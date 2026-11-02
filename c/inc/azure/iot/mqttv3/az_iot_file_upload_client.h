@@ -35,9 +35,13 @@ extern "C"
  *   2. app PUTs the file to blob_sas_uri  (header "x-ms-blob-type: BlockBlob")
  *   3. notify_complete(correlation_id, is_success, cb)
  *
- * This client pins the MQTTv3 profile; a connection resolved to another profile
- * is refused with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. The HTTP transport
- * hook and the buffers below are MQTTv3-only.
+ * There is no mqttv5 counterpart. File upload is not carried on the MQTT v5 hub
+ * for now, so rather than publish an API that cannot work there, this client
+ * pins the MQTTv3 profile and a connection that resolves to MQTT v5 is refused
+ * with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. When the MQTTv5 Files message
+ * schema lands, an mqttv5 client is added beside this one -- the HTTP transport
+ * hook and the buffers below stay MQTTv3-only either way, which is why they
+ * live in this header rather than a shared one.
  */
 
 /** @brief Maximum length of a built request URL (incl. NUL). */
@@ -187,13 +191,14 @@ extern "C"
    * @p client must be a fresh instance or one that has been passed to
    * az_iot_mqttv3_file_upload_client_deinit(). Initializing over a live instance
    * cannot be detected -- the struct is caller-allocated, so an uninitialized one
-   * is indistinguishable from a live one -- and would strand the profile
+   * is indistinguishable from a live one -- and would strand the generation
    * reference the live instance holds on @p conn.
    *
-   * Pins the connection to the MQTTv3 profile. A connection already resolved to
-   * another profile is rejected here with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a
-   * conflict surfaces when the connection resolves, which fails it before it reports CONNECTED. A
-   * failed init releases the pin it took.
+   * Pins the connection to the MQTTv3 profile. A connection already known to be
+   * MQTT v5 -- a direct connection, or a DPS one past assignment -- is rejected
+   * here with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a conflict
+   * surfaces when the connection resolves, which fails it before it reports
+   * CONNECTED. A failed init releases the pin it took.
    *
    * @param client          Instance to initialize.
    * @param conn            The (connected) connection client. Must outlive
@@ -202,7 +207,7 @@ extern "C"
    * @return AZ_IOT_OK on success;
    *         AZ_IOT_ERR_INVALID_ARG for a caller mistake -- a NULL argument, or no
    *         HTTP transport;
-   *         AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH on a connection of another profile;
+   *         AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH on an MQTT v5 connection;
    *         AZ_IOT_ERR_NOT_CONNECTED if the connection cannot yet supply a hub
    *         address and device id, which is transient: retry once it is connected.
    */

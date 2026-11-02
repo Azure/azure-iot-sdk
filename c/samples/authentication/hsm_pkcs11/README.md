@@ -11,8 +11,8 @@ through the token. After connecting, the sample sends one telemetry message
 
 ## Sample features
 
-- Hub: mqttv3 (MQTT 3.1.1). Key custody does not depend on the MQTT version; the telemetry client
-  is built once `CONNECTED`, for the assigned profile.
+- Hub generations: mqttv3 and mqttv5, whichever DPS assigns. Key custody does not depend on the
+  MQTT version; the telemetry client is built once `CONNECTED`, for the assigned generation.
 - Any PKCS#11 module works (SoftHSM2, a TPM through tpm2-pkcs11, an ATECC608, a smart card).
 - A key reference that cannot be resolved fails the connect with `AZ_IOT_ERR_TLS` and a log line
   naming the URI, rather than failing inside the handshake.
@@ -179,7 +179,7 @@ when not configured.
 | --- | --- |
 | Configuration | `hsm_config_load()` |
 | The provider: a key reference instead of a key | `hsm_load()` sets `client_key_uri` and `crypto_engine_id` |
-| Build the telemetry client for the assigned profile | after `CONNECTED` in `main()` |
-| Send | `az_iot_mqttv3_telemetry_client_send()`, `on_send_done()` |
+| Build the telemetry client for the assigned generation | after `CONNECTED` in `main()` |
+| Send | `az_iot_mqttv3_telemetry_client_send()` / `az_iot_mqttv5_telemetry_client_send()`, `on_send_done()` |
 
 Design background: [certificate-management.md](../../../docs/eng/certificate-management.md#device-certificate-storage-methods).

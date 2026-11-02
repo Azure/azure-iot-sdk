@@ -10,7 +10,7 @@ and at `sas.renewal_percent` of its lifetime. The SDK never sees a key. See [`ma
 
 - `dps_auth` and `hub_auth` set only `on_sas_token_required`. Certificates and keys can be set
   too; the callback is then the last fallback.
-- The callback receives the role, hub profile, resource URI and key name the token must carry,
+- The callback receives the role, hub generation, resource URI and key name the token must carry,
   and whether it renews a connected session. It must not block.
 - This sample records the request in the callback and supplies the token with
   `az_iot_connection_client_update_sas_token()` from the `do_work()` thread. A connect attempt
@@ -99,7 +99,7 @@ SDK log lines and state lines omitted:
 | Symptom | Likely cause |
 | --- | --- |
 | `[user_provided_sas_token] set AZ_IOT_DPS_ID_SCOPE, ...`, exit 1 | A required variable is missing, or the key is not valid base64 or is longer than 64 bytes. |
-| `[user_provided_sas_token] AZ_IOT_ERR_IDENTITY_REJECTED` | DPS or the hub refused the token: wrong key, a group key instead of the derived device key, no matching enrollment, or a wrong system clock. |
+| `[user_provided_sas_token] AZ_IOT_ERR_IDENTITY_REJECTED` | DPS or the hub refused the token: wrong key, a group key instead of the derived device key, no matching enrollment, a wrong system clock, or an mqttv5 hub, which does not accept SAS yet. |
 | `[user_provided_sas_token] timeout` with no `DPS token:` line | The system clock is not set (`time()` fails or returns 0); token requests wait for it. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>`, then `timeout` | DPS refused the registration. DPS verdicts are retried until the sample's run time ends. |
 | Repeated `paho: connect failed: ...`, then `timeout` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |

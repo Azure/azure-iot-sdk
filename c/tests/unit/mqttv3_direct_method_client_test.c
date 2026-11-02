@@ -874,20 +874,19 @@ static void init_rejects_a_null_connection(void** state)
       az_iot_mqttv3_direct_method_client_init(&dm, NULL, &fx->options), AZ_IOT_ERR_INVALID_ARG);
 }
 
-static void init_while_another_profile_is_required_is_rejected(void** state)
+static void init_against_an_mqtt_v5_connection_is_rejected(void** state)
 {
   fixture* fx = (fixture*)*state;
 
-  /* A feature client of another profile already pins the connection. */
+  /* A direct connection declares its generation up front, so the pin can be
+   * answered at init rather than deferred to connect. */
   az_iot_connection_client conn;
   az_iot_connection_client_options opts = { 0 };
   opts.iothub_hostname = "broker.example";
   opts.port = 8883;
   opts.device_id = "ut-device";
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   assert_int_equal(az_iot_test_connection_client_init(&conn, &opts), AZ_IOT_OK);
-  /* No supported profile other than mqttv3 exists to require; pin one directly. */
-  conn.required_profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
-  conn.required_profile_refs = 1;
 
   az_iot_mqttv3_direct_method_client dm;
   assert_int_equal(
@@ -1799,10 +1798,10 @@ static void a_routed_topic_the_parser_refuses_is_dropped(void** state)
   assert_true(topic_reached_the_parser(fx, "$iothub/methods/POST/reboot"));
 }
 
-/* A request built for another profile must not be answerable here: its
- * correlation scheme differs, so publishing it on a $rid topic would address
- * nothing. */
-static void respond_rejects_a_request_from_another_profile(void** state)
+/* A request built by the mqttv5 client must not be answerable here: the two
+ * generations answer on different correlation schemes, so publishing this one
+ * on a $rid topic would address nothing. */
+static void respond_rejects_a_request_from_the_other_generation(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -1814,7 +1813,7 @@ static void respond_rejects_a_request_from_another_profile(void** state)
   assert_true(rec.fired);
 
   az_iot_direct_method_request foreign = rec.request;
-  foreign._internal.profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+  foreign._internal.profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
 
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
   assert_int_equal(
@@ -2091,7 +2090,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(init_rejects_a_null_client, setup, teardown),
     cmocka_unit_test_setup_teardown(init_rejects_a_null_connection, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        init_while_another_profile_is_required_is_rejected, setup, teardown),
+        init_against_an_mqtt_v5_connection_is_rejected, setup, teardown),
     cmocka_unit_test_setup_teardown(the_subscription_uses_qos_0, setup, teardown),
     cmocka_unit_test(deinit_tolerates_null),
     cmocka_unit_test_setup_teardown(a_session_end_ends_unanswered_invocations, setup, teardown),
@@ -2136,7 +2135,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_topic_with_the_wrong_prefix_is_never_routed, setup, teardown),
     cmocka_unit_test_setup_teardown(a_routed_topic_the_parser_refuses_is_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        respond_rejects_a_request_from_another_profile, setup, teardown),
+        respond_rejects_a_request_from_the_other_generation, setup, teardown),
     cmocka_unit_test_setup_teardown(the_sequence_counter_skips_zero_on_wrap, setup, teardown),
     cmocka_unit_test_setup_teardown(a_rid_at_the_configured_bound_still_answers, setup, teardown),
     cmocka_unit_test_setup_teardown(a_method_name_past_the_bound_is_dropped, setup, teardown),

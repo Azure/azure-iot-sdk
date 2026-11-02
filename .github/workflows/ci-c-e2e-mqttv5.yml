@@ -28,12 +28,12 @@
 name: ci-c-e2e-mqttv5
 
 on:
-  # releases/public-preview only: its nightly dispatcher (ci-c-public-preview-nightly.yml) runs it.
   workflow_dispatch:
   # Pull requests: every one, so the gate job always reports; the `changes` job
   # decides whether the e2e legs run.
   pull_request:
-    branches: [ releases/public-preview ]
+  schedule:
+    - cron: '30 11 * * *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -93,12 +93,9 @@ jobs:
   # Not on pull requests: the repair logs in to Azure and runs the checked-out
   # script, so it only runs trusted code (schedule, manual). Pull requests rely
   # on the scheduled repair (every 10 minutes) in ci-c-e2e-mqttv5-adr-namespace.yml.
-  # main has no mqttv5 hub clients: a dispatch on main (the UI default) does nothing.
   adr-namespace:
     name: ADR namespace
-    if: >-
-      ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' && github.event_name != 'pull_request' &&
-          github.ref != 'refs/heads/main' }}
+    if: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' && github.event_name != 'pull_request' }}
     permissions:
       contents: read
       id-token: write
@@ -116,7 +113,6 @@ jobs:
     needs: changes
     if: >-
       ${{ needs.changes.outputs.run == 'true' && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
-          github.ref != 'refs/heads/main' &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&
             github.actor != 'dependabot[bot]')) }}
@@ -778,7 +774,6 @@ jobs:
     needs: [ changes, adr-namespace ]
     if: >-
       ${{ !cancelled() && needs.changes.outputs.run == 'true' && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
-          github.ref != 'refs/heads/main' &&
           (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&

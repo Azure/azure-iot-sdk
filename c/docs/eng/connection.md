@@ -29,9 +29,10 @@ This document describes the target lifecycle. Not all of it is coded yet, so eve
 | Term | Meaning |
 | --- | --- |
 | **State** | User-visible connection lifecycle value (`az_iot_connection_state`). Reported through the state callback. |
-| **Connection profile** | What the device is connected to, as declared by DPS: `classic` (`az_iot_connection_profile`). Not caller-settable. |
-| **Role** | Which endpoint/protocol the current MQTT session targets (`az_iot_mqtt_role`): `DPS` (v3.1.1), `HUB_MQTT_V3` (v3.1.1). |
-| **Phase** | Internal sub-step inside a state — DPS phases. Not user-visible. |
+| **Connection profile** | What the device is connected to, as declared by DPS: `classic` or `mqttV5` (`az_iot_connection_profile`). Not caller-settable. |
+| **Generation** | The feature-client family selected by the profile: `mqttv3` (`classic`) or `mqttv5` (mqttV5). |
+| **Role** | Which endpoint/protocol the current MQTT session targets (`az_iot_mqtt_role`): `DPS` (v3.1.1), `HUB_MQTT_V3` (v3.1.1), `HUB_MQTT_V5` (v5). |
+| **Phase** | Internal sub-step inside a state — DPS phases and presence (birth) phases. Not user-visible. |
 | **Provisioning** | Obtaining a hub assignment from DPS. |
 | **Onboarding** | Everything that happens against the DPS gateway under *onboarding auth*: the CSR and registration itself. |
 | **Renewal** | The recurring, post-provisioning counterpart under *operational auth*: certificate re-issuance. |
@@ -105,7 +106,7 @@ sequenceDiagram
     participant Conn as Connection client
     participant Cert as Certificate provider
     participant DPS
-    participant Hub as IoT Hub
+    participant Hub as IoT Hub / Event Grid
 
     App->>Conn: open(options)
     Conn->>Conn: state = SETTING_UP (DPS first when it registers, then HUB)
@@ -143,6 +144,13 @@ sequenceDiagram
     Conn->>Hub: MQTT CONNECT (role-specific username, TLS mutual auth)
     Hub-->>Conn: CONNACK
 
+    alt role = HUB_MQTT_V5 (MQTT v5)
+        Conn->>Hub: SUBSCRIBE ih/{device_id}/dev/# (QoS 1)
+        Hub-->>Conn: SUBACK
+        Conn->>Hub: PUBLISH birth (type=birth:1, correlation = connect nonce)
+        Hub-->>Conn: birth-ack on ih/{device_id}/dev/presence (nonce echoed)
+    end
+
     opt persistent filters exist for this role
       Conn->>Hub: re-SUBSCRIBE persistent filters
       Hub-->>Conn: SUBACK each required filter
@@ -153,12 +161,14 @@ sequenceDiagram
 
 Key ordering guarantees that both clients must honour:
 
-1. `CONNECTED` is announced **after** every required persistent subscription has been SUBACKed,
-  so a feature client never observes `CONNECTED` while its topic filters are missing. MQTTv3
-  feature filters and application-supplied topics use the persistent-subscription registry.
+1. `CONNECTED` is announced **after** the birth handshake (MQTTv5) and **after** every required
+  persistent subscription has been SUBACKed, so a feature client never observes `CONNECTED` while
+  its topic filters are missing. MQTTv5 feature delivery uses the single
+  `ih/{device_id}/dev/#` presence wildcard; MQTTv3 feature filters and application custom topics
+  use the persistent-subscription registry.
 
 2. The DPS session is fully torn down before the hub session is created — they are never concurrent,
-   and DPS always uses MQTT 3.1.1.
+   and DPS always uses MQTT 3.1.1 even when the hub session uses v5.
 3. The operational certificate is preferred over the bootstrap certificate on every connect attempt,
    including reconnects.
 4. The DPS assignment is the single delivery point for everything the device learns about its
@@ -173,7 +183,7 @@ reach DPS first.
 | Option | Effect |
 | --- | --- |
 | `transport` | `TCP` (default) or `WEBSOCKET`. WebSockets carries MQTT inside a WebSocket on 443, for a network that passes only HTTP(S) ports. |
-| `websocket_path` | Defaults to `/$iothub/websocket`. A value set here is used for every session. |
+| `websocket_path` | Defaults to `/$iothub/websocket` (DPS, mqttv3 hub) and `/mqtt` (mqttv5 hub). A value set here is used for every session. |
 | `proxy` | Host, port and optional Basic credentials of an HTTP proxy. The connection is made with HTTP `CONNECT`, for both transports. |
 | `port` | `0` derives the port from the transport: 8883 for TCP, 443 for WebSockets. An explicit value always wins. |
 
@@ -198,15 +208,16 @@ one of these options set, so the diff against it is exactly the feature.
 ### 3.2 Session terms per role **[implemented]**
 
 Every CONNECT also carries the terms of the session it is opening. They are decided per session
-role, in `resolve_session_options()` in `src/core/connection_client.c`, and the two roles do not
+role, in `resolve_session_options()` in `src/core/connection_client.c`, and the three roles do not
 want the same thing.
 
-| Role | MQTT | Clean Start / Clean Session | Will |
-| --- | --- | --- | --- |
-| `DPS` | 3.1.1 | clean (`1`), not overridable | never |
-| `HUB_MQTT_V3` | 3.1.1 | resume (`0`) by default | `opts.lwt`, if set |
+| Role | MQTT | Clean Start / Clean Session | Session Expiry | Will | DISCONNECT reason |
+| --- | --- | --- | --- | --- | --- |
+| `DPS` | 3.1.1 | clean (`1`), not overridable | n/a | never | n/a |
+| `HUB_MQTT_V3` | 3.1.1 | resume (`0`) by default | n/a | `opts.lwt`, if set | n/a |
+| `HUB_MQTT_V5` | 5 | resume by default | `opts.session_expiry_seconds`, default 1 h | `opts.lwt`, if set | `0x04` when a Will is set, else `0x00` |
 
-The hub role honours `opts.session_continuity` (`DEFAULT` / `RESUME` / `CLEAN`). DPS does not: the
+Both hub roles honour `opts.session_continuity` (`DEFAULT` / `RESUME` / `CLEAN`). DPS does not: the
 provisioning service does not implement session persistence at all, so honouring a request for it
 would promise something the service does not do.
 
@@ -223,17 +234,37 @@ Why each one:
   that is delivered once the device re-subscribes — but it does discard the subscription and any
   in-flight delivery, so resuming is the cheaper default. This is also the behaviour the role
   already had before the terms were set explicitly.
+- **MQTTv5 resumes, with an expiry.** Session continuity on this generation is a **transport
+  efficiency choice, not a correctness one**: the backend never reads `clean_start` or
+  `session_present`, the device publishes birth on every connection, and every feature protocol is
+  correct even if each connect started a fresh session. What resuming buys is the broker's QoS 1
+  redelivery across a transient drop and a re-subscribe saved. Both halves are required — a session
+  asked to expire the instant the connection closes is gone before any reconnect could resume it —
+  which is why the expiry is set rather than left at 0.
 
-Three rules that hold everywhere:
+Four rules that hold everywhere:
 
-- **No v5-only property is sent.** Every role speaks v3.1.1: its CONNECT has no field for Session
-  Expiry or Will Delay, and its DISCONNECT has no reason code.
-- **The SDK sets no Will of its own.** `opts.lwt` is the application's, and defaults to none. A
-  CONNECT carries one Will, and taking the slot would deny the application its own "device went
-  away" signal. It is never put on a provisioning session, whatever that session's lifetime:
-  nothing consumes a will published there.
-- **`Session Present` drives no application decision.** It is not exposed to the application. No
-  feature client tears down state because of it.
+- **A v3.1.1 broker never receives a v5-only property.** Session Expiry and Will Delay are MQTT 5
+  CONNECT properties; a v3.1.1 CONNECT has no field to carry them, and the DISCONNECT reason code
+  does not exist in 3.1.1 either.
+- **The SDK sets no Will of its own.** `opts.lwt` is the application's, and defaults to none. The
+  platform deliberately leaves the Will slot to the application: MQTT 5 allows exactly one Will per
+  CONNECT, device presence is derived from broker-emitted connection lifecycle events rather than
+  from a device-authored will message, and taking the slot would deny the application its own
+  "device went away" signal. It is never put on a provisioning session, whatever that session's
+  lifetime: nothing consumes a will published there.
+- **`Session Present` drives no application decision.** It is reported to the application and
+  carried on the birth message as a diagnostic. No feature client tears down state because of it.
+  It is reported on both MQTT versions — an MQTTv3 session connects with Clean Session 0, so this
+  is the only place the application learns whether the broker resumed it.
+- A Will Delay only means something while the session is alive, so on `HUB_MQTT_V5` the session expiry
+  is raised to cover a delay longer than it; MQTT 5 ends the delay at whichever comes first.
+
+Session Expiry is an operational tuning knob. A long expiry suits a rarely-connected, low-traffic
+device; a shorter one suits an always-connected device receiving heavy traffic, whose disconnected
+session queue (bounded at 100 messages / 1 MB, and destroyed entirely on overflow) would otherwise
+fill. The default is one hour, which matches the broker namespace default; the namespace maximum is
+eight hours and the broker clamps anything above it.
 
 ---
 
@@ -248,15 +279,18 @@ flowchart TB
     A["DPS assignment received"] --> B{"connectionProfile"}
     B -->|"classic"| C["AZ_IOT_CONNECTION_PROFILE_MQTT_V3<br/>MQTT 3.1.1, role HUB_MQTT_V3"]
     B -->|"absent or null"| C
+    B -->|"mqttV5"| D["AZ_IOT_CONNECTION_PROFILE_MQTT_V5<br/>MQTT 5, role HUB_MQTT_V5"]
     B -->|"anything else"| E["AZ_IOT_CONNECTION_PROFILE_UNKNOWN"]
     C --> F["mqttv3 feature clients"]
+    D --> G["mqttv5 feature clients<br/>+ presence handshake"]
     E --> H["Connection fails:<br/>AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED<br/>raw string still readable"]
 ```
 
-| Wire value | Enum | MQTT |
-| --- | --- | --- |
-| `"classic"`, absent, or `null` | `AZ_IOT_CONNECTION_PROFILE_MQTT_V3` | 3.1.1 |
-| anything else, including `"mqttV5"` | `AZ_IOT_CONNECTION_PROFILE_UNKNOWN` | — (connection fails) |
+| Wire value | Enum | MQTT | Generation |
+| --- | --- | --- | --- |
+| `"classic"`, absent, or `null` | `AZ_IOT_CONNECTION_PROFILE_MQTT_V3` | 3.1.1 | MQTTv3 |
+| `"mqttV5"` | `AZ_IOT_CONNECTION_PROFILE_MQTT_V5` | 5 | MQTTv5 |
+| anything else | `AZ_IOT_CONNECTION_PROFILE_UNKNOWN` | — | connection fails |
 
 Rules both clients must implement:
 
@@ -269,13 +303,16 @@ Rules both clients must implement:
   The SDK will not guess which MQTT version to speak.
 - The profile is readable only once `CONNECTED`; before that
   `az_iot_connection_client_get_hub_profile()` returns `AZ_IOT_ERR_NOT_CONNECTED`.
-- A feature client requiring another profile is refused with
-  `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
+- A feature client from the wrong generation is refused with `AZ_IOT_ERR_HUB_GENERATION_MISMATCH`.
+  Because of this, feature clients must be created **after** the connection is open.
 
 > The SDK now sends DPS `2026-11-02-preview` in the CONNECT username for every DPS session,
 > including CSR and provision-only update sessions. This allows DPS to return `connectionProfile`;
 > absent/null values still resolve to `classic`. mqttv3 hub sessions send hub `2025-08-01-preview`,
 > which hub certificate renewal requires.
+>
+> **Open:** whether a reconnect can change the generation. If DPS can reassign a device mid-life,
+> every feature client the application holds becomes invalid at that moment and it must be told.
 
 ---
 
@@ -288,7 +325,7 @@ sequenceDiagram
     participant Conn as Connection client
     participant App
 
-    Hub--xConn: transport drop / CONNACK error
+    Hub--xConn: transport drop / CONNACK error / birth timeout
     Conn->>Conn: teardown_active() (destroy adapter, drop pending PUBACKs, reset phases)
     alt user called close()
         Conn->>Conn: state = IDLE
@@ -327,7 +364,7 @@ Reset points differ per ladder:
 | Event | Effect |
 | --- | --- |
 | DPS registration succeeds | `DPS` and `HUB` reset; identity ladders untouched |
-| Hub CONNACK succeeds | `HUB` resets; `DPS` untouched |
+| Hub CONNACK succeeds (birth-ack on MQTTv5) | `HUB` resets; `DPS` untouched |
 | `HUB:CONNECTED` | identity ladders reset |
 | `dps.max_hub_connect_attempts_before_reprovision` crossed | `DPS` resets, so the first registration attempt waits `initial_delay_ms` |
 | `open()` / `close()` | all ladders reset |
@@ -361,6 +398,9 @@ successful CONNACK.
 - CONNACK with a non-success status.
 - Unexpected transport disconnect or adapter error while `CONNECTING` or `CONNECTED`.
 - Any failure during a DPS phase (a reconnect restarts provisioning from the beginning).
+- MQTTv5 presence timeouts: the `dev/#` SUBACK (`subscription_ack_timeout_seconds`, default 60 s)
+  and the birth-ack (escalating: 5–10, 6–11, 8–13, then 10–15 min, reset by `open()` and by a
+  birth-ack in time).
 
 A user-initiated `close()` never triggers a reconnect: it sets an internal `user_close` flag that is
 checked before backoff is scheduled.
@@ -371,12 +411,13 @@ checked before backoff is scheduled.
 | --- | --- | --- |
 | Persistent subscriptions | Yes | Re-issued on reconnect. Every required filter must be SUBACKed before `CONNECTED`; a missing SUBACK expires on the configured deadline and retries as a transient failure. |
 | Assigned hub host / device id | Yes | Cached after the first DPS assignment. |
-| Connection profile | Yes | Re-resolved from the new assignment; a profile other than mqttv3 faults with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` (§4). |
+| Connection profile | Yes | Re-resolved from the new assignment; a change invalidates held feature clients (open question, §4). |
 | Operational certificate | Yes | Owned by the certificate provider, reloaded on each attempt. |
 | Reconnect attempt counter | Reset on success | Incremented per failed attempt. |
 | In-flight QoS 1 PUBACKs | No | Packet ids belong to the destroyed adapter; callers must re-send. |
 | Twin GET/PATCH, method responses, telemetry in flight | No | Feature clients must re-issue. |
 | MQTTv3 desired-property patches sent while disconnected | No | IoT Hub does not queue them, and the SDK does not fetch the twin on reconnect. The application calls `az_iot_mqttv3_twin_client_get()` if it needs the current desired state. |
+| Presence (birth) phase | No | Restarted with a freshly generated nonce. |
 | DPS phase | No | Restarted from `CONNECTING` if DPS is configured. |
 | In-flight CSR operation | No | Abandoned; the callback fires with a failure/timeout result. |
 
@@ -455,10 +496,13 @@ flowchart TB
     STORE1 --> PROFILE{"connectionProfile"}
 
     PROFILE -->|"unknown profile"| FAULTED
-    PROFILE -->|"classic - mqttv3"| CRED["Load credential:<br/>operational, else bootstrap"]
+    PROFILE -->|"classic - mqttv3"| CRED
+    PROFILE -->|"mqttV5 - mqttv5"| CRED["Load credential:<br/>operational, else bootstrap"]
 
     CRED --> CONNECTING["CONNECTING<br/>MQTT CONNECT + mutual TLS"]
-    CONNECTING --> SUBS["Replay persistent subscriptions"]
+    CONNECTING --> BIRTH["Presence handshake<br/>mqttv5 only"]
+    BIRTH --> SUBS["Replay persistent subscriptions"]
+    CONNECTING --> SUBS
     SUBS --> CONNECTED["CONNECTED"]
 
     CONNECTED --> CRENEW["Cert renewal:<br/>send_csr, 202 then 200"]
@@ -477,7 +521,7 @@ Reading it as three overlapping concerns:
 | Concern | Onboarding (DPS gateway, onboarding auth) | Renewal (post-`CONNECTED`, operational auth) |
 | --- | --- | --- |
 | **Certificates** | CSR in the registration, issued chain in the assignment | `send_csr` over the hub; new chain applies on the next connect |
-| **Connection profile** | Declared in the assignment; selects the hub role | Re-resolved on every reconnect that goes through DPS |
+| **Connection profile** | Declared in the assignment; selects MQTT version and generation | Re-resolved on every reconnect that goes through DPS |
 | **Connection** | DPS phases inside `CONNECTING` | Backoff-driven reconnect replays the whole path |
 
 ---

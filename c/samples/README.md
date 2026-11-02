@@ -10,13 +10,14 @@ run it, and what to expect.
 
 | Folder | Serves | Use when |
 | --- | --- | --- |
-| [`unified/`](unified/) | mqttv3 (MQTT 3.1.1), as DPS assigns | Default. The device does not control which hub it is provisioned to. |
-| [`authentication/`](authentication/README.md) | mqttv3 | Certificate providers, certificates issued by DPS, renewal, keys in hardware. |
+| [`unified/`](unified/) | mqttv3 (MQTT 3.1.1) **or** mqttv5 (MQTT 5), whichever DPS assigns | Default. The device does not control which hub it is provisioned to. |
+| [`mqttv5/`](mqttv5/) | mqttv5 only | The device is known to be on an mqttv5 hub. |
+| [`authentication/`](authentication/README.md) | Either | Certificate providers, certificates issued by DPS, renewal, keys in hardware. |
 
 | Sample | What it shows |
 | --- | --- |
-| [unified/telemetry](unified/telemetry/README.md) | Telemetry. **Start here**: the build-before-open pattern most `unified/` samples follow. |
-| [unified/connect_first](unified/connect_first/README.md) | The same, building the client after connecting, from the assigned profile. |
+| [unified/telemetry](unified/telemetry/README.md) | Telemetry to either hub generation. **Start here**: the build-before-open pattern most `unified/` samples follow. |
+| [unified/connect_first](unified/connect_first/README.md) | The same, building the client after connecting, from the assigned generation. |
 | [unified/twin_get_patch](unified/twin_get_patch/README.md) | Device twin: GET, reported PATCH, desired updates. |
 | [unified/direct_method_responder](unified/direct_method_responder/README.md) | Direct methods answered inside the handler. |
 | [unified/direct_method_slow_responder](unified/direct_method_slow_responder/README.md) | Direct methods answered after the handler returned. |
@@ -26,6 +27,11 @@ run it, and what to expect.
 | [unified/proxy](unified/proxy/README.md) | Telemetry through an HTTP proxy. |
 | [unified/multithreaded_telemetry](unified/multithreaded_telemetry/README.md) | Telemetry with readings from other threads, handed to the one thread that calls the SDK. |
 | [unified/esp32](unified/esp32/README.md) | ESP32 (ESP-IDF): telemetry, twin and a direct method, identity from the `esp_secure_cert` partition. Runs in QEMU too. |
+| [mqttv5/telemetry](mqttv5/telemetry/README.md) | Telemetry on an mqttv5 hub. |
+| [mqttv5/twin_get_patch](mqttv5/twin_get_patch/README.md) | Device twin on an mqttv5 hub. |
+| [mqttv5/direct_method_responder](mqttv5/direct_method_responder/README.md) | Direct methods on an mqttv5 hub, with a probe handler. |
+| [mqttv5/direct_method_slow_responder](mqttv5/direct_method_slow_responder/README.md) | Direct methods answered later, on an mqttv5 hub. |
+| [mqttv5/custom_topic_publisher](mqttv5/custom_topic_publisher/README.md) | Publish to a custom topic on an mqttv5 hub. |
 | [authentication/dps_csr_managed](authentication/dps_csr_managed/README.md) | DPS issues an operational certificate from a CSR. |
 | [authentication/dps_persist_assignment](authentication/dps_persist_assignment/README.md) | Save the DPS assignment; later runs connect to the hub without registering. |
 | [authentication/custom_certificate_provider](authentication/custom_certificate_provider/README.md) | The same, with the CSR built by application code. |
@@ -35,17 +41,23 @@ run it, and what to expect.
 | [authentication/custom_provider_template](authentication/custom_provider_template/README.md) | Skeleton of a certificate provider. |
 | [authentication/dps_tpm](authentication/dps_tpm/README.md) | DPS TPM attestation over HTTPS, then hub SAS tokens signed by a simulated TPM. |
 
-## How a unified sample handles the hub profile
+## How a unified sample handles the hub generation
 
-DPS returns the hub's connection profile with the assignment. This SDK supports mqttv3 only: any
-other profile stops the connection with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` before that hub
-is reached, and the state event carries the assigned profile.
+DPS returns the hub's connection profile with the assignment, and it can change while a device
+runs: a device moved to another hub re-provisions and may land on the other generation. A feature
+client pins its generation at `init()`. If DPS assigns the other one, the connection stops with
+`AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` before that hub is reached, and the state event carries
+the assigned profile. The `unified/` samples respond in one of three ways:
 
-- Most `unified/` samples build their clients before `open()`.
-- `connect_first`: opens with no feature client and builds it once `CONNECTED`, from the assigned
-  profile.
+- `telemetry`, `twin_get_patch`, `direct_method_responder`, `direct_method_slow_responder`,
+  `websockets`, `proxy`: build their clients before `open()`; on a mismatch they destroy them,
+  build the other generation's, and call `close()` and `open()`.
+- `connect_first`: opens with no feature client, builds once `CONNECTED` from the assigned profile,
+  and on a later mismatch destroys the client and reopens without one.
+- `c2d_receiver`, `file_upload`: mqttv3 features with no mqttv5 counterpart. On an mqttv5
+  assignment they report it and exit 1.
 
-See [Architecture](../docs/architecture.md#hub-connection-profile).
+See [Architecture](../docs/architecture.md#hub-generations-mqttv3-and-mqttv5).
 
 ## Shared code
 
@@ -123,7 +135,7 @@ certificate, Schannel connects with TLS 1.2. Not available, because they need Op
 
 ## Configuration
 
-The `unified/` samples read:
+The `unified/` and `mqttv5/` samples read:
 
 | Variable | Required | Meaning |
 | --- | --- | --- |

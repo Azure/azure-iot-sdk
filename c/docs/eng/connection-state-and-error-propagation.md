@@ -62,7 +62,7 @@ Rules:
 5. **Under `dps.provision_only` (§4) `HUB` never leaves `IDLE`.**
 6. **`DPS:CONNECTED` is the provisioning SUBACK.** A normal DPS device reports
    `DPS:SETTING_UP → CONNECTING → CONNECTED → DISCONNECTING → IDLE` around its registration. `profile` is NULL on
-   `DPS:CONNECTED`; the hub profile comes from the assignment and is carried on `HUB:CONNECTED`.
+   `DPS:CONNECTED`; the hub generation comes from the assignment and is carried on `HUB:CONNECTED`.
 7. **Duplicate transitions are suppressed per scope.**
 8. **Every attempt starts in `SETTING_UP`**, before any step that can fail on the device, so a
    failed attempt is always a transition and is never suppressed. A failure there goes straight to
@@ -218,7 +218,7 @@ static void on_state(const az_iot_connection_state_event* e, void* ctx)
 }
 ```
 
-After a profile mismatch: rebuild feature clients.
+After a generation change: rebuild feature clients.
 
 ```c
 if (e->state == AZ_IOT_CONN_STATE_FAULTED

@@ -1,0 +1,243 @@
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
+
+/* SPDX-License-Identifier: MIT */
+/* mqttv5/telemetry - sample.
+ *
+ * Send one telemetry message to an MQTTv5 hub over MQTT v5. An
+ * application that must serve either hub generation picks at runtime -- see
+ * unified/telemetry.
+ *
+ * The client is created before the connection opens, because
+ * az_iot_mqttv5_telemetry_client_init() records the generation it needs rather
+ * than reading one off a live connection. A sample that served both generations
+ * could not do that: it would have to wait for CONNECTED, read the resolved
+ * profile, and only then build the right client.
+ *
+ * The hub leg is MQTT v5, but the DPS leg is still v3.1.1: the adapter builds
+ * an MQTT v3.1.1 client to provision, then an MQTT v5 one for the hub.
+ *
+ * Provision via DPS, open, send, close. DPS is handled internally by the
+ * connection client when dps.id_scope is set.
+ */
+#include <stdio.h>
+#include <stdlib.h>
+
+#include "azure/iot/az_iot.h"
+/* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+#include "azure/iot/adapters/az_iot_adapter_paho.h"
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
+#else
+#error "Define AZ_IOT_SAMPLE_ADAPTER_PAHO or AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT"
+#endif
+
+#include "sample_utils.h"
+
+typedef struct
+{
+  sample_config config;
+  az_iot_certificate_provider_pem certs;
+  az_iot_connection_client connection_client;
+  az_iot_mqttv5_telemetry_client telemetry;
+  int telemetry_initialized;
+} sample_state;
+
+static void sample_state_destroy(sample_state* state)
+{
+  if (state->telemetry_initialized)
+  {
+    az_iot_mqttv5_telemetry_client_deinit(&state->telemetry);
+    state->telemetry_initialized = 0;
+  }
+  az_iot_connection_client_deinit(&state->connection_client);
+  az_iot_certificate_provider_pem_deinit(&state->certs);
+  sample_config_release(&state->config);
+}
+
+typedef struct
+{
+  az_iot_connection_state conn_state;
+  int provisioning_faulted;
+  az_iot_result conn_reason;
+  int send_done;
+  az_iot_result send_status;
+} user_context;
+
+static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
+{
+  user_context* ctx = (user_context*)user_ctx;
+  /* A rejected assignment or a failed registration faults the provisioning
+   * lifecycle and leaves the hub IDLE, so the wait below must watch for it. */
+  if (event->scope == AZ_IOT_CONN_SCOPE_DPS)
+  {
+    if (event->state == AZ_IOT_CONN_STATE_FAULTED)
+    {
+      ctx->provisioning_faulted = 1;
+      if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH)
+      {
+        printf("This device is assigned to an MQTTv3 hub. Run the unified telemetry sample "
+               "instead.\n");
+      }
+    }
+    return;
+  }
+
+  /* Hub lifecycle only: the provisioning session reports on its own scope,
+   * and storing its state here would overwrite the hub state this code acts
+   * on. */
+  if (event->scope != AZ_IOT_CONN_SCOPE_HUB)
+  {
+    return;
+  }
+
+  ctx->conn_state = event->state;
+  ctx->conn_reason = event->reason;
+}
+
+static void on_send_done(az_iot_result status, void* user_ctx)
+{
+  user_context* ctx = (user_context*)user_ctx;
+  ctx->send_status = status;
+  ctx->send_done = 1;
+}
+
+int main(void)
+{
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_set_global_sink(&log);
+
+  sample_state state = { 0 };
+  if (sample_config_load(&state.config) != 0)
+  {
+    return 1;
+  }
+
+  int rc = 1;
+  user_context user_ctx = { 0 };
+
+  /* Certificate provider */
+  az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
+  pem.trusted_ca_pem_path = state.config.ca;
+  pem.client_cert_pem_path = state.config.cert;
+  pem.client_key_pem_path = state.config.key;
+
+  if (az_iot_certificate_provider_pem_init(&state.certs, &pem) != AZ_IOT_OK)
+  {
+    sample_state_destroy(&state);
+    return 1;
+  }
+
+  /* Connection client (DPS provisioning is internal) */
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+  az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
+  copts.dps.id_scope = state.config.id_scope;
+  copts.dps.registration_id = state.config.reg_id;
+  copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
+  copts.certificate_provider = &state.certs.base;
+  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
+   * for DPS, MQTT 5 for the MQTTv5 hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
+
+  if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
+  {
+    sample_state_destroy(&state);
+    return 1;
+  }
+  az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
+
+  /* Before open, and before any profile is known: this declares which hub the
+   * application is built for, and the connection is failed if it resolves to
+   * the other one. */
+  if (az_iot_mqttv5_telemetry_client_init(&state.telemetry, &state.connection_client) != AZ_IOT_OK)
+  {
+    sample_state_destroy(&state);
+    return 1;
+  }
+  state.telemetry_initialized = 1;
+
+  if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
+  {
+    sample_state_destroy(&state);
+    return 1;
+  }
+
+  for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
+  {
+    (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+    if (user_ctx.conn_state == AZ_IOT_CONN_STATE_FAULTED || user_ctx.provisioning_faulted)
+    {
+      break;
+    }
+  }
+
+  if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    /* Properties are one array of name/value pairs; the name decides the kind.
+     *
+     * System properties use the AZ_IOT_MSG_PROP_* names (az_iot_message.h):
+     * $.ct travels as the MQTT v5 Content Type, $.cid as Correlation Data, and
+     * the others ($.mid, $.ce, $.uid, ...) as user properties under the same
+     * names MQTTv3 uses, so a message means the same on either hub.
+     *
+     * Any other name is an application property, sent as a user property byte
+     * for byte (nothing is URL-encoded on mqttv5). The client also adds
+     * type=telemetry:1 and content-type. There is no limit on the count.
+     *
+     * Receiving: an mqttv5 hub sends no cloud-to-device messages, so the
+     * application gets no inbound properties; see unified/c2d_receiver for
+     * mqttv3. */
+    static const uint8_t payload[] = "{\"temp\":23}";
+    az_iot_telemetry_property props[] = {
+      /* System properties. */
+      { AZ_IOT_MSG_PROP_CONTENT_TYPE, "application/json" },
+      { AZ_IOT_MSG_PROP_MESSAGE_ID, "sample-1" },
+      { AZ_IOT_MSG_PROP_CORRELATION_ID, "sample-corr-1" },
+      /* Application property. */
+      { "unit", "deg C" },
+    };
+    az_iot_telemetry_message msg = { 0 };
+    msg.payload = payload;
+    msg.payload_len = sizeof(payload) - 1;
+    msg.properties = props;
+    msg.properties_count = sizeof(props) / sizeof(props[0]);
+
+    if (az_iot_mqttv5_telemetry_client_send(&state.telemetry, &msg, on_send_done, &user_ctx)
+        == AZ_IOT_OK)
+    {
+      for (int i = 0; i < 600 && !user_ctx.send_done; ++i)
+      {
+        (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+      }
+
+      if (user_ctx.send_done && user_ctx.send_status == AZ_IOT_OK)
+      {
+        rc = 0;
+      }
+    }
+  }
+
+  az_iot_connection_client_close(&state.connection_client);
+
+  for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
+  {
+    (void)az_iot_connection_client_do_work(&state.connection_client, 50);
+  }
+
+  sample_state_destroy(&state);
+
+  return rc;
+}

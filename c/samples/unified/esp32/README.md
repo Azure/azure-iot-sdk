@@ -4,17 +4,19 @@
 # IoT Hub Sample - ESP32
 
 An ESP32 that provisions through DPS with an X.509 identity and then, on whichever hub DPS
-assigns (mqttv3):
+assigns (mqttv3 or mqttv5):
 
 - sends telemetry every `HUB_TELEMETRY_INTERVAL_S` seconds (`{"deviceId":"<id>","count":n}`, with
   the device id DPS assigned);
 - answers the direct method `echo` with its payload (status 200, or 413 when the response would
-  not fit), any other with 404;
+  not fit), any other with 404 (mqttv5 refuses undeclared methods itself);
 - acknowledges each desired twin version by patching `{"desiredVersion":<version>}` into the
-  reported properties, including one set while it was offline: it reads the twin on each connect.
-  A version older than one already seen is ignored. A failed twin read or refused patch is retried
-  after 5 s; one unanswered for 60 s makes the sample reconnect, which ends it, and it is then
-  retried. The same applies to a telemetry message not acknowledged within 60 s.
+  reported properties, including one set while it was offline: on mqttv3 it reads the twin on
+  each connect; on mqttv5 the hub pushes the desired snapshot on connect. A version older than one
+  already seen is ignored, except in an mqttv5 snapshot (the whole document, e.g. a replaced
+  twin). A failed twin read or refused patch is retried after 5 s; on mqttv3, one unanswered for
+  60 s makes the sample reconnect, which ends it, and it is then retried. The same applies to a
+  telemetry message not acknowledged within 60 s, on either hub.
 
 It restarts after 15 minutes without a hub connection: ESP-IDF's `protocol_examples_common` stops
 reconnecting Wi-Fi after `EXAMPLE_WIFI_CONN_MAX_RETRY` failures, and a restart brings it up again.
@@ -26,7 +28,7 @@ sequenceDiagram
     participant Hub as IoT Hub
     D->>DPS: TLS with the device certificate, register
     DPS-->>D: assigned hub and connection profile
-    D->>Hub: connect (mqttv3)
+    D->>Hub: connect (mqttv3 or mqttv5)
     loop while connected
         D->>Hub: telemetry {"deviceId":"<id>","count":n}
         Hub-->>D: direct method echo / desired twin patch
@@ -34,8 +36,9 @@ sequenceDiagram
     end
 ```
 
-The clients are built before connecting. If DPS assigns a hub profile this SDK does not support,
-the connection faults and the sample restarts. Everything is in
+The clients are built for mqttv3 before connecting, what DPS assigns when it names no
+connection profile. If DPS assigns mqttv5, the sample rebuilds them and reconnects, as
+[unified/telemetry](../telemetry/README.md) explains. Everything is in
 [`main/app_main.c`](main/app_main.c).
 
 ## Prerequisites

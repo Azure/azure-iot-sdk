@@ -153,6 +153,7 @@ endif()
 set(_az_iot_pc_descriptions
     core                          "core: connection client"
     mqttv3                        "IoT Hub mqttv3 clients"
+    mqttv5                        "IoT Hub mqttv5 clients"
     adapter_paho                  "Eclipse Paho MQTT adapter"
     adapter_az_mqtt               "az_mqtt MQTT adapter"
     crypto_openssl                "OpenSSL crypto backend"

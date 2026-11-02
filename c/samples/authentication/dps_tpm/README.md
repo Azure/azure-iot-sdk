@@ -25,6 +25,7 @@ TPM software stack instead.
 - The sample then connects `az_iot_connection_client` directly to the assigned hub. Hub SAS tokens
   come from `on_sas_token_required`, signed by the TPM in `sign_token_with_tpm()` as in
   [`user_provided_sas_token`](../user_provided_sas_token/README.md).
+- mqttv3 hubs only: mqttv5 hubs do not accept SAS.
 
 ## Service requirements
 

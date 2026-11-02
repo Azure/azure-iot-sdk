@@ -29,6 +29,10 @@
 #define AZ_IOT_LOG_COMPONENT_MQTTV3_TWIN "mqttv3_twin"
 #define AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD "mqttv3_direct_method"
 #define AZ_IOT_LOG_COMPONENT_MQTTV3_FILE_UPLOAD "mqttv3_file_upload"
+#define AZ_IOT_LOG_COMPONENT_MQTTV5_TELEMETRY "mqttv5_telemetry"
+#define AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN "mqttv5_twin"
+#define AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD "mqttv5_direct_method"
+#define AZ_IOT_LOG_COMPONENT_MQTTV5_CUSTOM_TOPIC "mqttv5_custom_topic"
 /** @} */
 
 #endif /* AZ_IOT_LOG_COMPONENTS_H */

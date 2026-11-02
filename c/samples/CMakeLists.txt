@@ -91,8 +91,10 @@ macro(az_iot_add_sample group name)
         LIBS ${ARGN})
 endmacro()
 
-# mqttv3, from the DPS assignment.
+# MQTTv3 or MQTTv5, picked from the DPS assignment.
 add_subdirectory(unified)
+# MQTTv5 hubs only.
+add_subdirectory(mqttv5)
 # Authentication / certificate-management samples. The subdirectory decides
 # per-sample which other dependencies (managed provider, OpenSSL, libcurl) are required.
 add_subdirectory(authentication)

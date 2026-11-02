@@ -14,7 +14,7 @@
  *
  * Set az_iot_connection_client_options::mqtt_adapter to az_iot_az_mqtt_get_adapter(): the
  * connection client builds each session's client in mqtt_workspace, of the MQTT version the
- * session needs (v3.1.1 for DPS and the mqttv3 hub), with the buffer sizes of
+ * session needs (v3.1.1 for DPS and mqttv3, v5 for mqttv5), with the buffer sizes of
  * mqtt_limits. AZ_IOT_AZ_MQTT_WORKSPACE_SIZE() sizes a static workspace.
  *
  * TLS backend: OpenSSL 3 or mbedTLS on Linux, Schannel on Windows, ESP-IDF's mbedTLS on ESP32

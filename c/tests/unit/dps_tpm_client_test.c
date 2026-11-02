@@ -246,8 +246,7 @@ static void full_flow_registers_and_imports_both_keys(void** state)
   assert_non_null(a);
   assert_string_equal(a->assigned_hub, "hub.example");
   assert_string_equal(a->device_id, "dev-1");
-  assert_int_equal(a->connection_profile, AZ_IOT_CONNECTION_PROFILE_UNKNOWN);
-  assert_string_equal(a->connection_profile_raw, "mqttV5");
+  assert_int_equal(a->connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
   assert_true(a->hub_key_imported);
   const char* chain = "[\"QQ==\",\"Qg==\"]";
   assert_int_equal(az_span_size(a->issued_certificate_chain), (int32_t)strlen(chain));
@@ -387,7 +386,7 @@ static void connection_profiles_map_to_the_enum(void** state)
     { "", AZ_IOT_CONNECTION_PROFILE_MQTT_V3, "classic", false },
     { "\"connectionProfile\":\"classic\",", AZ_IOT_CONNECTION_PROFILE_MQTT_V3, "classic", false },
     { "\"connectionProfile\":null,", AZ_IOT_CONNECTION_PROFILE_MQTT_V3, "classic", false },
-    { "\"connectionProfile\":\"mqttV5\",", AZ_IOT_CONNECTION_PROFILE_UNKNOWN, "mqttV5", false },
+    { "\"connectionProfile\":\"mqttV5\",", AZ_IOT_CONNECTION_PROFILE_MQTT_V5, "mqttV5", false },
     { "\"connectionProfile\":\"other\",", AZ_IOT_CONNECTION_PROFILE_UNKNOWN, "other", false },
     /* Escapes are decoded before the profile is matched. */
     { "\"connectionProfile\":\"mqtt\\/V5\",", AZ_IOT_CONNECTION_PROFILE_UNKNOWN, "mqtt/V5", false },

@@ -14,7 +14,8 @@
  * a freshly signed hub SAS token as its authorization; otherwise it is "" and the
  * hook authenticates (mutual TLS, or the application's own token).
  *
- * This client pins the MQTTv3 profile, so a connection of another profile is
+ * There is no mqttv5 counterpart: file upload is not carried on the MQTT v5 hub
+ * for now. This client pins the MQTTv3 profile, so an MQTT v5 connection is
  * refused at init() rather than at the first upload.
  */
 #include <stdbool.h>

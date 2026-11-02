@@ -12,7 +12,7 @@ component.
 
 ## Sample features
 
-- Hub: mqttv3 (MQTT 3.1.1).
+- Hub generations: mqttv3 and mqttv5, whichever DPS assigns.
 - `sample_cert_provider` implements the full `az_iot_certificate_provider` interface and builds a real PKCS#10 CSR with OpenSSL 3.0+ (`sample_csr_openssl.c`) on every platform.
 - Opts in to issuance with `dps.request_operational_certificate`.
 - Platforms: Linux and Windows.
@@ -101,7 +101,7 @@ Exit code 0 when the hub connection was reached; the last line says with which i
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. DPS verdicts are retried until the sample's run time ends. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
-| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK does not support. |
+| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK version does not know. |
 | `connected with bootstrap identity` | DPS issued no certificate: the enrollment group has no credential policy. |
 
 ## Where to look in `main.c`

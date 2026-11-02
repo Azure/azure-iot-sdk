@@ -9,7 +9,7 @@
  *
  * Set az_iot_connection_client_options::mqtt_adapter to az_iot_paho_get_adapter(). The
  * connection client builds one Paho client per session in mqtt_workspace, of the MQTT version
- * the session needs (v3.1.1 for DPS and the mqttv3 hub).
+ * the session needs (v3.1.1 for DPS and mqttv3, v5 for mqttv5).
  *
  * @code
  * static uint8_t mqtt_workspace[AZ_IOT_PAHO_WORKSPACE_SIZE];

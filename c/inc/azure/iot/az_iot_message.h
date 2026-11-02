@@ -12,7 +12,7 @@
 
 #include "az_iot_result.h"
 /* For az_iot_connection_profile, which tags a method request with the
- * profile that built it. */
+ * generation that built it. */
 #include "az_iot_connection_client.h"
 
 #ifdef __cplusplus
@@ -32,7 +32,9 @@ extern "C"
  * "application/json" as "application%2Fjson", and decodes them again on the way
  * in. azure-sdk-for-c spells the same names pre-encoded
  * (AZ_IOT_MESSAGE_PROPERTIES_CONTENT_TYPE is "%24.ct"); the bytes on the wire
- * are identical.
+ * are identical. On the MQTTv5 path they travel as User Properties
+ * and need no encoding at all, except "$.ct" and "$.cid", which travel as the
+ * native Content Type and Correlation Data.
  *
  * See
  * https://learn.microsoft.com/azure/iot-hub/iot-hub-devguide-messages-construct
@@ -48,8 +50,10 @@ extern "C"
  * receive only. */
 #define AZ_IOT_MSG_PROP_EXPIRY_TIME "$.exp"
 
-  /* Callers always pass plain text: mqttv3 percent-encodes properties into the
-   * topic. */
+  /* Shared by the mqttv3 and mqttv5 telemetry clients. Callers always pass plain
+   * text: mqttv3 percent-encodes properties into the topic, while mqttv5 carries
+   * them as MQTT v5 User Properties, except "$.ct" and "$.cid" (native Content
+   * Type and Correlation Data). */
   typedef struct az_iot_telemetry_property
   {
     const char* key;
@@ -89,7 +93,7 @@ extern "C"
   /**
    * @brief A received cloud-to-device message.
    *
-   * MQTTv3 IoT Hub only.
+   * MQTTv3 IoT Hub only: C2D is not carried on the MQTT v5 hub.
    *
    * Every pointer is owned by the SDK and valid only for the duration of the
    * handler callback. Copy anything the application needs to keep.
@@ -212,7 +216,8 @@ extern "C"
       size_t* out_value_len);
   /** @} */
 
-#if defined(AZ_IOT_DM_METHOD_NAME_MAX) || defined(AZ_IOT_DM_RID_MAX)
+#if defined(AZ_IOT_DM_METHOD_NAME_MAX) || defined(AZ_IOT_DM_RID_MAX) \
+    || defined(AZ_IOT_DM_CORR_DATA_MAX)
 #error "Direct method string sizes are fixed: see c/docs/client-configuration.md."
 #endif
 
@@ -220,10 +225,12 @@ extern "C"
 #define AZ_IOT_DM_METHOD_NAME_MAX 96
 /** @brief Longest mqttv3 request id ($rid) carried on an invocation. Fixed. */
 #define AZ_IOT_DM_RID_MAX 32
+/** @brief Longest mqttv5 correlation data echoed back on a response. Fixed. */
+#define AZ_IOT_DM_CORR_DATA_MAX 64
 
 #ifdef AZ_IOT_DM_MAX_INFLIGHT
 #error \
-    "AZ_IOT_DM_MAX_INFLIGHT is removed: set az_iot_mqttv3_direct_method_client_limits::max_in_flight_invocations"
+    "AZ_IOT_DM_MAX_INFLIGHT is removed: set az_iot_mqttv3_direct_method_client_limits::max_in_flight_invocations or az_iot_mqttv5_direct_method_client_limits::max_concurrent_invocations"
 #endif
 
   /**
@@ -231,7 +238,11 @@ extern "C"
    *
    * Lives in a bounded pool the client holds. Opaque to
    * applications -- they never hold one; they hold an
-   * az_iot_direct_method_request naming it. mqttv3 answers on its `$rid`.
+   * az_iot_direct_method_request naming it.
+   *
+   * The correlation fields are generation-specific: mqttv3 answers on a `$rid`,
+   * mqttv5 echoes MQTT v5 correlation data. Both live here because the pool is
+   * the one piece of this feature the two generations share.
    */
   typedef struct az_iot_direct_method_slot
   {
@@ -239,6 +250,8 @@ extern "C"
     {
       char method_name[AZ_IOT_DM_METHOD_NAME_MAX];
       char rid[AZ_IOT_DM_RID_MAX];
+      uint8_t correlation_data[AZ_IOT_DM_CORR_DATA_MAX];
+      size_t correlation_data_len;
       /* Bumped every time this slot is handed out. A request naming an older
        * value is stale, which is what makes a reused slot detectable. Never 0
        * once issued, so a zeroed request cannot match a live slot. */
@@ -250,7 +263,7 @@ extern "C"
   /**
    * @brief Identifies one method invocation awaiting a response.
    *
-   * Passed to the handler and back to the owning client's respond call
+   * Passed to the handler and back to the owning generation's respond call
    * **by value**, so it names a slot rather than pointing at one. A slot that
    * has since been reclaimed and handed to another invocation no longer
    * matches, and the stale response is refused instead of answering the wrong
@@ -268,7 +281,7 @@ extern "C"
       const void* owner;
       uint32_t slot;
       uint32_t seq;
-      /* Which connection profile issued it; a respond call for another one is
+      /* Which generation issued it, so a respond call from the other one is
        * refused rather than matching a slot index by coincidence. */
       az_iot_connection_profile profile;
     } _internal;
@@ -301,7 +314,7 @@ extern "C"
 #endif
 
   /**
-   * @brief How many requests a twin client holds. 0 selects the default.
+   * @brief How many requests a twin client (mqttv3 or mqttv5) holds. 0 selects the default.
    *
    * Run-time values: the client struct does not depend on them. The requests live in the
    * workspace of the client's init options.
@@ -335,8 +348,8 @@ extern "C"
    * @brief Delivers the outcome of a reported-properties patch.
    *
    * Named for completion rather than acknowledgement because it reports
-   * failures too, and because an "ack" would be ambiguous with the QoS 1
-   * PUBACK -- this fires on the service's answer, not on the transport's.
+   * failures too, and because on MQTT v5 an "ack" would be ambiguous with the
+   * QoS 1 PUBACK -- this fires on the service's answer, not on the transport's.
    *
    * @param status   AZ_IOT_OK when the service accepted the patch.
    * @param version  The new version of the reported-properties section. An

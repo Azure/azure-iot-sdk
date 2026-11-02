@@ -9,7 +9,7 @@ the difference between the two `main.c` files is exactly the feature.
 
 ## Sample features
 
-- Hub: mqttv3 (MQTT 3.1.1).
+- Hub generations: mqttv3 (MQTT 3.1.1) and mqttv5 (MQTT 5), whichever DPS assigns, including after the device is moved to a hub of the other generation.
 - The whole feature is `copts.proxy.host` and `copts.proxy.port`, plus optional Basic credentials.
 - TLS runs end to end with the service inside the tunnel: the proxy cannot read or alter the IoT traffic, and certificate and hostname validation are unchanged. The proxy does see the destination host and port of each `CONNECT`, and the optional Basic credentials, which reach the proxy in clear text. Use proxy credentials only on a network you trust.
 - Applies to the DPS connect as well as the hub connect.
@@ -22,6 +22,7 @@ the difference between the two `main.c` files is exactly the feature.
 - An Azure IoT Hub Device Provisioning Service (DPS) instance linked to an IoT Hub.
 - An X.509 enrollment (individual or group) for the device. For an mqttv3 hub,
   [Quickstart: Provision an X.509 certificate simulated device](https://learn.microsoft.com/azure/iot-dps/quick-create-simulated-device-x509) walks through the setup.
+- To exercise mqttv5, the device's enrollment must assign it to an mqttv5 IoT Hub.
 - An HTTP proxy that allows `CONNECT` to the DPS and IoT Hub hosts on port 8883.
 
 ## Configure
@@ -94,10 +95,11 @@ Runs about 60 seconds. Exit code 0 when at least one message was sent and the co
 The sample prints a summary line at the end; SDK warnings and errors go to stderr.
 
 ```
-Sent 11 message(s), 0 failed.
+Sent 11 message(s) on AZ_IOT_CONNECTION_PROFILE_MQTT_V3, 0 failed.
 ```
 
-The count depends on how long connecting took.
+The count depends on how long connecting took. When DPS assigns the other generation, the
+sample first prints `DPS assigned AZ_IOT_CONNECTION_PROFILE_MQTT_V5; rebuilding the telemetry client.`
 
 ## Troubleshooting
 
@@ -106,7 +108,7 @@ The count depends on how long connecting took.
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. DPS verdicts are retried until the sample's run time ends. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
-| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK does not support. |
+| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK version does not know. |
 | Connect fails while the other samples connect | The proxy is unreachable, refuses `CONNECT` to port 8883, or needs credentials. |
 
 ## Where to look in `main.c`

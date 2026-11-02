@@ -84,7 +84,9 @@ extern "C"
   typedef struct az_iot_mqttv3_direct_method_invocation
   {
     az_iot_direct_method_slot slot;
-    /* When it stops being worth answering. */
+    /* When it stops being worth answering. Held here rather than on az_iot_direct_method_slot
+     * so mqttv5, which shares that type, does not carry storage for a timeout it derives from
+     * the exec budget instead. */
     uint64_t expires_at_ms;
     /* seq of the last invocation of this entry that a session end (or a respond() refused
      * NOT_CONNECTED) took, so respond() on it says NOT_CONNECTED rather than INVALID_ARG. A later
@@ -149,10 +151,11 @@ extern "C"
    * @brief Initialize the MQTTv3 hub direct method client.
    *
    * The connection need not be open: this records that it must resolve to the
-   * MQTTv3 profile. A connection already resolved to another profile
-   * is rejected here with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a
-   * conflict surfaces when the connection resolves, which fails it before it
-   * reports CONNECTED.
+   * MQTTv3 profile. A connection already known to be MQTT_V5 -- a direct
+   * connection, or a DPS one past assignment -- is rejected here with
+   * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; otherwise a conflict surfaces when
+   * the connection resolves, which fails it before it reports CONNECTED. The
+   * same error is returned when an mqttv5 client is already attached.
    *
    * Observes the connection: when a session ends, every invocation not answered yet ends with
    * it (IoT Hub fails a pending call when the device disconnects), and its slot is free again.
@@ -241,7 +244,7 @@ extern "C"
    *         AZ_IOT_ERR_BUSY) -- nothing is sent and the request stays answerable until
    *         its response timeout, or AZ_IOT_ERR_NOT_CONNECTED once its session ends;
    *         AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH if @p request came from a
-   *         client of another profile; AZ_IOT_ERR_INVALID_ARG if it was already answered, if
+   *         mqttv5 client; AZ_IOT_ERR_INVALID_ARG if it was already answered, if
    *         its slot was reclaimed on timeout and reused, or if it never came from
    *         this client.
    */

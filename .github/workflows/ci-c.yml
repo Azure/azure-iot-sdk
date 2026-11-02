@@ -1111,7 +1111,7 @@ jobs:
             cmake -S tests/install -B "$AZ_IOT_BUILD-$cfg-consumer" -G Ninja \
               -DCMAKE_BUILD_TYPE="$cfg" "${vcpkg_args[@]}" \
               -DCMAKE_PREFIX_PATH="$prefix;$AZ_IOT_DEPS" \
-              -DAZ_IOT_EXPECTED_COMPONENTS="core;mqttv3;adapter_paho;crypto_openssl;certificate_provider_managed"
+              -DAZ_IOT_EXPECTED_COMPONENTS="core;mqttv3;mqttv5;adapter_paho;crypto_openssl;certificate_provider_managed"
             cmake --build "$AZ_IOT_BUILD-$cfg-consumer"
             ctest --test-dir "$AZ_IOT_BUILD-$cfg-consumer" --output-on-failure --no-tests=error
           done
@@ -1144,7 +1144,7 @@ jobs:
   # installed files must use the install-time prefix.
   # Every PR and main build checks that the removed Rust MQTT adapter is absent
   # from both the build and the installed package.
-  # The -shared variants build core and mqttv3 as shared libraries.
+  # The -shared variants build core, mqttv3 and mqttv5 as shared libraries.
   # -installed-deps uses azure-sdk-for-c and Paho from a prefix (AZ_IOT_USE_INSTALLED_*).
   # -no-paho builds without Paho: neither the build nor the package may reference
   # it, and asking the package for adapter_paho must fail.
@@ -1161,47 +1161,47 @@ jobs:
             name: linux-gcc
             shared: 'OFF'
             mbedtls: '3.6.7'
-            components: core;mqttv3;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: ubuntu-24.04
             name: linux-gcc-shared
             shared: 'ON'
             mbedtls: '3.6.7'
-            components: core;mqttv3;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           # azure-sdk-for-c and Paho from an install prefix (eng/install-deps.sh), not fetched.
           - os: ubuntu-24.04
             name: linux-gcc-installed-deps
             shared: 'OFF'
             mbedtls: '3.6.7'
             installed_deps: 'ON'
-            components: core;mqttv3;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc
             shared: 'OFF'
             mbedtls: ''
-            components: core;mqttv3;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc-shared
             shared: 'ON'
             mbedtls: ''
-            components: core;mqttv3;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc-openssl-4.1-static
             shared: 'OFF'
             mbedtls: ''
             openssl: '4.1.0'
-            components: core;mqttv3;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
           - os: ubuntu-24.04
             name: linux-gcc-no-paho
             shared: 'OFF'
             mbedtls: '3.6.7'
             with_paho: 'OFF'
-            components: core;mqttv3;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc-no-paho
             shared: 'OFF'
             mbedtls: ''
             with_paho: 'OFF'
-            components: core;mqttv3;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;mqttv5;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -1356,13 +1356,13 @@ jobs:
           ver=$(sed -n 's/^#define AZ_IOT_VERSION_STRING "\([^"]*\)".*/\1/p' \
             "$AZ_IOT_PREFIX/include/azure/iot/az_iot_version.h")
           test -n "$ver"
-          exe="$AZ_IOT_CONSUMER/install_test_mqttv3"
+          exe="$AZ_IOT_CONSUMER/install_test_mqttv5"
           if [ "$RUNNER_OS" = "Windows" ]; then
             deps=$(dumpbin -nologo -dependents "$exe.exe")
-            want="az_iot_core-$ver.dll az_iot_mqttv3-$ver.dll"
+            want="az_iot_core-$ver.dll az_iot_mqttv5-$ver.dll"
           else
             deps=$(readelf -d "$exe")
-            want="[libaz_iot_core.so.$ver] [libaz_iot_mqttv3.so.$ver]"
+            want="[libaz_iot_core.so.$ver] [libaz_iot_mqttv5.so.$ver]"
           fi
           for w in $want; do
             if ! grep -qiF -- "$w" <<< "$deps"; then
@@ -1466,7 +1466,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '67'
+      EXPECTED_TESTS: '75'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

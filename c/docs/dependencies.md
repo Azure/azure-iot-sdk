@@ -4,7 +4,7 @@ Libraries the C SDK builds against, and the known issues of each.
 
 | Library | Version | Used by | Needed |
 | --- | --- | --- | --- |
-| [azure-sdk-for-c](https://github.com/Azure/azure-sdk-for-c) | 1.5.0 (`AZ_SDK_C_TAG`) | Core and mqttv3 clients | Always |
+| [azure-sdk-for-c](https://github.com/Azure/azure-sdk-for-c) | 1.5.0 (`AZ_SDK_C_TAG`) | Core, mqttv3 and mqttv5 clients | Always |
 | [Eclipse Paho MQTT C](https://github.com/eclipse-paho/paho.mqtt.c) | v1.3.16 (`PAHO_C_TAG`) with three upstream fixes ([races](#races-on-the-command-queue-and-client-state), [double free](#publish-freed-twice-after-a-failed-write)); installed: 1.3.14+ | Paho adapter | `AZ_IOT_WITH_PAHO` |
 | [OpenSSL](https://www.openssl.org/) | 3.0 to 4.1, [tested](#openssl) (Paho TLS alone: any Paho supports) | Paho TLS and key custody, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=openssl`), the OpenSSL crypto backend, the managed certificate provider | Only for the components listed; az_mqtt can use Mbed TLS, or Schannel on Windows ([Windows without OpenSSL](../samples/README.md#windows-without-openssl)) |
 | [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) | 3.6 LTS or 4.1+ | mbedTLS crypto backend, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=mbedtls`) | Optional |

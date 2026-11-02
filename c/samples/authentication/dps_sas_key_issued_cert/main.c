@@ -9,10 +9,11 @@
  * the assigned hub.
  *
  * The device registers with a SAS token and a CSR over an operational key the
- * managed provider owns, then connects to the assigned hub with the issued
- * certificate. The managed provider has no bootstrap certificate: DPS uses SAS
- * (dps_auth), the hub X.509 (hub_auth, the default). Renewal:
- * az_iot_connection_client_send_csr(), or re-provisioning with the key.
+ * managed provider owns, then connects to the assigned hub, on either
+ * generation, with the issued certificate. The managed provider has no
+ * bootstrap certificate: DPS uses SAS (dps_auth), the hub X.509 (hub_auth,
+ * the default). Renewal: az_iot_connection_client_send_csr() on an mqttv3
+ * hub, or re-provisioning with the key.
  */
 #include <stdbool.h>
 #include <stdio.h>
@@ -137,9 +138,10 @@ static void pump(az_iot_connection_client* client)
   sample_sleep_until_tick_end(start, SAMPLE_TICK_MS);
 }
 
-/** @brief Sends one message on the hub DPS assigned. */
+/** @brief Sends one message on the generation DPS assigned. */
 static az_iot_result send_telemetry(az_iot_connection_client* client, sample_context* ctx)
 {
+  /* The generation DPS assigned decides which telemetry client to use. */
   az_iot_hub_profile hub_profile;
   az_iot_result r = az_iot_connection_client_get_hub_profile(client, &hub_profile);
   if (r != AZ_IOT_OK)
@@ -155,12 +157,16 @@ static az_iot_result send_telemetry(az_iot_connection_client* client, sample_con
   msg.payload_len = sizeof(payload) - 1;
 
   az_iot_mqttv3_telemetry_client mqttv3 = { 0 };
-  r = az_iot_mqttv3_telemetry_client_init(&mqttv3, client);
+  az_iot_mqttv5_telemetry_client mqttv5 = { 0 };
+  bool v5 = profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  r = v5 ? az_iot_mqttv5_telemetry_client_init(&mqttv5, client)
+         : az_iot_mqttv3_telemetry_client_init(&mqttv3, client);
   if (r != AZ_IOT_OK)
   {
     return r;
   }
-  r = az_iot_mqttv3_telemetry_client_send(&mqttv3, &msg, on_send_done, ctx);
+  r = v5 ? az_iot_mqttv5_telemetry_client_send(&mqttv5, &msg, on_send_done, ctx)
+         : az_iot_mqttv3_telemetry_client_send(&mqttv3, &msg, on_send_done, ctx);
   uint64_t deadline = sample_now_ms() + SAMPLE_SEND_TIMEOUT_MS;
   while (r == AZ_IOT_OK && !ctx->send_done && !ctx->failed && sample_now_ms() < deadline)
   {
@@ -170,7 +176,14 @@ static az_iot_result send_telemetry(az_iot_connection_client* client, sample_con
   {
     r = ctx->send_done ? ctx->send_status : AZ_IOT_ERR_TIMEOUT;
   }
-  az_iot_mqttv3_telemetry_client_deinit(&mqttv3);
+  if (v5)
+  {
+    az_iot_mqttv5_telemetry_client_deinit(&mqttv5);
+  }
+  else
+  {
+    az_iot_mqttv3_telemetry_client_deinit(&mqttv3);
+  }
   return r;
 }
 
@@ -241,8 +254,8 @@ int main(void)
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   opts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
 
-  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
-   * then the hub. Limits: sample_utils.h. */
+  /* The adapter builds each session's MQTT client in this workspace, one at a time: MQTT 3.1.1
+   * for DPS and an MQTTv3 hub, MQTT 5 for an MQTTv5 hub. Limits: sample_utils.h. */
   static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
 #if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
   opts.mqtt_adapter = az_iot_paho_get_adapter();

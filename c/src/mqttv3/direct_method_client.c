@@ -432,7 +432,7 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
-        "this request was delivered by a client of another profile");
+        "this request was delivered by the mqttv5 client");
     return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
   }
 

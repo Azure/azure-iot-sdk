@@ -23,8 +23,8 @@
  *   - Direct hub connect: AZ_IOT_HUB_HOSTNAME + AZ_IOT_DEVICE_ID, for an
  *     environment whose DPS instance cannot hand out an assignment. The hub
  *     half of every scenario is identical either way. AZ_IOT_HUB_CONNECTION_PROFILE
- *     ("mqttv3", the default and only value) names the hub's profile, which
- *     DPS would otherwise report.
+ *     ("mqttv3", the default, or "mqttv5") names the hub's profile, which DPS
+ *     would otherwise report.
  *
  * Egress (optional, both modes, applied to the DPS and the hub connect alike):
  *   AZ_IOT_MQTT_TRANSPORT   "tcp" (default) or "websocket"
@@ -91,6 +91,8 @@ extern "C"
   /* Options for e2e_device_connect_with(). Zero-initialize. */
   typedef struct e2e_device_connect_options
   {
+    /* Copied to the connection options' twin_push (mqttv5 only). */
+    bool twin_push_desired;
     /* Called after the client is initialized and before open(), e.g. to attach feature
      * clients that must see the first messages. Non-zero aborts the connect. Optional. */
     int (*before_open)(e2e_device* dev, void* ctx);
@@ -107,6 +109,8 @@ extern "C"
     uint32_t max_hub_connect_attempts_before_reprovision;
     /** @brief Seconds to wait for CONNECTED; 0 keeps the default. */
     int connect_timeout_s;
+    /* Copied to the connection options' twin_push (mqttv5 only). */
+    bool twin_push_reported;
     /** @brief Called after each pump while waiting for CONNECTED; optional. */
     void (*during_connect)(void* ctx);
     void* during_connect_ctx;

@@ -5,7 +5,7 @@
 # prove the package works on its own. Not part of the SDK build.
 #
 #   cmake -S tests/install -B <dir> -DCMAKE_PREFIX_PATH=<install prefix>
-#         [-DAZ_IOT_EXPECTED_COMPONENTS="core;mqttv3;adapter_paho;..."]
+#         [-DAZ_IOT_EXPECTED_COMPONENTS="core;mqttv3;mqttv5;adapter_paho;..."]
 #   cmake --build <dir> && ctest --test-dir <dir>
 #
 # Every expected component is REQUIRED, so an adapter missing from the package
@@ -21,7 +21,7 @@ set(CMAKE_C_EXTENSIONS OFF)
 # Must match the SDK's static CRT (/MT[d]).
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-set(AZ_IOT_EXPECTED_COMPONENTS "core;mqttv3" CACHE STRING
+set(AZ_IOT_EXPECTED_COMPONENTS "core;mqttv3;mqttv5" CACHE STRING
     "azure-iot-sdk components the package must provide")
 
 find_package(azure-iot-sdk CONFIG REQUIRED COMPONENTS ${AZ_IOT_EXPECTED_COMPONENTS})
@@ -34,6 +34,7 @@ enable_testing()
 set(_sources
     core                          core_test.c
     mqttv3                        mqttv3_test.c
+    mqttv5                        mqttv5_test.c
     adapter_paho                  adapter_paho_test.c
     adapter_az_mqtt               adapter_az_mqtt_test.c
     crypto_openssl                crypto_test.c

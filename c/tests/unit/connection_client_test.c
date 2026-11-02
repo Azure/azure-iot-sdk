@@ -471,6 +471,42 @@ static void inbound_message_routes_through_dispatch(void** state)
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
 }
 
+/* ------------------------------------------------------------------------- */
+/* MQTTv5 presence (birth) handshake                                          */
+/* ------------------------------------------------------------------------- */
+
+/* Fixture variant: a direct HUB_MQTT_V5 (MQTTv5, MQTT v5) connection. session_role
+ * becomes HUB_MQTT_V5 from opts.connection_profile, so open() drives the birth handshake
+ * after CONNACK instead of announcing CONNECTED immediately. */
+static int setup_mqtt_v5_ex(void** state, bool push_desired, bool push_reported)
+{
+  fixture* fx = (fixture*)calloc(1, sizeof(*fx));
+  assert_non_null(fx);
+
+  az_iot_connection_client_options opts = { 0 };
+  opts.iothub_hostname = "broker.example";
+  opts.port = 8883;
+  opts.device_id = "ut-device";
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.twin_push.push_desired = push_desired;
+  opts.twin_push.push_reported = push_reported;
+  opts.csr_payload_buffer = az_span_create(fx->csr_buf, sizeof(fx->csr_buf));
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  fx->client = &fx->client_storage;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, on_state, &fx->rec), AZ_IOT_OK);
+
+  *state = fx;
+  return 0;
+}
+
+static int setup_mqtt_v5(void** state) { return setup_mqtt_v5_ex(state, false, false); }
+
+/* Fixture variant: HUB_MQTT_V5 with both twin push bits configured by the
+ * application, to verify the birth advertises what was asked for. */
+static int setup_mqtt_v5_twin_push(void** state) { return setup_mqtt_v5_ex(state, true, true); }
+
 /* Most recent recorded call of `kind`, or NULL if none. */
 static const az_iot_mock_call* last_call_of_kind(
     az_iot_mock_mqtt_client* m,
@@ -488,9 +524,392 @@ static const az_iot_mock_call* last_call_of_kind(
   return NULL;
 }
 
-/* CONNACK goes straight to CONNECTED: the hub session needs no handshake of its
- * own, so nothing is subscribed or published. */
-static void mqtt_v3_connack_announces_connected_at_once(void** state)
+/* Drive open -> CONNACK -> dev/presence SUBACK and return the recorded birth
+ * PUBLISH. Leaves the client in CONNECTING with presence phase BIRTH. */
+static const az_iot_mock_call* drive_to_birth_published(
+    fixture* fx,
+    bool session_present,
+    az_iot_mock_mqtt_client** out_m)
+{
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_non_null(m);
+
+  /* CONNACK must NOT announce CONNECTED; it subscribes to dev/presence. */
+  az_iot_mqtt_event connack;
+  memset(&connack, 0, sizeof(connack));
+  connack.kind = AZ_IOT_MQTT_EVT_CONNECTED;
+  connack.status = AZ_IOT_OK;
+  connack.session_present = session_present;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &connack));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
+  const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_string_equal(sub->topic, "ih/ut-device/dev/#");
+
+  /* SUBACK -> publish the birth message. */
+  az_iot_mqtt_event suback;
+  memset(&suback, 0, sizeof(suback));
+  suback.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
+  suback.status = AZ_IOT_OK;
+  suback.packet_id = sub->packet_id;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &suback));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
+  const az_iot_mock_call* birth = last_call_of_kind(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(birth);
+  if (out_m)
+  {
+    *out_m = m;
+  }
+  return birth;
+}
+
+/* Full happy path: birth is published with the right shape, and CONNECTED is
+ * announced only when a matching birth-ack echoes the nonce back. */
+static void hub_mqtt_v5_births_then_connects_on_birth_ack(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+
+  assert_string_equal(birth->topic, "ih/ut-device/srv/presence");
+  assert_int_equal(birth->qos, AZ_IOT_MQTT_QOS_0);
+  assert_string_equal(birth->user_type, "birth:1");
+  assert_int_equal(birth->correlation_data_len, 16);
+  /* proto3 Birth: session_present=false and both push bits default to false,
+   * so every field is at its default and the payload is empty. */
+  assert_int_equal(birth->payload_len, 0);
+
+  /* Echo the nonce back as a birth-ack -> CONNECTED. nonce + ack_type must
+   * outlive the delivering do_work below. */
+  uint8_t nonce[16];
+  memcpy(nonce, birth->correlation_data, sizeof(nonce));
+  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
+  az_iot_mqtt_message ack_msg;
+  memset(&ack_msg, 0, sizeof(ack_msg));
+  ack_msg.topic = "ih/ut-device/dev/presence";
+  ack_msg.correlation_data = nonce;
+  ack_msg.correlation_data_len = sizeof(nonce);
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
+  az_iot_mqtt_event ack;
+  memset(&ack, 0, sizeof(ack));
+  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  ack.message = &ack_msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
+  assert_int_equal(fx->rec.reasons[fx->rec.count - 1], AZ_IOT_OK);
+}
+
+/* MQTTv5 requires a non-empty CONNECT username (WebhookAuthUserNameMissing
+ * otherwise). It must carry the connection nonce as correlationId plus the
+ * clientVersion, and the same nonce must be reused as the birth Correlation
+ * Data so the service can correlate the CONNECT with the birth. */
+static void hub_mqtt_v5_connect_username_carries_correlation_nonce(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+
+  /* CONNECT is the first recorded call on the adapter. */
+  const az_iot_mock_call* conn = az_iot_mock_mqtt_client_call_at(m, 0);
+  assert_non_null(conn);
+  assert_int_equal(conn->kind, AZ_IOT_MOCK_CALL_CONNECT);
+
+  /* username = correlationId=<32 hex>&clientVersion=c%2F<version> */
+  assert_memory_equal(conn->username, "correlationId=", 14);
+  assert_non_null(strstr(conn->username, "&clientVersion=c%2F"));
+
+  /* correlationId must equal the lowercase hex of the birth's 16-byte
+   * Correlation Data (same nonce on the CONNECT and the birth). */
+  assert_int_equal(birth->correlation_data_len, 16);
+  static const char hexd[] = "0123456789abcdef";
+  char expect_hex[33];
+  for (size_t i = 0; i < 16; ++i)
+  {
+    expect_hex[i * 2] = hexd[(birth->correlation_data[i] >> 4) & 0x0F];
+    expect_hex[i * 2 + 1] = hexd[birth->correlation_data[i] & 0x0F];
+  }
+  expect_hex[32] = '\0';
+
+  const char* cid = conn->username + strlen("correlationId=");
+  assert_memory_equal(cid, expect_hex, 32);
+  /* SemVer characters are all URL-unreserved, so the encoded version is the
+   * version string itself. */
+  assert_string_equal(cid + 32, "&clientVersion=c%2F" AZ_IOT_VERSION_STRING);
+}
+
+/* A birth-ack whose correlation data doesn't match our nonce is discarded; the
+ * client stays in CONNECTING waiting for the real one. */
+static void hub_mqtt_v5_ignores_mismatched_birth_ack(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  (void)drive_to_birth_published(fx, false, &m);
+
+  uint8_t wrong[16];
+  memset(wrong, 0xAB, sizeof(wrong));
+  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
+  az_iot_mqtt_message ack_msg;
+  memset(&ack_msg, 0, sizeof(ack_msg));
+  ack_msg.topic = "ih/ut-device/dev/presence";
+  ack_msg.correlation_data = wrong;
+  ack_msg.correlation_data_len = sizeof(wrong);
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
+  az_iot_mqtt_event ack;
+  memset(&ack, 0, sizeof(ack));
+  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  ack.message = &ack_msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
+}
+
+/* On the MQTTv5 path it is the birth-ack, not the CONNACK, that completes
+ * the connection. Suppressing only the late CONNACK would therefore leave this
+ * route able to announce CONNECTED for an attempt the application has already
+ * abandoned: the broker's birth-ack was on the wire before close() reached it
+ * and lands in a later process_loop batch. */
+static void hub_mqtt_v5_birth_ack_after_close_is_ignored(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+
+  /* Capture the nonce before closing: it must outlive the delivering do_work. */
+  uint8_t nonce[16];
+  memcpy(nonce, birth->correlation_data, sizeof(nonce));
+
+  /* The application gives up while the birth is still in flight. */
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+
+  /* A birth-ack that matches the nonce now arrives anyway. */
+  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
+  az_iot_mqtt_message ack_msg;
+  memset(&ack_msg, 0, sizeof(ack_msg));
+  ack_msg.topic = "ih/ut-device/dev/presence";
+  ack_msg.correlation_data = nonce;
+  ack_msg.correlation_data_len = sizeof(nonce);
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
+  az_iot_mqtt_event ack;
+  memset(&ack, 0, sizeof(ack));
+  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  ack.message = &ack_msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* CONNECTED must never be announced, at any point in the sequence. */
+  for (size_t i = 0; i < fx->rec.count; ++i)
+  {
+    assert_int_not_equal(fx->rec.states[i], AZ_IOT_CONN_STATE_CONNECTED);
+  }
+}
+
+/* CONNACK with Session Present = 1 is reflected in the birth payload (proto3
+ * field 1). The push bits stay absent at their default. */
+static void hub_mqtt_v5_birth_reports_session_present(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, true, &m);
+
+  const uint8_t expect_body[] = { 0x08, 0x01 };
+  assert_int_equal(birth->payload_len, sizeof(expect_body));
+  assert_memory_equal(birth->payload, expect_body, sizeof(expect_body));
+}
+
+/* The birth advertises which twin traffic the application asked for, so the
+ * service only dispatches what this client can consume. With both bits set the
+ * payload carries proto3 fields 12 and 13. */
+static void hub_mqtt_v5_birth_advertises_configured_twin_push(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+
+  const uint8_t expect_body[] = { 0x60, 0x01, 0x68, 0x01 };
+  assert_int_equal(birth->payload_len, sizeof(expect_body));
+  assert_memory_equal(birth->payload, expect_body, sizeof(expect_body));
+}
+
+/* Twin push is opt-in: by default the birth requests no desired or reported push. */
+static void options_default_leaves_twin_push_off(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  assert_false(opts.twin_push.push_desired);
+  assert_false(opts.twin_push.push_reported);
+}
+
+/* The connection nonce must be a well-formed RFC 4122 version 4 UUID: the
+ * service treats it as a UUID, and the .NET client produces one via
+ * Guid.NewGuid(). */
+static void hub_mqtt_v5_connect_nonce_is_uuid_v4(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+
+  assert_int_equal(birth->correlation_data_len, 16);
+  assert_int_equal(birth->correlation_data[6] & 0xF0, 0x40); /* version 4   */
+  assert_int_equal(birth->correlation_data[8] & 0xC0, 0x80); /* variant 10xx */
+}
+
+/* A failed dev/presence SUBACK drained after a server DISCONNECT in the same process_loop belongs
+ * to the ending session: the DISCONNECT's transition, code and Reason String stand. */
+static void hub_mqtt_v5_suback_failure_after_a_server_disconnect_is_ignored(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+
+  az_iot_mqtt_event connack;
+  memset(&connack, 0, sizeof(connack));
+  connack.kind = AZ_IOT_MQTT_EVT_CONNECTED;
+  connack.status = AZ_IOT_OK;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &connack));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+
+  static const char reason[] = "quota exceeded";
+  az_iot_mqtt_event disconnect;
+  memset(&disconnect, 0, sizeof(disconnect));
+  disconnect.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  disconnect.status = az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x97);
+  disconnect.protocol_code = 0x97;
+  disconnect.reason_string = reason;
+  disconnect.reason_string_len = sizeof(reason) - 1;
+  az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &disconnect));
+  assert_true(az_iot_mock_mqtt_client_inject_suback_refusal(m, sub->packet_id, 0x87));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* No policy: the DISCONNECT settles at IDLE; the refusal would have FAULTED it. */
+  size_t const last = fx->rec.count - 1u;
+  assert_int_equal(fx->rec.states[last], AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(fx->rec.reasons[last], disconnect.status);
+  assert_int_equal(fx->rec.error_codes[last], 0x97);
+  assert_string_equal(fx->rec.error_messages[last], reason);
+}
+
+/* A dev/presence SUBACK that fails (e.g. the broker refused the subscription)
+ * must fault the handshake instead of publishing the birth. */
+static void hub_mqtt_v5_suback_failure_faults(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+
+  az_iot_mqtt_event connack;
+  memset(&connack, 0, sizeof(connack));
+  connack.kind = AZ_IOT_MQTT_EVT_CONNECTED;
+  connack.status = AZ_IOT_OK;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &connack));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+
+  az_iot_mqtt_event suback;
+  memset(&suback, 0, sizeof(suback));
+  suback.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
+  suback.status = AZ_IOT_ERR_MQTT;
+  suback.packet_id = sub->packet_id;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &suback));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* No reconnect policy -> the subscribe failure faults the connection. The
+   * adapter is torn down, so don't touch `m` past this point. */
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(fx->rec.reasons[fx->rec.count - 1], AZ_IOT_ERR_MQTT);
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
+}
+
+/* A message on dev/presence that echoes our nonce but is NOT a birth-ack (wrong
+ * type) is ignored; the handshake keeps waiting (stays CONNECTING). */
+static void hub_mqtt_v5_ignores_wrong_type_ack(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+
+  uint8_t nonce[16];
+  memcpy(nonce, birth->correlation_data, sizeof(nonce));
+  az_iot_mqtt_user_property wrong_type = { "type", "twin-push:1" };
+  az_iot_mqtt_message msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.topic = "ih/ut-device/dev/presence";
+  msg.correlation_data = nonce;
+  msg.correlation_data_len = sizeof(nonce);
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(&wrong_type, 1);
+  az_iot_mqtt_event evt;
+  memset(&evt, 0, sizeof(evt));
+  evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  evt.message = &msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &evt));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
+}
+
+/* Inject a presence message echoing the nonce, with `type` set to @p type_value
+ * after 20 other User Properties. */
+static void inject_presence_type_late(fixture* fx, const char* type_value)
+{
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+  uint8_t nonce[16];
+  memcpy(nonce, birth->correlation_data, sizeof(nonce));
+  az_iot_mqtt_user_property props[21];
+  for (size_t i = 0; i < 20; ++i)
+  {
+    props[i].key = "filler";
+    props[i].value = "x";
+  }
+  props[20].key = "type";
+  props[20].value = type_value;
+  az_iot_mqtt_message msg;
+  memset(&msg, 0, sizeof(msg));
+  msg.topic = "ih/ut-device/dev/presence";
+  msg.correlation_data = nonce;
+  msg.correlation_data_len = sizeof(nonce);
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(props, 21);
+  az_iot_mqtt_event evt;
+  memset(&evt, 0, sizeof(evt));
+  evt.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  evt.message = &msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &evt));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+}
+
+/* `type` = "birth-ack", with no schema version, is found after 20 other
+ * properties and completes the handshake. */
+static void hub_mqtt_v5_birth_ack_type_found_past_other_properties(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  inject_presence_type_late(fx, "birth-ack");
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
+}
+
+/* "birth-acked" only starts with "birth-ack": not a birth-ack. */
+static void hub_mqtt_v5_birth_ack_type_is_matched_whole(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  inject_presence_type_late(fx, "birth-acked:1");
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
+}
+
+/* MQTTv3 (v3.1.1) connections must NOT run the birth handshake: CONNACK goes
+ * straight to CONNECTED and no presence publish happens. */
+static void mqtt_v3_connect_skips_birth_handshake(void** state)
 {
   fixture* fx = (fixture*)*state;
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
@@ -500,6 +919,7 @@ static void mqtt_v3_connack_announces_connected_at_once(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
+  /* No SUBSCRIBE to a presence topic and no birth PUBLISH were issued. */
   assert_null(last_call_of_kind(m, AZ_IOT_MOCK_CALL_PUBLISH));
   const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
   assert_null(sub);
@@ -522,6 +942,20 @@ static int setup_mqtt_v3_with_will(void** state)
   fx->client->opts.lwt.payload_len = sizeof(k_will_body);
   fx->client->opts.lwt.qos = AZ_IOT_MQTT_QOS_1;
   fx->client->opts.lwt.retain = true;
+  fx->client->opts.lwt.will_delay_seconds = 30;
+  return rc;
+}
+
+static int setup_mqtt_v5_with_will(void** state)
+{
+  int rc = setup_mqtt_v5(state);
+  fixture* fx = (fixture*)*state;
+  fx->client->opts.lwt.topic = "app/ut-device/gone";
+  fx->client->opts.lwt.payload = k_will_body;
+  fx->client->opts.lwt.payload_len = sizeof(k_will_body);
+  fx->client->opts.lwt.qos = AZ_IOT_MQTT_QOS_1;
+  fx->client->opts.lwt.retain = true;
+  fx->client->opts.lwt.will_delay_seconds = 30;
   return rc;
 }
 
@@ -552,12 +986,55 @@ static void mqtt_v3_connect_asks_to_resume_the_session(void** state)
   assert_string_equal(connect->connect.lwt_topic, "");
 }
 
-/* The caller can ask for a clean session, and that must reach the wire. Session
- * Expiry is an MQTT 5 property and is never sent to a v3.1.1 broker. */
+/* MQTTv5 resumes its session and asks for an expiry long enough that there is
+ * something left to resume. Both halves matter: a session that expires the
+ * instant the connection closes is gone before any reconnect could resume it.
+ * This is a transport-efficiency choice -- the presence handshake is what
+ * establishes readiness on this generation either way. */
+static void hub_mqtt_v5_connect_resumes_the_session_with_an_expiry(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
+
+  assert_false(connect->connect.clean_start);
+  assert_int_equal(connect->connect.session_expiry_seconds, AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS);
+  /* No Will configured, so nothing to announce on an orderly close. */
+  assert_int_equal(connect->connect.disconnect_reason_code, 0);
+  assert_string_equal(connect->connect.lwt_topic, "");
+}
+
+/* The caller can override session continuity on a hub session, and asking for a
+ * clean one must actually reach the wire. The expiry still rides along: it
+ * governs what happens to THIS session once it ends, which is independent of
+ * whether the previous one was discarded at CONNECT. */
+static void hub_mqtt_v5_honors_a_caller_requested_clean_session(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->client->opts.session_continuity = AZ_IOT_SESSION_CONTINUITY_CLEAN;
+  const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
+
+  assert_true(connect->connect.clean_start);
+  assert_int_equal(connect->connect.session_expiry_seconds, AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS);
+}
+
+/* A caller-supplied expiry wins over the default. */
+static void hub_mqtt_v5_honors_a_caller_requested_session_expiry(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->client->opts.session_expiry_seconds = 900;
+  const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
+
+  assert_int_equal(connect->connect.session_expiry_seconds, 900);
+  assert_false(connect->connect.clean_start);
+}
+
+/* MQTTv3 honours the same override, but Session Expiry is an MQTT 5 property
+ * and must never be sent to a v3.1.1 broker even when one was configured. */
 static void mqtt_v3_honors_continuity_but_sends_no_expiry_property(void** state)
 {
   fixture* fx = (fixture*)*state;
   fx->client->opts.session_continuity = AZ_IOT_SESSION_CONTINUITY_CLEAN;
+  fx->client->opts.session_expiry_seconds = 900;
   const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
 
   assert_true(connect->connect.clean_start);
@@ -581,6 +1058,292 @@ static void a_will_rides_the_mqtt_v3_connect_without_v5_fields(void** state)
   assert_int_equal(connect->connect.session_expiry_seconds, 0);
   assert_int_equal(connect->connect.disconnect_reason_code, 0);
   assert_false(connect->connect.clean_start);
+}
+
+/* On MQTTv5 the Will carries its delay, the session is held open long enough
+ * for that delay to mean anything, and the close announces the departure
+ * instead of discarding the Will. */
+static void a_will_rides_the_hub_mqtt_v5_connect_with_delay_and_reason(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
+
+  assert_string_equal(connect->connect.lwt_topic, "app/ut-device/gone");
+  assert_int_equal(connect->connect.lwt_payload_len, sizeof(k_will_body));
+  assert_memory_equal(connect->connect.lwt_payload, k_will_body, sizeof(k_will_body));
+  assert_int_equal(connect->connect.lwt_qos, AZ_IOT_MQTT_QOS_1);
+  assert_true(connect->connect.lwt_retain);
+  assert_int_equal(connect->connect.lwt_will_delay_seconds, 30);
+  /* The will delay is shorter than the session expiry, so the expiry is left
+   * where the role put it -- MQTT 5 ends the delay at whichever comes first,
+   * and the delay is already the earlier of the two. */
+  assert_int_equal(connect->connect.session_expiry_seconds, AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS);
+  assert_int_equal(connect->connect.disconnect_reason_code, 0x04);
+  assert_false(connect->connect.clean_start);
+}
+
+/* A will delay longer than the session expiry would otherwise be silently
+ * truncated, because MQTT 5 ends the delay when the session ends. The expiry is
+ * raised to cover it rather than accepting the option and ignoring it. */
+static void a_will_delay_past_the_session_expiry_extends_it(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->client->opts.session_expiry_seconds = 60;
+  fx->client->opts.lwt.will_delay_seconds = 300;
+  const az_iot_mock_call* connect = connect_options_of_first_attempt(fx);
+
+  assert_int_equal(connect->connect.lwt_will_delay_seconds, 300);
+  assert_int_equal(connect->connect.session_expiry_seconds, 300);
+}
+
+/* The session options are a property of the ROLE, not of what the broker
+ * answered: a resumed session must not change what the next CONNECT asks for. */
+static void hub_mqtt_v5_session_options_do_not_depend_on_session_present(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  (void)drive_to_birth_published(fx, true, &m);
+
+  const az_iot_mock_call* connect = last_call_of_kind(m, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(connect);
+  assert_false(connect->connect.clean_start);
+  assert_int_equal(connect->connect.session_expiry_seconds, AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS);
+}
+
+/* A presence timeout ends the session with one DISCONNECT; report its completion. */
+static void complete_planned_disconnect(fixture* fx)
+{
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_non_null(m);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_int_equal(fx->client->state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTING);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+}
+
+/* With no reconnection policy, a birth-ack that never arrives faults the client
+ * once the handshake deadline passes. */
+static void hub_mqtt_v5_birth_ack_timeout_faults(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+
+  az_iot_mqtt_event connack;
+  memset(&connack, 0, sizeof(connack));
+  connack.kind = AZ_IOT_MQTT_EVT_CONNECTED;
+  connack.status = AZ_IOT_OK;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &connack));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
+
+  /* Force the handshake deadline to expire, then pump: DISCONNECT, then FAULTED
+   * with TIMEOUT. */
+  az_iot_connection_client__presence_force_timeout(fx->client);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  complete_planned_disconnect(fx);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(fx->rec.reasons[fx->rec.count - 1], AZ_IOT_ERR_TIMEOUT);
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
+}
+
+/* Publish the birth and deliver `payload` as its birth-ack body. */
+static void deliver_birth_ack_body(fixture* fx, const uint8_t* payload, size_t payload_len)
+{
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+
+  uint8_t nonce[16];
+  memcpy(nonce, birth->correlation_data, sizeof(nonce));
+  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
+  az_iot_mqtt_message ack_msg;
+  memset(&ack_msg, 0, sizeof(ack_msg));
+  ack_msg.topic = "ih/ut-device/dev/presence";
+  ack_msg.correlation_data = nonce;
+  ack_msg.correlation_data_len = sizeof(nonce);
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
+  ack_msg.payload = payload;
+  ack_msg.payload_len = payload_len;
+  az_iot_mqtt_event ack;
+  memset(&ack, 0, sizeof(ack));
+  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  ack.message = &ack_msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+}
+
+/* Drive the handshake to CONNECTED with `payload` as the birth-ack body. */
+static void drive_to_connected_with_birth_ack(
+    fixture* fx,
+    const uint8_t* payload,
+    size_t payload_len)
+{
+  deliver_birth_ack_body(fx, payload, payload_len);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
+}
+
+/* A malformed birth-ack is ignored: no CONNECTED, the birth stays unacknowledged. */
+static void assert_birth_ack_ignored(fixture* fx, const uint8_t* payload, size_t payload_len)
+{
+  deliver_birth_ack_body(fx, payload, payload_len);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTING);
+  assert_int_equal(fx->client->presence.phase, AZ_IOT_PRESENCE_PHASE_BIRTH);
+}
+
+/* The birth-ack carries the authoritative twin versions as of birth admission.
+ * The twin client needs them as the if_match anchor for its next reported
+ * patch, so they must be decoded and retained, not discarded with the ack. */
+static void hub_mqtt_v5_birth_ack_records_twin_versions(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  /* proto3 BirthAck: desired_version(10)=7, reported_version(11)=300. */
+  const uint8_t ack_body[] = { 0x50, 0x07, 0x58, 0xAC, 0x02 };
+  drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
+
+  uint64_t desired = 0, reported = 0;
+  assert_int_equal(
+      az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported), AZ_IOT_OK);
+  assert_int_equal(desired, 7);
+  assert_int_equal(reported, 300);
+}
+
+/* proto3 omits default-valued fields, so an empty birth-ack body is legal and
+ * means both versions are 0. */
+static void hub_mqtt_v5_birth_ack_without_versions_yields_zero(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  drive_to_connected_with_birth_ack(fx, NULL, 0);
+
+  uint64_t desired = 1, reported = 1;
+  assert_int_equal(
+      az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported), AZ_IOT_OK);
+  assert_int_equal(desired, 0);
+  assert_int_equal(reported, 0);
+}
+
+/* Fields the SDK does not know (a later schema revision adding per-feature
+ * recovery state) must be skipped rather than aborting the decode, so the
+ * versions that follow them are still read. */
+static void hub_mqtt_v5_birth_ack_skips_unknown_fields(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const uint8_t ack_body[] = {
+    0x12, 0x03, 0x61, 0x62, 0x63, /* f2  length-delimited "abc"  */
+    0x50, 0x07, /* f10 desired_version  = 7    */
+    0x2D, 0x01, 0x02, 0x03, 0x04, /* f5  32-bit                  */
+    0x58, 0xAC, 0x02, /* f11 reported_version = 300  */
+    0x41, 0,    0,    0,    0,    0, 0, 0, 0, /* f8  64-bit                  */
+  };
+  drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
+
+  uint64_t desired = 0, reported = 0;
+  assert_int_equal(
+      az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported), AZ_IOT_OK);
+  assert_int_equal(desired, 7);
+  assert_int_equal(reported, 300);
+}
+
+/* A twin version is a uint64, and proto3 spends 10 bytes on any value with bit
+ * 63 set — the widest legal varint. The 10th byte contributes only bit 63, so
+ * the shift bound has to admit shift == 63 and stop after it. Getting that
+ * boundary wrong would not fail loudly: the decode would abort mid-message and
+ * silently drop every field after the version, leaving the device to patch
+ * against a stale if_match. */
+static void hub_mqtt_v5_birth_ack_decodes_ten_byte_versions(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const uint8_t ack_body[] = {
+    /* f10 desired_version = UINT64_MAX */
+    0x50,
+    0xFF,
+    0xFF,
+    0xFF,
+    0xFF,
+    0xFF,
+    0xFF,
+    0xFF,
+    0xFF,
+    0xFF,
+    0x01,
+    /* f11 reported_version = 2^63 */
+    0x58,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x01,
+  };
+  drive_to_connected_with_birth_ack(fx, ack_body, sizeof(ack_body));
+
+  uint64_t desired = 0, reported = 0;
+  assert_int_equal(
+      az_iot_connection_client__presence_twin_versions(fx->client, &desired, &reported), AZ_IOT_OK);
+  assert_true(desired == UINT64_MAX);
+  assert_true(reported == (uint64_t)1 << 63);
+}
+
+/* A known field on the wrong wire type is malformed: the ack is ignored. */
+static void hub_mqtt_v5_birth_ack_with_a_mistyped_version_is_ignored(void** state)
+{
+  const uint8_t ack_body[] = { 0x52, 0x00 }; /* f10 desired_version as length-delimited */
+  assert_birth_ack_ignored((fixture*)*state, ack_body, sizeof(ack_body));
+}
+
+/* Eleven bytes cannot encode a uint64, so the value is corrupt and everything
+ * after it is unparseable: the ack is ignored rather than partly trusted. */
+static void hub_mqtt_v5_birth_ack_rejects_over_long_varint(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const uint8_t ack_body[] = {
+    0x50, 0x07, /* f10 desired_version = 7 */
+    0x58, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, /* f11, 11-byte varint     */
+    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x01,
+  };
+  assert_birth_ack_ignored(fx, ack_body, sizeof(ack_body));
+}
+
+/* A ten-byte varint whose last byte carries more than bit 63 encodes a value
+ * uint64_t cannot hold. The surplus bits shift out, so accepting it would turn
+ * a corrupt version into a plausible wrapped one and the device would anchor
+ * its next reported patch on it. Stop the decode instead. */
+static void hub_mqtt_v5_birth_ack_rejects_tenth_byte_overflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const uint8_t ack_body[] = {
+    0x50,
+    0x07, /* f10 desired_version = 7 */
+    /* f11, 10 bytes but the last carries 0x03: bit 63 plus a bit 64 that does
+     * not fit. Shifting drops the surplus and leaves a plausible 2^63, which
+     * is exactly the wrapped value that must not be accepted. */
+    0x58,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x80,
+    0x03,
+  };
+  assert_birth_ack_ignored(fx, ack_body, sizeof(ack_body));
+}
+
+/* A truncated body (varint with the continuation bit set at the end) is malformed: the decode
+ * stops without reading past the buffer and the ack is ignored. */
+static void hub_mqtt_v5_birth_ack_truncated_payload_is_safe(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const uint8_t ack_body[] = { 0x50, 0x07, 0x58, 0xAC }; /* f11 varint cut short */
+  assert_birth_ack_ignored(fx, ack_body, sizeof(ack_body));
 }
 
 /* D2: request_operational_certificate requires a certificate_provider whose
@@ -832,8 +1595,8 @@ static void a_rejected_assignment_does_not_store_its_issued_chain(void** state)
 typedef struct pin_change_ctx
 {
   az_iot_connection_client* client;
-  bool pin_on_connecting; /* require another profile when DPS first connects */
-  bool pin_on_teardown; /* require another profile at DPS DISCONNECTING */
+  bool pin_on_connecting; /* require mqttv5 when DPS first connects */
+  bool pin_on_teardown; /* require mqttv5 at DPS DISCONNECTING */
   bool release_on_teardown; /* release the pin at DPS DISCONNECTING */
   az_iot_result pin_result;
   bool done_connecting;
@@ -852,7 +1615,7 @@ static void change_pin(const az_iot_connection_state_event* event, void* user_ct
   {
     ctx->done_connecting = true;
     ctx->pin_result
-        = az_iot_connection_client__require_profile(ctx->client, AZ_IOT_CONNECTION_PROFILE_UNKNOWN);
+        = az_iot_connection_client__require_profile(ctx->client, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
   }
   if (event->state == AZ_IOT_CONN_STATE_DISCONNECTING && !ctx->done_teardown)
   {
@@ -860,7 +1623,7 @@ static void change_pin(const az_iot_connection_state_event* event, void* user_ct
     if (ctx->pin_on_teardown)
     {
       ctx->pin_result = az_iot_connection_client__require_profile(
-          ctx->client, AZ_IOT_CONNECTION_PROFILE_UNKNOWN);
+          ctx->client, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
     }
     if (ctx->release_on_teardown)
     {
@@ -869,9 +1632,9 @@ static void change_pin(const az_iot_connection_state_event* event, void* user_ct
   }
 }
 
-/* Once the chain is stored, another profile cannot be required before the
+/* Once the chain is stored, the other generation cannot be required before the
  * assignment is adopted, so the stored chain and the adopted assignment match. */
-static void a_stored_chain_blocks_another_profile_until_adoption(void** state)
+static void a_stored_chain_blocks_the_other_generation_until_adoption(void** state)
 {
   (void)state;
   fake_csr_provider prov = { 0 };
@@ -923,8 +1686,8 @@ static void a_withheld_chain_is_not_adopted_after_the_pin_is_released(void** sta
   az_iot_test_connection_client_deinit(&client);
 }
 
-/* Requires another profile from the operational-certificate callback. */
-static void require_another_profile_from_op_cert(
+/* Requires mqttv5 from the operational-certificate callback. */
+static void require_v5_from_op_cert(
     const az_iot_issued_certificate* issued,
     az_iot_result store_result,
     void* user_ctx)
@@ -934,10 +1697,10 @@ static void require_another_profile_from_op_cert(
   pin_change_ctx* ctx = (pin_change_ctx*)user_ctx;
   ctx->done_teardown = true;
   ctx->pin_result
-      = az_iot_connection_client__require_profile(ctx->client, AZ_IOT_CONNECTION_PROFILE_UNKNOWN);
+      = az_iot_connection_client__require_profile(ctx->client, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
 }
 
-/* Installs require_another_profile_from_op_cert() once DPS starts connecting. */
+/* Installs require_v5_from_op_cert() once DPS starts connecting. */
 static void install_op_cert_pin(const az_iot_connection_state_event* event, void* user_ctx)
 {
   pin_change_ctx* ctx = (pin_change_ctx*)user_ctx;
@@ -946,13 +1709,13 @@ static void install_op_cert_pin(const az_iot_connection_state_event* event, void
   {
     ctx->done_connecting = true;
     (void)az_iot_connection_client_set_operational_cert_callback(
-        ctx->client, require_another_profile_from_op_cert, ctx);
+        ctx->client, require_v5_from_op_cert, ctx);
   }
 }
 
 /* The operational-certificate callback runs after the chain is stored, so it
- * cannot require another profile either. */
-static void the_op_cert_callback_cannot_require_another_profile(void** state)
+ * cannot require the other generation either. */
+static void the_op_cert_callback_cannot_require_the_other_generation(void** state)
 {
   (void)state;
   fake_csr_provider prov = { 0 };
@@ -1097,7 +1860,7 @@ static void dps_a_rejected_assignment_leaves_the_profile_alone(void** state)
   const char trailing[] = "{\"operationId\":\"op1\",\"status\":\"assigned\","
                           "\"registrationState\":{\"registrationId\":\"ut-device\","
                           "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"ut-device\","
-                          "\"connectionProfile\":\"mqttV9-quantum\","
+                          "\"connectionProfile\":\"mqttV5\","
                           "\"issuedCertificateChain\":[\"TEEF\",\"SU5U\"]}}x";
   drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, trailing);
 
@@ -1107,9 +1870,10 @@ static void dps_a_rejected_assignment_leaves_the_profile_alone(void** state)
   az_iot_test_connection_client_deinit(&client);
 }
 
-/* A failed store fails the registration; the next registration stores its chain
- * and adopts its assignment. */
-static void dps_a_registration_after_a_failed_store_adopts_its_assignment(void** state)
+/* A failed store fails the registration after the profile was read. The
+ * failed assignment's profile is not kept, and the next assignment, with no
+ * profile, gets the default. */
+static void dps_a_failed_store_does_not_leak_its_profile_into_the_next_assignment(void** state)
 {
   (void)state;
   fake_csr_provider prov = { 0 };
@@ -1117,7 +1881,12 @@ static void dps_a_registration_after_a_failed_store_adopts_its_assignment(void**
   prov.store_rc = AZ_IOT_ERR_INTERNAL;
   az_iot_connection_client client;
   uint8_t csr_buf[AZ_IOT_CSR_PAYLOAD_BUFFER_MIN];
-  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, k_dps_assigned_with_chain);
+  const char v5[] = "{\"operationId\":\"op1\",\"status\":\"assigned\","
+                    "\"registrationState\":{\"registrationId\":\"ut-device\","
+                    "\"assignedHub\":\"myhub.azure-devices.net\",\"deviceId\":\"ut-device\","
+                    "\"connectionProfile\":\"mqttV5\","
+                    "\"issuedCertificateChain\":[\"TEEF\",\"SU5U\"]}}";
+  drive_dps_csr_assignment(&client, csr_buf, sizeof(csr_buf), &prov, v5);
   assert_int_equal(prov.store_calls, 1);
   assert_int_equal(client.connection_profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
 
@@ -2451,6 +3220,341 @@ static void the_publish_id_skips_zero_when_it_wraps(void** state)
   assert_true(wrapped.id == 1u);
 }
 
+/* MQTTv5 requires MQTT v5. With an adapter that only builds v3.1.1 clients there
+ * is no client that can speak the protocol, and open() must say so rather than
+ * silently downgrading to an MQTTv3 session. */
+static void hub_mqtt_v5_without_v5_clients_is_not_supported(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = { 0 };
+  opts.iothub_hostname = "broker.example";
+  opts.port = 8883;
+  opts.device_id = "ut-device";
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_OK);
+
+  assert_int_equal(az_iot_connection_client_open(&c), AZ_IOT_ERR_NOT_SUPPORTED);
+  az_iot_test_connection_client_deinit(&c);
+}
+
+/* If the birth PUBLISH itself cannot be handed to the adapter the handshake
+ * can never complete, so the attempt must end rather than sit in CONNECTING
+ * waiting for an ack that was never solicited. */
+/* A presence SUBSCRIBE or birth PUBLISH the adapter refuses synchronously
+ * comes with no adapter event, so the failure carries the step as LOCAL
+ * detail. */
+static void hub_mqtt_v5_refused_presence_calls_report_the_step(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_test_state_log log = { 0 };
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &log),
+      AZ_IOT_OK);
+
+  const char* k_step[] = { "presence subscribe() failed", "presence birth publish() failed" };
+  for (size_t k = 0; k < 2; ++k)
+  {
+    log.count = 0;
+    assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+    az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+    assert_non_null(m);
+    if (k == 0)
+    {
+      az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_SUBSCRIBE, AZ_IOT_ERR_MQTT);
+    }
+    assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+    if (k == 1)
+    {
+      const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+      assert_non_null(sub);
+      az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_MQTT);
+      assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+      (void)az_iot_connection_client_do_work(fx->client, 0);
+    }
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+
+    size_t i = log.count - 1u;
+    assert_int_equal(log.states[i], AZ_IOT_CONN_STATE_FAULTED);
+    assert_int_equal(log.reasons[i], AZ_IOT_ERR_MQTT);
+    assert_true(log.error_present[i]);
+    assert_int_equal(log.error_sources[i], AZ_IOT_CONN_ERR_SRC_LOCAL);
+    assert_int_equal(log.error_codes[i], (int32_t)AZ_IOT_ERR_MQTT);
+    assert_string_equal(log.error_message[i], k_step[k]);
+    assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  }
+  assert_int_equal(
+      az_iot_connection_client_remove_state_observer(fx->client, az_iot_test_on_state, &log),
+      AZ_IOT_OK);
+}
+
+static void hub_mqtt_v5_birth_publish_failure_faults(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_MQTT);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_FAULTED);
+}
+
+/* Presence traffic that arrives before the subscription is confirmed cannot be
+ * an ack for a birth we have not published yet. Accepting it would announce
+ * CONNECTED without ever completing the handshake. */
+static void hub_mqtt_v5_birth_ack_before_suback_is_ignored(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* No birth has been published, so no nonce exists to match. */
+  assert_true(az_iot_mock_mqtt_client_inject_message(
+      m, "ih/ut-device/dev/presence", (const uint8_t*)"", 0, AZ_IOT_MQTT_QOS_0));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
+  assert_false(az_iot_connection_client__is_connected(fx->client));
+}
+
+/* Fixture variant: HUB_MQTT_V5 with a reconnection policy, so a stalled handshake
+ * retries instead of faulting. */
+static int setup_mqtt_v5_with_reconnect(void** state)
+{
+  fixture* fx = (fixture*)calloc(1, sizeof(*fx));
+  assert_non_null(fx);
+
+  az_iot_connection_client_options opts = { 0 };
+  opts.iothub_hostname = "broker.example";
+  opts.port = 8883;
+  opts.device_id = "ut-device";
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.reconnection_policy.initial_delay_ms = RETRY_DELAY_MS;
+  opts.reconnection_policy.max_delay_ms = RETRY_DELAY_MS;
+  opts.reconnection_policy.max_attempts = 3;
+  opts.reconnection_policy.jitter_pct = 0;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
+  assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
+  fx->client = &fx->client_storage;
+  assert_int_equal(
+      az_iot_connection_client_add_state_observer(fx->client, on_state, &fx->rec), AZ_IOT_OK);
+  az_iot_connection_client__seed_rng(fx->client, 0xC0FFEEFEEDFACEull);
+
+  *state = fx;
+  return 0;
+}
+
+/* The nonce identifies one connection attempt. If a retry reused it, a
+ * birth-ack left over from the abandoned attempt would satisfy the new
+ * handshake and the client would announce CONNECTED on a session the service
+ * never acknowledged. */
+static void hub_mqtt_v5_birth_timeout_retries_with_a_new_nonce(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* first_birth = drive_to_birth_published(fx, false, &m);
+
+  uint8_t first_nonce[64];
+  size_t first_len = first_birth->correlation_data_len;
+  assert_true(first_len > 0);
+  memcpy(first_nonce, first_birth->correlation_data, first_len);
+
+  /* Abandon the handshake; the policy turns it into a retry. */
+  az_iot_connection_client__presence_force_timeout(fx->client);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  complete_planned_disconnect(fx);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_RETRY_PENDING);
+
+  az_iot_test_make_retry_due_now(fx->client);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
+  assert_non_null(m2);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m2, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub2 = last_call_of_kind(m2, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub2);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m2, sub2->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  const az_iot_mock_call* second_birth = last_call_of_kind(m2, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(second_birth);
+  assert_int_equal(second_birth->correlation_data_len, first_len);
+  assert_memory_not_equal(second_birth->correlation_data, first_nonce, first_len);
+}
+
+/* Deliver a birth-ack echoing the 16-byte `nonce` and pump it (the mock keeps
+ * a pointer to the message, so it must be processed before this returns). */
+static void deliver_birth_ack(fixture* fx, az_iot_mock_mqtt_client* m, const uint8_t* nonce)
+{
+  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
+  az_iot_mqtt_message ack_msg;
+  memset(&ack_msg, 0, sizeof(ack_msg));
+  ack_msg.topic = "ih/ut-device/dev/presence";
+  ack_msg.correlation_data = nonce;
+  ack_msg.correlation_data_len = 16u;
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
+  az_iot_mqtt_event ack;
+  memset(&ack, 0, sizeof(ack));
+  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  ack.message = &ack_msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+}
+
+/* Defensive-timeout random source returning a fixed value. */
+static uint64_t fixed_random_source(void* context) { return *(const uint64_t*)context; }
+
+static const uint64_t k_fixed_jitter = 12345u;
+
+/* CONNACK + presence SUBACK on `m`; returns the birth PUBLISH. */
+static const az_iot_mock_call* connack_and_suback(fixture* fx, az_iot_mock_mqtt_client* m)
+{
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* birth = last_call_of_kind(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(birth);
+  assert_int_equal(fx->client->presence.phase, AZ_IOT_PRESENCE_PHASE_BIRTH);
+  return birth;
+}
+
+/* The armed birth-ack deadline is `expected_ms` from now (to within the time
+ * the test itself took). */
+static void assert_birth_ack_timeout(fixture* fx, uint32_t expected_ms)
+{
+  uint64_t now = az_iot_time_mono_ms();
+  assert_int_equal(fx->client->presence.birth_ack_timeout_ms, expected_ms);
+  uint64_t remaining = az_iot_deadline__remaining_ms(&fx->client->presence.deadline, now);
+  assert_true(remaining <= expected_ms);
+  assert_true(remaining + 1000u >= expected_ms);
+}
+
+/* Expire the pending presence step: the session is ended with a DISCONNECT and
+ * a retry scheduled. */
+static void expire_presence_step(fixture* fx)
+{
+  fx->rec.count = 0;
+  az_iot_connection_client__presence_force_timeout(fx->client);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  complete_planned_disconnect(fx);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(fx->rec.reasons[fx->rec.count - 1], AZ_IOT_ERR_TIMEOUT);
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
+}
+
+/* Let the retry backoff pass and return the new session's mock client. */
+static az_iot_mock_mqtt_client* reconnect(fixture* fx)
+{
+  az_iot_test_make_retry_due_now(fx->client);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_non_null(m);
+  return m;
+}
+
+/* Each missed birth-ack disconnects, reconnects and escalates the next birth's
+ * timeout: 5, 6, 8, then 10 min bases, plus the jitter. */
+static void hub_mqtt_v5_birth_ack_timeout_escalates_per_attempt(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t jitter = k_fixed_jitter;
+  az_iot_connection_client__set_defensive_timeout_random_source(
+      fx->client, fixed_random_source, &jitter);
+
+  (void)drive_to_birth_published(fx, false, NULL);
+  assert_birth_ack_timeout(fx, 300000u + (uint32_t)k_fixed_jitter);
+
+  const uint32_t next_base_ms[] = { 360000u, 480000u, 600000u, 600000u };
+  for (size_t i = 0; i < sizeof(next_base_ms) / sizeof(next_base_ms[0]); ++i)
+  {
+    expire_presence_step(fx);
+    assert_int_equal(fx->client->presence.consecutive_birth_ack_timeouts, i + 1u);
+    (void)connack_and_suback(fx, reconnect(fx));
+    assert_birth_ack_timeout(fx, next_base_ms[i] + (uint32_t)k_fixed_jitter);
+  }
+}
+
+/* The jitter spans [0, 5 min]: the extremes of the source give the extremes of
+ * the range. */
+static void hub_mqtt_v5_birth_ack_timeout_jitter_spans_five_minutes(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t value = 0;
+  az_iot_connection_client__set_defensive_timeout_random_source(
+      fx->client, fixed_random_source, &value);
+  assert_int_equal(az_iot_connection_client__defensive_timeout_ms(fx->client, 1), 300000u);
+  value = 300000u;
+  assert_int_equal(az_iot_connection_client__defensive_timeout_ms(fx->client, 1), 600000u);
+  assert_int_equal(az_iot_connection_client__defensive_timeout_ms(fx->client, 4), 900000u);
+
+  /* The default source stays in range and does vary. */
+  az_iot_connection_client__set_defensive_timeout_random_source(fx->client, NULL, NULL);
+  az_iot_connection_client__seed_rng(fx->client, 0x1234567u);
+  const uint32_t base_ms[] = { 300000u, 360000u, 480000u, 600000u, 600000u };
+  for (uint32_t attempt = 1; attempt <= 5u; ++attempt)
+  {
+    uint32_t first = az_iot_connection_client__defensive_timeout_ms(fx->client, attempt);
+    bool varied = false;
+    for (int i = 0; i < 64; ++i)
+    {
+      uint32_t t = az_iot_connection_client__defensive_timeout_ms(fx->client, attempt);
+      assert_true(t >= base_ms[attempt - 1u]);
+      assert_true(t <= base_ms[attempt - 1u] + 300000u);
+      varied = varied || t != first;
+    }
+    assert_true(varied);
+  }
+}
+
+/* A birth-ack that arrives in time starts the schedule over for the next
+ * connection. */
+static void hub_mqtt_v5_birth_ack_in_time_resets_the_schedule(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t jitter = k_fixed_jitter;
+  az_iot_connection_client__set_defensive_timeout_random_source(
+      fx->client, fixed_random_source, &jitter);
+
+  (void)drive_to_birth_published(fx, false, NULL);
+  expire_presence_step(fx);
+  az_iot_mock_mqtt_client* m = reconnect(fx);
+  const az_iot_mock_call* birth = connack_and_suback(fx, m);
+  assert_birth_ack_timeout(fx, 360000u + (uint32_t)k_fixed_jitter);
+
+  uint8_t nonce[16];
+  assert_int_equal(birth->correlation_data_len, sizeof(nonce));
+  memcpy(nonce, birth->correlation_data, sizeof(nonce));
+  deliver_birth_ack(fx, m, nonce);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
+  assert_int_equal(fx->client->presence.consecutive_birth_ack_timeouts, 0);
+
+  /* The link drops; the next birth is attempt 1 again. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  (void)connack_and_suback(fx, reconnect(fx));
+  assert_birth_ack_timeout(fx, 300000u + (uint32_t)k_fixed_jitter);
+}
+
 /* max_unconfirmed_delivery_timeout_ms: options_default() sets the default, init() resolves 0 to
  * it and keeps a set value. */
 static void max_unconfirmed_delivery_timeout_defaults_and_resolves_zero(void** state)
@@ -2471,6 +3575,180 @@ static void max_unconfirmed_delivery_timeout_defaults_and_resolves_zero(void** s
   opts.max_unconfirmed_delivery_timeout_ms = 1u;
   assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   assert_int_equal(fx->client->opts.max_unconfirmed_delivery_timeout_ms, 1u);
+}
+
+/* A replaced schedule arms the birth-ack with its own bases (the last repeats)
+ * and jitter; NULL restores the spec's schedule at the same attempt. */
+static void hub_mqtt_v5_birth_ack_timeout_follows_a_replaced_schedule(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static const uint32_t base_ms[] = { 5000u, 6000u };
+  uint64_t random_value = 5000u + 1u + 123u; /* modulo (jitter_max + 1) = 123 */
+  az_iot_connection_client__set_defensive_timeout_random_source(
+      fx->client, fixed_random_source, &random_value);
+  assert_int_equal(
+      az_iot_connection_client__set_defensive_timeout_schedule(fx->client, base_ms, 2u, 5000u),
+      AZ_IOT_OK);
+
+  (void)drive_to_birth_published(fx, false, NULL);
+  assert_birth_ack_timeout(fx, 5123u);
+  expire_presence_step(fx);
+  (void)connack_and_suback(fx, reconnect(fx));
+  assert_birth_ack_timeout(fx, 6123u);
+  expire_presence_step(fx);
+  (void)connack_and_suback(fx, reconnect(fx));
+  assert_birth_ack_timeout(fx, 6123u);
+
+  assert_int_equal(
+      az_iot_connection_client__set_defensive_timeout_schedule(fx->client, NULL, 0u, 0u),
+      AZ_IOT_OK);
+  expire_presence_step(fx);
+  (void)connack_and_suback(fx, reconnect(fx));
+  assert_birth_ack_timeout(fx, 600000u + (uint32_t)(random_value % 300001u));
+}
+
+/* The schedule needs both a table and a count, or neither. */
+static void set_defensive_timeout_schedule_rejects_bad_arguments(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static const uint32_t base_ms[] = { 5000u };
+  assert_int_equal(
+      az_iot_connection_client__set_defensive_timeout_schedule(NULL, base_ms, 1u, 0u),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_connection_client__set_defensive_timeout_schedule(fx->client, base_ms, 0u, 0u),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_connection_client__set_defensive_timeout_schedule(fx->client, NULL, 1u, 0u),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_null(fx->client->defensive_timeout_base_ms_by_attempt);
+  assert_true(az_iot_connection_client__defensive_timeout_ms(fx->client, 1) >= 300000u);
+}
+
+/* A birth-ack drained after the deadline passed is a miss: the client
+ * reconnects and escalates rather than announcing CONNECTED. */
+static void hub_mqtt_v5_late_birth_ack_is_a_timeout(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_mock_mqtt_client* m = NULL;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
+  uint8_t nonce[16];
+  assert_int_equal(birth->correlation_data_len, sizeof(nonce));
+  memcpy(nonce, birth->correlation_data, sizeof(nonce));
+
+  az_iot_connection_client__presence_force_timeout(fx->client);
+  fx->rec.count = 0;
+  deliver_birth_ack(fx, m, nonce);
+  complete_planned_disconnect(fx);
+
+  for (size_t i = 0; i < fx->rec.count; ++i)
+  {
+    assert_int_not_equal(fx->rec.states[i], AZ_IOT_CONN_STATE_CONNECTED);
+  }
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(fx->rec.reasons[fx->rec.count - 1], AZ_IOT_ERR_TIMEOUT);
+  assert_int_equal(fx->client->presence.consecutive_birth_ack_timeouts, 1);
+}
+
+/* A DISCONNECTED processed after the birth-ack deadline tears down before the
+ * timeout check runs; the miss still counts. One before the deadline does not. */
+static void hub_mqtt_v5_disconnect_after_birth_deadline_counts_a_miss(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t jitter = k_fixed_jitter;
+  az_iot_connection_client__set_defensive_timeout_random_source(
+      fx->client, fixed_random_source, &jitter);
+  az_iot_mock_mqtt_client* m = NULL;
+  (void)drive_to_birth_published(fx, false, &m);
+
+  /* Before the deadline: a transport drop is not a birth-ack miss. */
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->client->presence.consecutive_birth_ack_timeouts, 0);
+  m = reconnect(fx);
+  (void)connack_and_suback(fx, m);
+  assert_birth_ack_timeout(fx, 300000u + (uint32_t)k_fixed_jitter);
+
+  /* Past the deadline: the drop is drained first, and the miss counts. */
+  az_iot_connection_client__presence_force_timeout(fx->client);
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->client->presence.consecutive_birth_ack_timeouts, 1);
+  (void)connack_and_suback(fx, reconnect(fx));
+  assert_birth_ack_timeout(fx, 360000u + (uint32_t)k_fixed_jitter);
+}
+
+/* open() is a fresh connect cycle: the schedule starts over. */
+static void hub_mqtt_v5_open_resets_the_birth_ack_schedule(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t jitter = k_fixed_jitter;
+  az_iot_connection_client__set_defensive_timeout_random_source(
+      fx->client, fixed_random_source, &jitter);
+
+  (void)drive_to_birth_published(fx, false, NULL);
+  expire_presence_step(fx);
+  (void)connack_and_suback(fx, reconnect(fx));
+  expire_presence_step(fx);
+  assert_int_equal(fx->client->presence.consecutive_birth_ack_timeouts, 2);
+
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_IDLE);
+
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_non_null(m);
+  (void)connack_and_suback(fx, m);
+  assert_birth_ack_timeout(fx, 300000u + (uint32_t)k_fixed_jitter);
+}
+
+/* Before the birth is published only the SUBACK is awaited: it gets the SUBACK
+ * window, and missing it does not escalate the birth-ack schedule. */
+static void hub_mqtt_v5_presence_suback_timeout_does_not_escalate(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  uint64_t jitter = k_fixed_jitter;
+  az_iot_connection_client__set_defensive_timeout_random_source(
+      fx->client, fixed_random_source, &jitter);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->client->presence.phase, AZ_IOT_PRESENCE_PHASE_SUBSCRIBING);
+  uint64_t now = az_iot_time_mono_ms();
+  uint64_t suback_window_ms = (uint64_t)AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS * 1000u;
+  uint64_t remaining = az_iot_deadline__remaining_ms(&fx->client->presence.deadline, now);
+  assert_true(remaining <= suback_window_ms);
+  assert_true(remaining + 1000u >= suback_window_ms);
+
+  expire_presence_step(fx);
+  assert_int_equal(fx->client->presence.consecutive_birth_ack_timeouts, 0);
+  (void)connack_and_suback(fx, reconnect(fx));
+  assert_birth_ack_timeout(fx, 300000u + (uint32_t)k_fixed_jitter);
+}
+
+/* close() before the dev/# SUBACK: the closing session publishes no birth and settles at IDLE on
+ * its DISCONNECTED. */
+static void hub_mqtt_v5_close_before_the_presence_suback_publishes_no_birth(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  uint16_t const presence_id = sub->packet_id;
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, presence_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_null(last_call_of_kind(m, AZ_IOT_MOCK_CALL_PUBLISH));
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_IDLE);
 }
 
 /* Most recent PUBLISH to the issueCertificate topic, or NULL. */
@@ -3364,6 +4642,131 @@ typedef struct closing_observer
   bool armed;
 } closing_observer;
 
+/* A presence SUBACK drained after its timeout started the session's end publishes no birth. */
+static void hub_mqtt_v5_late_presence_suback_publishes_no_birth(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  uint16_t sub_packet_id = sub->packet_id;
+
+  az_iot_connection_client__presence_force_timeout(fx->client);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub_packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_null(last_call_of_kind(m, AZ_IOT_MOCK_CALL_PUBLISH));
+
+  complete_planned_disconnect(fx);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(fx->rec.reasons[fx->rec.count - 1], AZ_IOT_ERR_TIMEOUT);
+}
+
+/* A presence SUBACK drained in the batch where its timeout expired publishes no birth; the timeout
+ * ends the session. */
+static void hub_mqtt_v5_expired_presence_suback_publishes_no_birth(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  uint16_t sub_packet_id = sub->packet_id;
+
+  az_iot_connection_client__presence_force_timeout(fx->client);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub_packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_null(last_call_of_kind(m, AZ_IOT_MOCK_CALL_PUBLISH));
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+}
+
+/* The adapter wait ends by the presence SUBACK and birth-ack deadlines, so an ack that arrives
+ * in time is dispatched in time. */
+static void hub_mqtt_v5_the_wait_is_bounded_by_the_presence_deadlines(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  uint16_t sub_packet_id = sub->packet_id;
+
+  (void)az_iot_connection_client_do_work(fx->client, UINT32_MAX);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms
+      <= AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS * 1000u);
+
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub_packet_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_non_null(last_call_of_kind(m, AZ_IOT_MOCK_CALL_PUBLISH));
+  (void)az_iot_connection_client_do_work(fx->client, UINT32_MAX);
+  assert_true(
+      az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms
+      <= fx->client->presence.birth_ack_timeout_ms);
+}
+
+/* After a presence timeout starts a planned end, the expired presence deadline no longer bounds
+ * the wait: it is bounded by the planned end's disconnect bound instead of spinning at zero. */
+static void hub_mqtt_v5_a_presence_timeout_does_not_spin_the_wait(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  az_iot_connection_client__presence_force_timeout(fx->client);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  (void)az_iot_connection_client_do_work(fx->client, UINT32_MAX);
+  assert_true(az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms > 0u);
+}
+
+typedef struct
+{
+  az_iot_connection_client* client;
+  uint16_t sub_packet_id;
+} suback_after_deadline_ctx;
+
+/* Lets the presence SUBACK deadline pass during the wait, then queues the SUBACK. */
+static void queue_suback_after_the_deadline(az_iot_mock_mqtt_client* m, void* user_ctx)
+{
+  suback_after_deadline_ctx* ctx = (suback_after_deadline_ctx*)user_ctx;
+  az_iot_mock_mqtt_client_set_process_loop_hook(m, NULL, NULL);
+  while (!az_iot_deadline__has_passed(&ctx->client->presence.deadline, az_iot_time_mono_ms()))
+  {
+    /* busy-wait: at most the 1 s SUBACK timeout */
+  }
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, ctx->sub_packet_id, AZ_IOT_OK));
+}
+
+/* A presence SUBACK that arrives during a wait begun before its deadline, but is dispatched after
+ * it (e.g. behind a DPS wait), is in time: the birth is published. */
+static void hub_mqtt_v5_a_suback_dispatched_late_in_its_pass_is_in_time(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fx->client->opts.subscription_ack_timeout_seconds = 1;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = last_call_of_kind(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+
+  suback_after_deadline_ctx ctx = { fx->client, sub->packet_id };
+  az_iot_mock_mqtt_client_set_process_loop_hook(m, queue_suback_after_the_deadline, &ctx);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_non_null(last_call_of_kind(m, AZ_IOT_MOCK_CALL_PUBLISH));
+}
+
 static int s_late_binds;
 
 static az_iot_result count_late_bind(void* owner, az_iot_connection_client* client)
@@ -3390,6 +4793,12 @@ static int binds_run_when_attached_while_connecting(fixture* fx)
   return s_late_binds;
 }
 
+/* An mqttv5 session connecting binds a late feature client at once (it only routes). */
+static void hub_mqtt_v5_a_client_attached_while_connecting_binds_at_once(void** state)
+{
+  assert_int_equal(binds_run_when_attached_while_connecting((fixture*)*state), 1);
+}
+
 /* An mqttv3 session connecting does not: its binds subscribe, and a client withdrawn before
  * CONNECTED would not unsubscribe. */
 static void an_mqttv3_client_attached_while_connecting_is_not_bound(void** state)
@@ -3400,6 +4809,18 @@ static void an_mqttv3_client_attached_while_connecting_is_not_bound(void** state
 int main(void)
 {
   const struct CMUnitTest tests[] = {
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_late_presence_suback_publishes_no_birth, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_expired_presence_suback_publishes_no_birth, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_the_wait_is_bounded_by_the_presence_deadlines, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_a_presence_timeout_does_not_spin_the_wait, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_a_suback_dispatched_late_in_its_pass_is_in_time, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_a_client_attached_while_connecting_binds_at_once, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
         an_mqttv3_client_attached_while_connecting_is_not_bound, setup, teardown),
     cmocka_unit_test_setup_teardown(get_device_id_returns_the_direct_client_id, setup, teardown),
@@ -3433,26 +4854,118 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         user_close_after_connected_does_not_reconnect, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(inbound_message_routes_through_dispatch, setup, teardown),
-    cmocka_unit_test_setup_teardown(mqtt_v3_connack_announces_connected_at_once, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_births_then_connects_on_birth_ack, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_connect_username_carries_correlation_nonce, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_reports_session_present, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_advertises_configured_twin_push, setup_mqtt_v5_twin_push, teardown),
+    cmocka_unit_test(options_default_leaves_twin_push_off),
+    cmocka_unit_test_setup_teardown(hub_mqtt_v5_connect_nonce_is_uuid_v4, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_records_twin_versions, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_without_versions_yields_zero, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_skips_unknown_fields, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_decodes_ten_byte_versions, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_rejects_over_long_varint, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_with_a_mistyped_version_is_ignored, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_rejects_tenth_byte_overflow, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_truncated_payload_is_safe, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_ignores_mismatched_birth_ack, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_after_close_is_ignored, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(hub_mqtt_v5_ignores_wrong_type_ack, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_type_found_past_other_properties, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_type_is_matched_whole, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(hub_mqtt_v5_suback_failure_faults, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_suback_failure_after_a_server_disconnect_is_ignored, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(hub_mqtt_v5_birth_ack_timeout_faults, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(mqtt_v3_connect_skips_birth_handshake, setup, teardown),
     cmocka_unit_test_setup_teardown(mqtt_v3_connect_asks_to_resume_the_session, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_connect_resumes_the_session_with_an_expiry, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_honors_a_caller_requested_clean_session, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_honors_a_caller_requested_session_expiry, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(
         mqtt_v3_honors_continuity_but_sends_no_expiry_property, setup, teardown),
     cmocka_unit_test_setup_teardown(
+        a_will_delay_past_the_session_expiry_extends_it, setup_mqtt_v5_with_will, teardown),
+    cmocka_unit_test_setup_teardown(
         a_will_rides_the_mqtt_v3_connect_without_v5_fields, setup_mqtt_v3_with_will, teardown),
     cmocka_unit_test_setup_teardown(
+        a_will_rides_the_hub_mqtt_v5_connect_with_delay_and_reason,
+        setup_mqtt_v5_with_will,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_session_options_do_not_depend_on_session_present, setup_mqtt_v5, teardown),
+    cmocka_unit_test(hub_mqtt_v5_without_v5_clients_is_not_supported),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_publish_failure_faults, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_refused_presence_calls_report_the_step, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_before_suback_is_ignored, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_timeout_retries_with_a_new_nonce, setup_mqtt_v5_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_timeout_escalates_per_attempt,
+        setup_mqtt_v5_with_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_timeout_jitter_spans_five_minutes, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_in_time_resets_the_schedule, setup_mqtt_v5_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
         max_unconfirmed_delivery_timeout_defaults_and_resolves_zero, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_birth_ack_timeout_follows_a_replaced_schedule,
+        setup_mqtt_v5_with_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        set_defensive_timeout_schedule_rejects_bad_arguments, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_late_birth_ack_is_a_timeout, setup_mqtt_v5_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_disconnect_after_birth_deadline_counts_a_miss,
+        setup_mqtt_v5_with_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_open_resets_the_birth_ack_schedule, setup_mqtt_v5_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_presence_suback_timeout_does_not_escalate,
+        setup_mqtt_v5_with_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_close_before_the_presence_suback_publishes_no_birth,
+        setup_mqtt_v5_with_reconnect,
+        teardown),
     cmocka_unit_test(open_rejects_operational_cert_without_csr_provider),
     cmocka_unit_test(dps_csr_flow_sends_csr_and_stores_issued_chain),
     cmocka_unit_test(a_rejected_assignment_does_not_store_its_issued_chain),
-    cmocka_unit_test(a_stored_chain_blocks_another_profile_until_adoption),
+    cmocka_unit_test(a_stored_chain_blocks_the_other_generation_until_adoption),
     cmocka_unit_test(a_withheld_chain_is_not_adopted_after_the_pin_is_released),
-    cmocka_unit_test(the_op_cert_callback_cannot_require_another_profile),
+    cmocka_unit_test(the_op_cert_callback_cannot_require_the_other_generation),
     cmocka_unit_test(a_withheld_chain_without_a_device_id_faults_as_invalid),
     cmocka_unit_test(dps_store_failure_still_delivers_the_chain_with_the_error),
     cmocka_unit_test(dps_a_successful_get_csr_without_a_csr_is_released),
     cmocka_unit_test(dps_a_truncated_assignment_is_not_stored),
     cmocka_unit_test(dps_a_rejected_assignment_leaves_the_profile_alone),
-    cmocka_unit_test(dps_a_registration_after_a_failed_store_adopts_its_assignment),
+    cmocka_unit_test(dps_a_failed_store_does_not_leak_its_profile_into_the_next_assignment),
     cmocka_unit_test(open_rejects_operational_cert_without_release_or_store),
     cmocka_unit_test(open_rejects_operational_cert_without_payload_buffer),
     cmocka_unit_test_setup_teardown(send_csr_two_phase_delivers_issued_chain, setup_csr, teardown),

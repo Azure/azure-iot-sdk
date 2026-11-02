@@ -5,6 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 #include "e2e_device.h"
 #include "e2e_connect_clock.h"
+#include "e2e_defensive_timeout.h"
 #include "e2e_mqtt_adapter.h"
 #include "support/test_env.h"
 
@@ -76,9 +77,13 @@ static int device_config_load(e2e_device* dev)
   {
     char* profile = az_iot_test_env_dup("AZ_IOT_HUB_CONNECTION_PROFILE");
     dev->hub_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
-    if (profile != NULL && strcmp(profile, "mqttv3") != 0)
+    if (profile != NULL && strcmp(profile, "mqttv5") == 0)
     {
-      fprintf(stderr, "[e2e] AZ_IOT_HUB_CONNECTION_PROFILE must be mqttv3\n");
+      dev->hub_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+    }
+    else if (profile != NULL && strcmp(profile, "mqttv3") != 0)
+    {
+      fprintf(stderr, "[e2e] AZ_IOT_HUB_CONNECTION_PROFILE must be mqttv3 or mqttv5\n");
       free(profile);
       return 1;
     }
@@ -176,6 +181,7 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
   copts.proxy.port = dev->proxy_port;
   copts.proxy.username = dev->proxy_username;
   copts.proxy.password = dev->proxy_password;
+  copts.twin_push.push_desired = opts != NULL && opts->twin_push_desired;
   if (opts != NULL)
   {
     if (opts->saved_hub != NULL)
@@ -202,6 +208,7 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
           = opts->max_hub_connect_attempts_before_reprovision;
     }
   }
+  copts.twin_push.push_reported = opts != NULL && opts->twin_push_reported;
   copts.workspace = dev->connection_workspace;
   copts.workspace_size = sizeof(dev->connection_workspace);
   /* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
@@ -218,6 +225,11 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
     return 1;
   }
   dev->conn_ok = true;
+  if (e2e_use_short_defensive_timeouts(&dev->conn) != AZ_IOT_OK)
+  {
+    fprintf(stderr, "[e2e] defensive-timeout schedule rejected\n");
+    return 1;
+  }
   az_iot_connection_client_add_state_observer(&dev->conn, on_conn_state, dev);
 
   if (opts != NULL && opts->before_open != NULL

@@ -63,7 +63,7 @@ extern "C"
     bool retain;
     uint16_t packet_id; /* the packet_id this call returned (0 if N/A) */
     uint32_t timeout_ms; /* for process_loop */
-    /* MQTT v5 PUBLISH extras, captured for tests. */
+    /* MQTT v5 PUBLISH extras, captured for presence/birth tests. */
     uint8_t correlation_data[64];
     size_t correlation_data_len;
     size_t correlation_data_offered_len; /* before truncation to correlation_data */

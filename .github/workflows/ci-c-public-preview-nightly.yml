@@ -11,7 +11,7 @@
 #
 #   main (own schedule)                      releases/public-preview (here)
 #   11:00 ci-c-e2e                           14:00
-#   -     ci-c-e2e-mqttv5 (preview only)     14:30
+#   11:30 ci-c-e2e-mqttv5                    14:30
 #   12:00 ci-c-e2e-csr                       15:00
 #   -     ci-c-e2e-adu (preview only)        15:00
 #   12:00 Mon codeql-c                       15:00 Mon

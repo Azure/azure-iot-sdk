@@ -44,8 +44,10 @@
 #include "internal/connection_client_internal.h"
 #include "internal/crypto.h"
 #include "internal/deadline.h"
+#include "internal/defensive_timeout.h"
 #include "internal/dispatch.h"
 #include "internal/log_internal.h"
+#include "internal/proto3.h"
 #include "internal/mono_time.h"
 #include "internal/retry_policy.h"
 #include "internal/span_writer.h"
@@ -137,14 +139,85 @@
 /* DPS ASSIGNED result fields that carry the issued operational chain. */
 #define DPS_JSON_REGISTRATION_STATE "registrationState"
 #define DPS_JSON_ISSUED_CERT_CHAIN "issuedCertificateChain"
-/* The hub profile the device was assigned to. A string, and an extensible
+/* The hub generation the device was assigned to. A string, and an extensible
  * union: absent or null means "classic". New in api-version 2026-11-02-preview. */
 #define DPS_JSON_CONNECTION_PROFILE "connectionProfile"
 #define CONNECTION_PROFILE_MQTT_V3_STR "classic"
+#define CONNECTION_PROFILE_MQTT_V5_STR "mqttV5"
 
 /* Max certs in an issued chain (leaf + a few intermediates). The chain is
  * delivered as zero-copy spans into the payload. */
 #define CERT_CHAIN_MAX_CERTS 6u
+
+/* ------------------------------------------------------------------------- */
+/* MQTTv5 presence (birth) handshake wire constants. Mirrors the .NET          */
+/* SDK's ConnectToAzureEventGridIotHubAsync and common/Protos/presence.proto.  */
+/* ------------------------------------------------------------------------- */
+#define PRESENCE_PHASE_NONE AZ_IOT_PRESENCE_PHASE_NONE
+#define PRESENCE_PHASE_SUBSCRIBING AZ_IOT_PRESENCE_PHASE_SUBSCRIBING
+#define PRESENCE_PHASE_BIRTH AZ_IOT_PRESENCE_PHASE_BIRTH
+#define PRESENCE_PHASE_DONE AZ_IOT_PRESENCE_PHASE_DONE
+
+/* Device publishes the birth message here; the birth-ack arrives on dev/. All
+ * three are "ih/" + device id + one of these suffixes. */
+#define PRESENCE_TOPIC_PREFIX "ih/"
+#define PRESENCE_TOPIC_SRV_SUFFIX "/srv/presence"
+#define PRESENCE_TOPIC_DEV_SUFFIX "/dev/presence"
+/* The device subscribes to the whole device-bound topic space (per RFC
+ * topics.md and the .NET SDK) rather than the narrower dev/presence: one
+ * subscription that MQTTv5's topic-space authorization is guaranteed to grant and
+ * that also covers the other device-bound feature topics. The birth-ack is
+ * still matched by its exact dev/presence topic. */
+#define PRESENCE_TOPIC_DEV_SUB_SUFFIX "/dev/#"
+/* MQTT v5 User Property key carrying the message type, plus the value we send
+ * and the type we match. The service stamps "<type>:<schemaVersion>"; the
+ * schema suffix is ignored when matching the birth-ack. */
+#define PRESENCE_TYPE_KEY "type"
+#define PRESENCE_TYPE_BIRTH "birth:1"
+#define PRESENCE_TYPE_BIRTH_ACK "birth-ack"
+/* Connection nonce carried as MQTT v5 Correlation Data on the birth PUBLISH and
+ * echoed unchanged on the birth-ack. 16 bytes matches the .NET GUID nonce, and
+ * is the same width every MQTTv5 correlation id uses. */
+#define PRESENCE_NONCE_LEN AZ_IOT_CORRELATION_UUID_LEN
+
+/* The nonce is a UUID, so two of its octets carry RFC 4122 metadata: octet 6
+ * holds the version in its high nibble and octet 8 the variant in its high
+ * bits. The rest of each octet stays random. */
+#define PRESENCE_UUID_VERSION_OCTET 6u
+#define PRESENCE_UUID_VARIANT_OCTET 8u
+#define PRESENCE_UUID_VERSION_KEEP_MASK 0x0Fu
+#define PRESENCE_UUID_VERSION_4 0x40u
+#define PRESENCE_UUID_VARIANT_KEEP_MASK 0x3Fu
+#define PRESENCE_UUID_VARIANT_RFC4122 0x80u
+#define PRESENCE_UUID_STAMP_VERSION_4(octet) \
+  ((uint8_t)(((octet) & PRESENCE_UUID_VERSION_KEEP_MASK) | PRESENCE_UUID_VERSION_4))
+#define PRESENCE_UUID_STAMP_VARIANT_RFC4122(octet) \
+  ((uint8_t)(((octet) & PRESENCE_UUID_VARIANT_KEEP_MASK) | PRESENCE_UUID_VARIANT_RFC4122))
+
+/* Nibble halves of a byte, for rendering the nonce as hex. */
+#define PRESENCE_NIBBLE_MASK 0x0Fu
+#define PRESENCE_NIBBLE_BITS 4u
+#define PRESENCE_HI_NIBBLE(byte) (((byte) >> PRESENCE_NIBBLE_BITS) & PRESENCE_NIBBLE_MASK)
+#define PRESENCE_LO_NIBBLE(byte) ((byte) & PRESENCE_NIBBLE_MASK)
+
+/* proto3 field keys for the birth encoder. A record is a varint key -- field
+ * number in the high bits, wire type in the low three. Decoding goes through
+ * internal/proto3.h; the birth is three fixed bool fields, which is cheaper to
+ * emit directly than to frame. */
+#define PROTO_WIRE_TYPE_VARINT 0u
+#define PROTO_WIRE_TYPE_BITS 3u
+/* Single-byte key for a varint field. Valid for field numbers 1..15, which is
+ * every field this client encodes. */
+#define PROTO_KEY_VARINT(field) \
+  ((uint8_t)(((field) << PROTO_WIRE_TYPE_BITS) | PROTO_WIRE_TYPE_VARINT))
+#define PROTO_BOOL_TRUE 0x01u
+
+/* Field numbers from presence.proto. */
+#define PRESENCE_BIRTH_FIELD_SESSION_PRESENT 1u
+#define PRESENCE_BIRTH_FIELD_PUSH_DESIRED 12u
+#define PRESENCE_BIRTH_FIELD_PUSH_REPORTED 13u
+#define PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION 10u
+#define PRESENCE_BIRTH_ACK_FIELD_REPORTED_VERSION 11u
 
 /* ------------------------------------------------------------------------- */
 /* helpers                                                                   */
@@ -158,6 +231,8 @@ const char* az_iot_mqtt_role_to_string(az_iot_mqtt_role r)
       return "DPS";
     case AZ_IOT_MQTT_ROLE_HUB_MQTT_V3:
       return "HUB_MQTT_V3";
+    case AZ_IOT_MQTT_ROLE_HUB_MQTT_V5:
+      return "HUB_MQTT_V5";
     default:
       return "ROLE?";
   }
@@ -428,7 +503,7 @@ static bool reason_is_retriable(az_iot_result reason)
     case AZ_IOT_ERR_AUTH:
     case AZ_IOT_ERR_IDENTITY_REJECTED:
     case AZ_IOT_ERR_CREDENTIAL_INCOMPLETE:
-    /* The assigned profile is not one the attached feature clients can use.
+    /* The assigned generation is not one the attached feature clients can use.
      * Re-provisioning returns the same assignment. */
     case AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH:
     case AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED:
@@ -481,6 +556,8 @@ static const char* profile_name(az_iot_connection_profile profile)
   {
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
       return "mqttv3";
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
+      return "mqttv5";
     case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
     default:
       return "unknown";
@@ -709,7 +786,7 @@ static void set_state_to(
   if (scope == AZ_IOT_CONN_SCOPE_HUB && new_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
     c->consecutive_hub_connect_failures = 0;
-    /* The identity was accepted end to end. */
+    /* The identity was accepted end to end (birth-ack included on mqttv5). */
     reset_identity_recovery(c);
   }
   if (!have_state_observers(c))
@@ -764,7 +841,7 @@ static void set_state_to(
     }
     event.error = &detail;
   }
-  /* The profile rides the events that settle "which hub profile is this?":
+  /* The profile rides the events that settle "which hub generation is this?":
    * HUB:CONNECTED, and the two failures that are ABOUT the profile.
    *
    * HUB only. DPS:CONNECTED is the SUBACK, before any assignment exists.
@@ -894,8 +971,8 @@ static uint16_t default_port_for_transport(az_iot_mqtt_transport transport)
       : (uint16_t)AZ_IOT_MQTT_DEFAULT_PORT_TCP_TLS;
 }
 
-/* Apply the caller's transport, WebSocket path and proxy to one connect, and
- * resolve the port: an explicit @p port wins, 0 means "derive from
+/* Apply the caller's transport, WebSocket path and proxy to one connect for
+ * @p role, and resolve the port: an explicit @p port wins, 0 means "derive from
  * transport".
  *
  * Shared by the DPS bootstrap connect and the hub connect on purpose. A device
@@ -905,10 +982,17 @@ static uint16_t default_port_for_transport(az_iot_mqtt_transport transport)
 static void resolve_connect_transport(
     const az_iot_connection_client* c,
     az_iot_mqtt_connect_options* copts,
+    az_iot_mqtt_role role,
     uint16_t port)
 {
   copts->transport = c->opts.transport;
   copts->websocket_path = c->opts.websocket_path;
+  /* The mqttv5 hub serves WebSockets on its own path; DPS and the mqttv3 hub keep
+   * the adapter default. */
+  if (copts->websocket_path == NULL && role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5)
+  {
+    copts->websocket_path = AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH;
+  }
   copts->proxy = c->opts.proxy;
   copts->port = port ? port : default_port_for_transport(c->opts.transport);
 }
@@ -917,21 +1001,27 @@ static void resolve_connect_transport(
  * @brief Whether the hub session of a client with @p opts connects with clean_start false.
  *
  * resolve_session_options() and init() both use it, so init() validates the same answer every
- * connect gets. A hub session that is not clean outlives its connection: MQTT 3.1.1 keeps it. DPS
- * sessions are always clean.
+ * connect gets. A hub session that is not clean outlives its connection: MQTT 3.1.1 keeps it, and
+ * MQTT 5 gives it a Session Expiry Interval above 0 (guaranteed below). DPS sessions are always
+ * clean.
  */
 static bool does_hub_session_resume(const az_iot_connection_client_options* opts)
 {
   return opts->session_continuity != AZ_IOT_SESSION_CONTINUITY_CLEAN;
 }
 
+#if AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS == 0
+#error "AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS must be above 0: a resumed MQTT 5 session needs it"
+#endif
+
 /* Apply the session semantics for one role: Clean Start / Clean Session, the
- * Last Will, and the reason code the session will be closed with.
+ * MQTT 5 Session Expiry Interval, the Last Will, and the reason code the
+ * session will be closed with.
  *
  * Every CONNECT this client issues used to go out with whatever the
- * zero-initialized options struct yielded, which is clean_start = false for every
- * role -- so DPS asked the broker to resume a session it has no use for. The
- * roles do not want the same thing,
+ * zero-initialized options struct yielded, which is clean_start = false for all
+ * three roles -- so DPS and MQTTv5 both asked the broker to resume a session
+ * neither of them has any use for. The three roles do not want the same thing,
  * and the choice is made here, in one place, rather than at the two connect
  * sites:
  *
@@ -957,13 +1047,25 @@ static bool does_hub_session_resume(const az_iot_connection_client_options* opts
  *    every connect either way (begin_feature_subscriptions), so resuming costs
  *    nothing.
  *
- * The hub role may be overridden by the caller through
+ *  - HUB_MQTT_V5 (v5): a resumed session as well, with a Session Expiry Interval
+ *    so there is something left to resume. The presence design is explicit that
+ *    this is a TRANSPORT EFFICIENCY choice and not a correctness one: the
+ *    backend never reads clean_start or session_present, the device always
+ *    publishes birth, and every feature protocol is correct even if each
+ *    connect started a fresh session. What resuming buys is the broker's QoS 1
+ *    redelivery across a transient drop, and a re-subscribe saved. Both halves
+ *    are needed -- a session that expires the instant the connection closes is
+ *    gone before any reconnect could resume it -- which is why the expiry is
+ *    set here and not left at 0.
+ *
+ * Either hub role may be overridden by the caller through
  * opts.session_continuity; DPS may not, because the provisioning service does
  * not implement session persistence at all and honouring a request for it
  * would be promising something the service does not do.
  *
- * Every role speaks v3.1.1, so no Session Expiry Interval or Will Delay Interval
- * is set: a v3.1.1 CONNECT has no property field to carry them. */
+ * The v5-only fields are set for the v5 role only. A v3.1.1 broker must never
+ * be sent a Session Expiry Interval or a Will Delay Interval -- there is no
+ * property field in a v3.1.1 CONNECT to carry them. */
 static void resolve_session_options(
     const az_iot_connection_client* c,
     az_iot_mqtt_connect_options* copts,
@@ -980,8 +1082,19 @@ static void resolve_session_options(
   copts->session_expiry_seconds = 0;
   copts->disconnect_reason_code = (uint8_t)AZ_IOT_MQTT_DISCONNECT_NORMAL;
 
+  /* Session Expiry is an MQTT 5 property, so it exists only for the v5 hub.
+   * A session the caller asked to be clean still carries it: clean_start
+   * discards whatever was there at CONNECT, while the expiry governs what
+   * happens to THIS session after it ends, and those are independent. */
+  if (role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5)
+  {
+    copts->session_expiry_seconds = c->opts.session_expiry_seconds
+        ? c->opts.session_expiry_seconds
+        : (uint32_t)AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS;
+  }
+
   /* The Will belongs to the hub session. Nothing consumes a will published from
-   * a provisioning session: DPS has no device-lifecycle protocol to
+   * a provisioning session: DPS has no presence or device-lifecycle protocol to
    * deliver one to, and opts.lwt is the application's signal about its DEVICE,
    * which is reachable through the hub. Announcing a departure on a channel
    * with no listener is worse than not announcing it.
@@ -1001,6 +1114,24 @@ static void resolve_session_options(
   copts->lwt.payload_len = c->opts.lwt.payload_len;
   copts->lwt.qos = c->opts.lwt.qos;
   copts->lwt.retain = c->opts.lwt.retain;
+
+  if (role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V5)
+  {
+    return; /* v3.1.1: no will delay, no reason codes */
+  }
+
+  copts->lwt.will_delay_seconds = c->opts.lwt.will_delay_seconds;
+  /* MQTT 5 ends the Will Delay at whichever comes first, the delay or the
+   * session expiry, so a delay asked for on a session that expires at once is
+   * no delay at all. Carry the session far enough to honour it rather than
+   * accepting the option and then ignoring it. */
+  if (copts->lwt.will_delay_seconds > copts->session_expiry_seconds)
+  {
+    copts->session_expiry_seconds = copts->lwt.will_delay_seconds;
+  }
+  /* An orderly close discards the Will by default. A device that configured one
+   * wants its departure announced however it leaves, so close with 0x04. */
+  copts->disconnect_reason_code = (uint8_t)AZ_IOT_MQTT_DISCONNECT_WITH_WILL_MESSAGE;
 }
 
 /**
@@ -1051,7 +1182,17 @@ static void end_session(az_iot_connection_client* c, az_iot_connection_session_e
     destroy_session_mqtt_client(c, c->active_client);
   }
   c->active_client = NULL;
-  /* Abandon the subscription gate: its packet ids died with the session and
+  /* A birth-ack wait torn down at or past its deadline is a miss, whatever
+   * ended the session (timeout, DISCONNECTED or ERROR processed first). */
+  if (c->presence.phase == PRESENCE_PHASE_BIRTH
+      && az_iot_deadline__has_passed(&c->presence.deadline, az_iot_time_mono_ms()))
+  {
+    az_iot_defensive_timeout__count_miss(&c->presence.consecutive_birth_ack_timeouts);
+  }
+  /* Abandon any in-flight MQTTv5 presence (birth) handshake: it belonged to the
+   * now-destroyed session and must restart from CONNACK on the next connect. */
+  c->presence.phase = PRESENCE_PHASE_NONE;
+  /* Same for the subscription gate. Its packet ids died with the session and
    * will never be acked, so nothing is left for a deadline to wait on. */
   memset(&c->subscription_gate, 0, sizeof(c->subscription_gate));
   /* Complete any pending PUBACK correlation entries with an error. The
@@ -1117,7 +1258,7 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c);
 static bool planned_hub_session_end_in_progress(const az_iot_connection_client* c);
 static bool dps_configured(const az_iot_connection_client* c);
 static az_iot_result run_feature_client_binds(az_iot_connection_client* c);
-static void drop_subscriptions_from_other_profiles(az_iot_connection_client* c);
+static void drop_subscriptions_from_other_generations(az_iot_connection_client* c);
 static void csr_event_init(az_iot_csr_event* evt, az_iot_csr_event_kind kind);
 static void report_csr_event(
     az_iot_connection_client* c,
@@ -3259,6 +3400,10 @@ static void profile_record(
   {
     *profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   }
+  else if (strcmp(raw_buf, CONNECTION_PROFILE_MQTT_V5_STR) == 0)
+  {
+    *profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  }
   else
   {
     *profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
@@ -3357,7 +3502,8 @@ static az_iot_result dps_read_connection_profile(az_iot_connection_client* c, az
  */
 static bool dps_assignment_acceptable(const az_iot_connection_client* c)
 {
-  return c->dps_assigned_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3
+  return (c->dps_assigned_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3
+          || c->dps_assigned_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
       && (c->required_profile_refs == 0 || c->required_profile == c->dps_assigned_profile)
       && is_nonempty_cstr(c->dps_assigned_hub) && is_nonempty_cstr(c->dps_assigned_device_id);
 }
@@ -3659,7 +3805,7 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
               az_span_ptr(resp.registration_state.device_id),
               (size_t)dev_n);
           c->dps_assigned_device_id[dev_n] = '\0';
-          /* Which hub profile we were assigned to. Held pending and recorded
+          /* Which hub generation we were assigned to. Held pending and recorded
            * only when the assignment is adopted (dps_apply_deferred()): until
            * then the cached or saved hub, and its profile, still apply. */
           az_iot_result pr = dps_read_connection_profile(c, payload_span);
@@ -3899,7 +4045,7 @@ static az_iot_result dps_connect_session(az_iot_connection_client* c)
   copts.host = endpoint;
   copts.client_id = c->opts.dps.registration_id;
   resolve_connect_timings(c, &copts);
-  resolve_connect_transport(c, &copts, 0);
+  resolve_connect_transport(c, &copts, AZ_IOT_MQTT_ROLE_DPS, 0);
   resolve_session_options(c, &copts, AZ_IOT_MQTT_ROLE_DPS);
 
   copts.username = dps_username;
@@ -4160,7 +4306,7 @@ static az_iot_result dps_register_on_ready_session(az_iot_connection_client* c)
  * and opts.device_id still name the hub from the previous assignment, and
  * open() skips DPS whenever a host is set. Without this the client would
  * connect to the stale hub -- and for a profile mismatch it would do so with
- * session_role already switched to the profile this very response was
+ * session_role already switched to the generation this very response was
  * rejected for.
  *
  * The flag is raised BEFORE the transition because set_state_to() runs the
@@ -4304,7 +4450,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
      * most transient failure a device meets: the enrollment may not have been
      * created yet, the DPS may not have a linked IoT Hub yet, or the service
      * may simply have been unavailable. Every other failure path -- hub CONNACK
-     * failures, unexpected drops, subscription-gate timeouts
+     * failures, unexpected drops, presence timeouts, subscription-gate timeouts
      * -- consults the reconnection policy first, and this one used to be the
      * single exception: it faulted unconditionally, so a device configured to
      * retry forever still ended terminally on a first boot that ran slightly
@@ -4371,6 +4517,9 @@ static void dps_apply_deferred(az_iot_connection_client* c)
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
       c->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V3;
       break;
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
+      c->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V5;
+      break;
     case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
     default:
       AZ_IOT_LOG_ERRORF(
@@ -4381,13 +4530,13 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       reject_assignment(c, AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED);
       return;
   }
-  /* The assignment may have moved the device to a different profile than the
+  /* The assignment may have moved the device to a different generation than the
    * one its registered filters were built for. */
   c->connection_profile_resolved = true;
   if (c->required_profile_refs > 0 && c->required_profile != c->connection_profile)
   {
     /* Terminal on purpose: re-provisioning would return this same profile while
-     * the feature clients still require another one, so an immediate retry
+     * the feature clients still require the other one, so an immediate retry
      * cannot succeed. The application owns the recovery -- deinit the feature
      * clients and rebuild them for the profile this event carries, then close()
      * this connection client (legal from FAULTED, and it returns it to IDLE)
@@ -4395,13 +4544,13 @@ static void dps_apply_deferred(az_iot_connection_client* c)
      * deinitialized.
      *
      * The switch above has already moved session_role to the assigned
-     * profile. That is harmless only because reject_assignment() forces the
+     * generation. That is harmless only because reject_assignment() forces the
      * next open() through DPS, which settles the role again from whatever that
      * run is assigned. */
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_DPS,
-        "assigned connectionProfile \"%s\", but the attached feature clients require "
-        "another hub profile; deinit them and rebuild for the assigned profile",
+        "assigned connectionProfile \"%s\", but the attached feature clients require the "
+        "other hub generation; deinit them and rebuild for the assigned profile",
         c->connection_profile_raw);
     reject_assignment(c, AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH);
     return;
@@ -4456,7 +4605,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       &c->opts.device_id,
       c->dps_assigned_device_id);
   c->dps_cert_awaits_adoption = false;
-  drop_subscriptions_from_other_profiles(c);
+  drop_subscriptions_from_other_generations(c);
   /* A hub token asked for, or held, before this assignment may be for
    * another hub or device: the next attempt asks again. */
   clear_sas_token_request(c, AZ_IOT_CONN_SCOPE_HUB);
@@ -4535,6 +4684,182 @@ static void dps_apply_deferred(az_iot_connection_client* c)
       set_state_to(c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_FAULTED, r);
     }
   }
+}
+
+/* ------------------------------------------------------------------------- */
+/* MQTTv5 presence (birth) handshake                                          */
+/*                                                                           */
+/* On a HUB_MQTT_V5 (MQTT v5) session the connection is not "up" at CONNACK: the  */
+/* device must announce presence by publishing a birth message and waiting for */
+/* a birth-ack before the SDK reports CONNECTED. MQTTv3/DPS sessions skip all */
+/* of this. Sequenced as a small sub-state machine driven from on_mqtt_event:  */
+/*   CONNACK  -> SUBSCRIBE ih/{id}/dev/#                  (phase SUBSCRIBING)   */
+/*   SUBACK   -> PUBLISH   ih/{id}/srv/presence (birth)   (phase BIRTH)         */
+/*   birth-ack MESSAGE on ih/{id}/dev/presence, matching nonce                  */
+/*                                     -> announce CONNECTED (phase DONE)       */
+/* A stalled handshake is timed out from do_work().                            */
+/* ------------------------------------------------------------------------- */
+
+/* Fill `out` with a fresh RFC 4122 version 4 UUID drawn from the client's PRNG.
+ * Uses the same LCG as the CSR request-id generator, advanced through rng_state
+ * and salted by the attempt count so successive draws never collide. Uniqueness
+ * (not cryptographic strength) is what these identifiers need. */
+static void gen_uuid_v4(az_iot_connection_client* c, uint8_t out[PRESENCE_NONCE_LEN])
+{
+  for (size_t i = 0; i < PRESENCE_NONCE_LEN; i += 8)
+  {
+    uint64_t x = az_iot_time_mono_ms()
+        ^ (c->rng_state * 6364136223846793005ull + 1442695040888963407ull)
+        ^ ((uint64_t)(c->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] + 1u) << 40);
+    c->rng_state = x;
+    for (size_t b = 0; b < 8u; ++b)
+    {
+      out[i + b] = (uint8_t)(x >> (b * 8u));
+    }
+  }
+
+  /* Stamp the RFC 4122 version (4 = random) and variant (10xx) bits so the
+   * nonce is a well-formed UUID, which is what the presence protocol
+   * specifies and what the .NET client produces via Guid.NewGuid(). */
+  out[PRESENCE_UUID_VERSION_OCTET]
+      = PRESENCE_UUID_STAMP_VERSION_4(out[PRESENCE_UUID_VERSION_OCTET]);
+  out[PRESENCE_UUID_VARIANT_OCTET]
+      = PRESENCE_UUID_STAMP_VARIANT_RFC4122(out[PRESENCE_UUID_VARIANT_OCTET]);
+}
+
+/* Fill `out` with the per-connection nonce: a fresh UUID regenerated on every
+ * CONNECT attempt (not per successful CONNACK). It is echoed on the birth-ack
+ * so the SDK can discard acks from a prior attempt, and it tags the
+ * backend-initiated dev-bound traffic belonging to this connection. */
+static void presence_gen_nonce(az_iot_connection_client* c, uint8_t out[PRESENCE_NONCE_LEN])
+{
+  gen_uuid_v4(c, out);
+}
+
+/* Build the MQTTv5 CONNECT username. The IoT Hub auth webhook denies a
+ * connect with an empty username (WebhookAuthUserNameMissing), so the SDK sends
+ * "correlationId=<hex nonce>&clientVersion=c%2F<version>", mirroring the .NET
+ * SDK. correlationId is the 32-character lowercase hex of the 16-byte
+ * connection nonce; the SAME nonce bytes ride the birth message as raw
+ * Correlation Data so the service can correlate the CONNECT with the birth.
+ *
+ * Returns false if `cap` (AZ_IOT_MQTT_USERNAME_BUF) cannot hold the whole
+ * username; `buf` is left unusable and the caller must fail the attempt. */
+static bool presence_build_username(const az_iot_connection_client* c, char* buf, size_t cap)
+{
+  static const char hexdigits[] = "0123456789abcdef";
+  char hex[PRESENCE_NONCE_LEN * 2u + 1u];
+  for (size_t i = 0; i < PRESENCE_NONCE_LEN; ++i)
+  {
+    hex[i * 2u] = hexdigits[PRESENCE_HI_NIBBLE(c->presence.nonce[i])];
+    hex[i * 2u + 1u] = hexdigits[PRESENCE_LO_NIBBLE(c->presence.nonce[i])];
+  }
+  hex[(size_t)PRESENCE_NONCE_LEN * 2u] = '\0';
+
+  /* clientVersion is URL-escaped as in the .NET SDK: '/' -> %2F. The version
+   * string is percent-encoded too, which leaves today's digits-and-dots form
+   * untouched but keeps the pair well-formed if it ever gains a suffix. */
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(&writer, az_span_create((uint8_t*)buf, (int32_t)cap));
+  az_iot_span_writer_append_str(&writer, "correlationId=");
+  az_iot_span_writer_append_str(&writer, hex);
+  az_iot_span_writer_append_str(&writer, "&clientVersion=c%2F");
+  az_iot_span_writer_append_url_encoded(&writer, az_iot_version_string());
+
+  /* A truncated username is worse than none: it would carry a partial
+   * correlationId, so the service could not tie the CONNECT to the birth and
+   * the handshake would surface much later as an opaque birth-ack timeout.
+   * Report it here so the connect attempt fails with a precise reason. */
+  return az_iot_span_writer_end_str(&writer, NULL) == AZ_IOT_OK;
+}
+
+/* Encode a proto3 Birth message (common/Protos/presence.proto) into `out`.
+ * proto3 omits default-valued fields, matching Google.Protobuf on the .NET
+ * side, so a false push bit is simply absent from the payload.
+ * push_desired/push_reported advertise which twin traffic the application wants
+ * dispatched on this connection (opts.twin_push); reported_version and
+ * desired_version stay 0 (the device does not persist twin state yet) and are
+ * omitted. Returns the encoded length. */
+static size_t presence_encode_birth(
+    uint8_t* out,
+    size_t cap,
+    bool session_present,
+    bool push_desired,
+    bool push_reported)
+{
+  size_t n = 0;
+  if (session_present && n + 2u <= cap)
+  {
+    out[n++] = PROTO_KEY_VARINT(PRESENCE_BIRTH_FIELD_SESSION_PRESENT);
+    out[n++] = PROTO_BOOL_TRUE;
+  }
+  if (push_desired && n + 2u <= cap)
+  {
+    out[n++] = PROTO_KEY_VARINT(PRESENCE_BIRTH_FIELD_PUSH_DESIRED);
+    out[n++] = PROTO_BOOL_TRUE;
+  }
+  if (push_reported && n + 2u <= cap)
+  {
+    out[n++] = PROTO_KEY_VARINT(PRESENCE_BIRTH_FIELD_PUSH_REPORTED);
+    out[n++] = PROTO_BOOL_TRUE;
+  }
+  return n;
+}
+
+/* Decode the twin recovery state the service returns on the birth-ack
+ * (presence.proto BirthAck): desired_version (field 10) and reported_version
+ * (field 11), both varints. These are the authoritative versions as of birth
+ * admission; the device adopts them as its view for this connection. Fields the
+ * service omits keep the proto3 default of 0, and unknown fields are skipped so
+ * a service-side schema addition does not break the handshake.
+ * @return false for a malformed ack (bad encoding, or a known field on the wrong wire type). */
+static bool presence_decode_birth_ack(az_iot_connection_client* c, const uint8_t* buf, size_t len)
+{
+  c->presence.desired_version = 0;
+  c->presence.reported_version = 0;
+  if (!buf)
+  {
+    return true;
+  }
+
+  size_t pos = 0;
+  while (pos < len)
+  {
+    uint32_t field = 0;
+    uint8_t wire = 0;
+    if (!az_iot_proto3_read_tag(buf, len, &pos, &field, &wire))
+    {
+      return false;
+    }
+    bool const known = field == PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION
+        || field == PRESENCE_BIRTH_ACK_FIELD_REPORTED_VERSION;
+    if (known && wire != AZ_IOT_PROTO3_WIRE_VARINT)
+    {
+      return false;
+    }
+
+    if (known)
+    {
+      uint64_t v = 0;
+      if (!az_iot_proto3_read_varint(buf, len, &pos, &v))
+      {
+        return false;
+      }
+      if (field == PRESENCE_BIRTH_ACK_FIELD_DESIRED_VERSION)
+      {
+        c->presence.desired_version = v;
+      }
+      else
+      {
+        c->presence.reported_version = v;
+      }
+    }
+    else if (!az_iot_proto3_skip_field(buf, len, &pos, wire))
+    {
+      return false;
+    }
+  }
+  return true;
 }
 
 /* Announce CONNECTED once the session's persistent subscriptions are live.
@@ -4794,6 +5119,154 @@ static bool subscription_gate_settle(az_iot_connection_client* c, const az_iot_m
   return false;
 }
 
+/* Begin the presence handshake after a successful HUB_MQTT_V5 CONNACK: subscribe
+ * to the device-bound topic space (dev/#) so the birth-ack can be received. */
+static az_iot_result presence_start(az_iot_connection_client* c, bool session_present)
+{
+  if (!c->active_client || !c->active_client->iface)
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+
+  const char* device_id = c->opts.device_id ? c->opts.device_id : "";
+  char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
+  const char* topic_parts[] = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_DEV_SUB_SUFFIX };
+  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
+  {
+    stage_local_error(
+        c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_NOT_ENOUGH_SPACE, "presence topic does not fit");
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  c->presence.session_present = session_present;
+  /* The connection nonce was generated at CONNECT time (start_connect_attempt)
+   * so it could ride the CONNECT username as correlationId; reuse it here as
+   * the birth Correlation Data. Do NOT regenerate it, or the username's
+   * correlationId and the birth would diverge and the service could not
+   * correlate them. The broker answers the SUBSCRIBE, so it gets the SUBACK
+   * window; the birth-ack timeout is armed once the birth is published. */
+  az_iot_deadline__arm_after_seconds(
+      &c->presence.deadline, az_iot_time_mono_ms(), subscription_ack_timeout_seconds(c));
+
+  uint16_t pid = 0;
+  az_iot_result r
+      = c->active_client->iface->subscribe(c->active_client, topic, AZ_IOT_MQTT_QOS_1, &pid);
+  if (r != AZ_IOT_OK)
+  {
+    stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, r, "presence subscribe() failed");
+    return r;
+  }
+
+  c->presence.sub_packet_id = pid;
+  c->presence.phase = PRESENCE_PHASE_SUBSCRIBING;
+  return AZ_IOT_OK;
+}
+
+/* Publish the birth message once the dev/presence SUBSCRIBE is acked. Birth is
+ * QoS 0: the service acknowledges it with a full birth-ack PUBLISH rather than
+ * a PUBACK. The nonce rides as Correlation Data; "type"="birth:1" as a User
+ * Property. */
+static az_iot_result presence_publish_birth(az_iot_connection_client* c)
+{
+  if (!c->active_client || !c->active_client->iface)
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+
+  const char* device_id = c->opts.device_id ? c->opts.device_id : "";
+  char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
+  const char* topic_parts[] = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_SRV_SUFFIX };
+  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
+  {
+    stage_local_error(
+        c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_NOT_ENOUGH_SPACE, "presence topic does not fit");
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+
+  uint8_t body[8];
+  size_t body_len = presence_encode_birth(
+      body,
+      sizeof(body),
+      c->presence.session_present,
+      c->opts.twin_push.push_desired,
+      c->opts.twin_push.push_reported);
+
+  az_iot_mqtt_user_property type_prop = { PRESENCE_TYPE_KEY, PRESENCE_TYPE_BIRTH };
+
+  az_iot_mqtt_message msg = { 0 };
+  msg.topic = topic;
+  msg.payload = body;
+  msg.payload_len = body_len;
+  msg.qos = AZ_IOT_MQTT_QOS_0;
+  msg.user_properties = az_iot_mqtt_user_properties_from_array(&type_prop, 1);
+  msg.correlation_data = c->presence.nonce;
+  msg.correlation_data_len = PRESENCE_NONCE_LEN;
+
+  uint16_t pid = 0;
+  az_iot_result r = c->active_client->iface->publish(c->active_client, &msg, &pid);
+  if (r != AZ_IOT_OK)
+  {
+    stage_local_error(c, AZ_IOT_CONN_SCOPE_HUB, r, "presence birth publish() failed");
+    return r;
+  }
+
+  /* The birth is on the wire: arm the escalating birth-ack timeout. Its attempt
+   * is one past the birth-acks missed in a row. */
+  uint32_t attempt
+      = az_iot_defensive_timeout__next_attempt(c->presence.consecutive_birth_ack_timeouts);
+  c->presence.birth_ack_timeout_ms = az_iot_connection_client__defensive_timeout_ms(c, attempt);
+  az_iot_deadline__arm_after_ms(
+      &c->presence.deadline, az_iot_time_mono_ms(), c->presence.birth_ack_timeout_ms);
+  c->presence.phase = PRESENCE_PHASE_BIRTH;
+  AZ_IOT_LOG_DEBUGF(
+      AZ_IOT_LOG_COMPONENT_CONNECTION,
+      "birth published; birth-ack timeout %lu ms (attempt %lu)",
+      (unsigned long)c->presence.birth_ack_timeout_ms,
+      (unsigned long)attempt);
+  return AZ_IOT_OK;
+}
+
+/* True when `msg` is the birth-ack for the in-flight handshake: it arrives on
+ * ih/{deviceId}/dev/presence, carries "type"="birth-ack[:*]", and echoes our
+ * connection nonce as Correlation Data. Non-matching acks (e.g. from a prior
+ * attempt) are ignored per presence.proto. */
+static bool presence_is_birth_ack(const az_iot_connection_client* c, const az_iot_mqtt_message* msg)
+{
+  if (!msg || !msg->topic)
+  {
+    return false;
+  }
+
+  const char* device_id = c->opts.device_id ? c->opts.device_id : "";
+  char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
+  const char* topic_parts[] = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_DEV_SUFFIX };
+  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
+  {
+    return false;
+  }
+  if (strcmp(msg->topic, topic) != 0)
+  {
+    return false;
+  }
+
+  if (msg->correlation_data_len != PRESENCE_NONCE_LEN || msg->correlation_data == NULL
+      || memcmp(msg->correlation_data, c->presence.nonce, PRESENCE_NONCE_LEN) != 0)
+  {
+    return false;
+  }
+
+  az_iot_mqtt_user_property_view type;
+  if (az_iot_mqtt_user_properties_find(&msg->user_properties, PRESENCE_TYPE_KEY, &type)
+      != AZ_IOT_OK)
+  {
+    return false;
+  }
+  size_t n = strlen(PRESENCE_TYPE_BIRTH_ACK);
+  /* Match "birth-ack" exactly or "birth-ack:<schemaVersion>". */
+  return type.value_len >= n && memcmp(type.value, PRESENCE_TYPE_BIRTH_ACK, n) == 0
+      && (type.value_len == n || type.value[n] == ':');
+}
+
 /* Inbound MQTT events are dispatched here (synchronously from process_loop). */
 /**
  * @brief Defer finishing the planned hub session end with its own reason, unless this batch
@@ -4892,6 +5365,25 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         /* The credential was accepted: kept; a later rejection starts a new pass. */
         c->auth[AZ_IOT_CONN_SCOPE_HUB].pass_from = AZ_IOT_AUTH_SOURCE_NONE;
 
+        /* MQTTv5 (MQTT v5): the connection is not usable until
+         * presence is established. Kick off the birth handshake and
+         * defer the CONNECTED announcement until the birth-ack arrives.
+         * MQTTv3 (and DPS-assigned MQTTv3) sessions announce now. */
+        if (c->session_role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5)
+        {
+          az_iot_result pr = presence_start(c, evt->session_present);
+          if (pr != AZ_IOT_OK)
+          {
+            c->presence.phase = PRESENCE_PHASE_NONE;
+            c->deferred
+                = (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
+                ? DEFER_RECONNECT
+                : DEFER_FAULT;
+            c->deferred_reason = pr;
+          }
+          break;
+        }
+
         begin_feature_subscriptions(c);
       }
       else
@@ -4923,7 +5415,7 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       break;
 
     case AZ_IOT_MQTT_EVT_DISCONNECTED:
-      /* An MQTT 5 Not authorized DISCONNECT is an identity refusal too. */
+      /* An mqttv5 Not authorized DISCONNECT is an identity refusal too. */
       c->hub_session_ended = true;
       c->hub_server_disconnect_seen = c->hub_server_disconnect_seen || is_server_disconnect(evt);
       note_identity_refusal(c, evt->status);
@@ -4984,6 +5476,49 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
     case AZ_IOT_MQTT_EVT_MESSAGE:
       if (evt->message)
       {
+        /* During the MQTTv5 birth handshake, intercept the birth-ack and
+         * complete the connection; everything else routes normally. */
+        if (c->presence.phase == PRESENCE_PHASE_BIRTH && presence_is_birth_ack(c, evt->message))
+        {
+          /* The session is already being ended (e.g. its handshake timed out). */
+          if (planned_hub_session_end_in_progress(c))
+          {
+            break;
+          }
+          /* Same reasoning as the CONNACK case above. On the MQTTv5 path it
+           * is the birth-ack, not the CONNACK, that completes the connection,
+           * so suppressing only the CONNACK would leave this route able to
+           * announce CONNECTED for an attempt the application has already
+           * abandoned. A birth-ack the broker sent before close() reached it
+           * arrives in a later process_loop batch, when user_close is set and
+           * the state is DISCONNECTING. */
+          if (c->user_close || c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_DISCONNECTING)
+          {
+            AZ_IOT_LOG_DEBUG(
+                AZ_IOT_LOG_COMPONENT_CONNECTION, "birth-ack ignored: close already requested");
+            break;
+          }
+          /* An ack whose deadline had passed when this pass began is a miss, left
+           * to the timeout path to reconnect and escalate. A pass's waits end by
+           * the deadline, but one may dispatch late (e.g. after a DPS wait). */
+          if (az_iot_connection_client__deadline_passed_before_pass(c, &c->presence.deadline))
+          {
+            AZ_IOT_LOG_DEBUG(
+                AZ_IOT_LOG_COMPONENT_CONNECTION, "birth-ack ignored: birth-ack timeout expired");
+            break;
+          }
+          if (!presence_decode_birth_ack(c, evt->message->payload, evt->message->payload_len))
+          {
+            /* Its versions cannot be trusted; the birth-ack timeout ends the session. */
+            AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_CONNECTION, "malformed birth-ack ignored");
+            break;
+          }
+          c->presence.phase = PRESENCE_PHASE_DONE;
+          /* Arrived in time: the next birth starts the schedule over. */
+          c->presence.consecutive_birth_ack_timeouts = 0;
+          begin_feature_subscriptions(c);
+          break;
+        }
         enter_callback(c);
         (void)az_iot_dispatch_route(&c->dispatch, evt->message);
         leave_callback(c);
@@ -5063,8 +5598,43 @@ static void on_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
       break;
     }
 
-    /* A SUBACK settles the subscription gate entry it correlates with. */
+    /* The dev/presence SUBACK advances the MQTTv5 birth handshake: publish the
+     * birth message now that the ack topic is subscribed. Other SUBACKs are
+     * absorbed (feature clients don't yet need SUBACK correlation). */
     case AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK:
+      if (c->presence.phase == PRESENCE_PHASE_SUBSCRIBING
+          && evt->packet_id == c->presence.sub_packet_id && !planned_hub_session_end_in_progress(c))
+      {
+        /* As for the birth-ack: late only if the deadline passed before this pass. */
+        if (az_iot_connection_client__deadline_passed_before_pass(c, &c->presence.deadline))
+        {
+          AZ_IOT_LOG_DEBUG(
+              AZ_IOT_LOG_COMPONENT_CONNECTION, "presence SUBACK ignored: its timeout expired");
+          break;
+        }
+        /* A session-ending transition is pending (a server DISCONNECT drained in the
+         * same process_loop, say), or close() is disconnecting: the handshake of the ending session
+         * must neither replace that transition nor its detail. */
+        if (c->deferred != DEFER_NONE || c->user_close)
+        {
+          break;
+        }
+        az_iot_result pr = (evt->status == AZ_IOT_OK) ? presence_publish_birth(c) : evt->status;
+        if (evt->status != AZ_IOT_OK)
+        {
+          stage_error_codes_from_event(c, AZ_IOT_CONN_SCOPE_HUB, evt);
+        }
+        if (pr != AZ_IOT_OK)
+        {
+          c->presence.phase = PRESENCE_PHASE_NONE;
+          c->deferred
+              = (az_iot_retry_policy_is_enabled(&c->opts.reconnection_policy) && !c->user_close)
+              ? DEFER_RECONNECT
+              : DEFER_FAULT;
+          c->deferred_reason = pr;
+        }
+        break;
+      }
       if (!subscription_gate_settle(c, evt))
       {
         /* Not one this connection correlated: an ack for a SUBSCRIBE it never
@@ -5144,11 +5714,12 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
   copts.host = c->opts.iothub_hostname;
   copts.client_id = c->opts.device_id;
   resolve_connect_timings(c, &copts);
-  resolve_connect_transport(c, &copts, c->opts.port);
+  resolve_connect_transport(c, &copts, c->session_role, c->opts.port);
   resolve_session_options(c, &copts, c->session_role);
 
-  /* mqttv3 hub username (see hub_build_username()). */
-  if (c->opts.iothub_hostname && c->opts.device_id)
+  /* mqttv3 hub username (see hub_build_username()). MQTTv5 uses its own format. */
+  if (c->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.iothub_hostname
+      && c->opts.device_id)
   {
     /* IoT Hub requires the username: fail locally rather than CONNECT without it. */
     if (!ensure_hub_client(c))
@@ -5170,6 +5741,29 @@ static az_iot_result start_connect_attempt(az_iot_connection_client* c)
           AZ_IOT_CONN_SCOPE_HUB,
           AZ_IOT_ERR_NOT_ENOUGH_SPACE,
           "MQTTv3 CONNECT username does not fit AZ_IOT_MQTT_USERNAME_BUF");
+      return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
+    copts.username = c->hub_username;
+  }
+  else if (
+      c->session_role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5 && c->opts.iothub_hostname
+      && c->opts.device_id)
+  {
+    /* MQTTv5: generate the per-attempt connection nonce now so it
+     * rides the CONNECT username (correlationId) and is reused as the birth
+     * Correlation Data. The auth webhook denies an empty username. */
+    presence_gen_nonce(c, c->presence.nonce);
+    if (!presence_build_username(c, c->hub_username, sizeof(c->hub_username)))
+    {
+      AZ_IOT_LOG_ERROR(
+          AZ_IOT_LOG_COMPONENT_CONNECTION,
+          "AZ_IOT_MQTT_USERNAME_BUF is too small for the MQTTv5 CONNECT username");
+      destroy_session_mqtt_client(c, mc);
+      stage_local_error(
+          c,
+          AZ_IOT_CONN_SCOPE_HUB,
+          AZ_IOT_ERR_NOT_ENOUGH_SPACE,
+          "MQTTv5 CONNECT username does not fit AZ_IOT_MQTT_USERNAME_BUF");
       return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
     }
     copts.username = c->hub_username;
@@ -6042,9 +6636,10 @@ static void process_sas_token_request(az_iot_connection_client* c)
 /**
  * @brief @p timeout_ms, capped so a process_loop() wait ends by the next
  * connection deadline: a session's SAS token renewal, a planned hub session
- * end's settle and disconnect bounds, an open certificate renewal's response timeout, a
- * provisioning session's readiness bound, or a feature observer's NEXT_DEADLINE. A token request's
- * deadline is not one: its attempt has no session to wait on.
+ * end's settle and disconnect bounds, the presence SUBACK or birth-ack timeout, an open
+ * certificate renewal's response timeout, a provisioning session's readiness
+ * bound, or a feature observer's NEXT_DEADLINE.
+ * A token request's deadline is not one: its attempt has no session to wait on.
  */
 static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, uint32_t timeout_ms)
 {
@@ -6106,6 +6701,13 @@ static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, 
     remaining = unix_left < remaining ? unix_left : remaining;
   }
   remaining = planned_end_left < remaining ? planned_end_left : remaining;
+  /* Once a planned end is under way the presence deadline has done its job; its bound counts. */
+  if ((c->presence.phase == PRESENCE_PHASE_SUBSCRIBING || c->presence.phase == PRESENCE_PHASE_BIRTH)
+      && !planned_hub_session_end_in_progress(c))
+  {
+    uint64_t presence_left = az_iot_deadline__remaining_ms(&c->presence.deadline, now);
+    remaining = presence_left < remaining ? presence_left : remaining;
+  }
   if (c->csr_op.in_use)
   {
     uint64_t const csr_left = c->csr_op.deadline_ms > now ? c->csr_op.deadline_ms - now : 0;
@@ -6592,7 +7194,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   }
   /* UNKNOWN only ever comes back FROM the service; a caller cannot meaningfully
    * declare a profile the SDK does not know how to speak. */
-  if (opts->connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
+  if (opts->connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3
+      && opts->connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
@@ -6714,11 +7317,26 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   client->state[AZ_IOT_CONN_SCOPE_HUB] = AZ_IOT_CONN_STATE_IDLE;
   /* Determine session role early so feature clients can query the profile
    * during their init (which happens before open()). */
-  client->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V3;
+  if (client->opts.iothub_hostname
+      && client->opts.connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
+  {
+    /* Direct connect to an MQTTv5 endpoint (MQTT v5). For DPS
+     * (host == NULL) the profile is learned during provisioning, so
+     * opts.connection_profile is honored only when a direct host is supplied. */
+    client->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V5;
+  }
+  else
+  {
+    client->session_role = AZ_IOT_MQTT_ROLE_HUB_MQTT_V3;
+  }
   /* Seed the reported profile from the role settled above, so a direct connect
    * -- where there is no service to ask -- is answerable from init onward. The
    * DPS path overwrites this when the ASSIGNED payload arrives. */
-  connection_profile_set(client, AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V3_STR));
+  connection_profile_set(
+      client,
+      client->session_role == AZ_IOT_MQTT_ROLE_HUB_MQTT_V5
+          ? AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V5_STR)
+          : AZ_SPAN_FROM_STR(CONNECTION_PROFILE_MQTT_V3_STR));
   /* A direct connect has no service to ask, and a saved hub (host with DPS
    * configured) declares its profile, so the seed above is the answer until a
    * registration replaces it. */
@@ -7148,6 +7766,8 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_open(az_iot_connection_clien
   client->retry_attempt[AZ_IOT_CONN_SCOPE_DPS] = 0;
   client->retry_attempt[AZ_IOT_CONN_SCOPE_HUB] = 0;
   client->reconnect_due_ms = 0;
+  /* A fresh connect cycle starts the birth-ack timeout schedule over. */
+  client->presence.consecutive_birth_ack_timeouts = 0;
   reset_identity_recovery(client);
   dps_user_retry_reset(client);
   /* open() starts again at the first credential source. */
@@ -7521,6 +8141,7 @@ static void settle_spent_dps_retry(az_iot_connection_client* c)
 /** @brief One do_work() pass, without the tick observers. */
 static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t timeout_ms)
 {
+  client->do_work_pass_started_ms = az_iot_time_mono_ms();
   process_sas_token_request(client);
 
   /* --- DPS provisioning pump --- */
@@ -7728,6 +8349,34 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
   if (client->csr_op.in_use && az_iot_time_mono_ms() >= client->csr_op.deadline_ms)
   {
     fail_open_csr(client, AZ_IOT_ERR_TIMEOUT);
+  }
+
+  /* Fail a stalled MQTTv5 presence (birth) handshake so a missing SUBACK or
+   * birth-ack can't wedge the client in CONNECTING forever: end the session
+   * with a DISCONNECT, then reconnect when a policy is configured, otherwise
+   * fault. A missed birth-ack escalates the next birth's timeout. */
+  if ((client->presence.phase == AZ_IOT_PRESENCE_PHASE_SUBSCRIBING
+       || client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
+      && !planned_hub_session_end_in_progress(client)
+      && az_iot_deadline__has_passed(&client->presence.deadline, az_iot_time_mono_ms()))
+  {
+    if (client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
+    {
+      AZ_IOT_LOG_WARNF(
+          AZ_IOT_LOG_COMPONENT_CONNECTION,
+          "no birth-ack within %lu ms; ending the session",
+          (unsigned long)client->presence.birth_ack_timeout_ms);
+    }
+    /* Both paths tear down, which counts the missed birth-ack. close() has
+     * already sent its DISCONNECT and decides how the session ends. */
+    if (client->user_close)
+    {
+      settle_closed_hub_session(client);
+    }
+    else
+    {
+      start_planned_hub_session_end(client, AZ_IOT_ERR_TIMEOUT);
+    }
   }
 
   /* A gated filter withdrawn while its ack was still outstanding stops holding
@@ -8050,6 +8699,63 @@ void az_iot_connection_client__seed_rng(az_iot_connection_client* client, uint64
   client->rng_state = seed ? seed : 1ull;
 }
 
+void az_iot_connection_client__set_defensive_timeout_random_source(
+    az_iot_connection_client* client,
+    uint64_t (*source)(void* context),
+    void* context)
+{
+  if (!client)
+  {
+    return;
+  }
+  client->defensive_timeout_random_source = source;
+  client->defensive_timeout_random_context = source ? context : NULL;
+}
+
+az_iot_result az_iot_connection_client__set_defensive_timeout_schedule(
+    az_iot_connection_client* client,
+    const uint32_t* base_ms_by_attempt,
+    size_t attempt_count,
+    uint32_t jitter_max_ms)
+{
+  if (!client || (base_ms_by_attempt == NULL) != (attempt_count == 0u))
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  client->defensive_timeout_base_ms_by_attempt = base_ms_by_attempt;
+  client->defensive_timeout_attempt_count = attempt_count;
+  client->defensive_timeout_jitter_max_ms = base_ms_by_attempt ? jitter_max_ms : 0u;
+  return AZ_IOT_OK;
+}
+
+uint32_t az_iot_connection_client__defensive_timeout_ms(
+    az_iot_connection_client* client,
+    uint32_t attempt)
+{
+  uint64_t random_value = 0;
+  if (client && client->defensive_timeout_random_source)
+  {
+    random_value
+        = client->defensive_timeout_random_source(client->defensive_timeout_random_context);
+  }
+  else if (client)
+  {
+    /* Same LCG as gen_uuid_v4(); the high half is the well-mixed part. */
+    client->rng_state = client->rng_state * 6364136223846793005ull + 1442695040888963407ull;
+    random_value = client->rng_state >> 32;
+  }
+  if (client && client->defensive_timeout_base_ms_by_attempt)
+  {
+    return az_iot_defensive_timeout__schedule_ms(
+        client->defensive_timeout_base_ms_by_attempt,
+        client->defensive_timeout_attempt_count,
+        client->defensive_timeout_jitter_max_ms,
+        attempt,
+        random_value);
+  }
+  return az_iot_defensive_timeout__ms(attempt, random_value);
+}
+
 az_iot_result az_iot_connection_client__end_hub_session(
     az_iot_connection_client* client,
     az_iot_result reason)
@@ -8088,6 +8794,104 @@ bool az_iot_connection_client__holds_sends_for_session_end(const az_iot_connecti
   return client
       && (az_iot_deadline__is_set(&client->planned_hub_session_end.drain_deadline)
           || planned_hub_session_end_in_progress(client));
+}
+
+bool az_iot_connection_client__twin_push_expected(const az_iot_connection_client* client)
+{
+  return client && (client->opts.twin_push.push_desired || client->opts.twin_push.push_reported);
+}
+
+bool az_iot_connection_client__deadline_passed_before_pass(
+    const az_iot_connection_client* client,
+    const az_iot_deadline* deadline)
+{
+  return az_iot_deadline__has_passed(deadline, client->do_work_pass_started_ms);
+}
+
+void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* client)
+{
+  if (!client)
+  {
+    return;
+  }
+  if (client->presence.phase == AZ_IOT_PRESENCE_PHASE_SUBSCRIBING
+      || client->presence.phase == AZ_IOT_PRESENCE_PHASE_BIRTH)
+  {
+    az_iot_deadline__expire_now(&client->presence.deadline);
+  }
+}
+
+az_iot_result az_iot_connection_client__presence_twin_versions(
+    const az_iot_connection_client* client,
+    uint64_t* out_desired_version,
+    uint64_t* out_reported_version)
+{
+  if (!client || !out_desired_version || !out_reported_version)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+
+  *out_desired_version = client->presence.desired_version;
+  *out_reported_version = client->presence.reported_version;
+  return AZ_IOT_OK;
+}
+
+void az_iot_connection_client__gen_uuid(
+    az_iot_connection_client* client,
+    uint8_t out[AZ_IOT_CORRELATION_UUID_LEN])
+{
+  if (!client || !out)
+  {
+    return;
+  }
+  gen_uuid_v4(client, out);
+}
+
+az_iot_result az_iot_connection_client__presence_nonce(
+    const az_iot_connection_client* client,
+    uint8_t out[AZ_IOT_CORRELATION_UUID_LEN])
+{
+  if (!client || !out)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if (client->presence.phase != AZ_IOT_PRESENCE_PHASE_DONE)
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+
+  memcpy(out, client->presence.nonce, AZ_IOT_CORRELATION_UUID_LEN);
+  return AZ_IOT_OK;
+}
+
+az_iot_result az_iot_connection_client__birth_nonce(
+    const az_iot_connection_client* client,
+    uint8_t out[AZ_IOT_CORRELATION_UUID_LEN])
+{
+  if (!client || !out)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  if ((client->presence.phase != AZ_IOT_PRESENCE_PHASE_BIRTH
+       && client->presence.phase != AZ_IOT_PRESENCE_PHASE_DONE)
+      || client->user_close
+      || client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_DISCONNECTING)
+  {
+    return AZ_IOT_ERR_NOT_CONNECTED;
+  }
+
+  memcpy(out, client->presence.nonce, AZ_IOT_CORRELATION_UUID_LEN);
+  return AZ_IOT_OK;
+}
+
+bool az_iot_connection_client__twin_push_desired(const az_iot_connection_client* client)
+{
+  return client && client->opts.twin_push.push_desired;
+}
+
+bool az_iot_connection_client__twin_push_reported(const az_iot_connection_client* client)
+{
+  return client && client->opts.twin_push.push_reported;
 }
 
 void az_iot_connection_client__subscription_gate_force_timeout(az_iot_connection_client* client)
@@ -8197,7 +9001,7 @@ az_iot_result az_iot_connection_client__require_profile(
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
-        "a feature client for another hub profile is already "
+        "a feature client for the other hub generation is already "
         "attached to this connection");
     return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
   }
@@ -8252,12 +9056,14 @@ az_iot_result az_iot_connection_client__register_feature_client_bind(
   }
   client->feature_client_binds[free_slot].owner = owner;
   client->feature_client_binds[free_slot].on_bind = on_bind;
-  /* Connected means the identity is settled and this session's binds have run,
-   * so this one has to catch up or it would sit idle until the next connect.
-   * Mirrors __add_subscription_on_connect subscribing immediately. Not a session
-   * connecting: its binds subscribe, and a client withdrawn before CONNECTED
-   * would not unsubscribe. */
-  if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED)
+  /* Connected, or an mqttv5 session connecting, means the identity is settled
+   * and this session's binds have run, so this one has to catch up or it would
+   * sit idle until the next connect. Mirrors __add_subscription_on_connect
+   * subscribing immediately. Not an mqttv3 session connecting: its binds subscribe,
+   * and a client withdrawn before CONNECTED would not unsubscribe. */
+  if (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED
+      || (client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTING
+          && client->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5))
   {
     return on_bind(owner, client);
   }
@@ -8284,7 +9090,7 @@ void az_iot_connection_client__unregister_feature_client_bind(
 
 /* Rebuild every attached feature client's topics against the identity this
  * attempt will actually use. Their previous registrations are withdrawn first,
- * so a device id or profile that changed during re-provisioning cannot leave
+ * so a device id or generation that changed during re-provisioning cannot leave
  * a filter behind that the new hub would refuse. */
 static az_iot_result run_feature_client_binds(az_iot_connection_client* c)
 {
@@ -9128,7 +9934,13 @@ size_t az_iot_connection_client__remove_subscriptions_for(
   {
     return 0;
   }
-  /* Withdraw each entry from the broker too. */
+  /* Withdraw each entry from the broker too, on both generations. This cannot
+   * touch MQTTv5's device-wide ih/{device_id}/dev/# subscription: the presence
+   * handshake issues that one directly, not through this registry, so it has no
+   * owner and never appears in the loop below. On MQTTv5, entries in this registry
+   * are application custom topics; feature delivery uses the wildcard instead.
+   * Withdrawing a custom filter leaves the wildcard -- and therefore every
+   * feature's delivery -- untouched. */
   const bool unsubscribe_on_the_wire = client->active_client && client->active_client->iface
       && client->active_client->iface->unsubscribe
       && client->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_CONNECTED;
@@ -9153,13 +9965,13 @@ size_t az_iot_connection_client__remove_subscriptions_for(
   return removed;
 }
 
-/* Drop persistent subscriptions that belong to a different hub profile than
- * the one now resolved. Without this, a device reassigned to another profile
- * would re-issue its $iothub/... filters at a hub that does not grant
+/* Drop persistent subscriptions that belong to a different hub generation than
+ * the one now resolved. Without this, a device reassigned from MQTTv3 to MQTTv5
+ * would re-issue its $iothub/... filters at the new hub, which does not grant
  * them -- and once CONNECTED is gated on those SUBACKs, the session could never
  * come up and the application would never get the callback that would have
  * removed them. See docs/eng/connection-c.md section 5.3. */
-static void drop_subscriptions_from_other_profiles(az_iot_connection_client* c)
+static void drop_subscriptions_from_other_generations(az_iot_connection_client* c)
 {
   for (size_t i = 0; i < c->opts.limits.max_persistent_subscriptions; ++i)
   {
@@ -9169,7 +9981,7 @@ static void drop_subscriptions_from_other_profiles(az_iot_connection_client* c)
     }
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_CONNECTION,
-        "dropping '%s' -- registered for a different hub profile than the one now "
+        "dropping '%s' -- registered for a different hub generation than the one now "
         "assigned",
         c->persistent_subs[i].topic_filter);
     subscription_gate_forget(c, i);
@@ -9751,7 +10563,7 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_send_csr(
   }
   if (client->session_role != AZ_IOT_MQTT_ROLE_HUB_MQTT_V3)
   {
-    return AZ_IOT_ERR_NOT_SUPPORTED; /* only the mqttv3 hub renews certificates */
+    return AZ_IOT_ERR_NOT_SUPPORTED; /* MQTTv5 path not defined yet */
   }
   if (client->csr_op.in_use)
   {
@@ -9848,6 +10660,8 @@ const char* az_iot_connection_profile_to_string(az_iot_connection_profile profil
   {
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
       return "AZ_IOT_CONNECTION_PROFILE_MQTT_V3";
+    case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
+      return "AZ_IOT_CONNECTION_PROFILE_MQTT_V5";
     case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
       return "AZ_IOT_CONNECTION_PROFILE_UNKNOWN";
     default:

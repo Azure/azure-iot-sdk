@@ -4,8 +4,9 @@
 
 /* SPDX-License-Identifier: MIT */
 /* Recovery after the hub refuses the device identity (opts.identity_recovery):
- * CONNACK rejection, direct and DPS-provisioned, the bounds of the ladder, explicit
- * re-provisioning, and what the state events report. */
+ * mqttv3 and mqttv5, CONNACK rejection and mid-session DISCONNECT, direct and
+ * DPS-provisioned, the bounds of the ladder, explicit re-provisioning, and what
+ * the state events report. */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -88,6 +89,14 @@ static int setup_v3(void** state)
   az_iot_connection_client_options opts = base_options();
   opts.iothub_hostname = HUB_HOST;
   return setup_opts(state, &opts, AZ_IOT_MQTT_VERSION_3_1_1);
+}
+
+static int setup_v5(void** state)
+{
+  az_iot_connection_client_options opts = base_options();
+  opts.iothub_hostname = HUB_HOST;
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  return setup_opts(state, &opts, AZ_IOT_MQTT_VERSION_5);
 }
 
 static int setup_dps(void** state)
@@ -201,8 +210,55 @@ static void provision(az_iot_test_conn* fx)
   assert_string_equal(last_connect_host(), HUB_HOST);
 }
 
+/* mqttv5: CONNACK -> presence SUBACK -> birth-ack -> HUB:CONNECTED. */
+static void connect_v5(az_iot_test_conn* fx)
+{
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_non_null(m);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  pump(fx, 1);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, sub->packet_id, AZ_IOT_OK));
+  pump(fx, 1);
+  const az_iot_mock_call* birth = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(birth);
+
+  uint8_t nonce[16];
+  memcpy(nonce, birth->correlation_data, sizeof(nonce));
+  az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
+  az_iot_mqtt_message ack_msg;
+  memset(&ack_msg, 0, sizeof(ack_msg));
+  ack_msg.topic = "ih/ut-device/dev/presence";
+  ack_msg.correlation_data = nonce;
+  ack_msg.correlation_data_len = sizeof(nonce);
+  ack_msg.user_properties = az_iot_mqtt_user_properties_from_array(&ack_type, 1);
+  az_iot_mqtt_event ack;
+  memset(&ack, 0, sizeof(ack));
+  ack.kind = AZ_IOT_MQTT_EVT_MESSAGE;
+  ack.message = &ack_msg;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
+  pump(fx, 1);
+  assert_int_equal(
+      az_iot_connection_client_get_state(fx->client, AZ_IOT_CONN_SCOPE_HUB),
+      AZ_IOT_CONN_STATE_CONNECTED);
+}
+
+static void inject_v5_disconnect(az_iot_test_conn* fx, az_iot_result status, int32_t reason_code)
+{
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_non_null(m);
+  az_iot_mqtt_event evt;
+  memset(&evt, 0, sizeof(evt));
+  evt.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  evt.status = status;
+  evt.protocol_code = reason_code;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &evt));
+  pump(fx, 1);
+}
+
 /* ------------------------------------------------------------------------- */
-/* mqttv3: the cached hub is retried on the identity ladder                   */
+/* mqttv3 / mqttv5: the cached hub is retried on the identity ladder          */
 /* ------------------------------------------------------------------------- */
 
 static void mqttv3_connack_rejection_retries_the_hub_on_the_identity_ladder(void** state)
@@ -223,6 +279,67 @@ static void mqttv3_connack_rejection_retries_the_hub_on_the_identity_ladder(void
 
   fire_retry(fx);
   assert_string_equal(last_connect_host(), HUB_HOST);
+}
+
+static void mqttv5_connack_rejection_retries_the_hub_on_the_identity_ladder(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+
+  reject_identity(fx);
+  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(r->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
+  assert_int_equal(r->next_attempt_delay_ms, IDENTITY_MS);
+
+  fire_retry(fx);
+  assert_string_equal(last_connect_host(), HUB_HOST);
+}
+
+/* A mid-session Not authorized DISCONNECT is the same refusal as a CONNACK one. */
+static void mqttv5_mid_session_not_authorized_uses_the_identity_ladder(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  connect_v5(fx);
+
+  inject_v5_disconnect(fx, az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x87), 0x87);
+  size_t i = last_index_of(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_AUTH);
+  assert_true(fx->log.error_present[i]);
+  assert_int_equal(fx->log.error_codes[i], 0x87);
+  assert_int_equal(fx->log.recovery[i].classification, AZ_IOT_CONN_FAILURE_IDENTITY);
+  assert_int_equal(fx->log.recovery[i].next_attempt_delay_ms, IDENTITY_MS);
+
+  fire_retry(fx);
+  assert_string_equal(last_connect_host(), HUB_HOST);
+}
+
+static void mqttv5_mid_session_server_busy_uses_the_reconnection_policy(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  connect_v5(fx);
+
+  inject_v5_disconnect(fx, az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x89), 0x89);
+  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(r->classification, AZ_IOT_CONN_FAILURE_TRANSIENT);
+  assert_int_equal(r->next_attempt_delay_ms, RECONNECT_MS);
+  assert_int_equal(fx->client->identity_retry_attempt, 0);
+}
+
+/* With retries disabled a mid-session refusal is a failure, not a clean end. */
+static void mqttv5_mid_session_not_authorized_faults_without_a_policy(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  fx->client->opts.reconnection_policy = az_iot_connection_client_get_disabled_retry_policy();
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  connect_v5(fx);
+
+  inject_v5_disconnect(fx, az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, 0x87), 0x87);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  const az_iot_connection_recovery_info* r = last_hub_recovery(fx, AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(r->classification, AZ_IOT_CONN_FAILURE_IDENTITY);
+  assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_AUTH);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -1034,6 +1151,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         mqttv3_connack_rejection_retries_the_hub_on_the_identity_ladder, setup_v3, teardown),
     cmocka_unit_test_setup_teardown(
+        mqttv5_connack_rejection_retries_the_hub_on_the_identity_ladder, setup_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        mqttv5_mid_session_not_authorized_uses_the_identity_ladder, setup_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        mqttv5_mid_session_server_busy_uses_the_reconnection_policy, setup_v5, teardown),
+    cmocka_unit_test_setup_teardown(
         identity_backoff_grows_until_max_attempts_faults, setup_v3, teardown),
     cmocka_unit_test_setup_teardown(identity_recovery_stops_at_max_duration, setup_v3, teardown),
     cmocka_unit_test_setup_teardown(
@@ -1073,6 +1196,8 @@ int main(void)
         request_reprovision_during_a_registration_does_not_linger, setup_dps, teardown),
     cmocka_unit_test_setup_teardown(
         a_dps_refusal_is_not_on_the_identity_ladder, setup_dps, teardown),
+    cmocka_unit_test_setup_teardown(
+        mqttv5_mid_session_not_authorized_faults_without_a_policy, setup_v5, teardown),
     cmocka_unit_test_setup_teardown(
         zeroed_identity_recovery_reprovisions_on_the_reconnection_schedule, setup_dps, teardown),
     cmocka_unit_test_setup_teardown(

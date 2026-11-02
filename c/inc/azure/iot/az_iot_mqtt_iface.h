@@ -21,8 +21,8 @@ extern "C"
 {
 #endif
 
-  /* MQTT protocol versions supported by adapters. DPS and the MQTTv3 hub require v3.1.1.
-   * An adapter may build clients of both, but each client speaks
+  /* MQTT protocol versions supported by adapters. DPS + MQTTv3 hub require v3.1.1;
+   * MQTTv5 hub requires v5. An adapter may build clients of both, but each client speaks
    * exactly one version. */
   typedef enum az_iot_mqtt_version
   {
@@ -203,6 +203,11 @@ extern "C"
    * `websocket_path` is NULL. */
 #define AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH "/$iothub/websocket"
 
+  /* WebSocket resource path of the mqttv5 IoT Hub. The connection client selects
+   * it for an mqttv5 hub session when az_iot_connection_client_options::websocket_path
+   * is NULL. */
+#define AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH "/mqtt"
+
 /* Default broker ports, by transport and by whether the session is TLS. Named
  * rather than spelled out at each use: the same four numbers are needed by the
  * core when it derives a port and by every adapter when it builds a URI, and a
@@ -340,7 +345,9 @@ extern "C"
      * would be blocked by the firewall the caller was working around. */
     az_iot_mqtt_transport transport;
     /* WebSocket resource path, used only when transport is WEBSOCKET. NULL
-     * selects AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH. Must start with '/'. */
+     * selects AZ_IOT_MQTT_DEFAULT_WEBSOCKET_PATH. The connection client sets
+     * AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH for an mqttv5 hub session. Must start
+     * with '/'. */
     const char* websocket_path;
     az_iot_mqtt_proxy_options proxy;
     /* Reason code the adapter puts in the MQTT 5 DISCONNECT packet it sends

@@ -2,7 +2,7 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 SUMMARY = "Azure IoT SDK C library"
-DESCRIPTION = "C99 client library for Azure IoT Hub (mqttv3) and DPS: static \
+DESCRIPTION = "C99 client library for Azure IoT Hub (mqttv3, mqttv5) and DPS: static \
 libraries, headers, CMake package and pkg-config files."
 SECTION = "libs"
 
@@ -63,7 +63,7 @@ DEBUG_PREFIX_MAP:append = " \
 
 # Components the selected PACKAGECONFIG must produce. An adapter whose
 # dependency is not found is otherwise skipped by CMake without an error.
-AZ_IOT_SDK_COMPONENTS = "core mqttv3 \
+AZ_IOT_SDK_COMPONENTS = "core mqttv3 mqttv5 \
     ${@bb.utils.contains('PACKAGECONFIG', 'paho', 'adapter_paho', '', d)} \
     ${@bb.utils.contains('PACKAGECONFIG', 'crypto-openssl', 'crypto_openssl', '', d)} \
     ${@bb.utils.contains('PACKAGECONFIG', 'mbedtls', 'crypto_mbedtls', '', d)} \

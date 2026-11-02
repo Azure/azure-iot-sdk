@@ -161,7 +161,8 @@ operational credential is held.
 
 ## Hub-side renewal (MQTTv3)
 
-Renews the operational certificate without re-provisioning through DPS.
+Renews the operational certificate without re-provisioning through DPS. MQTTv5 hubs do not
+support it.
 
 - **API version:** the hub refuses these topics (`errorCode` 400001) unless the CONNECT username
   carries `api-version=2025-08-01-preview`, which the SDK sends on every mqttv3 hub connection.
@@ -415,7 +416,7 @@ Under [`samples/authentication/`](../../samples/authentication/README.md). Each 
 | `dps_csr_managed/` | D9 provider-owned: the `managed` provider, DPS issuance |
 | `hub_renew/` | D7 hub renewal: the SDK gets the CSR from the provider and stores the chain, then `close()`/`open()` |
 | `custom_certificate_provider/` | D9: an application-written provider that makes the CSR and stores the chain |
-| `hsm_pkcs11/` | D8 key-reference URI (non-extractable key), Paho |
+| `hsm_pkcs11/` | D8 key-reference URI (non-extractable key), Paho, either hub generation |
 | `hsm_sign_callback/` | D8 provider `sign()` hook |
 | `custom_provider_template/` | A starting point for a custom provider |
 
@@ -430,6 +431,7 @@ In `tests/e2e/tests/`, run by [`ci-c-e2e.yml`](../../../.github/workflows/ci-c-e
 | DPS issuance and hub renewal | `e2e_csr_test.c` | `AZ_IOT_BUILD_E2E_CSR` (needs a CA-linked DPS enrollment) |
 | SAS onboarding, DPS-issued certificate for the hub | `e2e_csr_sas_test.c` | `AZ_IOT_BUILD_E2E_CSR` (CA-linked symmetric-key group) |
 | Storage / custody: the key held in a PKCS#11 token (SoftHSM2 in CI) | `e2e_custody_test.c` | `AZ_IOT_BUILD_E2E_PKCS11` |
+| Storage / custody on an mqttv5 hub ([`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml)) | `e2e_mqttv5_custody_test.c` | `AZ_IOT_BUILD_E2E_PKCS11` + `AZ_IOT_BUILD_E2E_MQTTV5` |
 
 [`eng/setup-softhsm.sh`](../../eng/setup-softhsm.sh) initializes a SoftHSM2 token, imports the
 device key, deletes the on-disk copy and prints the key URI.

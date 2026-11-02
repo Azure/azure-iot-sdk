@@ -9,7 +9,7 @@
 # enabled when OpenSSL is available (required for Azure IoT connections on port 8883).
 #
 # az_iot_paho_get_adapter() builds one Paho client per session in the application's
-# mqtt_workspace: v3.1.1 for DPS and the MQTTv3 hub.
+# mqtt_workspace: v3.1.1 for DPS and the MQTTv3 hub, v5 for the MQTTv5 hub.
 
 if(AZ_IOT_USE_INSTALLED_PAHO)
     # Upstream's package config does not load OpenSSL, which its SSL targets link.

@@ -2485,6 +2485,22 @@ static void close_open_and_deinit_from_the_token_callback_are_refused(void** sta
   assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_CONNECTED);
 }
 
+/* An mqttv5 hub: the request carries its profile, and the supplied token is
+ * the CONNECT password. */
+static void a_user_token_connects_an_mqttv5_hub(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_SUPPLY);
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  assert_int_equal(g_fake.calls, 1);
+  assert_int_equal(g_fake.profile, AZ_IOT_CONNECTION_PROFILE_MQTT_V5);
+  assert_string_equal(g_fake.resource_uri, "broker.example%2Fdevices%2Fut-device");
+  assert_string_equal(last_connect()->password, USER_TOKEN);
+}
+
 /* The attempt waits in SETTING_UP until the token is supplied, then connects
  * DPS with it. A hub token before the assignment has no identity to match. */
 static void a_pending_user_token_connects_dps_once_delivered(void** state)
@@ -4312,6 +4328,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_ready_user_token_connects_the_hub, setup, teardown),
     cmocka_unit_test_setup_teardown(
         close_open_and_deinit_from_the_token_callback_are_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_user_token_connects_an_mqttv5_hub, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_pending_user_token_connects_dps_once_delivered, setup, teardown),
     cmocka_unit_test_setup_teardown(update_sas_token_checks_its_arguments, setup, teardown),

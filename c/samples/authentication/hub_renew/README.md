@@ -9,7 +9,7 @@ the hub is an **mqttv3** feature.
 
 ## Sample features
 
-- Hub: mqttv3 (MQTT 3.1.1).
+- Hub generation: renewal needs an mqttv3 hub. On an mqttv5 hub the sample prints `runtime renewal is not available on this hub generation` and exits 1.
 - Uses the OpenSSL-backed managed certificate provider for the operational key, the CSR and the files.
 - Connects with the operational certificate when the files hold one (for example from a previous [`dps_csr_managed`](../dps_csr_managed/README.md) run with the same files), otherwise with the bootstrap certificate.
 - `az_iot_connection_client_send_csr()` gets the CSR from the provider and is two-phase: the hub answers `202 Accepted`, then `200` with the issued chain.
@@ -107,7 +107,7 @@ The chain length depends on the credential policy.
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. DPS verdicts are retried until the sample's run time ends. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
-| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK does not support. |
+| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK version does not know. |
 | `CSR failed: ... service_code=409005` | Another renewal is active on the hub; retry later, or supersede it with `replace`. |
 | `CSR failed: ... service_code=400040` | The hub could not decode or verify the CSR. |
 

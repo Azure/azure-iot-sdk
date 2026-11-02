@@ -5,7 +5,7 @@ idf_component_register(
     SRCS
         "app_main.c"
     REQUIRES
-        azure-iot-sdk                      # SDK (core, mqttv3)
+        azure-iot-sdk                      # SDK (core, mqttv3, mqttv5)
         azure-iot-sdk-crypto-mbedtls       # crypto backend
         azure-iot-sdk-az-mqtt              # MQTT adapter
         azure-iot-sdk-certificate-provider-esp-secure-cert  # device identity
