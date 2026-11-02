@@ -100,6 +100,8 @@ static e2e_fixture g_fixture;
 
 /* The direct method client's invocations, at a limit of 1: the smallest works against the hub. */
 static uint8_t g_direct_method_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE(1)];
+/* The twin client's requests, at a limit of 1: the scenario has one request in flight at a time. */
+static uint8_t g_twin_workspace[AZ_IOT_MQTTV3_TWIN_CLIENT_WORKSPACE_SIZE(1)];
 
 /* Advance the device MQTT stack for a single slice. */
 static void device_do_work(e2e_fixture* fx, int ms) { e2e_device_do_work(&fx->dev, ms); }
@@ -587,7 +589,11 @@ static void test_twin(void** state)
 {
   e2e_fixture* fx = (e2e_fixture*)*state;
 
-  assert_int_equal(az_iot_mqttv3_twin_client_init(&fx->client.twin, &fx->dev.conn), AZ_IOT_OK);
+  const az_iot_mqttv3_twin_client_options options = { .limits = { .max_pending_requests = 1 },
+                                                      .workspace = g_twin_workspace,
+                                                      .workspace_size = sizeof(g_twin_workspace) };
+  assert_int_equal(
+      az_iot_mqttv3_twin_client_init(&fx->client.twin, &fx->dev.conn, &options), AZ_IOT_OK);
   fx->attached = E2E_FEATURE_CLIENT_TWIN;
 
   /* --- desired: cloud patches, device observes ------------------------- */

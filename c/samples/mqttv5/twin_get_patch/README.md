@@ -108,6 +108,6 @@ patch_reported: done=1 status=AZ_IOT_OK verdict=1 version=2
 | What | Code |
 | --- | --- |
 | MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
-| Create the client, encode buffer, desired handler | `az_iot_mqttv5_twin_client_init()`, `az_iot_mqttv5_twin_client_set_encode_buffer()`, `az_iot_mqttv5_twin_client_set_desired_handler()` |
+| Create the client, its workspace (two requests), encode buffer, desired handler | `az_iot_mqttv5_twin_client_init()` with `az_iot_mqttv5_twin_client_options`, `az_iot_mqttv5_twin_client_set_encode_buffer()`, `az_iot_mqttv5_twin_client_set_desired_handler()` |
 | GET | `az_iot_mqttv5_twin_client_get()`, `on_get()` |
 | PATCH and its verdict | `az_iot_mqttv5_twin_client_patch_reported()`, `on_patch()` |

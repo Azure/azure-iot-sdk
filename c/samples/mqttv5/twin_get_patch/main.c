@@ -47,12 +47,18 @@
 
 #include "sample_utils.h"
 
+/** @brief Twin requests the sample holds at once: a GET and a reported patch. */
+#define SAMPLE_TWIN_MAX_PENDING_REQUESTS 2
+
 typedef struct
 {
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
   az_iot_mqttv5_twin_client twin;
+  /* The twin client's requests: the sample has at most a GET and a patch in flight. */
+  uint8_t
+      twin_workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_WORKSPACE_SIZE(SAMPLE_TWIN_MAX_PENDING_REQUESTS)];
   int twin_initialized;
 } sample_state;
 
@@ -235,7 +241,14 @@ int main(void)
 
   /* Before open(): this records the generation the sample needs, so an
    * assignment to the other one is refused rather than discovered later. */
-  if (az_iot_mqttv5_twin_client_init(&state.twin, &state.connection_client) != AZ_IOT_OK)
+  if (az_iot_mqttv5_twin_client_init(
+          &state.twin,
+          &state.connection_client,
+          &(az_iot_mqttv5_twin_client_options){
+              .limits = { .max_pending_requests = SAMPLE_TWIN_MAX_PENDING_REQUESTS },
+              .workspace = state.twin_workspace,
+              .workspace_size = sizeof(state.twin_workspace) })
+      != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;

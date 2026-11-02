@@ -361,6 +361,7 @@ entries live in the options' `workspace` (static, stack or heap), owned by the c
 | Client (limits struct) | Limit | Default | Bounds |
 | --- | --- | --- | --- |
 | mqttv3 direct methods (`az_iot_mqttv3_direct_method_client_limits`) | `max_in_flight_invocations` | 4 | Invocations held, at most 1024. When all are held, a new invocation is dropped with a `WARN` log and gets no response. |
+| mqttv3 and mqttv5 twin (`az_iot_twin_client_limits`) | `max_pending_requests` | 8 | Twin requests (GET, reported patch) awaiting their answer, at most 1024. A request past it is refused with `AZ_IOT_ERR_NOT_SUPPORTED`. The mqttv5 workspace holds one more, for the client's own desired-snapshot GET. |
 
 ```c
 /* mqttv3 direct methods, one invocation at a time. */
@@ -373,11 +374,11 @@ methods_options.workspace_size = sizeof(methods_workspace);
 result = az_iot_mqttv3_direct_method_client_init(&methods, &connection, &methods_options);
 ```
 
-Defining the removed `AZ_IOT_DM_MAX_INFLIGHT` is a compile error.
+Defining the removed `AZ_IOT_DM_MAX_INFLIGHT` or `AZ_IOT_TWIN_MAX_PENDING` is a compile error.
 
 | Macro | Default | Bounds |
 | --- | --- | --- |
-| `AZ_IOT_TWIN_MAX_PENDING` | 8 | Twin requests in flight per twin client. |
+| `AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS` | 8 | Default `az_iot_twin_client_limits::max_pending_requests`, 1-1024. |
 | `AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_MAX_IN_FLIGHT_INVOCATIONS` | 4 | Default `az_iot_mqttv3_direct_method_client_limits::max_in_flight_invocations`, 1-1024. |
 | `AZ_IOT_MQTTV3_DM_RESPONSE_TIMEOUT_SECONDS` | 300 | Default for `az_iot_mqttv3_direct_method_client_set_response_timeout()`. |
 | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` | 4 | mqttv5 invocations probed or awaiting an answer. A probe past it is refused `DEVICE_BUSY`. The client reserves twice this many `max_pending_publishes` slots. |
@@ -499,7 +500,7 @@ is granted only when usable at once: if tracked publishes in flight occupy its s
 | mqttv5 direct methods | Probe ack, result, abandon | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` invocations. Not bounded: refused probes are also acknowledged, and refused probes past `AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX` are sent untracked. A result keeps its slot until acknowledged. | Reserves `2 × AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` at init; init fails with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` if they do not fit, or `AZ_IOT_ERR_BUSY` as above. Probe acks and results never go untracked: when all are in use they wait for the next PUBACK. Probe rejections and abandons leave one slot free per invocation that could still need one, and past that are sent untracked. |
 | Certificate renewal | 1 request | 1 operation at a time | Reserves 1 at init when `opts.csr_payload_buffer` is set. Cancel, timeout and a session end give it back at once. |
 
-Not counted: twin and mqttv3 direct methods (QoS 0, bounded by `AZ_IOT_TWIN_MAX_PENDING` and
+Not counted: twin and mqttv3 direct methods (QoS 0, bounded by `max_pending_requests` and
 `max_in_flight_invocations`), and the provisioning session (DPS registration, software updates).
 
 With the defaults, telemetry gets all 16 slots, 8 when an mqttv5 direct method client is
@@ -546,6 +547,7 @@ always the same thing.
 | `az_iot_certificate_provider_pem_options` (`az_iot_certificate_provider_pem_options_default()`) | Certificate, key and CA files | [az_iot_certificate_provider_pem.h](../inc/azure/iot/az_iot_certificate_provider_pem.h) |
 | `az_iot_certificate_provider_managed_options` | Bootstrap and operational certificate and key files, key type (EC P-256, EC P-384 or RSA 2048) | [az_iot_certificate_provider_managed.h](../adapters/cert_openssl/az_iot_certificate_provider_managed.h), [sample](../samples/authentication/dps_csr_managed/README.md) |
 | `az_iot_mqttv3_direct_method_client_options` (`az_iot_mqttv3_direct_method_client_options_default()`) | Invocations held, and the workspace that holds them | [Feature clients](#feature-clients-az_iot_messageh-and-the-client-headers), [az_iot_direct_method_client.h](../inc/azure/iot/mqttv3/az_iot_direct_method_client.h) |
+| `az_iot_mqttv3_twin_client_options`, `az_iot_mqttv5_twin_client_options` (`az_iot_mqttv3_twin_client_options_default()`, `az_iot_mqttv5_twin_client_options_default()`) | Twin requests held, and the workspace that holds them | [Feature clients](#feature-clients-az_iot_messageh-and-the-client-headers), [mqttv3](../inc/azure/iot/mqttv3/az_iot_twin_client.h), [mqttv5](../inc/azure/iot/mqttv5/az_iot_twin_client.h) |
 | `az_iot_su_client_config_options` (`az_iot_su_client_config_options_default()`) | Platform hooks, root keys, device properties, replacement policy. Crypto comes from the connection client. | [az_iot_su.h](../inc/azure/iot/az_iot_su.h), [samples](../samples/software_update/pc/simulated_onboarding/README.md) |
 | `az_iot_mqttv5_twin_get_options` (`az_iot_mqttv5_twin_get_options_default()`) | Per request to `az_iot_mqttv5_twin_client_get_with_options()`: sections to fetch, and versions to skip if unchanged | [az_iot_twin_client.h](../inc/azure/iot/mqttv5/az_iot_twin_client.h) |
 

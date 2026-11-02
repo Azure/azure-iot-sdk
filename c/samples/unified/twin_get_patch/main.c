@@ -52,6 +52,12 @@ typedef struct
   /* Only the one matching `profile` is ever initialized. */
   az_iot_mqttv3_twin_client mqttv3;
   az_iot_mqttv5_twin_client mqttv5;
+  /* The requests of whichever client is initialized, for the default limits. */
+  uint8_t twin_workspace
+      [AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE
+               > AZ_IOT_MQTTV3_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE
+           ? AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE
+           : AZ_IOT_MQTTV3_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_profile profile;
   int twin_initialized;
 } sample_state;
@@ -253,7 +259,11 @@ static az_iot_result clients_build(
   switch (profile)
   {
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      result = az_iot_mqttv5_twin_client_init(&s->mqttv5, &s->connection_client);
+      result = az_iot_mqttv5_twin_client_init(
+          &s->mqttv5,
+          &s->connection_client,
+          &(az_iot_mqttv5_twin_client_options){ .workspace = s->twin_workspace,
+                                                .workspace_size = sizeof(s->twin_workspace) });
       if (result != AZ_IOT_OK)
       {
         return result;
@@ -268,7 +278,11 @@ static az_iot_result clients_build(
       }
       return result;
     case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
-      result = az_iot_mqttv3_twin_client_init(&s->mqttv3, &s->connection_client);
+      result = az_iot_mqttv3_twin_client_init(
+          &s->mqttv3,
+          &s->connection_client,
+          &(az_iot_mqttv3_twin_client_options){ .workspace = s->twin_workspace,
+                                                .workspace_size = sizeof(s->twin_workspace) });
       if (result != AZ_IOT_OK)
       {
         return result;

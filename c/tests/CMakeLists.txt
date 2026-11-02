@@ -357,7 +357,8 @@ foreach(_case
         AZ_IOT_DM_CORR_DATA_MAX=64 AZ_IOT_DM_CORR_DATA_MAX=128
         AZ_IOT_MQTTV5_DM_TOPIC_MAX=192 AZ_IOT_MQTTV5_DM_TOPIC_MAX=256
         AZ_IOT_LOG_FILE_PATH_MAX=256 AZ_IOT_LOG_FILE_PATH_MAX=512
-        AZ_IOT_DM_MAX_INFLIGHT=4 AZ_IOT_DM_MAX_INFLIGHT=1)
+        AZ_IOT_DM_MAX_INFLIGHT=4 AZ_IOT_DM_MAX_INFLIGHT=1
+        AZ_IOT_TWIN_MAX_PENDING=8 AZ_IOT_TWIN_MAX_PENDING=1)
     string(REPLACE "=" "_" _name "${_case}")
     string(TOLOWER "az_iot_tests_fixed_size_${_name}" _name)
     add_library(${_name} OBJECT EXCLUDE_FROM_ALL compile/fixed_sizes_test.c)

@@ -987,7 +987,7 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | `limits.max_publish_reservations` | 2 | Feature clients holding a pending-PUBACK reservation | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_DPS_OPERATION_ID_MAX` | 64 | DPS `operation_id` from the assigning response | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX` | 512 | Caller-supplied DPS registration payload | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
-| `AZ_IOT_TWIN_MAX_PENDING` | 8 | Pending twin requests, per generation ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_twin_client.h), [MQTTv5](../../inc/azure/iot/mqttv5/az_iot_twin_client.h)) | `AZ_IOT_ERR_NOT_SUPPORTED` |
+| `limits.max_pending_requests` | 8 | Pending twin requests, per client, at run time ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_twin_client.h), [MQTTv5](../../inc/azure/iot/mqttv5/az_iot_twin_client.h)) | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `limits.max_in_flight_invocations` | 4 | In-flight MQTTv3 direct-method requests, at run time ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_direct_method_client.h)) | No result — the invocation is dropped and a warning is logged. |
 | `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` | 4 | MQTTv5 direct-method invocations probed or awaiting an answer ([MQTTv5](../../inc/azure/iot/mqttv5/az_iot_direct_method_client.h)) | Probe refused `DEVICE_BUSY`. |
 | `AZ_IOT_MQTTV5_DM_MAX_METHODS` | 8 | Registered MQTTv5 direct-method handlers | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |

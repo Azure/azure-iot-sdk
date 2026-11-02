@@ -229,9 +229,11 @@ typedef struct example_device
   az_iot_mqttv3_direct_method_client direct_method_v3;
   uint8_t direct_method_v3_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv3_twin_client twin_v3;
+  uint8_t twin_v3_workspace[AZ_IOT_MQTTV3_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv5_telemetry_client telemetry_v5;
   az_iot_mqttv5_direct_method_client direct_method_v5;
   az_iot_mqttv5_twin_client twin_v5;
+  uint8_t twin_v5_workspace[AZ_IOT_MQTTV5_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
 } example_device;
 
 static example_device g_device;
@@ -274,8 +276,19 @@ static bool example_device_connects(bool mqtt_v5, const az_iot_connection_client
   }
   if (result == AZ_IOT_OK)
   {
-    result = mqtt_v5 ? az_iot_mqttv5_twin_client_init(&g_device.twin_v5, c)
-                     : az_iot_mqttv3_twin_client_init(&g_device.twin_v3, c);
+    result = mqtt_v5
+        ? az_iot_mqttv5_twin_client_init(
+              &g_device.twin_v5,
+              c,
+              &(az_iot_mqttv5_twin_client_options){ .workspace = g_device.twin_v5_workspace,
+                                                    .workspace_size
+                                                    = sizeof(g_device.twin_v5_workspace) })
+        : az_iot_mqttv3_twin_client_init(
+              &g_device.twin_v3,
+              c,
+              &(az_iot_mqttv3_twin_client_options){ .workspace = g_device.twin_v3_workspace,
+                                                    .workspace_size
+                                                    = sizeof(g_device.twin_v3_workspace) });
     attached += result == AZ_IOT_OK ? 1u : 0u;
   }
   if (result == AZ_IOT_OK && !mqtt_v5)
