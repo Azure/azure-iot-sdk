@@ -6,7 +6,8 @@
 ESP-IDF (v6.0 or later) components that compile the SDK from this repository. Add
 `components/` and `c/deps/az_mqtt` to the project's `EXTRA_COMPONENT_DIRS`, `REQUIRES` what the
 application uses, and set `CONFIG_AZ_MQTT_BUILD_AZ_CORE=n` and
-`CONFIG_AZ_MQTT_AZ_CORE_COMPONENT="azure-sdk-for-c"` (azure-sdk-for-c is compiled once).
+`CONFIG_AZ_MQTT_AZ_CORE_COMPONENT="azure-sdk-for-c"` (azure-sdk-for-c is compiled once), and
+`CONFIG_AZ_MQTT_ENABLE_MQTTV5=n` (the SDK uses MQTT 3.1.1 only).
 The `azure-sdk-for-c` component needs the `c/deps/azure-sdk-for-c` submodule.
 
 | Component | Builds | Header |

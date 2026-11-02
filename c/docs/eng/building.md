@@ -182,8 +182,8 @@ and shared (`hardening-windows`).
 `file:line`, when tracked content in `c/`, the C workflows or the C instructions names a non-GA
 feature, file names included. Its allowlists, each entry with its reason, keep the preview-only
 workflows that must stay on `main` for `workflow_dispatch`, the DPS connection profile value
-that `main` rejects and its test, and the vendored `deps/az_mqtt`, whose MQTT 5 client the SDK
-builds without. CI runs it in the `conventions` job of `ci-c.yml`, on every pull request that touches what it scans;
+that `main` rejects and its test, and, for MQTT 5 only, the vendored `deps/az_mqtt`, whose MQTT 5
+client the SDK builds without (CMake and ESP-IDF). CI runs it in the `conventions` job of `ci-c.yml`, on every pull request that touches what it scans;
 `releases/public-preview` reverts it together with the removals.
 
 ```sh
