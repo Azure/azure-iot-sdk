@@ -68,18 +68,6 @@
   `AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE`, `AZ_IOT_AZ_MQTT_INFLIGHT_MAX` and
   `AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE` (macros, and the first three as CMake options) are removed;
   defining one fails the build. Neither adapter allocates its client any more.
-- Breaking: `AZ_IOT_SU_REQUEST_NO_TIMEOUT` is removed, and `az_iot_su_client_request_update()` and
-  `az_iot_su_client_request_onboarding_update()` return `AZ_IOT_ERR_INVALID_ARG` for a timeout of
-  0. The hub session is down while a check runs, so every check is bounded; pass
-  `AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS` or your own bound.
-- Software updates: an update check the channel sent or a status report waits at most 120 s
-  (`AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS`, was 60 s for reports only) for its answer; then the
-  provisioning session is released, the hub reconnects, and the request is sent again on the retry
-  backoff. A provisioning session opened for an operation waits at most 120 s (was 60 s) to become
-  ready.
-- Software updates: `AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS` is 120 s (was 60 s). It is the whole
-  wall-clock budget of a check, session setup and retries included, and no longer shorter than the
-  120 s one sent request may wait for its answer (`AZ_IOT_SU_CHANNEL_RESPONSE_TIMEOUT_MS`).
 - Connection client: `az_iot_connection_client_set_dps_assignment_invalidated_callback()` reports,
   once, when the client will not use the assignment it holds again: DPS returned an assignment it
   rejected, the hub refused the identity in `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode, or
@@ -88,15 +76,8 @@
   `dps_persist_assignment` sample does. See
   [docs/connecting.md](docs/connecting.md#saved-hub-with-dps-fallback).
 - Breaking: the connection client runs one MQTT session at a time; the provisioning session and the
-  hub session no longer overlap. With software updates bound, the hub connect after registration
-  waits while the update check still needs the provisioning session, then connects to the assigned
-  hub without registering again. After registration, each update check or status report made while
-  the hub is connected ends the hub session and the hub reconnects to its assignment once the
-  software updates client has no work left: the hub scope reports `RETRY_PENDING` with reason
-  `AZ_IOT_OK` (`is_credential_renewal` false, no `recovery`), and feature clients see an ordinary
-  session end (`AZ_IOT_CONNECTION_SESSION_END_PLANNED`) and resume after it. These planned ends do not
-  count toward reconnection backoff or `dps.max_hub_connect_attempts_before_reprovision`. Creating
-  an MQTT client for one session while the other's exists fails with `AZ_IOT_ERR_INTERNAL`.
+  hub session no longer overlap. Creating an MQTT client for one session while the other's exists
+  fails with `AZ_IOT_ERR_INTERNAL`.
 - Connection client (internal): the provisioning session is wanted through
   `__dps_session_ensure()` or `__dps_publish()` and given back with `__dps_session_release()`;
   `__dps_user_acquire()` and `__dps_user_release()` are removed. Behavior is unchanged.
@@ -105,8 +86,6 @@
   memory (e.g. `az_iot_az_mqtt_get_adapter()`), instead of registered factories. `init()` checks
   the workspace size; `deinit()` wipes it. The workspace
   holds one client at a time, as one MQTT session runs at a time.
-- Samples: the software updates samples (PC and ESP32) build their MQTT client in a static
-  workspace through `mqtt_adapter`, like the other samples, instead of registering MQTT factories.
 - SAS token renewal lets the session's deliveries settle before its DISCONNECT: publishes
   awaiting a PUBACK and SDK requests awaiting a response (twin), for up to 5 s (not past the
   token's expiry). Meanwhile a new QoS 1 publish returns `AZ_IOT_ERR_BUSY`; once the DISCONNECT
@@ -145,43 +124,6 @@
   to 15 s, ±20%, 4 attempts) paces those refusals until `HUB:CONNECTED`, before the 5-minute
   identity recovery policy. Zeroed, every refusal waits on `policy` as before. See
   [Identity recovery](docs/connecting.md#identity-recovery).
-- Software updates: the update request, file URL, workflow and install-result types are the SDK's
-  own; `az_iot_su.h` no longer includes azure-sdk-for-c's `az_iot_adu_client.h`, and an installed
-  azure-sdk-for-c no longer needs the `AZ_IOT_SU_MAX_*` limits. Breaking:
-  `az_iot_su_client_install_result` has no `step_results` (steps are in `az_iot_su_step_result`),
-  and `AZ_IOT_SU_CLIENT_SERVICE_ACTION_APPLY_DEPLOYMENT` is an `az_iot_su_client_service_action`
-  enumerator.
-- Software updates: `az_iot_su_download_handler` and `az_iot_su_client_config_options::download_handlers`
-  register handlers that build a file from a related file (e.g. a delta), matched by the manifest's
-  `downloadHandler` id. `az_iot_su_client_init()` validates them.
-- Software updates: the managed client builds each file that names a registered download handler
-  from the related file the handler chooses, verifying the related and the built file's SHA-256.
-  If that fails, the file is downloaded in full and its step reports `SUCCEEDED` with an
-  `AZ_IOT_SU_FACILITY_DELTA` (`0xA`) extended result code (`AZ_IOT_SU_DELTA_ERROR_*` sub-codes)
-  and short result details. `workflow_ended_fn` is called once a workflow with such a file ends,
-  with its outcome (`CANCELED` when a new workflow replaced it). `download_fn` and `read_file_fn` also get related files.
-- Software updates: the reference `microsoft/delta:1` download handler, `az_iot_su_delta.h`
-  (`-DAZ_IOT_WITH_SU_DELTA=ON`, component `su_delta`, POSIX only). It rebuilds a file from a delta
-  related file and the file of an earlier update, kept in a source cache with the Device Update
-  reference agent's layout (default `/var/lib/adu/sdc`, latest update per provider). The default
-  delta processor, `libadudiffapi.so`, is loaded at run time; without it files are downloaded in
-  full. The `pc/http_download` and `pc/simulated_regular` samples register it.
-- Software updates: `az_iot_su_decode_manifest_string()` decodes a manifest string the parser keeps
-  escaped, such as a file id (`f\u0031` is `f1`).
-- End-to-end tests: the Software Update offer suite runs delta updates against the service, with
-  a test download handler: a device holding the source builds the file from the related file, and
-  one without it falls back to a full download reported with the delta `NO_SOURCE` code; and, on
-  POSIX, with the reference `microsoft/delta:1` handler and the real delta processor. Three new
-  standing offers (`AZ_IOT_E2E_SU_OFFER_MODEL_DELTA`, `_DELTA_NO_SOURCE`, `_MICROSOFT_DELTA`). On
-  POSIX the offer suite now needs `AZ_IOT_WITH_SU_DELTA=ON` and `AZ_IOT_SU_DELTA_TEST_LIBRARY`.
-- Software updates: the parsed manifest keeps each file's `mimeType`, `properties`,
-  `downloadHandler` id and related files (`relatedFiles`, delta updates), and the request accepts
-  their `fileUrls`. New `az_iot_su_limits::max_related_files` (default
-  `AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES`, 40) bounds the related files kept; more are left out with
-  a warning. Breaking: `az_iot_su_client_update_request::file_urls` is a pointer to
-  `AZ_IOT_SU_FILE_URL_CAPACITY()` entries, `az_iot_su_parse_update_request()` takes an
-  `az_iot_su_update_request_storage`, and `AZ_IOT_SU_WORKSPACE_SIZE()` and
-  `AZ_IOT_SU_STATE_BLOB_MAX_SIZE()` take `max_related_files`.
 - Breaking: removed the Rust MQTT adapter shell, its `az_iot_rust_mqtt_*` APIs and FFI contract,
   `AZ_IOT_RUST_MQTT_WORKSPACE_SIZE`, `AZ_IOT_WITH_RUST_MQTT`, the `adapter_rust_mqtt` CMake and
   pkg-config component, and Yocto's `rust-mqtt` option. Use Paho or az_mqtt instead; the generic
@@ -221,16 +163,6 @@
   after it. Both were kept and resent without limit. Such an exec is abandoned as insufficient time
   unless the timeout exceeds the method's declared minimum. The Message Expiry sent is unchanged
   (none).
-- Software updates: compatibility-property strings are no longer capped at 256 bytes; the only limit
-  is `az_iot_su_limits::device_properties_size`. The installed update ID is capped at
-  `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE` (192 bytes, as before). A set that does not fit is refused with
-  `AZ_IOT_ERR_NOT_ENOUGH_SPACE` and an `ERROR` log of the bytes needed; properties whose strings
-  point into the client's copy are refused with `AZ_IOT_ERR_INVALID_ARG`. The update-check body
-  is sized with the longest installed ID, fully escaped, so the applied ID adopted after a
-  successful update always fits `max_message_size`. The update check's copy
-  moves from `az_iot_su_client` (432 bytes smaller on 64-bit) into the workspace, which now
-  counts `device_properties_size` twice plus `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE` (default: 1216
-  bytes, was 512).
 - Breaking: connection client entry counts are run-time limits
   (`az_iot_connection_client_options::limits`, 0 = default) instead of compile-time macros. The
   entries live in `options.workspace`, sized by `az_iot_connection_client_get_workspace_size()` or
@@ -246,8 +178,6 @@
   values (`AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_*`, `AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE`, or the
   CMake options of the same names); `AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE` sizes a static
   workspace for them.
-- Breaking: `az_iot_su_platform_hooks` fields `persist_state_fn` and `load_state_fn` are renamed
-  `persist_workflow_state_fn` and `load_workflow_state_fn`.
 - az_mqtt adapter in application memory: `az_iot_az_mqtt_get_adapter()` returns an
   `az_iot_mqtt_adapter` whose `init()` builds an MQTT 3.1.1 or MQTT 5 client in a workspace the
   application provides, with no allocation. Sizes are run-time values (`az_iot_mqtt_limits`): send
@@ -296,9 +226,6 @@
 - Logging for support diagnostics: rotating file sink (`az_iot_log_file_sink_open()`), lines
   `<UTC ISO 8601 time> [LEVEL] [component] [thread] [file:line] message` from the built-in sinks, connection configuration,
   state changes and retries at `INFO`, and a `...` marker on truncated messages.
-- Breaking: software updates has no device-side cancel. `az_iot_su_is_cancelled()` and
-  `AZ_IOT_SU_RESULT_CANCELLED` are removed; a cancel is service-side only.
-  `AZ_IOT_SU_OUTCOME_CANCELED` stays as a reported value.
 - Breaking: log calls and sinks take a component. `AZ_IOT_LOG_*(component, msg)`,
   `az_iot_log_emit*(level, component, file, line, ...)` and `az_iot_log_sink_callback` gain a
   `component` argument; SDK values are the `AZ_IOT_LOG_COMPONENT_*` macros in `az_iot_log_components.h`. See [docs/logging.md](docs/logging.md).
@@ -355,60 +282,6 @@
   server's Maximum Packet Size, is the new `AZ_IOT_ERR_PUBLISH_REFUSED`, quota exceeded (`0x97`) is `AZ_IOT_ERR_BUSY`, other failures stay
   `AZ_IOT_ERR_MQTT`. The az_mqtt adapter uses it; publish callbacks receive it unchanged, and the
   connection client logs the code of a failed PUBACK.
-- Software updates: `az_iot_su_client_set_step_result_details()` sets the `resultDetails` reported
-  for a step, from a hook or between `do_work()` calls. The text is copied into the workspace
-  (`az_iot_su_limits::result_details_size`, default 128 bytes per step, at most 1024), persisted with
-  the step (persisted-state format 3; earlier-format records are ignored) and reported with the terminal
-  result; a report over `max_message_size` is sent without step details.
-  `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` carries the accepted terminal report, as sent, in `event->report`.
-  `AZ_IOT_SU_WORKSPACE_SIZE()` and `AZ_IOT_SU_STATE_BLOB_MAX_SIZE()` take `result_details_size`.
-- Breaking: software updates memory comes from one application-provided workspace.
-  `az_iot_su_client_config_options` replaces `device_properties_buffer` /
-  `device_properties_buffer_size` with `limits` (`az_iot_su_limits`: `max_update_size`,
-  `scratch_size`, `max_message_size`, `device_properties_size`) and `workspace` / `workspace_size`,
-  sized with `az_iot_su_workspace_size()` or `AZ_IOT_SU_WORKSPACE_SIZE()`. The update copy, the
-  persisted-state records, the verification scratch (was the client's persist scratch), the
-  message body and the property strings live there; `az_iot_su_client` drops from
-  about 39 KiB to about 3.5 KiB and no longer depends on them. `max_update_size` defaults to
-  65536, the service's response ceiling (was `AZ_IOT_SU_REQUEST_BUFFER_SIZE`, 16384). `max_message_size` is at
-  least `AZ_IOT_SU_MIN_MESSAGE_SIZE` (2048), which fits the largest status report. The workflow
-  record is serialized in place around the update copy, so the separate persist scratch is gone.
-  Removed: `AZ_IOT_SU_REQUEST_BUFFER_SIZE`, `AZ_IOT_SU_PERSIST_BLOB_SIZE`,
-  `AZ_IOT_SU_DEVICE_PROPERTIES_STORAGE()`. `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size)` takes the
-  limit. `az_iot_su_client_resume()` returns `AZ_IOT_ERR_BUSY` while a workflow is in progress. A
-  file URL longer than `scratch_size` is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`.
-- Software updates: `AZ_IOT_SU_REQUEST_BUFFER_SIZE` defaults to 16384 (was 4096), so offers above
-  4 KiB are no longer refused; the client struct grows by about 24 KiB. The manifest signature is
-  decoded into the client's own scratch, mostly in place, rather than fixed stack buffers: a
-  signature that fits the request buffer verifies unless its SJWK header alone exceeds a quarter
-  of it, and the verifier's stack drops from about 6.5 KiB to under 1 KiB.
-  `az_iot_su_parse_update_request()` uses `AZ_IOT_SU_VERIFY_SCRATCH_SIZE` (8192) bytes of stack
-  instead. A part that does not fit is logged as too large, not as invalid. The ESP32 sample sets
-  the request buffer to 8192 and its NVS partition to 36 KB (erase the flash to move to it).
-- Software updates events: entering Failed carries `reason` and `extended_result_code`; a manifest
-  verification failure carries an `AZ_IOT_SU_MANIFEST_ERROR_*` sub-code (also in the report,
-  was 0). New `AZ_IOT_SU_EVENT_NO_UPDATE` (check answered with no update),
-  `AZ_IOT_SU_EVENT_UPDATE_DUPLICATE` (redelivery of the current workflow ignored) and
-  `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` (`report_terminal` marks the final report). An undecodable
-  update now raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_PROTOCOL`.
-- Software updates: the onboarding update check
-  (`az_iot_su_client_request_onboarding_update()`) now sends `installedUpdateId` when the device
-  properties set one, as the regular check does, so the service does not offer an update that is
-  already installed. It is still omitted when nothing is installed.
-- Breaking: software updates root keys and observers are run-time limits in the workspace:
-  `az_iot_su_limits::max_root_keys` and `max_observers` (defaults
-  `AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS` 8 and `AZ_IOT_SU_DEFAULT_MAX_OBSERVERS` 4, at most
-  `AZ_IOT_SU_MAX_LIMIT_COUNT`). `AZ_IOT_SU_WORKSPACE_SIZE()` takes them as two more arguments.
-  `AZ_IOT_SU_MAX_ROOT_KEYS`, `AZ_IOT_MAX_SU_OBSERVERS` and the unused `AZ_IOT_SU_MAX_WORKFLOW_ID_LEN`
-  are removed; `AZ_IOT_SU_WORKFLOW_ID_SIZE` (now 128, the service's maximum; was 64) and
-  `AZ_IOT_SU_RETRY_TIMESTAMP_SIZE` (64) are fixed. Defining any of the five is a compile error.
-  `AZ_IOT_SU_MIN_MESSAGE_SIZE` and the default `max_message_size` grow to 2176 + 128 per step (3456)
-  so the largest status report still fits.
-- Software updates: `az_iot_su_client_init()` is now inline and returns `AZ_IOT_ERR_INVALID_ARG`,
-  with an `ERROR` log and the client untouched, when `sizeof(az_iot_su_client)` or any of
-  `AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` or `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP`
-  differs between the application and SDK builds. The exported symbol is
-  `az_iot_su_client_init_checked()`, taking an `az_iot_su_client_layout`.
 - Breaking: the connection client no longer reads `AZ_IOT_HUB_MQTT_V5_MOCK_ENDPOINT`,
   `AZ_IOT_DEVICE_ID` or `AZ_IOT_DPS_CONNECTION_PROFILE_OVERRIDE`. DPS now returns
   `connectionProfile`; to connect to an mqttv5 hub without DPS, set `opts.iothub_hostname`,
@@ -456,35 +329,21 @@
   MQTT adapters, including your own, must implement and read the view: see
   [docs/how_to_byo_mqtt_client.md](docs/how_to_byo_mqtt_client.md). The vendored az_mqtt is
   patched for it (`deps/az_mqtt/VENDORED.md`).
-- Software updates: a `FAILED` workflow offered again under the same `workflowId` is
-  retried after 1 h, doubling per consecutive failure up to 24 h, plus up to 10% jitter. An earlier
-  offer raises the new `AZ_IOT_SU_EVENT_UPDATE_RETRY_WAIT` (`retry_after_ms`). The wait survives a
-  restart; the persisted format moves to version 2, so version-1 records are ignored.
 - Threading contract documented: the SDK does not lock its state against other threads, so every
   SDK call in a process must come from one thread or be serialized by the application
   ([docs/architecture.md](docs/architecture.md)). `tls.sign` and the certificate provider's
   `sign()` are called only on that thread. Sample
   [unified/multithreaded_telemetry](samples/unified/multithreaded_telemetry/README.md) hands
   readings from other threads to the SDK thread.
-- ESP-IDF components in [platforms/esp32](platforms/esp32/README.md): the SDK, azure-sdk-for-c,
-  the mbedTLS crypto backend and the software updates OTA platform hooks
-  (`az_iot_su_esp32_ota.h`: `az_iot_su_esp32_ota_context`,
-  `az_iot_su_esp32_ota_get_platform_hooks()`, `az_iot_su_esp32_ota_mark_running_image_valid()`).
+- ESP-IDF components in [platforms/esp32](platforms/esp32/README.md): the SDK, azure-sdk-for-c and
+  the mbedTLS crypto backend.
 - az_mqtt adapter on ESP-IDF (`azure-iot-sdk-az-mqtt` component): with no trusted CA it verifies
-  the server against the ESP-IDF certificate bundle. The ESP32 software updates sample uses it
-  instead of its own esp-mqtt adapter, and no longer depends on `espressif/mqtt`.
+  the server against the ESP-IDF certificate bundle.
 - ESP-IDF certificate provider over the `esp_secure_cert` partition
   (`azure-iot-sdk-certificate-provider-esp-secure-cert`, `espressif/esp_secure_cert_mgr` 2.9.3):
   `az_iot_certificate_provider_esp_secure_cert_init()`. With the Digital Signature peripheral the
   key is a PSA key (`client_key_psa_id`); otherwise the partition's PEM key, read per connection.
-  The ESP32 software updates sample uses it instead of a certificate and key compiled into the
-  image; its partition tables gain `esp_secure_cert` (0xD000; 0x11000 in the security profile),
-  so devices running an earlier build of the sample must be reflashed over serial.
-- ESP32 software updates sample: the network comes from ESP-IDF's `protocol_examples_common`
-  (`example_connect()`), replacing the sample's own Wi-Fi code. The Wi-Fi settings are now
-  `EXAMPLE_WIFI_SSID` / `EXAMPLE_WIFI_PASSWORD` (were `SU_WIFI_SSID` / `SU_WIFI_PASSWORD`).
-  `sdkconfig.qemu` runs it in QEMU (esp32, esp32s3, esp32c3) over OpenCores Ethernet;
-  `eng/esp-idf-qemu.sh` boots a build in QEMU and waits for a log line, and CI boots the QEMU
+- `eng/esp-idf-qemu.sh` boots a build in QEMU and waits for a log line, and CI boots the QEMU
   builds until they get an IPv4 address.
 - ESP32 IoT Hub sample [unified/esp32](samples/unified/esp32/README.md): DPS with the
   `esp_secure_cert` identity, then telemetry, the `echo` direct method and desired-twin
@@ -505,10 +364,10 @@
   (eclipse-paho/paho.mqtt.c#1592); an installed Paho is not. The adapter also reports such a
   failure with the publish's packet id, where it reported packet id 0, which matched no publish.
   See [docs/dependencies.md](docs/dependencies.md#publish-freed-twice-after-a-failed-write).
-- ESP32 samples (`software_update/esp32`, `unified/esp32`) build with every ESP-IDF 6 release:
-  they pinned `espressif/ethernet_init` to `==1.2.0`, while ESP-IDF v6.0.2 and later need
+- ESP32 sample `unified/esp32` builds with every ESP-IDF 6 release: it pinned
+  `espressif/ethernet_init` to `==1.2.0`, while ESP-IDF v6.0.2 and later need
   `^1.3.0`. The version now comes from ESP-IDF's `protocol_examples_common`. CI builds the ESP32
-  samples and runs the ESP32 QEMU e2e with ESP-IDF v6.1, and builds both samples with v6.0.
+  sample and runs the ESP32 QEMU e2e with ESP-IDF v6.1, and builds it with v6.0.
 - ESP32 with the Digital Signature peripheral (esp32c3, esp32s3, esp32c6) connects with ESP-IDF
   v6.0.1 and later: the `esp_secure_cert` certificate provider imports the DS key in the layout
   those releases expect (an `esp_rsa_ds_opaque_key_t`; v6.0 keeps the old one), and az_mqtt's
@@ -521,16 +380,9 @@
   and an identity refusal is acted on whatever came first. While `close()` disconnects, a late
   SUBACK neither announces CONNECTED nor publishes the birth, and a new filter waits for the next
   session.
-- Software updates: a verified update whose step names a file missing from the manifest `files`, or
-  from `fileUrls`, is refused before any step runs, instead of failing at that step's download
-  after earlier steps were installed and rolled back (or passing an empty URL to `download_fn`).
-  Library mode does not offer it to the application, and `az_iot_su_parse_update_request()`
-  returns `AZ_IOT_ERR_INVALID_ARG`. File ids are matched decoded, so a JSON-escaped id (`f\u0031`)
-  finds its file and URL (`f1`).
 - ESP32: the `azure-sdk-for-c` component implements `az_platform_clock_msec()` and
   `az_platform_sleep_msec()` with `esp_timer` and FreeRTOS, so the az_mqtt adapter's idle wait
-  sleeps instead of returning at once. The software updates sample's connect loop waits out each
-  50 ms tick, so a DPS retry backoff no longer spins it through its bound, starving the idle task.
+  sleeps instead of returning at once.
 - Paho and az_mqtt adapters: `AZ_IOT_MQTT_EVT_DISCONNECTED` carries `AZ_IOT_OK` only for a
   completed `disconnect()`. A lost connection (Paho) and a server DISCONNECT with reason 0x00
   (`az_iot_mqtt_disconnect_result()`) now report `AZ_IOT_ERR_NOT_CONNECTED`.
@@ -563,20 +415,6 @@
   Maximum Packet Size (the receive buffer size), after DISCONNECT 0x95; that session ends with
   `AZ_IOT_ERR_NOT_ENOUGH_SPACE`, as before. An mbedTLS verify callback's rejection is reported as a
   TLS verification failure.
-- Software updates: updates with up to 10 steps and 10 files, the Device Update limits, are
-  accepted; the azure-sdk-for-c limits they depend on defaulted to 2 and nothing set them. CMake
-  options `AZ_IOT_SU_MAX_STEP_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT` and
-  `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP` (10, 10, the file count) set them for azure-sdk-for-c,
-  `az_iot_core` and, through its CMake and pkg-config packages, the application; smaller values
-  save memory. An installed azure-sdk-for-c built with other values fails configuration. A manifest
-  with more steps, or more hashes for a file, than its parsed form holds was written past those
-  arrays; now any manifest over a limit fails the workflow with an `ERROR` log naming the limit, and
-  more `fileUrls` than `AZ_IOT_SU_MAX_FILE_COUNT` raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with
-  `AZ_IOT_ERR_NOT_ENOUGH_SPACE` (was `AZ_IOT_ERR_PROTOCOL`). A file `mimeType` that is not a string
-  fails the workflow as malformed (the parser would read its members as file properties).
-  `AZ_IOT_SU_MIN_MESSAGE_SIZE` and the default `max_message_size` are 1792 + 128 per step (3072).
-  `az_iot_su_client` grows from 4616 to 8584 bytes and the default workspace from 78920 to 85640
-  (64-bit).
 - Paho: the bundled v1.3.16 is patched with two upstream fixes for data races between the
   application thread and Paho's threads: `MQTTAsync_destroy()` against the send thread on the
   command queue (eclipse-paho/paho.mqtt.c#1709), and `MQTTAsync_connect()` against the timeout and
@@ -624,33 +462,6 @@
   abandons are kept in a queue of `AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX` entries (default
   `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT`). All are dropped when the hub or device id changes (for
   example after DPS re-provisioning).
-- Software updates: a failed workflow or step now reports a non-positive `resultCode` (`-facility`,
-  e.g. `-5` for an install failure), as the service contract requires; it was `700 - facility`.
-- Software updates error handling: `UPDATE_ACCOUNT_ACCESS_DENIED` is handled like
-  `UPDATE_ACCOUNT_NOT_LINKED`; `DEVICE_NOT_PROVISIONED`, `MAX_DEVICE_CLASSES_EXCEEDED` and
-  `FORBIDDEN` stop the request. An untyped `409000` on a status report now raises
-  `AZ_IOT_SU_EVENT_OPERATION_ABANDONED` instead of being taken as delivered.
-  `OUTDATED_SERVICE_CONFIG` is no longer special-cased: the service never returns it.
-- Software updates: a status report rejected as conflicting (`REPORT_CONFLICT` or an untyped
-  `409000`) now makes the client check for updates once, as the service requires, after raising
-  `AZ_IOT_SU_EVENT_OPERATION_ABANDONED`.
-- Software updates: an update check requested while a workflow's terminal report is owed now waits
-  for that report's verdict (sending it again if nothing else would), so the check no longer goes
-  out before the service has the outcome. The wait counts against the check's timeout. If the
-  report then loses its session for good, the check is abandoned (`AZ_IOT_ERR_NOT_CONNECTED`).
-- Software updates: after a SUCCEEDED workflow the client adopts the applied update ID as the
-  installed one (also on resuming its terminal record), so later checks advertise it without
-  `az_iot_su_client_update_device_properties()`. That call no longer re-sends a settled terminal
-  report; the next check carries the new properties.
-- Software updates: new `AZ_IOT_SU_EVENT_WORKFLOW_COMPLETED`, raised once when a workflow's terminal
-  report is settled (accepted, or retired by the service), with the report and the verdict. An
-  application waiting for the end of a workflow no longer has to combine `REPORT_ACCEPTED` and
-  `OPERATION_ABANDONED`.
-- Software updates: new `az_iot_su_client_get_reboot_state()` tells whether `install_fn` or
-  `apply_fn` asked for a reboot and whether storage already holds what `az_iot_su_client_resume()`
-  needs (`AZ_IOT_SU_REBOOT_NONE` / `_PENDING` / `_READY`), so an application no longer tracks
-  `PERSIST_FAILED` / `PERSIST_RECOVERED` itself to decide when to reboot. `PENDING` also covers
-  storage behind with no reboot asked for, so it gates any planned exit.
 
 - MQTT over WebSockets to an mqttv5 hub: the hub session now uses the hub's path `/mqtt`
   (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`) when `websocket_path` is NULL. The mqttv5 hub refuses
@@ -663,6 +474,6 @@
   and az_mqtt (`az_iot_sample_<...>_az_mqtt`, in `az_mqtt/`); `main.c` selects the adapter with
   `AZ_IOT_SAMPLE_ADAPTER_PAHO` or `AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT`. Samples no longer drop out
   without Paho; `AZ_IOT_BUILD_SAMPLES=ON` with neither adapter fails the configure step. The
-  SAS-key and Software Update samples use mbedTLS when the OpenSSL crypto backend is not built.
+  SAS-key samples use mbedTLS when the OpenSSL crypto backend is not built.
 - End-to-end tests: each suite that connects is built and run over Paho and over az_mqtt
   (`<suite>_az_mqtt`).

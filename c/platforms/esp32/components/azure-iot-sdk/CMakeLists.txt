@@ -25,7 +25,6 @@ idf_component_register(
         # Internal headers resolve siblings as "internal/foo.h" regardless of
         # which src/ subtree the includer lives in (matches src/CMakeLists.txt).
         "${AZ_IOT_ROOT}/src/core"
-        "${AZ_IOT_ROOT}/src/features/su"
     REQUIRES
         azure-sdk-for-c
 )

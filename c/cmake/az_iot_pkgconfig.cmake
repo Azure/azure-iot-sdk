@@ -151,7 +151,7 @@ else()
 endif()
 
 set(_az_iot_pc_descriptions
-    core                          "core: connection client and software updates"
+    core                          "core: connection client"
     mqttv3                        "IoT Hub mqttv3 clients"
     mqttv5                        "IoT Hub mqttv5 clients"
     adapter_paho                  "Eclipse Paho MQTT adapter"
@@ -159,7 +159,6 @@ set(_az_iot_pc_descriptions
     crypto_openssl                "OpenSSL crypto backend"
     crypto_mbedtls                "mbedTLS crypto backend"
     certificate_provider_managed  "OpenSSL managed certificate provider"
-    su_delta                      "software updates microsoft/delta:1 download handler"
 )
 
 set(_az_iot_pc_dir "${PROJECT_BINARY_DIR}/pkgconfig")
@@ -178,11 +177,9 @@ foreach(_i RANGE 0 ${_last} 2)
     set(AZ_IOT_PC_DESCRIPTION "Azure IoT SDK C library ${_desc}")
 
     if(_tgt STREQUAL "az_iot_core")
-        list(TRANSFORM AZ_IOT_SU_LIMIT_DEFINITIONS PREPEND " -D" OUTPUT_VARIABLE _su_limits)
-        list(JOIN _su_limits "" _su_limits)
         set(AZ_IOT_PC_REQUIRES "")
         set(AZ_IOT_PC_REQUIRES_PRIVATE "")
-        set(AZ_IOT_PC_CFLAGS "-I\${includedir}${_az_iot_pc_sdk_for_c_cflags}${_su_limits}")
+        set(AZ_IOT_PC_CFLAGS "-I\${includedir}${_az_iot_pc_sdk_for_c_cflags}")
         set(AZ_IOT_PC_LIBS "-l${_tgt}${_az_iot_pc_sdk_for_c_libs}")
         set(AZ_IOT_PC_LIBS_PRIVATE "")
     else()
@@ -228,7 +225,6 @@ unset(_az_iot_pc_requires_private)
 unset(_az_iot_pc_libs_private)
 unset(_openssl_req)
 unset(_defs)
-unset(_su_limits)
 unset(_desc)
 unset(_k)
 unset(_pc)

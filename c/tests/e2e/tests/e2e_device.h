@@ -5,11 +5,10 @@
 /* SPDX-License-Identifier: MIT */
 /* Shared device-side fixture for the in-process end-to-end suites.
  *
- * Both e2e executables (the fast scenario suite and the software updates suite) need the same
- * "device half": load the DPS/X.509 configuration from the environment, provision
- * via a DPS X.509 individual enrollment, and connect to the assigned IoT Hub over
- * the MQTT adapter of the build (Paho or az_mqtt). This module owns that boilerplate so each suite
- * only adds its scenario-specific code.
+ * The e2e executables need the same "device half": load the DPS/X.509 configuration from
+ * the environment, provision via a DPS X.509 individual enrollment, and connect to the
+ * assigned IoT Hub over the MQTT adapter of the build (Paho or az_mqtt). This module owns that
+ * boilerplate so each suite only adds its scenario-specific code.
  *
  * The device id targeted by the service side is the DPS registration id (the SDK's
  * default: device id == registration id for individual enrollments).

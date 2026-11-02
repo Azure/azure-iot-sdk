@@ -16,20 +16,12 @@ option(AZ_IOT_PAHO_KEY_CUSTODY "Honour non-extractable key references in the Pah
 option(AZ_IOT_WITH_CRYPTO_OPENSSL "Build the OpenSSL crypto backend"                    ON)
 option(AZ_IOT_WITH_CRYPTO_MBEDTLS "Build the mbedTLS crypto backend when mbedTLS 3.6 LTS or 4.1+ is found" ON)
 option(AZ_IOT_WITH_CERT_PROVIDER_MANAGED "Build the OpenSSL managed certificate provider" ON)
-# Reference microsoft/delta:1 download handler for software updates (POSIX). Loads the
-# delta processor (libadudiffapi) at run time; no build-time dependency.
-option(AZ_IOT_WITH_SU_DELTA "Build the software updates microsoft/delta:1 download handler (POSIX)" OFF)
 option(AZ_IOT_BUILD_SAMPLES    "Build sample apps"                              ON)
 option(AZ_IOT_BUILD_TESTS      "Build unit tests"                               OFF)
 # End-to-end tests talk to a REAL Azure IoT Hub/DPS instance and are off by
 # default (they require provisioned cloud resources + the Paho adapter). The
 # e2e GitHub Actions workflow enables this alongside AZ_IOT_BUILD_TESTS.
 option(AZ_IOT_BUILD_E2E        "Build the end-to-end test device agent"         OFF)
-# The software updates device-update e2e suite. Selects that suite WITHIN the e2e tests;
-# AZ_IOT_BUILD_E2E and AZ_IOT_WITH_PAHO are still required, and this option on
-# its own creates no target. Separate because the suite needs a Device Update
-# environment and an X.509 enrollment that the other e2e jobs do not provision.
-option(AZ_IOT_BUILD_E2E_SU "Build the software updates device-update end-to-end suite (needs AZ_IOT_BUILD_E2E + AZ_IOT_WITH_PAHO)" OFF)
 # The conformance suites drive a REAL MQTT broker over the network. The harness
 # executables always build when the Paho adapter is on -- customers link the
 # conformance library to validate their own adapter -- but they are registered
@@ -108,7 +100,7 @@ option(AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C "Use an installed azure-sdk-for-c (c
 option(AZ_IOT_USE_INSTALLED_PAHO "Use an installed Eclipse Paho C (find_package(eclipse-paho-mqtt-c)) instead of fetching it" OFF)
 
 # Options that would otherwise create nothing without saying so.
-foreach(_opt AZ_IOT_BUILD_E2E_SU AZ_IOT_BUILD_E2E_CSR AZ_IOT_BUILD_E2E_MQTTV5 AZ_IOT_BUILD_E2E_PKCS11
+foreach(_opt AZ_IOT_BUILD_E2E_CSR AZ_IOT_BUILD_E2E_MQTTV5 AZ_IOT_BUILD_E2E_PKCS11
         AZ_IOT_BUILD_E2E_ESP32_QEMU)
     if(${_opt} AND NOT AZ_IOT_BUILD_E2E)
         message(FATAL_ERROR "${_opt}=ON needs AZ_IOT_BUILD_E2E=ON")

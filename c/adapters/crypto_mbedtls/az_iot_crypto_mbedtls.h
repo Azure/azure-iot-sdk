@@ -19,8 +19,7 @@ extern "C"
 #endif
 
   /**
-   * @brief Returns the mbedTLS backend, with every function including
-   * verify_rs256. Static storage; stateless; no heap use for SHA-256.
+   * @brief Returns the mbedTLS backend. Static storage; stateless; no heap use.
    *
    * @return The backend.
    */

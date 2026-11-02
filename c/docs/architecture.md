@@ -9,8 +9,7 @@ built for constrained and embedded devices.
 - **Single-threaded API.** The connection and feature clients start no threads, and callbacks fire
   synchronously on the thread that called into the SDK. The Paho adapter runs Paho's own I/O
   threads internally and hands their events over to that thread. Callbacks are dispatched mostly
-  from `az_iot_connection_client_do_work()`, but a feature client's own entry points can dispatch
-  them too (for example `az_iot_su_client_do_work()` and `az_iot_su_client_resume()`).
+  from `az_iot_connection_client_do_work()`.
   The SDK does not lock its state against other threads: make every SDK call, for every client in
   the process, from one thread, or serialize the calls in the application. Callbacks run inside
   those calls; a callback must not wait for another thread that is calling the SDK.
@@ -32,17 +31,15 @@ flowchart TB
     APP["Application"]
     V3["mqttv3 feature clients<br/>telemetry, twin, direct methods,<br/>cloud-to-device, file upload"]
     V5["mqttv5 feature clients<br/>telemetry, twin, direct methods,<br/>custom topics"]
-    SU["Software updates client"]
     CONN["Connection client<br/>DPS provisioning, connect, reconnect,<br/>certificates, adapter registry"]
     CORE["Core<br/>results, logging, dispatch, messages"]
     IFACE["MQTT adapter interface"]
     ADAPT["MQTT adapters<br/>Paho C (default) or your own"]
     CERT["Certificate provider<br/>PEM files, managed (OpenSSL), or your own"]
 
-    APP --> V3 & V5 & SU & CONN
+    APP --> V3 & V5 & CONN
     V3 --> CONN
     V5 --> CONN
-    SU --> CONN
     CONN --> CORE
     CONN --> CERT
     CONN --> IFACE --> ADAPT
@@ -52,7 +49,6 @@ flowchart TB
 | --- | --- | --- |
 | Connection client | `az_iot_connection_client.h`, `az_iot_retry_policy.h` | One per device. Provisions through DPS, connects to the assigned hub, reconnects, and owns the MQTT session. |
 | Feature clients | `mqttv3/*.h`, `mqttv5/*.h` | Protocol features. Each binds to a connection client, which delivers its messages. The connection client's `do_work()` drives their timeouts. |
-| Software updates client | `az_iot_su.h` | Checks for, verifies, downloads, installs and reports device updates ([guide](software-update.md)). In library mode it hands each verified update to the application, which downloads, installs and reports through it. Pumped by `az_iot_su_client_do_work()`. |
 | Certificate provider | `az_iot_certificate_provider.h` | Supplies TLS credentials and, optionally, handles CSRs and issued certificates. |
 | MQTT adapter interface | `az_iot_mqtt_iface.h` | The contract an MQTT client library implements. |
 
@@ -95,7 +91,6 @@ The samples under [`samples/unified`](../samples/unified) handle both generation
 | Custom topics (publish) | No | Yes |
 | File upload | Yes | No |
 | Certificate renewal over the hub | Yes | No |
-| [Software updates](software-update.md) | Yes, over DPS | Yes, over DPS |
 
 ## MQTT adapters
 
