@@ -51,8 +51,9 @@ sequenceDiagram
 
 The client runs inside your `do_work()` loop, single-threaded, with no heap allocation: you provide
 its memory. Each `do_work()` does one bounded piece of work, provided your hooks return
-`IN_PROGRESS` for long work. The reference delta processor is the exception: by default it builds a
-whole file in one call ([Delta updates](#delta-updates)).
+`IN_PROGRESS` for long work. Two steps take one call however long they run: the SHA-256 check of a
+downloaded file reads the whole file through `read_file_fn`, and the reference delta processor
+builds a whole file by default ([Delta updates](#delta-updates)).
 
 ## Before you start
 
@@ -148,7 +149,9 @@ for (;;)
 
 ## Checking for updates
 
-The client never checks on its own; the application chooses **when** and **which route**.
+The application chooses **when** to check and **which route**. The client checks on its own only once
+after the service rejects a final report as conflicting (`REPORT_CONFLICT`), on the route last
+requested; like any check, that one pauses the hub session (see the note below).
 
 | Route | Call | When |
 |---|---|---|
@@ -344,7 +347,7 @@ is valid only during the callback. Names below omit the `AZ_IOT_SU_EVENT_` prefi
 | `WORKFLOW_COMPLETED` | The final report is settled (`report` holds it) | After a success, check again for the next update |
 | `NO_UPDATE` | A check found nothing | Wait for the next check |
 | `REPORT_ACCEPTED` | The service accepted a report | — |
-| `OPERATION_ABANDONED` | A check or report was given up (`reason`, `service_error`) | Log `service_error`; ask again later on the **same** route |
+| `OPERATION_ABANDONED` | A check or report was given up (`operation`, `reason`, `service_error`) | A check: log `service_error` and ask again later on the **same** route. A report: log only; the client reports again at its next reporting point (a rejected final report: see the header) |
 | `UPDATE_REFUSED` | An offer is too large or malformed; not processed | Raise the limit named by `reason`, or fix the update |
 | `UPDATE_DEFERRED` | A new update waits: the current one has started installing (or awaits its reboot) | Ask again once the current one ends |
 | `UPDATE_DUPLICATE` | The same update was offered again | — |
