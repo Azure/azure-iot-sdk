@@ -926,12 +926,18 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             fetch.Timer = null;
             GetTwinRequest request = fetch.Request;
 
+            // An earlier attempt that is still waiting to be sent (for example, held until the device reconnects) is superseded
+            // by this one, so it must never be sent.
+            _ = fetch.AttemptCancellation?.CancelAsync();
+            CancellationTokenSource attemptCancellation = CancellationTokenSource.CreateLinkedTokenSource(fetch.Cancellation.Token);
+            fetch.AttemptCancellation = attemptCancellation;
+
             // The connection client may hold the publish until the device has reconnected, so it is sent off this thread. That
             // way, a caller can stop waiting for the response, and the publish is never sent while holding a lock.
-            _ = Task.Run(() => PublishGetTwinAsync(fetch, getId, request));
+            _ = Task.Run(() => PublishGetTwinAsync(fetch, getId, request, attemptCancellation.Token));
         }
 
-        private async Task PublishGetTwinAsync(GetTwinFetch fetch, Guid getId, GetTwinRequest request)
+        private async Task PublishGetTwinAsync(GetTwinFetch fetch, Guid getId, GetTwinRequest request, CancellationToken attemptCancellationToken)
         {
             MqttPublish publish = IsClassicConnection()
                 ? CreateClassicGetTwinPublish(getId)
@@ -943,10 +949,19 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             try
             {
+                lock (_getTwinLock)
+                {
+                    // The GET ended, or a newer attempt superseded this one, before this attempt got to be sent.
+                    if (fetch.IsEnded || fetch.GetId != getId)
+                    {
+                        return;
+                    }
+                }
+
                 Trace.TraceInformation("Publishing 'GetTwin' request on topic " + publish.Topic);
 
                 // The connection client returns the PUBACK as-is, so a rejected request must be surfaced here.
-                MqttPublishAck puback = await _connection.PublishAsync(publish, fetch.Cancellation.Token);
+                MqttPublishAck puback = await _connection.PublishAsync(publish, attemptCancellationToken);
                 MqttAckValidator.ThrowIfPubackHasErrorCode(puback);
                 List<GetTwinWaiter> abandoned;
                 lock (_getTwinLock)
@@ -979,9 +994,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                     waiter.Response.TrySetException(CreateGetTwinConnectionLostException());
                 }
             }
-            catch (OperationCanceledException) when (fetch.Cancellation.IsCancellationRequested)
+            catch (OperationCanceledException) when (attemptCancellationToken.IsCancellationRequested)
             {
-                // The GET already ended.
+                // The GET already ended, or a newer attempt superseded this one.
             }
             catch (Exception e)
             {
@@ -1099,8 +1114,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             fetch.IsEnded = true;
             fetch.Timer?.Dispose();
 
-            // Callbacks registered on this token run asynchronously so that they never run while holding the lock.
+            // Callbacks registered on these tokens run asynchronously so that they never run while holding the lock.
             _ = fetch.Cancellation.CancelAsync();
+            _ = fetch.AttemptCancellation?.CancelAsync();
 
             if (_nextGetTwinFetch == fetch)
             {
@@ -2220,6 +2236,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             // Cancelled when the GET ends, so that an attempt still waiting to be sent is never sent.
             public CancellationTokenSource Cancellation { get; } = new();
+
+            // Cancelled when a newer attempt starts (or the GET ends), so that a superseded attempt still waiting to be sent is
+            // never sent.
+            public CancellationTokenSource? AttemptCancellation { get; set; }
 
             // The ID of the latest attempt.
             public Guid? GetId { get; set; }
