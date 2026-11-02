@@ -48,6 +48,10 @@ the [MQTTv5 twin sample](../../MQTTv5/TwinClientSample/README.md#persisted-twin)
 These are the same as in the [MQTTv5 twin sample](../../MQTTv5/TwinClientSample/README.md#best-practices-demonstrated):
 
 - **Set handlers before connecting**, since the twin may be raised as soon as the device connects.
+- **Opt into desired properties updates.** `ConnectionClientOptions.ReceiveDesiredPropertyUpdates` defaults to false,
+  in which case IoT hubs that use MQTTv5 send no desired properties updates while the device is connected (the SDK
+  only fetches changed desired properties upon connecting). This sample sets it to true. IoT hubs that use MQTTv3
+  always send them.
 - **Rely on the SDK for ordering.** `DesiredPatchReceived` is only raised for the next desired version. If the SDK
   detects a missed update, it fetches the desired properties and raises `TwinPushReceived` instead.
 - **Don't block event handlers.** Handlers call `EnqueueReportedPropertiesUpdate` rather than awaiting

@@ -40,22 +40,29 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Models
         public uint SessionExpiryInterval { get; set; } = 3600;
 
         /// <summary>
-        /// True (the default) to request desired properties upon connecting and subsequent desired property updates.
+        /// True to have IoT hub push the desired properties upon connecting (when they changed since the version this device
+        /// holds) and each desired properties patch while connected. False (the default) for pull mode.
         /// Maps to the birth message's push_desired flag.
         /// </summary>
         /// <remarks>
+        /// In pull mode, IoT hub sends no desired properties patches while the device is connected, so
+        /// <see cref="Twin.TwinClient.DesiredPatchReceived"/> is never raised. Instead, upon each connection the twin client
+        /// fetches the desired properties if IoT hub's version is newer than the one the device holds, and raises
+        /// <see cref="Twin.TwinClient.TwinPushReceived"/> with them. Later changes are only seen upon reconnecting or by calling
+        /// <see cref="Twin.TwinClient.GetTwinAsync"/>.
         /// This value is read once when the connection client is constructed. It does not disable explicit twin requests.
         /// </remarks>
-        public bool ReceiveDesiredPropertyUpdates { get; set; } = true;
+        public bool ReceiveDesiredPropertyUpdates { get; set; }
 
         /// <summary>
-        /// True (the default) to request reported properties upon connecting or reconnecting.
-        /// Maps to the birth message's push_reported flag.
+        /// True to have IoT hub push the reported properties upon connecting or reconnecting, when they changed since the version
+        /// this device holds. False (the default) otherwise. Maps to the birth message's push_reported flag.
         /// </summary>
         /// <remarks>
+        /// This is meant for devices that don't persist their reported properties and use IoT hub to restore them.
         /// This value is read once when the connection client is constructed. It does not disable explicit twin requests.
         /// </remarks>
-        public bool ReceiveReportedPropertiesUponConnect { get; set; } = true;
+        public bool ReceiveReportedPropertiesUponConnect { get; set; }
 
         internal Unified.Models.ConnectionClientOptions ToCommonOptions()
         {

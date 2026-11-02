@@ -3,6 +3,7 @@
 
 using Microsoft.Azure.Iot.Device.Models.Twin;
 using Microsoft.Azure.Iot.Device.Unified.Twin;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 using System.Text.Json.Nodes;
 using Xunit;
 using Microsoft.Azure.Devices;
@@ -16,7 +17,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [InlineData(false, Traits = new[] { Setup.HubTrait, Setup.MQTTv5HubTraitValue })]
         public async Task TestTwin(bool testAgainstClassicHub)
         {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
+            // MQTTv5 IoT hubs only send desired properties patches if asked to. MQTTv3 IoT hubs always send them.
+            ConnectionClientOptions options = new() { ReceiveDesiredPropertyUpdates = true };
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, options, TestContext.Current.CancellationToken);
             string deviceId = testDeviceContext.ConnectionContext.DeviceId;
 
             RegistryManager registryManager = testAgainstClassicHub
