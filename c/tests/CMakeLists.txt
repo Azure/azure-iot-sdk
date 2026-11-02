@@ -266,19 +266,15 @@ if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv3_direct_method_client PRIVATE
         _POSIX_C_SOURCE=200809L)
 endif()
-# AZ_IOT_DM_MAX_INFLIGHT sizes a public struct, so the library and the
-# application have to be built against the same value, hence compiling the
-# mqttv3 source into this target rather than linking az_iot_mqttv3, which carries
-# the default. A single in-flight slot proves no test or loop assumes two.
+# The whole suite again, against the library, at a run-time limit of one in-flight
+# invocation (limits.max_in_flight_invocations = 1): proves no test or loop assumes two.
 az_iot_add_cmocka_test(az_iot_tests_mqttv3_direct_method_client_tuned
-    unit/mqttv3_direct_method_client_test.c
-    ${PROJECT_SOURCE_DIR}/src/mqttv3/direct_method_client.c)
-target_link_libraries(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE az_iot_test_support)
+    unit/mqttv3_direct_method_client_test.c)
+target_link_libraries(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE az_iot_test_support az_iot_mqttv3)
 target_include_directories(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/core
-    ${PROJECT_SOURCE_DIR}/src/mqttv3)
+    ${PROJECT_SOURCE_DIR}/src/core)
 target_compile_definitions(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE
-    AZ_IOT_DM_MAX_INFLIGHT=1)
+    TEST_MAX_IN_FLIGHT_INVOCATIONS=1)
 if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv3_direct_method_client_tuned PRIVATE
         _POSIX_C_SOURCE=200809L)
@@ -299,7 +295,7 @@ endif()
 # linked from az_iot_mqttv5, which carries the default. Running the whole suite
 # against an overridden limit proves the knob reaches every pool, loop and
 # admission check, and catches anyone reintroducing a hardcoded bound. It is set
-# to 1, the smallest, through its documented default AZ_IOT_DM_MAX_INFLIGHT.
+# to 1, the smallest.
 az_iot_add_cmocka_test(az_iot_tests_mqttv5_direct_method_client_tuned
     unit/mqttv5_direct_method_client_test.c
     ${PROJECT_SOURCE_DIR}/src/mqttv5/direct_method_client.c
@@ -311,7 +307,7 @@ target_include_directories(az_iot_tests_mqttv5_direct_method_client_tuned PRIVAT
     ${PROJECT_SOURCE_DIR}/src/core
     ${PROJECT_SOURCE_DIR}/src/mqttv5)
 target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
-    AZ_IOT_DM_MAX_INFLIGHT=1
+    AZ_IOT_MQTTV5_DM_MAX_CONCURRENT=1
     AZ_IOT_MQTTV5_DM_NOTICE_QUEUE_MAX=4)
 if(UNIX)
     target_compile_definitions(az_iot_tests_mqttv5_direct_method_client_tuned PRIVATE
@@ -348,9 +344,9 @@ az_iot_add_cmocka_test(az_iot_tests_su_client_layout_mismatch unit/su_client_lay
 target_compile_definitions(az_iot_tests_su_client_layout_mismatch PRIVATE
     AZ_IOT_TEST_SU_MAX_STEP_COUNT=${_az_iot_test_su_other_step_count}
     AZ_IOT_TEST_SU_EXPECTED_MISMATCH="AZ_IOT_SU_MAX_STEP_COUNT")
-# Fixed feature-client sizes: the headers compile included twice (built here),
-# and defining any fixed size, even to its default, fails on its guard
-# (az_iot_tests_fixed_sizes_refuse_overrides builds each such case).
+# Fixed feature-client sizes and removed count macros: the headers compile included
+# twice (built here), and defining any of them, even to its former default, fails on
+# its guard (az_iot_tests_fixed_sizes_refuse_overrides builds each such case).
 add_library(az_iot_tests_fixed_sizes OBJECT compile/fixed_sizes_test.c)
 target_link_libraries(az_iot_tests_fixed_sizes PRIVATE az_iot_core)
 az_iot_apply_warnings(az_iot_tests_fixed_sizes)
@@ -360,7 +356,8 @@ foreach(_case
         AZ_IOT_DM_RID_MAX=32 AZ_IOT_DM_RID_MAX=64
         AZ_IOT_DM_CORR_DATA_MAX=64 AZ_IOT_DM_CORR_DATA_MAX=128
         AZ_IOT_MQTTV5_DM_TOPIC_MAX=192 AZ_IOT_MQTTV5_DM_TOPIC_MAX=256
-        AZ_IOT_LOG_FILE_PATH_MAX=256 AZ_IOT_LOG_FILE_PATH_MAX=512)
+        AZ_IOT_LOG_FILE_PATH_MAX=256 AZ_IOT_LOG_FILE_PATH_MAX=512
+        AZ_IOT_DM_MAX_INFLIGHT=4 AZ_IOT_DM_MAX_INFLIGHT=1)
     string(REPLACE "=" "_" _name "${_case}")
     string(TOLOWER "az_iot_tests_fixed_size_${_name}" _name)
     add_library(${_name} OBJECT EXCLUDE_FROM_ALL compile/fixed_sizes_test.c)
@@ -372,7 +369,7 @@ string(REPLACE ";" "," _az_iot_fixed_size_cases "${_az_iot_fixed_size_cases}")
 add_test(NAME az_iot_tests_fixed_sizes_refuse_overrides
     COMMAND ${CMAKE_COMMAND}
         -DBUILD_DIR=${CMAKE_BINARY_DIR} -DCONFIG=$<CONFIG> -DTARGETS=${_az_iot_fixed_size_cases}
-        "-DEXPECTED=(is|are) fixed" -P ${CMAKE_CURRENT_SOURCE_DIR}/compile/check_build_refused.cmake)
+        "-DEXPECTED=(is|are) (fixed|removed)" -P ${CMAKE_CURRENT_SOURCE_DIR}/compile/check_build_refused.cmake)
 # Builds in the build tree: one at a time with anything else that does.
 set_tests_properties(az_iot_tests_fixed_sizes_refuse_overrides PROPERTIES RESOURCE_LOCK build_tree)
 unset(_az_iot_fixed_size_cases)

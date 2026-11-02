@@ -988,7 +988,8 @@ a slow path. Constants are `#ifndef`-guarded and can be raised at build time, ex
 | `AZ_IOT_DPS_OPERATION_ID_MAX` | 64 | DPS `operation_id` from the assigning response | `AZ_IOT_ERR_NOT_SUPPORTED` |
 | `AZ_IOT_DPS_REGISTRATION_PAYLOAD_MAX` | 512 | Caller-supplied DPS registration payload | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | `AZ_IOT_TWIN_MAX_PENDING` | 8 | Pending twin requests, per generation ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_twin_client.h), [MQTTv5](../../inc/azure/iot/mqttv5/az_iot_twin_client.h)) | `AZ_IOT_ERR_NOT_SUPPORTED` |
-| `AZ_IOT_DM_MAX_INFLIGHT` | 4 | In-flight direct-method requests ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_direct_method_client.h); MQTTv5 derives `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` from it) | No result — the invocation is dropped and a warning is logged. |
+| `limits.max_in_flight_invocations` | 4 | In-flight MQTTv3 direct-method requests, at run time ([MQTTv3](../../inc/azure/iot/mqttv3/az_iot_direct_method_client.h)) | No result — the invocation is dropped and a warning is logged. |
+| `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` | 4 | MQTTv5 direct-method invocations probed or awaiting an answer ([MQTTv5](../../inc/azure/iot/mqttv5/az_iot_direct_method_client.h)) | Probe refused `DEVICE_BUSY`. |
 | `AZ_IOT_MQTTV5_DM_MAX_METHODS` | 8 | Registered MQTTv5 direct-method handlers | `AZ_IOT_ERR_NOT_ENOUGH_SPACE` |
 | CSR slot | 1 | In-flight hub CSR renewals | `AZ_IOT_ERR_BUSY` |
 | `AZ_IOT_DEFAULT_CONNECT_TIMEOUT_SECONDS` | 30 | Connect attempt, hub and DPS alike | Adapter-reported failure → `AZ_IOT_ERR_MQTT` |

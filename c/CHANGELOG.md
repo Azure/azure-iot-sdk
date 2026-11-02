@@ -17,13 +17,23 @@
   or `dps.provision_only` is set, so this fails at init instead of at every connect. Paho, and
   adapters that leave it NULL, are unaffected. Defining `AZ_IOT_DEFAULT_SESSION_EXPIRY_SECONDS` as
   0 is a compile error.
+- Breaking: the mqttv3 direct method client holds its in-flight invocations in a workspace the
+  application provides, sized at run time. `az_iot_mqttv3_direct_method_client_init()` takes
+  `az_iot_mqttv3_direct_method_client_options` (`az_iot_mqttv3_direct_method_client_options_default()`):
+  `limits.max_in_flight_invocations` (0: the default
+  `AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_MAX_IN_FLIGHT_INVOCATIONS`, 4; at most 1024),
+  `workspace` and `workspace_size` (`az_iot_mqttv3_direct_method_client_get_workspace_size()`,
+  `AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE()`). `init()` returns `AZ_IOT_ERR_INVALID_ARG`
+  for a limit above its maximum or a NULL workspace, and `AZ_IOT_ERR_NOT_ENOUGH_SPACE` for one too
+  small; `deinit()` wipes it. `AZ_IOT_DM_MAX_INFLIGHT` is removed (defining it is a compile error);
+  `AZ_IOT_MQTTV5_DM_MAX_CONCURRENT` now defaults to 4.
 - Breaking: feature-client string and topic sizes that lay out public structs are fixed:
   `AZ_IOT_DM_METHOD_NAME_MAX` (96), `AZ_IOT_DM_RID_MAX` (32), `AZ_IOT_DM_CORR_DATA_MAX` (64),
   `AZ_IOT_MQTTV5_DM_TOPIC_MAX` (192) and `AZ_IOT_LOG_FILE_PATH_MAX` (256). Defining any of them
   before including the headers is a compile error, so these sizes cannot differ between the
-  application and the SDK. The direct method and twin counts (`AZ_IOT_DM_MAX_INFLIGHT`,
-  `AZ_IOT_TWIN_MAX_PENDING`, `AZ_IOT_MQTTV5_DM_*` counts) and `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` are
-  still overridable and must match between the two.
+  application and the SDK. The twin and mqttv5 direct method counts (`AZ_IOT_TWIN_MAX_PENDING`,
+  `AZ_IOT_MQTTV5_DM_*` counts) and `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX` are still overridable and
+  must match between the two.
 - Breaking: the MQTT factory API is removed; the connection client builds every session's MQTT
   client with `az_iot_connection_client_options::mqtt_adapter` in `mqtt_workspace`, sized by
   `mqtt_limits`. All three are required: `init()` returns `AZ_IOT_ERR_INVALID_ARG` when
