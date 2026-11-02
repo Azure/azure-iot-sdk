@@ -14,7 +14,7 @@ menu "Azure IoT SDK az_mqtt adapter"
         help
             az_iot_mqtt_limits.send_buffer_size of the samples, which also size their
             message store for one copy for QoS 1 redelivery. Must hold the largest
-            telemetry message and software updates report (limits.max_message_size).
+            telemetry message.
 
     config AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE
         int "Largest incoming MQTT packet (bytes)"
@@ -22,9 +22,9 @@ menu "Azure IoT SDK az_mqtt adapter"
         default 12288
         help
             az_iot_mqtt_limits.receive_buffer_size of the samples. Each client holds it
-            twice (packet and inbound strings). Must hold the largest
-            update the software updates client accepts (limits.max_update_size) plus its
-            topic, properties and envelope. MQTT 5: also the Maximum Packet Size advertised.
+            twice (packet and inbound strings). Must hold the largest incoming message
+            (a twin document, say) plus its topic, properties and envelope. MQTT 5: also
+            the Maximum Packet Size advertised.
 
     config AZ_IOT_AZ_MQTT_INFLIGHT_MAX
         int "Requests in flight at once"

@@ -17,13 +17,10 @@
 
 #include <cmocka.h>
 
-#include "azure/iot/az_iot_su.h"
 #include "crypto_contract.h"
 #include "internal/crypto.h"
-#include "su_crypto_vectors.h"
-#include "su_root_key_package_vectors.h"
 
-#define SU_ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
+#define ARRAY_LEN(a) (sizeof(a) / sizeof((a)[0]))
 
 /** @brief Backend under test for the running group. */
 static const az_iot_crypto* g_crypto;
@@ -32,8 +29,64 @@ static const az_iot_crypto* g_crypto;
 /* SHA-256                                                                   */
 /* ------------------------------------------------------------------------- */
 
+/** @brief One SHA-256 case: @p message repeated @p repeat times hashes to @p digest. */
+typedef struct sha256_vector
+{
+  const char* name;
+  const uint8_t* message;
+  size_t message_len;
+  size_t repeat;
+  const uint8_t* digest;
+} sha256_vector;
+
+/* clang-format off */
+static const uint8_t k_sha256_digest_empty[32] = {
+  0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8,
+  0x99, 0x6f, 0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c,
+  0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
+};
+static const uint8_t k_sha256_digest_abc[32] = {
+  0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde,
+  0x5d, 0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c,
+  0xb4, 0x10, 0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+};
+static const uint8_t k_sha256_digest_448_bit[32] = {
+  0x24, 0x8d, 0x6a, 0x61, 0xd2, 0x06, 0x38, 0xb8, 0xe5, 0xc0, 0x26, 0x93,
+  0x0c, 0x3e, 0x60, 0x39, 0xa3, 0x3c, 0xe4, 0x59, 0x64, 0xff, 0x21, 0x67,
+  0xf6, 0xec, 0xed, 0xd4, 0x19, 0xdb, 0x06, 0xc1,
+};
+static const uint8_t k_sha256_digest_896_bit[32] = {
+  0xcf, 0x5b, 0x16, 0xa7, 0x78, 0xaf, 0x83, 0x80, 0x03, 0x6c, 0xe5, 0x9e,
+  0x7b, 0x04, 0x92, 0x37, 0x0b, 0x24, 0x9b, 0x11, 0xe8, 0xf0, 0x7a, 0x51,
+  0xaf, 0xac, 0x45, 0x03, 0x7a, 0xfe, 0xe9, 0xd1,
+};
+static const uint8_t k_sha256_digest_million_a[32] = {
+  0xcd, 0xc7, 0x6e, 0x5c, 0x99, 0x14, 0xfb, 0x92, 0x81, 0xa1, 0xc7, 0xe2,
+  0x84, 0xd7, 0x3e, 0x67, 0xf1, 0x80, 0x9a, 0x48, 0xa4, 0x97, 0x20, 0x0e,
+  0x04, 0x6d, 0x39, 0xcc, 0xc7, 0x11, 0x2c, 0xd0,
+};
+/* clang-format on */
+
+#define SHA256_MESSAGE(text) (const uint8_t*)(text), sizeof(text) - 1
+
+/** @brief SHA-256 known answers (FIPS 180-4). */
+static const sha256_vector k_sha256_kat[] = {
+  { "empty", SHA256_MESSAGE(""), 1, k_sha256_digest_empty },
+  { "abc", SHA256_MESSAGE("abc"), 1, k_sha256_digest_abc },
+  { "448_bit",
+    SHA256_MESSAGE("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+    1,
+    k_sha256_digest_448_bit },
+  { "896_bit",
+    SHA256_MESSAGE("abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmno"
+                   "ijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"),
+    1,
+    k_sha256_digest_896_bit },
+  { "million_a", SHA256_MESSAGE("a"), 1000000, k_sha256_digest_million_a },
+};
+
 /** @brief Materialize a vector's full input (message repeated). Caller frees. */
-static uint8_t* sha256_input(const su_sha256_vector* v, size_t* out_len)
+static uint8_t* sha256_input(const sha256_vector* v, size_t* out_len)
 {
   size_t len = v->message_len * v->repeat;
   uint8_t* buf = (uint8_t*)malloc(len == 0 ? 1 : len);
@@ -49,9 +102,9 @@ static uint8_t* sha256_input(const su_sha256_vector* v, size_t* out_len)
 static void sha256_oneshot_matches_known_answers(void** state)
 {
   (void)state;
-  for (size_t i = 0; i < SU_ARRAY_LEN(k_su_sha256_kat); ++i)
+  for (size_t i = 0; i < ARRAY_LEN(k_sha256_kat); ++i)
   {
-    const su_sha256_vector* v = &k_su_sha256_kat[i];
+    const sha256_vector* v = &k_sha256_kat[i];
     size_t len = 0;
     uint8_t* in = sha256_input(v, &len);
     uint8_t out[32];
@@ -70,12 +123,12 @@ static void sha256_incremental_matches_known_answers_for_any_chunking(void** sta
 {
   (void)state;
   static const size_t k_chunks[] = { 1, 63, 64, 65, 4096 };
-  for (size_t i = 0; i < SU_ARRAY_LEN(k_su_sha256_kat); ++i)
+  for (size_t i = 0; i < ARRAY_LEN(k_sha256_kat); ++i)
   {
-    const su_sha256_vector* v = &k_su_sha256_kat[i];
+    const sha256_vector* v = &k_sha256_kat[i];
     size_t len = 0;
     uint8_t* in = sha256_input(v, &len);
-    for (size_t c = 0; c < SU_ARRAY_LEN(k_chunks); ++c)
+    for (size_t c = 0; c < ARRAY_LEN(k_chunks); ++c)
     {
       size_t chunk = k_chunks[c];
       if (chunk == 1 && len > 4096)
@@ -108,8 +161,8 @@ static void sha256_incremental_matches_known_answers_for_any_chunking(void** sta
 static void sha256_contexts_are_independent(void** state)
 {
   (void)state;
-  const su_sha256_vector* a = &k_su_sha256_kat[1]; /* abc */
-  const su_sha256_vector* b = &k_su_sha256_kat[2]; /* 448-bit */
+  const sha256_vector* a = &k_sha256_kat[1]; /* abc */
+  const sha256_vector* b = &k_sha256_kat[2]; /* 448-bit */
   assert_int_equal(a->repeat, 1);
   assert_int_equal(b->repeat, 1);
 
@@ -138,7 +191,7 @@ static void sha256_contexts_are_independent(void** state)
 static void sha256_init_ignores_prior_context_contents(void** state)
 {
   (void)state;
-  const su_sha256_vector* abc = &k_su_sha256_kat[1];
+  const sha256_vector* abc = &k_sha256_kat[1];
   az_iot_sha256_ctx ctx;
   uint8_t out[AZ_IOT_SHA256_SIZE];
 
@@ -158,11 +211,11 @@ static void sha256_init_ignores_prior_context_contents(void** state)
 static void sha256_rejects_bad_arguments_without_leaking(void** state)
 {
   (void)state;
-  const su_sha256_vector* abc = &k_su_sha256_kat[1];
+  const sha256_vector* abc = &k_sha256_kat[1];
   uint8_t out[32];
 
   assert_int_equal(az_iot_crypto__sha256(g_crypto, NULL, 0, out), AZ_IOT_OK);
-  assert_memory_equal(out, k_su_sha256_kat[0].digest, 32);
+  assert_memory_equal(out, k_sha256_kat[0].digest, 32);
   assert_int_not_equal(az_iot_crypto__sha256(g_crypto, NULL, 1, out), AZ_IOT_OK);
   assert_int_not_equal(
       az_iot_crypto__sha256(g_crypto, abc->message, abc->message_len, NULL), AZ_IOT_OK);
@@ -283,7 +336,7 @@ static const hmac_vector k_hmac[] = {
 static void hmac_sha256_matches_known_answers(void** state)
 {
   (void)state;
-  for (size_t i = 0; i < SU_ARRAY_LEN(k_hmac); ++i)
+  for (size_t i = 0; i < ARRAY_LEN(k_hmac); ++i)
   {
     const hmac_vector* v = &k_hmac[i];
     uint8_t key[131];
@@ -335,448 +388,6 @@ static void hmac_sha256_rejects_bad_arguments(void** state)
   assert_int_equal(az_iot_crypto__hmac_sha256(NULL, NULL, 0, NULL, 0, mac), AZ_IOT_ERR_INVALID_ARG);
 }
 
-/* ------------------------------------------------------------------------- */
-/* RS256                                                                     */
-/* ------------------------------------------------------------------------- */
-
-static az_iot_result verify_vector(const su_rs256_vector* v)
-{
-  return g_crypto->verify_rs256(
-      g_crypto,
-      v->modulus,
-      v->modulus_len,
-      v->exponent,
-      v->exponent_len,
-      v->message,
-      v->message_len,
-      v->signature,
-      v->signature_len);
-}
-
-static void rs256_accepts_known_good_vectors(void** state)
-{
-  (void)state;
-  for (size_t i = 0; i < SU_ARRAY_LEN(k_su_rs256_good); ++i)
-  {
-    if (verify_vector(&k_su_rs256_good[i]) != AZ_IOT_OK)
-    {
-      fail_msg("verify_rs256 rejected good vector '%s'", k_su_rs256_good[i].name);
-    }
-  }
-}
-
-/* Each compiled-in Microsoft root verifies its signature on the published root key
- * package, so a wrong modulus byte fails here. */
-static void microsoft_root_keys_verify_the_root_key_package(void** state)
-{
-  (void)state;
-  size_t count = 0;
-  const az_iot_su_root_key* keys = az_iot_su_microsoft_root_keys(&count);
-  assert_int_equal(count, SU_ARRAY_LEN(k_su_root_key_package_signatures));
-  for (size_t i = 0; i < count; ++i)
-  {
-    const su_root_key_package_signature* s = &k_su_root_key_package_signatures[i];
-    assert_string_equal(keys[i].kid, s->kid);
-    assert_int_equal(
-        g_crypto->verify_rs256(
-            g_crypto,
-            keys[i].modulus,
-            keys[i].modulus_len,
-            keys[i].exponent,
-            keys[i].exponent_len,
-            k_su_root_key_package_signed,
-            sizeof(k_su_root_key_package_signed),
-            s->signature,
-            s->signature_len),
-        AZ_IOT_OK);
-
-    uint8_t modulus[512];
-    assert_true(keys[i].modulus_len <= sizeof(modulus));
-    memcpy(modulus, keys[i].modulus, keys[i].modulus_len);
-    modulus[keys[i].modulus_len - 1] ^= 0x02;
-    assert_int_not_equal(
-        g_crypto->verify_rs256(
-            g_crypto,
-            modulus,
-            keys[i].modulus_len,
-            keys[i].exponent,
-            keys[i].exponent_len,
-            k_su_root_key_package_signed,
-            sizeof(k_su_root_key_package_signed),
-            s->signature,
-            s->signature_len),
-        AZ_IOT_OK);
-  }
-}
-
-static void rs256_rejects_known_bad_vectors(void** state)
-{
-  (void)state;
-  size_t accepted = 0;
-  for (size_t i = 0; i < SU_ARRAY_LEN(k_su_rs256_bad); ++i)
-  {
-    az_iot_result r = verify_vector(&k_su_rs256_bad[i]);
-    if (r == AZ_IOT_OK)
-    {
-      print_error("verify_rs256 accepted bad vector '%s'\n", k_su_rs256_bad[i].name);
-      ++accepted;
-    }
-  }
-  assert_int_equal(accepted, 0);
-}
-
-static void rs256_rejects_missing_inputs(void** state)
-{
-  (void)state;
-  const su_rs256_vector* g = &k_su_rs256_good[0];
-  su_rs256_vector v;
-  const struct
-  {
-    const char* name;
-    size_t field;
-  } k_cases[] = {
-    { "modulus NULL", 0 },    { "modulus_len 0", 1 }, { "exponent NULL", 2 },
-    { "exponent_len 0", 3 },  { "message NULL", 4 },  { "signature NULL", 5 },
-    { "signature_len 0", 6 },
-  };
-  for (size_t i = 0; i < SU_ARRAY_LEN(k_cases); ++i)
-  {
-    v = *g;
-    switch (k_cases[i].field)
-    {
-      case 0:
-        v.modulus = NULL;
-        break;
-      case 1:
-        v.modulus_len = 0;
-        break;
-      case 2:
-        v.exponent = NULL;
-        break;
-      case 3:
-        v.exponent_len = 0;
-        break;
-      case 4:
-        v.message = NULL;
-        break;
-      case 5:
-        v.signature = NULL;
-        break;
-      default:
-        v.signature_len = 0;
-        break;
-    }
-    if (verify_vector(&v) != AZ_IOT_ERR_INVALID_ARG)
-    {
-      fail_msg("verify_rs256 did not reject %s as an invalid argument", k_cases[i].name);
-    }
-  }
-}
-
-/* Keys sized to fill, then overflow, a fixed-size DER encoding buffer. Every
- * case must be rejected without writing out of bounds (run under ASan in CI). */
-static void rs256_rejects_oversized_keys_safely(void** state)
-{
-  (void)state;
-  static const struct
-  {
-    size_t modulus_len;
-    size_t exponent_len;
-  } k_cases[] = {
-    { 594, 200 }, /* modulus leaves under 4 bytes; exponent header must not overrun */
-    { 596, 3 },
-    { 4096, 3 },
-    { 70000, 3 }, /* beyond a 2-byte DER length */
-  };
-  static uint8_t modulus[70000];
-  static uint8_t exponent[200];
-  static uint8_t signature[512];
-  memset(modulus, 0x01, sizeof(modulus));
-  memset(exponent, 0x01, sizeof(exponent));
-  exponent[sizeof(exponent) - 1] = 0x03;
-  memset(signature, 0x5A, sizeof(signature));
-  static const uint8_t data[] = "data";
-  for (size_t i = 0; i < SU_ARRAY_LEN(k_cases); ++i)
-  {
-    az_iot_result r = g_crypto->verify_rs256(
-        g_crypto,
-        modulus,
-        k_cases[i].modulus_len,
-        exponent,
-        k_cases[i].exponent_len,
-        data,
-        sizeof(data) - 1,
-        signature,
-        sizeof(signature));
-    if (r == AZ_IOT_OK)
-    {
-      fail_msg("verify_rs256 accepted a %zu-byte modulus", k_cases[i].modulus_len);
-    }
-  }
-}
-
-/* ------------------------------------------------------------------------- */
-/* Through core: the backend only ever sees primitive inputs                 */
-/* ------------------------------------------------------------------------- */
-
-#define SU_MAX_RECORDED 4
-
-/** @brief One recorded verify_rs256 call. */
-typedef struct recorded_verify
-{
-  uint8_t modulus[1024];
-  size_t modulus_len;
-  uint8_t data[4096];
-  size_t data_len;
-  size_t signature_len;
-} recorded_verify;
-
-/** @brief Calls observed by the recording backend. */
-static struct
-{
-  recorded_verify verify[SU_MAX_RECORDED];
-  size_t verify_count;
-  uint8_t sha256_data[4096]; /**< Bytes fed to the first SHA-256 stream. */
-  size_t sha256_len;
-  size_t sha256_count; /**< SHA-256 streams started. */
-} g_rec;
-
-static az_iot_result rec_verify_rs256(
-    const az_iot_crypto* self,
-    const uint8_t* modulus,
-    size_t modulus_len,
-    const uint8_t* exponent,
-    size_t exponent_len,
-    const uint8_t* signed_data,
-    size_t signed_data_len,
-    const uint8_t* signature,
-    size_t signature_len)
-{
-  (void)self;
-  if (g_rec.verify_count < SU_MAX_RECORDED && modulus_len <= sizeof(g_rec.verify[0].modulus)
-      && signed_data_len <= sizeof(g_rec.verify[0].data))
-  {
-    recorded_verify* r = &g_rec.verify[g_rec.verify_count];
-    memcpy(r->modulus, modulus, modulus_len);
-    r->modulus_len = modulus_len;
-    memcpy(r->data, signed_data, signed_data_len);
-    r->data_len = signed_data_len;
-    r->signature_len = signature_len;
-  }
-  ++g_rec.verify_count;
-  return g_crypto->verify_rs256(
-      g_crypto,
-      modulus,
-      modulus_len,
-      exponent,
-      exponent_len,
-      signed_data,
-      signed_data_len,
-      signature,
-      signature_len);
-}
-
-static az_iot_result rec_sha256_init(const az_iot_crypto* self, az_iot_sha256_ctx* ctx)
-{
-  (void)self;
-  ++g_rec.sha256_count;
-  return g_crypto->sha256_init(g_crypto, ctx);
-}
-
-static az_iot_result rec_sha256_update(
-    const az_iot_crypto* self,
-    az_iot_sha256_ctx* ctx,
-    const uint8_t* data,
-    size_t len)
-{
-  (void)self;
-  if (g_rec.sha256_count == 1 && g_rec.sha256_len + len <= sizeof(g_rec.sha256_data) && len > 0)
-  {
-    memcpy(g_rec.sha256_data + g_rec.sha256_len, data, len);
-    g_rec.sha256_len += len;
-  }
-  return g_crypto->sha256_update(g_crypto, ctx, data, len);
-}
-
-static az_iot_result rec_sha256_final(
-    const az_iot_crypto* self,
-    az_iot_sha256_ctx* ctx,
-    uint8_t out[AZ_IOT_SHA256_SIZE])
-{
-  (void)self;
-  return g_crypto->sha256_final(g_crypto, ctx, out);
-}
-
-static const az_iot_crypto k_recording = {
-  .version = AZ_IOT_CRYPTO_VERSION,
-  .sha256_init = rec_sha256_init,
-  .sha256_update = rec_sha256_update,
-  .sha256_final = rec_sha256_final,
-  .verify_rs256 = rec_verify_rs256,
-};
-
-/** @brief Resets the recording and returns the recording backend. */
-static const az_iot_crypto* recording_crypto(void)
-{
-  memset(&g_rec, 0, sizeof(g_rec));
-  return &k_recording;
-}
-
-static az_iot_su_root_key chain_root(bool disabled)
-{
-  az_iot_su_root_key root;
-  root.kid = SU_VEC_CHAIN_ROOT_KID;
-  root.modulus = k_su_vec_chain_root_n;
-  root.modulus_len = sizeof(k_su_vec_chain_root_n);
-  root.exponent = k_su_vec_chain_root_e;
-  root.exponent_len = sizeof(k_su_vec_chain_root_e);
-  root.disabled = disabled;
-  return root;
-}
-
-/** @brief Writable copy of a request; the parser decodes strings in place. */
-static char g_request[8192];
-static az_iot_su_client_file_url
-    g_file_urls[AZ_IOT_SU_FILE_URL_CAPACITY(AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES)];
-static az_iot_su_client_update_manifest_file g_related_files[AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES];
-
-static az_iot_result parse_chain(
-    const char* request,
-    const az_iot_crypto* crypto,
-    const az_iot_su_root_key* root,
-    az_iot_su_client_update_request* out_req,
-    az_iot_su_client_update_manifest* out_manifest)
-{
-  size_t len = strlen(request);
-  assert_true(len < sizeof(g_request));
-  memcpy(g_request, request, len);
-  memset(out_req, 0, sizeof(*out_req));
-  memset(out_manifest, 0, sizeof(*out_manifest));
-  az_iot_su_update_request_storage storage
-      = { g_file_urls, g_related_files, AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES };
-  return az_iot_su_parse_update_request(
-      az_span_create((uint8_t*)g_request, (int32_t)len),
-      crypto,
-      root,
-      1,
-      &storage,
-      out_req,
-      out_manifest);
-}
-
-static void chain_verifies_and_backend_sees_only_primitive_inputs(void** state)
-{
-  (void)state;
-  const az_iot_crypto* crypto = recording_crypto();
-  az_iot_su_root_key root = chain_root(false);
-  az_iot_su_client_update_request req;
-  az_iot_su_client_update_manifest manifest;
-
-  assert_int_equal(parse_chain(k_su_vec_chain_request, crypto, &root, &req, &manifest), AZ_IOT_OK);
-  assert_int_equal(manifest.files_count, 1);
-
-  /* 1: SJWK under the root key; 2: manifest JWS under the SJWK's signing key. Each gets
-   * the raw modulus, the ASCII signing input and a decoded, modulus-sized signature. */
-  assert_int_equal(g_rec.verify_count, 2);
-  const recorded_verify* sj = &g_rec.verify[0];
-  assert_int_equal(sj->modulus_len, sizeof(k_su_vec_chain_root_n));
-  assert_memory_equal(sj->modulus, k_su_vec_chain_root_n, sj->modulus_len);
-  assert_int_equal(sj->data_len, strlen(k_su_vec_chain_sjwk_input));
-  assert_memory_equal(sj->data, k_su_vec_chain_sjwk_input, sj->data_len);
-  assert_int_equal(sj->signature_len, sizeof(k_su_vec_chain_root_n));
-
-  const recorded_verify* mj = &g_rec.verify[1];
-  assert_int_equal(mj->modulus_len, sizeof(k_su_vec_chain_signing_n));
-  assert_memory_equal(mj->modulus, k_su_vec_chain_signing_n, mj->modulus_len);
-  assert_int_equal(mj->data_len, strlen(k_su_vec_chain_manifest_input));
-  assert_memory_equal(mj->data, k_su_vec_chain_manifest_input, mj->data_len);
-  assert_int_equal(mj->signature_len, sizeof(k_su_vec_chain_signing_n));
-
-  /* SHA-256 runs once, over the unescaped manifest body. */
-  assert_int_equal(g_rec.sha256_count, 1);
-  assert_int_equal(g_rec.sha256_len, strlen(k_su_vec_chain_manifest));
-  assert_memory_equal(g_rec.sha256_data, k_su_vec_chain_manifest, g_rec.sha256_len);
-}
-
-static void chain_is_rejected_when_tampered_or_root_disabled(void** state)
-{
-  (void)state;
-  az_iot_su_root_key root = chain_root(false);
-  az_iot_su_client_update_request req;
-  az_iot_su_client_update_manifest manifest;
-  size_t mismatched = 0;
-
-  for (size_t i = 0; i < SU_ARRAY_LEN(k_su_chain_tampered); ++i)
-  {
-    const su_chain_vector* v = &k_su_chain_tampered[i];
-    const az_iot_crypto* crypto = recording_crypto();
-    az_iot_result r = parse_chain(v->request, crypto, &root, &req, &manifest);
-    if (r != AZ_IOT_ERR_AUTH || g_rec.verify_count != v->verify_calls
-        || g_rec.sha256_count != v->sha256_calls)
-    {
-      print_error(
-          "tampered chain '%s': result %d, %zu verify / %zu sha256 calls (expected %zu / %zu)\n",
-          v->name,
-          (int)r,
-          g_rec.verify_count,
-          g_rec.sha256_count,
-          v->verify_calls,
-          v->sha256_calls);
-      ++mismatched;
-    }
-  }
-  assert_int_equal(mismatched, 0);
-
-  root = chain_root(true);
-  assert_int_equal(
-      parse_chain(k_su_vec_chain_request, g_crypto, &root, &req, &manifest), AZ_IOT_ERR_AUTH);
-}
-
-/** @brief Serves the deterministic payload, optionally with one byte flipped. */
-typedef struct payload_reader
-{
-  size_t flip_at;
-} payload_reader;
-
-static int32_t read_payload(
-    size_t offset,
-    uint8_t* buffer,
-    size_t buffer_size,
-    size_t* out_read,
-    void* read_ctx)
-{
-  const payload_reader* r = (const payload_reader*)read_ctx;
-  size_t n = 0;
-  while (n < buffer_size && offset + n < SU_VEC_FILE_PAYLOAD_LEN)
-  {
-    size_t at = offset + n;
-    buffer[n] = (uint8_t)(su_crypto_file_byte(at) ^ (at == r->flip_at ? 0x01U : 0x00U));
-    ++n;
-  }
-  *out_read = n;
-  return AZ_IOT_SU_RESULT_SUCCESS;
-}
-
-static void file_hash_matches_signed_manifest(void** state)
-{
-  (void)state;
-  az_iot_su_root_key root = chain_root(false);
-  az_iot_su_client_update_request req;
-  az_iot_su_client_update_manifest manifest;
-  assert_int_equal(
-      parse_chain(k_su_vec_chain_request, g_crypto, &root, &req, &manifest), AZ_IOT_OK);
-  assert_int_equal(manifest.files_count, 1);
-
-  payload_reader intact = { SIZE_MAX };
-  assert_int_equal(
-      az_iot_su_verify_file_hash(&manifest.files[0], g_crypto, read_payload, &intact), AZ_IOT_OK);
-
-  payload_reader flipped = { SU_VEC_FILE_PAYLOAD_LEN - 1 };
-  assert_int_equal(
-      az_iot_su_verify_file_hash(&manifest.files[0], g_crypto, read_payload, &flipped),
-      AZ_IOT_ERR_AUTH);
-}
-
 int crypto_contract_run(const char* group_name, const az_iot_crypto* crypto)
 {
   g_crypto = crypto;
@@ -788,14 +399,6 @@ int crypto_contract_run(const char* group_name, const az_iot_crypto* crypto)
     cmocka_unit_test(sha256_rejects_bad_arguments_without_leaking),
     cmocka_unit_test(hmac_sha256_matches_known_answers),
     cmocka_unit_test(hmac_sha256_rejects_bad_arguments),
-    cmocka_unit_test(rs256_accepts_known_good_vectors),
-    cmocka_unit_test(microsoft_root_keys_verify_the_root_key_package),
-    cmocka_unit_test(rs256_rejects_known_bad_vectors),
-    cmocka_unit_test(rs256_rejects_missing_inputs),
-    cmocka_unit_test(rs256_rejects_oversized_keys_safely),
-    cmocka_unit_test(chain_verifies_and_backend_sees_only_primitive_inputs),
-    cmocka_unit_test(chain_is_rejected_when_tampered_or_root_disabled),
-    cmocka_unit_test(file_hash_matches_signed_manifest),
   };
   return cmocka_run_group_tests_name(group_name, tests, NULL, NULL);
 }

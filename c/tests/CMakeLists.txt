@@ -327,14 +327,6 @@ target_link_libraries(az_iot_tests_mqttv5_twin_client PRIVATE az_iot_test_suppor
 target_include_directories(az_iot_tests_mqttv5_twin_client PRIVATE
     ${PROJECT_SOURCE_DIR}/src/core ${PROJECT_SOURCE_DIR}/src/mqttv5)
 
-az_iot_add_cmocka_test(az_iot_tests_su_client unit/su_client_test.c)
-# An application built with a manifest limit that differs from az_iot_core:
-# az_iot_su_client_init() must refuse the client. One step more than the SDK build, whatever AZ_IOT_SU_MAX_STEP_COUNT is configured to.
-math(EXPR _az_iot_test_su_other_step_count "${AZ_IOT_SU_MAX_STEP_COUNT} + 1")
-az_iot_add_cmocka_test(az_iot_tests_su_client_layout_mismatch unit/su_client_layout_mismatch_test.c)
-target_compile_definitions(az_iot_tests_su_client_layout_mismatch PRIVATE
-    AZ_IOT_TEST_SU_MAX_STEP_COUNT=${_az_iot_test_su_other_step_count}
-    AZ_IOT_TEST_SU_EXPECTED_MISMATCH="AZ_IOT_SU_MAX_STEP_COUNT")
 # Fixed feature-client sizes and removed count macros: the headers compile included
 # twice (built here), and defining any of them, even to its former default, fails on
 # its guard (az_iot_tests_fixed_sizes_refuse_overrides builds each such case).
@@ -367,28 +359,6 @@ add_test(NAME az_iot_tests_fixed_sizes_refuse_overrides
 # Builds in the build tree: one at a time with anything else that does.
 set_tests_properties(az_iot_tests_fixed_sizes_refuse_overrides PROPERTIES RESOURCE_LOCK build_tree)
 unset(_az_iot_fixed_size_cases)
-
-az_iot_add_cmocka_test(az_iot_tests_su_protocol unit/su_protocol_test.c)
-az_iot_add_cmocka_test(az_iot_tests_su_manifest unit/su_manifest_test.c)
-target_include_directories(az_iot_tests_su_manifest PRIVATE ${PROJECT_SOURCE_DIR}/src/features/su)
-target_link_libraries(az_iot_tests_su_client PRIVATE az_iot_test_support)
-# For az_iot_time_mono_ms: the request deadline is a monotonic instant, so a
-# test that exercises it has to speak the same clock.
-target_include_directories(az_iot_tests_su_client PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
-
-# The channel over a real connection client: what reaches the broker, how a
-# response is correlated back, and the paths that can fault provisioning.
-az_iot_add_cmocka_test(az_iot_tests_su_channel_dps unit/su_channel_dps_test.c)
-target_link_libraries(az_iot_tests_su_channel_dps PRIVATE az_iot_test_support)
-target_include_directories(az_iot_tests_su_channel_dps PRIVATE
-    ${PROJECT_SOURCE_DIR}/src/core
-    ${PROJECT_SOURCE_DIR}/src/features/su/internal)
-
-# Bound precondition hangs while leaving headroom for Valgrind instrumentation.
-set_tests_properties(
-    az_iot_tests_su_client az_iot_tests_su_protocol
-    az_iot_tests_su_channel_dps
-    PROPERTIES TIMEOUT 300)
 
 # File upload is HTTPS-only (stateless request-build/response-parse helpers), so
 # these tests need neither the mqtt mock nor internal headers. mqttv5 is linked
@@ -654,44 +624,6 @@ if(TARGET az_iot_certificate_provider_managed)
         target_compile_definitions(az_iot_tests_certificate_provider_managed PRIVATE
             AZ_IOT_TEST_WRAP_FSYNC=1)
     endif()
-endif()
-
-# Reference microsoft/delta:1 download handler (adapters/su/delta), with a fake delta processor.
-# AZ_IOT_SU_DELTA_TEST_LIBRARY (the libadudiffapi.so that eng/install-su-delta-processor.sh
-# prints) adds the interop test: the real library rebuilds the committed target vector.
-set(AZ_IOT_SU_DELTA_TEST_LIBRARY "" CACHE FILEPATH
-    "libadudiffapi.so for the microsoft/delta:1 interop test (needs AZ_IOT_WITH_SU_DELTA)")
-if(TARGET az_iot_su_delta)
-    # With the samples' delta processor (su_sim.c), run against the handler.
-    set(_su_sample_common ${CMAKE_CURRENT_SOURCE_DIR}/../samples/software_update/pc/common)
-    az_iot_add_cmocka_test(az_iot_tests_su_delta RACE
-        unit/su_delta_test.c
-        ${_su_sample_common}/su_sim.c
-        ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common/sample_utils.c)
-    target_include_directories(az_iot_tests_su_delta PRIVATE
-        ${_su_sample_common} ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common)
-    target_link_libraries(az_iot_tests_su_delta PRIVATE az_iot_su_delta pthread)
-    target_compile_definitions(az_iot_tests_su_delta PRIVATE
-        AZ_IOT_TEST_SU_DELTA_WORK_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}/su_delta_work")
-endif()
-if(AZ_IOT_SU_DELTA_TEST_LIBRARY)
-    # Configured but unusable fails here rather than leaving the test out.
-    if(NOT TARGET az_iot_su_delta)
-        message(FATAL_ERROR "AZ_IOT_SU_DELTA_TEST_LIBRARY needs -DAZ_IOT_WITH_SU_DELTA=ON.")
-    endif()
-    if(NOT EXISTS "${AZ_IOT_SU_DELTA_TEST_LIBRARY}")
-        message(FATAL_ERROR "AZ_IOT_SU_DELTA_TEST_LIBRARY: ${AZ_IOT_SU_DELTA_TEST_LIBRARY} not found.")
-    endif()
-    if(NOT TARGET az_iot_crypto_openssl)
-        message(FATAL_ERROR "AZ_IOT_SU_DELTA_TEST_LIBRARY needs the OpenSSL crypto backend.")
-    endif()
-    az_iot_add_cmocka_test(az_iot_tests_su_delta_interop unit/su_delta_test.c)
-    target_link_libraries(az_iot_tests_su_delta_interop PRIVATE
-        az_iot_su_delta az_iot_crypto_openssl)
-    target_compile_definitions(az_iot_tests_su_delta_interop PRIVATE
-        AZ_IOT_TEST_SU_DELTA_LIBRARY="${AZ_IOT_SU_DELTA_TEST_LIBRARY}"
-        AZ_IOT_TEST_SU_DELTA_VECTORS_DIRECTORY="${CMAKE_CURRENT_SOURCE_DIR}/unit/data/su_delta"
-        AZ_IOT_TEST_SU_DELTA_WORK_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}/su_delta_interop_work")
 endif()
 
 # The samples' platform helpers (samples/common/sample_utils.c).
