@@ -51,7 +51,6 @@ Device features by IoT Hub generation:
 | Cloud-to-device messages | Yes | No |
 | File upload | Yes | No |
 | Certificate renewal over IoT Hub | Yes | No |
-| [Software updates](docs/software-update.md) | Yes, over DPS | Yes, over DPS |
 
 ## Getting Started
 
@@ -107,10 +106,7 @@ in its header.
 - A [Yocto layer](platforms/yocto/meta-azure-iot-sdk/README.md) (scarthgap) builds the libraries,
   headers, CMake package and pkg-config files.
 - To port to another platform, supply an MQTT adapter
-  ([Bring your own MQTT client](docs/how_to_byo_mqtt_client.md)) and, for software updates, a
-  crypto backend and either the platform hooks ([ESP32 sample](samples/software_update/esp32/README.md))
-  or, in library mode, an application that installs the updates itself
-  ([library_mode sample](samples/software_update/pc/library_mode/README.md)).
+  ([Bring your own MQTT client](docs/how_to_byo_mqtt_client.md)).
 
 ## Getting Help
 

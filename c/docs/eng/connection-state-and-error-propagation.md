@@ -82,7 +82,7 @@ is a re-registration leaves `HUB` in `RETRY_PENDING` while the attempt runs on `
 
 ## 3. Shared provisioning sessions
 
-A feature client (for example software updates) can hold the provisioning session open past
+A feature client can hold the provisioning session open past
 registration, or open one after it; the session is reference-counted. Only one MQTT session runs at
 a time: while a provisioning session is in use the hub session waits at `HUB:RETRY_PENDING` with
 reason `AZ_IOT_OK` and no retry scheduled (a connected hub session is first ended as planned), and
@@ -108,7 +108,7 @@ client's decision.
 
 For a device that never connects to an IoT Hub: the client brings up a provisioning session, keeps
 it up, and never registers or connects to a hub. Feature clients that work over the provisioning
-session (software updates) use it.
+session use it.
 
 - Settled state is `DPS:CONNECTED` + `HUB:IDLE`. `HUB` is never announced.
 - Registration is skipped, not attempted: an enrollment with no linked hub fails registration, and

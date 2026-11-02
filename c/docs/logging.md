@@ -74,7 +74,7 @@ terminator). A longer one is cut to that length and ends in `...`.
 | `ERROR`, `WARN` | Always on | Failures, and state changes caused by a failure, with the reason and the service or transport error code. |
 | `INFO` | Default; enough for most support cases | Configuration at `open()`, every connection state change, each scheduled retry and its delay (connection and provisioning-session), the DPS assignment. |
 | `DEBUG` | Reproducing an issue | Protocol steps, TLS material paths. |
-| `TRACE` | Only when asked | Message bodies, such as software update payloads, and Paho's trace (`AZ_IOT_PAHO_TRACE`). Review before sharing. |
+| `TRACE` | Only when asked | Message bodies and Paho's trace (`AZ_IOT_PAHO_TRACE`). Review before sharing. |
 
 For TLS or MQTT connection issues, set `AZ_IOT_PAHO_TRACE=protocol` and the sink to `TRACE`. See
 [Environment variables](client-configuration.md#environment-variables).
@@ -91,7 +91,6 @@ macros, all in [az_iot_log_components.h](../inc/azure/iot/az_iot_log_components.
 | `connection` | Connection client: open, state changes, retries, MQTT acks |
 | `dps` | Provisioning: registration, assignment |
 | `cert`, `cert_pem` | Issued certificate chains, PEM certificate provider |
-| `su` | Software updates |
 | `paho` | Paho MQTT adapter and TLS |
 | `az_mqtt` | az_mqtt MQTT adapter |
 | `mqttv3_telemetry`, `mqttv3_twin`, `mqttv3_direct_method`, `mqttv3_file_upload`, `c2d` | mqttv3 feature clients |
@@ -127,4 +126,3 @@ Then, by symptom:
 | Device does not connect or keeps reconnecting | `DEBUG` | `AZ_IOT_PAHO_TRACE=protocol` with `TRACE` for TLS failures. |
 | Provisioning fails | `DEBUG` | Lines with the `dps` prefix carry the service error code. |
 | Twin, direct method, telemetry or cloud-to-device issue | `DEBUG` | The relevant `mqttv3_*` or `mqttv5_*` component. |
-| Software update fails | `DEBUG` | `TRACE` only if asked for the update payload. |
