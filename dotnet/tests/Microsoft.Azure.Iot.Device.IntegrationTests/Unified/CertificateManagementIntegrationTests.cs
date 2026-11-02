@@ -66,7 +66,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(dpsCredentials.Password));
         }
 
-        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds, Skip = "Disabled infra")]
         public async Task FileUploadUsesIssuedCertificateInsteadOfSymmetricKey()
         {
             using RSA privateKey = RSA.Create(2048);
