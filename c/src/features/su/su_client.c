@@ -2267,12 +2267,14 @@ static void settle_terminal_report(az_iot_su_client* client, az_iot_result resul
 #define AZ_IOT_SU_RETRY_JITTER_PCT 20u
 
 /**
- * @brief Pace the next fetch/report after a retryable verdict that named no delay.
+ * @brief Pace the next fetch/report after a retryable verdict.
  *
  * Exponential backoff with jitter. Service verdicts, and a report the channel
  * stopped awaiting (AZ_IOT_ERR_TIMEOUT), only: a lost session is paced by the
- * connection client, and a service-named delay by the channel. Never moves a
- * fetch deadline.
+ * connection client. A throttle (429) that names a delay is paced by the
+ * channel alone. A transient failure (5xx) is always backed off: the delay it
+ * names is set by DPS, not the update service, and the channel enforces it
+ * alongside, so the longer of the two applies. Never moves a fetch deadline.
  *
  * @return true if this verdict armed the backoff.
  */
@@ -2284,7 +2286,8 @@ static bool arm_retry_backoff(
 {
   if ((result != AZ_IOT_ERR_DPS && result != AZ_IOT_ERR_TIMEOUT)
       || (action != AZ_IOT_SU_ERROR_ACTION_RETRY && action != AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER)
-      || (service_error != NULL && service_error->retry_after_ms != 0))
+      || (action == AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER && service_error != NULL
+          && service_error->retry_after_ms != 0))
   {
     return false;
   }

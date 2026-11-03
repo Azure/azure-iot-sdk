@@ -359,8 +359,9 @@ is valid only during the callback. Names below omit the `AZ_IOT_SU_EVENT_` prefi
 
 ## Retries, duplicates and cancellation
 
-- **Transient service errors** are retried by the client (1 s doubling to 60 s, or the service's
-  `Retry-After`), within the request timeout.
+- **Transient service errors** are retried by the client (1 s doubling to 60 s, within the request
+  timeout). A throttled request waits for the service's `Retry-After` instead; on a 5xx the
+  `Retry-After` is only a floor for the backoff.
 - **A failed update** offered again is retried after 1 h, doubling up to 24 h, with jitter. The wait
   survives a restart when persistence is set.
 - **A new update while one runs** replaces it until its first `install_fn` call: an update still

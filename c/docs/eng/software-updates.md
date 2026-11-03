@@ -245,13 +245,15 @@ status alone -- 429 throttled,
 | Unknown workflow | 400 `UNKNOWN_WORKFLOW_ID` | Stop reporting the same workflow; report abandonment. |
 | Agent info stale or unknown | 400 `OUTDATED_AGENT_INFO` / `UNKNOWN_AGENT_INFO_VERSION` | Resend the full `agentInfo` and retry. |
 | Throttled | 429 + `Retry-After` | Wait, then retry. |
-| Transient upstream failure | 503 `UPSTREAM_UNAVAILABLE` / 500 `INTERNAL_SERVER_ERROR` | Honor a valid delay, otherwise use backoff; keep the fetch deadline and owed report. |
+| Transient upstream failure | 503 `UPSTREAM_UNAVAILABLE` / 500 `INTERNAL_SERVER_ERROR` | Use backoff, never shorter than a valid delay; keep the fetch deadline and owed report. |
 | Bad request, auth, disabled | 400 / 401 / 403 `FORBIDDEN` | Fix the request or credentials; do not retry unchanged. |
 
 **The device is the only retrier**: DPS makes one attempt per hop. A retryable failure with no
-`Retry-After` is retried after a jittered exponential backoff (1 s doubling to 60 s, ±20%), reset by
-any accepted operation; it counts against the request timeout. A report is retried until the
-service accepts it or rejects it permanently; a rejected report is dropped. While that backoff
+`Retry-After`, and any 5xx, is retried after a jittered exponential backoff (1 s doubling to 60 s,
+±20%), reset by any accepted operation; it counts against the request timeout. A `Retry-After` on
+a 5xx is set by DPS, not the update service, so it is only a floor: the longer of it and the
+backoff applies. A report is retried until the service accepts it or rejects it permanently; a
+rejected report is dropped. While that backoff
 runs, a newer report waits for it and the latest state is sent when it ends. A lost DPS
 session is retried up to `AZ_IOT_SU_CHANNEL_MAX_SESSION_RETRIES` (4) times; the next consecutive
 loss abandons the report for this process (`AZ_IOT_SU_EVENT_OPERATION_ABANDONED`). A terminal

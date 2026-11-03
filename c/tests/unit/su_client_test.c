@@ -10122,23 +10122,23 @@ static void a_no_hint_retryable_report_is_paced(void** state)
   assert_int_equal(count_ops(&fx->log, OP_INSTALL), installs);
 }
 
-/* Only a service verdict that named no delay arms the fallback: a named delay
- * is the channel's, a lost session the connection client's, and a corrective
- * resend is due at once. */
-static void only_a_no_hint_service_verdict_arms_the_fallback(void** state)
+/* A throttle naming its delay does not arm the fallback (the delay is the
+ * channel's), nor does a lost session (the connection client's) or a
+ * corrective resend (due at once). */
+static void a_named_throttle_session_loss_or_resend_does_not_arm_the_fallback(void** state)
 {
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
   assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
 
-  az_iot_su_service_error hinted
-      = { .code = 503000, .message = "", .tracking_id = "", .retry_after_ms = 1000u };
+  az_iot_su_service_error throttled
+      = { .code = 429001, .message = "", .tracking_id = "", .retry_after_ms = 1000u };
   fx->chan.result_cb(
       AZ_IOT_SU_OP_GET_UPDATE,
       AZ_IOT_ERR_DPS,
-      AZ_IOT_SU_ERROR_ACTION_RETRY,
-      &hinted,
+      AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER,
+      &throttled,
       fx->chan.engine_ctx);
   fx->chan.result_cb(
       AZ_IOT_SU_OP_GET_UPDATE,
@@ -10157,6 +10157,60 @@ static void only_a_no_hint_service_verdict_arms_the_fallback(void** state)
 
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.request_update_count, 2);
+}
+
+/** @brief A transient failure (5xx) naming a delay, as DPS sends on every 5xx. */
+static void deliver_transient_failure_naming_a_delay(fixture* fx, az_iot_su_operation operation)
+{
+  az_iot_su_service_error se = {
+    .code = 503000, .message = "UPSTREAM_UNAVAILABLE", .tracking_id = "", .retry_after_ms = 3000u
+  };
+  fx->chan.result_cb(
+      operation, AZ_IOT_ERR_DPS, AZ_IOT_SU_ERROR_ACTION_RETRY, &se, fx->chan.engine_ctx);
+}
+
+/* A delay named on a 5xx does not replace the backoff: a fetch failing again
+ * and again waits longer each time, not just the named delay. */
+static void a_transient_failure_naming_a_delay_still_backs_off(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.request_update_count, 1);
+
+  for (uint32_t attempt = 1u; attempt <= 3u; ++attempt)
+  {
+    uint64_t before = az_iot_time_mono_ms();
+    deliver_transient_failure_naming_a_delay(fx, AZ_IOT_SU_OP_GET_UPDATE);
+    assert_fallback_delay(fx, before, attempt);
+    assert_true(fx->su._internal.pending_fetch_paced);
+
+    pump(fx, 3);
+    assert_int_equal(fx->chan.request_update_count, (int)attempt);
+
+    fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+    assert_int_equal(fx->chan.request_update_count, (int)attempt + 1);
+  }
+}
+
+/* Likewise for a report: a 5xx naming a delay paces its resend. */
+static void a_transient_report_failure_naming_a_delay_still_backs_off(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  finish_with_report_unacknowledged(fx);
+  int sent = fx->chan.report_count;
+
+  uint64_t before = az_iot_time_mono_ms();
+  deliver_transient_failure_naming_a_delay(fx, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_fallback_delay(fx, before, 1u);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, sent);
+
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, sent + 1);
 }
 
 /* A fresh application request is not held by the fallback: the application
@@ -10697,6 +10751,10 @@ static void catalog_engine_error(void** state)
     if (row->delay_ms != 0)
     {
       assert_true(wire_channel(fx)->retry_after_deadline_ms >= before + row->delay_ms);
+    }
+    /* A throttle's named delay replaces the backoff; on a 5xx it is only a floor. */
+    if (row->delay_ms != 0 && row->action == AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER)
+    {
       assert_int_equal(fx->su._internal.retry._internal.due_ms, 0);
     }
     else
@@ -10707,11 +10765,12 @@ static void catalog_engine_error(void** state)
     if (row->delay_ms != 0)
     {
       wire_channel(fx)->retry_after_deadline_ms = az_iot_time_mono_ms();
+      if (row->action != AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER)
+      {
+        assert_wire_pumps_do_not_publish(fx, sent);
+      }
     }
-    else
-    {
-      fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
-    }
+    fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
   }
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), sent + 1);
@@ -11727,7 +11786,11 @@ int main(void)
         a_no_hint_retryable_fetch_is_paced_and_keeps_its_deadline, setup, teardown),
     cmocka_unit_test_setup_teardown(a_no_hint_retryable_report_is_paced, setup, teardown),
     cmocka_unit_test_setup_teardown(
-        only_a_no_hint_service_verdict_arms_the_fallback, setup, teardown),
+        a_named_throttle_session_loss_or_resend_does_not_arm_the_fallback, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_transient_failure_naming_a_delay_still_backs_off, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_transient_report_failure_naming_a_delay_still_backs_off, setup, teardown),
     cmocka_unit_test_setup_teardown(a_new_application_request_is_not_paced, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_stale_fallback_does_not_hold_an_excluded_fetch_retry, setup, teardown),
