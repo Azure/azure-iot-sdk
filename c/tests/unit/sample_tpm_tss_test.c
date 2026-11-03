@@ -139,11 +139,100 @@ static int swtpm_stop(void** state)
   return system(command) == 0 ? 0 : -1;
 }
 
+/**
+ * @brief What a test has open on the swtpm. swtpm serves one client at a time
+ * and has no resource manager, so connections_release() closes these and
+ * flushes leftover transient objects even when an assertion ends a test early.
+ */
+static struct
+{
+  sample_tpm_tss* tpm;
+  ESYS_CONTEXT* esys;
+  TSS2_TCTI_CONTEXT* tcti;
+} opened;
+
 static sample_tpm_tss* open_tpm(uint32_t hmac_key_handle)
 {
-  sample_tpm_tss* tpm = sample_tpm_tss_create(swtpm.tcti, hmac_key_handle);
-  assert_non_null(tpm);
-  return tpm;
+  assert_null(opened.tpm);
+  opened.tpm = sample_tpm_tss_create(swtpm.tcti, hmac_key_handle);
+  assert_non_null(opened.tpm);
+  return opened.tpm;
+}
+
+/** @brief Closes what open_tpm() opened. */
+static void close_tpm(void)
+{
+  sample_tpm_tss_destroy(opened.tpm);
+  opened.tpm = NULL;
+}
+
+/** @brief Opens an ESAPI context on the swtpm, for the test's own commands. */
+static ESYS_CONTEXT* esys_open(void)
+{
+  assert_null(opened.esys);
+  assert_int_equal(Tss2_TctiLdr_Initialize(swtpm.tcti, &opened.tcti), TSS2_RC_SUCCESS);
+  assert_int_equal(Esys_Initialize(&opened.esys, opened.tcti, NULL), TSS2_RC_SUCCESS);
+  return opened.esys;
+}
+
+/** @brief Closes what esys_open() opened. */
+static void esys_close(void)
+{
+  if (opened.esys != NULL)
+  {
+    Esys_Finalize(&opened.esys);
+  }
+  if (opened.tcti != NULL)
+  {
+    Tss2_TctiLdr_Finalize(&opened.tcti);
+  }
+}
+
+/** @brief Flushes every transient object the swtpm holds. */
+static void flush_transient_objects(ESYS_CONTEXT* esys)
+{
+  TPMI_YES_NO more = TPM2_NO;
+  TPMS_CAPABILITY_DATA* caps = NULL;
+  if (Esys_GetCapability(
+          esys,
+          ESYS_TR_NONE,
+          ESYS_TR_NONE,
+          ESYS_TR_NONE,
+          TPM2_CAP_HANDLES,
+          TPM2_TRANSIENT_FIRST,
+          TPM2_MAX_CAP_HANDLES,
+          &more,
+          &caps)
+      != TSS2_RC_SUCCESS)
+  {
+    return;
+  }
+  for (uint32_t i = 0; i < caps->data.handles.count; ++i)
+  {
+    ESYS_TR object = ESYS_TR_NONE;
+    if (Esys_TR_FromTPMPublic(
+            esys, caps->data.handles.handle[i], ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, &object)
+        == TSS2_RC_SUCCESS)
+    {
+      (void)Esys_FlushContext(esys, object);
+    }
+  }
+  Esys_Free(caps);
+}
+
+/** @brief Per-test teardown: releases whatever the test left open. */
+static int connections_release(void** state)
+{
+  (void)state;
+  close_tpm();
+  esys_close();
+  if (Tss2_TctiLdr_Initialize(swtpm.tcti, &opened.tcti) == TSS2_RC_SUCCESS
+      && Esys_Initialize(&opened.esys, opened.tcti, NULL) == TSS2_RC_SUCCESS)
+  {
+    flush_transient_objects(opened.esys);
+  }
+  esys_close();
+  return 0;
 }
 
 static void expected_hmac(
@@ -225,10 +314,7 @@ static size_t build_dps_key(
     size_t hmac_key_len,
     uint8_t out[DPS_KEY_MAX])
 {
-  TSS2_TCTI_CONTEXT* tcti = NULL;
-  ESYS_CONTEXT* esys = NULL;
-  assert_int_equal(Tss2_TctiLdr_Initialize(swtpm.tcti, &tcti), TSS2_RC_SUCCESS);
-  assert_int_equal(Esys_Initialize(&esys, tcti, NULL), TSS2_RC_SUCCESS);
+  ESYS_CONTEXT* esys = esys_open();
 
   ESYS_TR ek_handle = load_public(esys, ek, ek_len);
   ESYS_TR srk_handle = load_public(esys, srk, srk_len);
@@ -386,8 +472,7 @@ static size_t build_dps_key(
   (void)Esys_FlushContext(esys, key);
   (void)Esys_FlushContext(esys, parent);
   (void)Esys_FlushContext(esys, srk_handle);
-  Esys_Finalize(&esys);
-  Tss2_TctiLdr_Finalize(&tcti);
+  esys_close();
   return len;
 }
 
@@ -408,7 +493,7 @@ static size_t dps_key_for_tpm(
   memcpy(ek, pub, ek_len);
   sample_tpm_tss_srk_public(tpm, &pub, &srk_len);
   memcpy(srk, pub, srk_len);
-  sample_tpm_tss_destroy(tpm);
+  close_tpm();
   return build_dps_key(ek, ek_len, srk, srk_len, hmac_key, hmac_key_len, out);
 }
 
@@ -437,7 +522,7 @@ static void public_areas_are_rsa2048_ek_and_srk(void** state)
   assert_int_equal(srk.publicArea.type, TPM2_ALG_RSA);
   assert_int_equal(srk.publicArea.objectAttributes, 0x00030472u);
   assert_int_equal(srk.publicArea.unique.rsa.size, 256);
-  sample_tpm_tss_destroy(tpm);
+  close_tpm();
 
   /* Primaries are deterministic: the same EK, so the same registration ID, next time. */
   tpm = open_tpm(HANDLE_FOR_TESTS);
@@ -450,7 +535,7 @@ static void public_areas_are_rsa2048_ek_and_srk(void** state)
   assert_int_equal(
       Tss2_MU_TPM2B_PUBLIC_Unmarshal(again, again_len, &offset, &ek_again), TSS2_RC_SUCCESS);
   assert_memory_equal(ek_again.publicArea.unique.rsa.buffer, ek.publicArea.unique.rsa.buffer, 256);
-  sample_tpm_tss_destroy(tpm);
+  close_tpm();
 }
 
 static void hmac_fails_before_a_key_is_imported(void** state)
@@ -462,7 +547,7 @@ static void hmac_fails_before_a_key_is_imported(void** state)
   az_iot_dps_tpm_ops ops = sample_tpm_tss_ops(tpm);
   assert_int_equal(
       ops.hmac_sha256(ops.ctx, (const uint8_t*)MESSAGE, strlen(MESSAGE), mac), AZ_IOT_ERR_INTERNAL);
-  sample_tpm_tss_destroy(tpm);
+  close_tpm();
 }
 
 static void imports_the_dps_key_and_persists_it(void** state)
@@ -484,13 +569,13 @@ static void imports_the_dps_key_and_persists_it(void** state)
       ops.hmac_sha256(ops.ctx, (const uint8_t*)MESSAGE, strlen(MESSAGE), mac), AZ_IOT_OK);
   expected_hmac(first, sizeof(first), MESSAGE, expected);
   assert_memory_equal(mac, expected, sizeof(mac));
-  sample_tpm_tss_destroy(tpm);
+  close_tpm();
 
   /* Persisted: a new session signs with it without importing. */
   tpm = open_tpm(HANDLE_FOR_TESTS);
   assert_true(sample_tpm_tss_hmac(tpm, (const uint8_t*)MESSAGE, strlen(MESSAGE), mac));
   assert_memory_equal(mac, expected, sizeof(mac));
-  sample_tpm_tss_destroy(tpm);
+  close_tpm();
 
   /* A later key (re-registration, or the hub key) replaces it. */
   key_len = dps_key_for_tpm(second, sizeof(second), key);
@@ -500,7 +585,7 @@ static void imports_the_dps_key_and_persists_it(void** state)
   assert_true(sample_tpm_tss_hmac(tpm, (const uint8_t*)MESSAGE, strlen(MESSAGE), mac));
   expected_hmac(second, sizeof(second), MESSAGE, expected);
   assert_memory_equal(mac, expected, sizeof(mac));
-  sample_tpm_tss_destroy(tpm);
+  close_tpm();
 }
 
 static void a_tampered_or_malformed_key_is_refused(void** state)
@@ -518,23 +603,7 @@ static void a_tampered_or_malformed_key_is_refused(void** state)
   assert_int_equal(ops.import_key(ops.ctx, key, key_len - 1), AZ_IOT_ERR_PROTOCOL);
   assert_int_equal(ops.import_key(ops.ctx, key, 3), AZ_IOT_ERR_PROTOCOL);
   assert_int_equal(ops.import_key(NULL, key, key_len), AZ_IOT_ERR_PROTOCOL);
-  sample_tpm_tss_destroy(tpm);
-}
-
-/** @brief Opens an ESAPI context on the swtpm. */
-static ESYS_CONTEXT* esys_open(TSS2_TCTI_CONTEXT** tcti)
-{
-  ESYS_CONTEXT* esys = NULL;
-  assert_int_equal(Tss2_TctiLdr_Initialize(swtpm.tcti, tcti), TSS2_RC_SUCCESS);
-  assert_int_equal(Esys_Initialize(&esys, *tcti, NULL), TSS2_RC_SUCCESS);
-  return esys;
-}
-
-/** @brief Closes what esys_open() opened. */
-static void esys_close(ESYS_CONTEXT** esys, TSS2_TCTI_CONTEXT** tcti)
-{
-  Esys_Finalize(esys);
-  Tss2_TctiLdr_Finalize(tcti);
+  close_tpm();
 }
 
 /**
@@ -672,13 +741,12 @@ static void provisioned_ek_and_srk_are_used_and_kept(void** state)
   memcpy(ek, pub, ek_len);
   sample_tpm_tss_srk_public(tpm, &pub, &srk_len);
   memcpy(srk, pub, srk_len);
-  sample_tpm_tss_destroy(tpm);
+  close_tpm();
 
-  TSS2_TCTI_CONTEXT* tcti = NULL;
-  ESYS_CONTEXT* esys = esys_open(&tcti);
+  ESYS_CONTEXT* esys = esys_open();
   persist_primary(esys, ESYS_TR_RH_ENDORSEMENT, ek, ek_len, SAMPLE_TPM_TSS_EK_HANDLE);
   persist_primary(esys, ESYS_TR_RH_OWNER, srk, srk_len, SAMPLE_TPM_TSS_SRK_HANDLE);
-  esys_close(&esys, &tcti);
+  esys_close();
 
   size_t key_len = dps_key_for_tpm(bytes, sizeof(bytes), key);
   tpm = open_tpm(HANDLE_FOR_TESTS);
@@ -688,23 +756,23 @@ static void provisioned_ek_and_srk_are_used_and_kept(void** state)
   assert_true(sample_tpm_tss_hmac(tpm, (const uint8_t*)MESSAGE, strlen(MESSAGE), mac));
   expected_hmac(bytes, sizeof(bytes), MESSAGE, expected);
   assert_memory_equal(mac, expected, sizeof(mac));
-  sample_tpm_tss_destroy(tpm);
+  close_tpm();
 
   /* Destroy releases the persistent primaries without evicting them. */
-  esys = esys_open(&tcti);
+  esys = esys_open();
   assert_true(persistent_exists(esys, SAMPLE_TPM_TSS_EK_HANDLE));
   assert_true(persistent_exists(esys, SAMPLE_TPM_TSS_SRK_HANDLE));
-  esys_close(&esys, &tcti);
+  esys_close();
   tpm = open_tpm(HANDLE_FOR_TESTS);
   assert_publics(tpm, ek, ek_len, srk, srk_len);
   assert_true(sample_tpm_tss_hmac(tpm, (const uint8_t*)MESSAGE, strlen(MESSAGE), mac));
   assert_memory_equal(mac, expected, sizeof(mac));
-  sample_tpm_tss_destroy(tpm);
+  close_tpm();
 
-  esys = esys_open(&tcti);
+  esys = esys_open();
   evict_persistent(esys, SAMPLE_TPM_TSS_EK_HANDLE);
   evict_persistent(esys, SAMPLE_TPM_TSS_SRK_HANDLE);
-  esys_close(&esys, &tcti);
+  esys_close();
 }
 
 static void create_rejects_a_non_persistent_or_reserved_handle(void** state)
@@ -720,12 +788,13 @@ static void create_rejects_a_non_persistent_or_reserved_handle(void** state)
 int main(void)
 {
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(create_rejects_a_non_persistent_or_reserved_handle),
-    cmocka_unit_test(public_areas_are_rsa2048_ek_and_srk),
-    cmocka_unit_test(hmac_fails_before_a_key_is_imported),
-    cmocka_unit_test(imports_the_dps_key_and_persists_it),
-    cmocka_unit_test(a_tampered_or_malformed_key_is_refused),
-    cmocka_unit_test(provisioned_ek_and_srk_are_used_and_kept),
+    cmocka_unit_test_teardown(
+        create_rejects_a_non_persistent_or_reserved_handle, connections_release),
+    cmocka_unit_test_teardown(public_areas_are_rsa2048_ek_and_srk, connections_release),
+    cmocka_unit_test_teardown(hmac_fails_before_a_key_is_imported, connections_release),
+    cmocka_unit_test_teardown(imports_the_dps_key_and_persists_it, connections_release),
+    cmocka_unit_test_teardown(a_tampered_or_malformed_key_is_refused, connections_release),
+    cmocka_unit_test_teardown(provisioned_ek_and_srk_are_used_and_kept, connections_release),
   };
   return cmocka_run_group_tests(tests, swtpm_start, swtpm_stop);
 }
