@@ -5,22 +5,18 @@
 # FetchContent for the same reason as azure-sdk-for-c (no vcpkg dependency).
 include(FetchContent)
 
-# Keep the commit for this tag in c/cgmanifest.json.
-set(CMOCKA_TAG "cmocka-1.1.7" CACHE STRING "cmocka git tag")
-# cmocka is developed on GitLab; git.cryptomilk.org is the maintainer's older
-# host and is the less reliable of the two. On 2026-08-05 it began answering
-# clones with "info/refs not valid: could not determine hash algorithm", which
-# broke every configuration that builds the unit tests -- main included --
-# because this is the only dependency we fetch at configure time.
-#
-# Both serve the same code: the cmocka-1.1.7 tag resolves to commit
-# a01cc69ee9536f90e57c61a198f2d1944d3d4313 on either host. (On GitLab the tag
-# is annotated, so refs/tags/cmocka-1.1.7 is a tag object; peeling it with ^{}
-# gives that commit.)
-#
-# Still overridable, so a mirror or a local clone can be substituted:
-#   cmake -DCMOCKA_REPO=<url> ...
-set(CMOCKA_REPO "https://gitlab.com/cmocka/cmocka.git" CACHE STRING "cmocka git repository")
+# cmocka's signed release tarball from cmocka.org, pinned by hash; keep it in
+# c/cgmanifest.json. Not the git repository: its GitLab home is blocked by the
+# network isolation of the official Azure Pipelines build, and its older host,
+# git.cryptomilk.org, has failed clones since 2026-08-05.
+# Overridable, so a mirror or a local copy (file://) can be substituted:
+#   cmake -DCMOCKA_URL=<url> ...
+set(CMOCKA_URL "https://cmocka.org/files/1.1/cmocka-1.1.7.tar.xz" CACHE STRING "cmocka release tarball")
+set(CMOCKA_SHA256 "810570eb0b8d64804331f82b29ff47c790ce9cd6b163e98d47a4807047ecad82" CACHE STRING "SHA-256 of CMOCKA_URL")
+# Extracted files get the extraction time, so a changed URL rebuilds cmocka.
+if(POLICY CMP0135)
+    cmake_policy(SET CMP0135 NEW)
+endif()
 
 # cmocka's single `cmocka` target follows BUILD_SHARED_LIBS. Force static here so
 # downstream test exes don't need a runtime DLL on Windows. Restore afterward
@@ -38,9 +34,8 @@ set(CMAKE_WARN_DEPRECATED OFF CACHE BOOL "" FORCE)
 
 FetchContent_Declare(
     cmocka
-    GIT_REPOSITORY ${CMOCKA_REPO}
-    GIT_TAG        ${CMOCKA_TAG}
-    GIT_SHALLOW    TRUE
+    URL            ${CMOCKA_URL}
+    URL_HASH       SHA256=${CMOCKA_SHA256}
     PATCH_COMMAND  ${CMAKE_COMMAND} -P ${CMAKE_CURRENT_SOURCE_DIR}/../cmake/patch_cmocka_symlink.cmake
 )
 FetchContent_MakeAvailable(cmocka)

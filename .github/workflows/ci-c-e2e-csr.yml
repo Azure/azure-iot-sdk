@@ -165,7 +165,7 @@ jobs:
 
       - name: Provision cert-management resources
         id: provision
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@9109e1ce6d9d19bbc750f4715b85db1f5167190e # v1.0.1 + dps-symmkey-group-enrollment-devices (#456)
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@2fc8ffebbdc13476890b15fee48e304b1e135ce3 # v1.0.1 + #456 + #457 + retry on 5xx (#459)
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # The shared action defaults to EastUS; these pipelines run in
@@ -389,7 +389,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Delete Azure resources
-        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@b96d2aa2eb2b36e1e4dfbdb04aa56cf3dccecf8a # v1.0.1
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@2fc8ffebbdc13476890b15fee48e304b1e135ce3 # v1.0.1 + SHA-pinned azure/powershell (#457)
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}
 
