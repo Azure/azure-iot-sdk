@@ -64,6 +64,17 @@ extern "C"
   az_iot_result az_iot_su__report_state(az_iot_su_client* client);
 
   /**
+   * @brief Build the FAILED report of the refused update named by
+   * `refused_workflow_id`, with `refused_extended_result_code`.
+   *
+   * @param[in] client The client.
+   * @param[out] v     The report; it points into @p v.
+   */
+  void az_iot_su__build_refused_report_view(
+      const az_iot_su_client* client,
+      az_iot_su__report_view* v);
+
+  /**
    * @brief Hand the channel the FAILED report of the refused update named by
    * `refused_workflow_id`, with `refused_extended_result_code`.
    *

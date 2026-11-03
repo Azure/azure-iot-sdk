@@ -337,20 +337,25 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
   return sent;
 }
 
+void az_iot_su__build_refused_report_view(const az_iot_su_client* client, az_iot_su__report_view* v)
+{
+  memset(&v->report, 0, sizeof(v->report));
+  memcpy(v->workflow_id, SU_I(client).refused_workflow_id, sizeof(v->workflow_id));
+  az_iot_su__format_extended_result_code(
+      v->extended, sizeof(v->extended), SU_I(client).refused_extended_result_code);
+  v->report.workflow_id = v->workflow_id;
+  v->report.installed_update_id = cached_installed_update_id(client, v);
+  v->report.outcome = AZ_IOT_SU_OUTCOME_FAILED;
+  v->report.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE;
+  /* Non-positive and naming the facility, as for a failed step. */
+  v->report.result_code = -(int32_t)AZ_IOT_SU_FACILITY_REFUSED;
+  v->report.extended_result_codes = v->extended;
+}
+
 az_iot_result az_iot_su__report_refused_update(az_iot_su_client* client)
 {
   az_iot_su__report_view v;
-  memset(&v.report, 0, sizeof(v.report));
-  memcpy(v.workflow_id, SU_I(client).refused_workflow_id, sizeof(v.workflow_id));
-  az_iot_su__format_extended_result_code(
-      v.extended, sizeof(v.extended), SU_I(client).refused_extended_result_code);
-  v.report.workflow_id = v.workflow_id;
-  v.report.installed_update_id = cached_installed_update_id(client, &v);
-  v.report.outcome = AZ_IOT_SU_OUTCOME_FAILED;
-  v.report.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE;
-  /* Non-positive and naming the facility, as for a failed step. */
-  v.report.result_code = -(int32_t)AZ_IOT_SU_FACILITY_REFUSED;
-  v.report.extended_result_codes = v.extended;
+  az_iot_su__build_refused_report_view(client, &v);
   return SU_I(client).channel.vtable->report(SU_I(client).channel.ctx, &v.report);
 }
 

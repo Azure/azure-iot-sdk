@@ -496,11 +496,18 @@ superseded. The client MUST distinguish:
 
 A refused update whose `workflowId` is known (decodable, at most
 `AZ_IOT_SU_WORKFLOW_ID_SIZE` bytes, and not the active workflow's) is reported
-`FAILED` with facility `0xB`, so the service stops offering it. The report is
-sent from `do_work`, before any update check, and retried after the backoff on
-a retryable verdict. Only the last refusal is kept, a newly accepted workflow
+`FAILED` with facility `0xB`, so the service and its deployment record the
+failure instead of an offer left unanswered. As for any `FAILED` workflow, the
+service keeps re-offering it (Failed-workflow retries above); each re-offer is
+refused again, and not reported again once the service accepted the report.
+The report is sent from `do_work`, before any update check, and raises
+`REPORT_ACCEPTED` or `OPERATION_ABANDONED` as any terminal report does, but no
+`WORKFLOW_COMPLETED`. It is sent again after the backoff on a retryable verdict
+or at once when the service asks for the agent information; a conflict queues
+one update check. Only the last refusal is kept, a newly accepted workflow
 drops it, and it is not persisted: a redelivery after a restart is refused and
-reported again.
+reported again. The `workflowId` is read from the root object whatever the
+order or validity of the other properties.
 
 A deployment is validated as a whole, so from its first `install_fn` call it is
 not interleaved with another: a partly applied or not yet activated deployment

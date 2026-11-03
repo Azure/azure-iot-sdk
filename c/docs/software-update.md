@@ -420,10 +420,11 @@ PC samples run on Linux and Windows.
   is downloaded (`AZ_IOT_SU_MANIFEST_ERROR_*`).
 - No built-in health check or automatic rollback after a reboot.
 - `AZ_IOT_SU_REPLACEMENT_ROLLBACK` is not supported yet.
-- An update refused by the device (`UPDATE_REFUSED`) is reported `FAILED` (facility `0xB`) so the
-  service stops offering it, unless its workflow ID is missing, undecodable or longer than
-  `AZ_IOT_SU_WORKFLOW_ID_SIZE`. That report is not persisted: after a restart, an offer refused
-  again is reported again.
+- An update refused by the device (`UPDATE_REFUSED`) is reported `FAILED` once (facility `0xB`),
+  unless its workflow ID is missing, undecodable or longer than `AZ_IOT_SU_WORKFLOW_ID_SIZE`. The
+  service records the failure but, as for any failed workflow, keeps offering it while the
+  deployment applies; each offer is refused again. Fix the update or raise the limit. The report is
+  not persisted: after a restart, the next refusal is reported again.
 - A skipped update is reported with result code -1.
 - During a service outage a check is retried until its timeout, not deferred to the next scheduled
   check.

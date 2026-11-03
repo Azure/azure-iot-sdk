@@ -10305,8 +10305,85 @@ static void a_refused_update_is_reported_failed(void** state)
   assert_true(fx->chan.last_had_installed_update_id);
   assert_string_equal(fx->chan.last_installed_version, "1.0");
   assert_int_equal(fx->completed_count, 0);
+  assert_int_equal(fx->accepted_report_count, 1);
+  assert_string_equal(fx->accepted_workflow_id, "wf-refused");
+  assert_int_equal(fx->accepted_report_outcome, AZ_IOT_SU_OUTCOME_FAILED);
   assert_false(fx->su._internal.refused_report_owed);
   assert_false(fx->su._internal.refused_report_in_flight);
+
+  /* The service re-offers a FAILED workflow: refused again, not reported again. */
+  inject_patch(fx, REFUSED_PATCH);
+  assert_int_equal(fx->refused_count, 2);
+  pump(fx, 5);
+  assert_int_equal(fx->chan.report_count, 1);
+}
+
+/* The workflow id is found wherever it sits: a property refused before it is
+ * read does not hide it. */
+static void a_refused_update_is_reported_whatever_its_property_order(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  inject_patch(
+      fx,
+      "{\"fileUrls\":{\"f\":1,\"g\":{\"x\":[1]}},\"workflowId\":\"wf-refused\","
+      "\"updateManifest\":\"{}\"}");
+  assert_int_equal(fx->refused_count, 1);
+  pump(fx, 5);
+  assert_int_equal(fx->chan.report_count, 1);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-refused");
+  assert_string_equal(fx->chan.last_extended, "b0000002");
+}
+
+/* A refused update's report the service asks to resend with the agent
+ * information stays owed and is sent again. */
+static void a_refused_update_report_is_resent_with_agent_info(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_verdict_deferred = true;
+  inject_patch(fx, REFUSED_PATCH);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, 1);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO,
+      &(az_iot_su_service_error){ .code = 409001, .message = "", .tracking_id = "" },
+      fx->chan.engine_ctx);
+  assert_true(fx->su._internal.refused_report_owed);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, 2);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-refused");
+}
+
+/* A conflict on a refused update's report is abandoned and, as for any report,
+ * queues one update check. */
+static void a_conflicting_refused_update_report_queues_a_check(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->chan.report_verdict_deferred = true;
+  inject_patch(fx, REFUSED_PATCH);
+  pump(fx, 3);
+  int checks = fx->chan.request_update_count;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_RECHECK,
+      &(az_iot_su_service_error){ .code = 409000, .message = "", .tracking_id = "" },
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_int_equal(fx->completed_count, 0);
+  assert_false(fx->su._internal.refused_report_owed);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.request_update_count, checks + 1);
+  assert_int_equal(fx->chan.report_count, 1);
 }
 
 /* The active workflow's id, refused on redelivery, is not reported FAILED: its
@@ -11876,6 +11953,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_synchronous_retryable_report_verdict_is_not_lost, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_update_is_reported_failed, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_update_is_reported_whatever_its_property_order, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_update_report_is_resent_with_agent_info, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_conflicting_refused_update_report_queues_a_check, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_redelivery_of_the_active_workflow_is_not_reported, setup, teardown),
     cmocka_unit_test_setup_teardown(

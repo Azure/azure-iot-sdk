@@ -944,9 +944,11 @@ extern "C"
      * az_iot_su_limits::max_update_size; AZ_IOT_ERR_PROTOCOL when the payload
      * cannot be decoded (not JSON, a required field missing or of the wrong
      * type, or an invalid string escape). Raised again on each redelivery.
-     * The update is reported FAILED (AZ_IOT_SU_FACILITY_REFUSED), so the
-     * service stops offering it, unless its workflow id is missing, cannot be
-     * decoded, exceeds AZ_IOT_SU_WORKFLOW_ID_SIZE or is the active workflow's. */
+     * The update is reported FAILED (AZ_IOT_SU_FACILITY_REFUSED) once, so the
+     * service records the failure, unless its workflow id is missing, cannot
+     * be decoded, exceeds AZ_IOT_SU_WORKFLOW_ID_SIZE or is the active
+     * workflow's. The service re-offers a FAILED workflow; a re-offer of one
+     * already reported is not reported again. */
     AZ_IOT_SU_EVENT_UPDATE_REFUSED,
 
     /* A delivered update with a new workflow id was not started because the
@@ -1385,6 +1387,8 @@ extern "C"
       bool refused_report_owed;
       /** The refused update's FAILED report awaits its verdict. */
       bool refused_report_in_flight;
+      /** The service accepted the FAILED report of `refused_workflow_id`. */
+      bool refused_report_accepted;
     } _internal;
   } az_iot_su_client;
 
