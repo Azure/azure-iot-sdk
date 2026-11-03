@@ -57,6 +57,13 @@ $script:TestDeltaHandlerId = 'sdke2e/xor-delta:1'
 # vectors, shared with the unit tests: target.swu = source.swu + delta.bin.
 $script:MicrosoftDeltaHandlerId = 'microsoft/delta:1'
 $script:DeltaVectorsDir = Join-Path $PSScriptRoot '../../unit/data/su_delta'
+# Device Update limit on the update names of one provider (Standard SKU).
+$script:MaxUpdateNamesPerProvider = 25
+# Blob a standing offer set's RunId is appended to, overwritten by each run that uses the set.
+$script:OfferSetUseMarkerPrefix = 'sdke2e/used/'
+# Hours a run of ci-c-e2e-adu.yml may use the offer set it staged (offers job, then e2e-su job):
+# a set used more recently is never deleted to make room.
+$script:OfferSetInUseHours = 8
 
 # Scenario name -> device-suite variable holding its model, and the per-device
 # job result status the service is expected to record once the suite has run.
@@ -77,6 +84,11 @@ $script:Scenarios = [ordered]@{
     DELTA_NO_SOURCE   = @{ Short = 'nosrc'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DELTA_NO_SOURCE'; Expected = 'Succeeded'; Delta = 'Test' }
     # The reference microsoft/delta:1 handler and the real delta processor.
     MICROSOFT_DELTA   = @{ Short = 'msdelta'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA'; Expected = 'Succeeded'; Delta = 'Microsoft' }
+    # Detached = $true: an update manifest over 4,096 bytes, which the service offers as a
+    # signed mini manifest (see Import-SuE2EUpdate); managed and library mode. The device suite
+    # reads Expected too (<Variable>_EXPECTED): Failed while the client refuses mini manifests.
+    DETACHED              = @{ Short = 'mini'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED'; Expected = 'Failed'; Detached = $true }
+    DETACHED_LIBRARY_MODE = @{ Short = 'minilib'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_LIBRARY_MODE'; Expected = 'Failed'; Detached = $true }
 }
 
 function Get-SuE2EConfig {
@@ -286,6 +298,9 @@ function Get-SuE2EJobsUri([hashtable]$Config) {
                  file XOR Get-SuE2EDeltaSource.
       Microsoft  microsoft/delta:1; the file is target.swu, the related file
                  delta.bin, the source source.swu ($script:DeltaVectorsDir).
+    With -Detached, the step's handler properties are padded until the update
+    manifest the service generates is well over 4,096 bytes (about 6.5 KB), so
+    the service offers a signed mini manifest that names it as a detached file.
 #>
 function Import-SuE2EUpdate {
     param(
@@ -297,6 +312,7 @@ function Import-SuE2EUpdate {
         [Parameter(Mandatory)][string]$Model,
         [Parameter(Mandatory)][string]$WorkDir,
         [ValidateSet('', 'Test', 'Microsoft')][string]$Delta = '',
+        [switch]$Detached,
         # Receives each uploaded blob name as soon as it exists, for cleanup.
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Blobs,
         # Called after each upload, so the caller can persist $Blobs at once.
@@ -348,6 +364,12 @@ function Import-SuE2EUpdate {
         $payloadFile.downloadHandler = @{ id = $handlerId }
     }
 
+    $handlerProperties = [ordered]@{ installedCriteria = $Version }
+    if ($Detached) {
+        # Kept in the update manifest, unlike unknown import manifest fields, which the service drops.
+        for ($i = 0; $i -lt 12; $i++) { $handlerProperties["sdke2ePadding$i"] = 'p' * 500 }
+    }
+
     $manifest = [ordered]@{
         updateId        = [ordered]@{ provider = $Provider; name = $Name; version = $Version }
         compatibility   = @([ordered]@{ manufacturer = $Manufacturer; model = $Model })
@@ -355,7 +377,7 @@ function Import-SuE2EUpdate {
             steps = @([ordered]@{
                     handler           = 'microsoft/swupdate:1'
                     files             = @("$Model.bin")
-                    handlerProperties = @{ installedCriteria = $Version }
+                    handlerProperties = $handlerProperties
                 })
         }
         files           = @($payloadFile)
@@ -593,7 +615,9 @@ function Get-SuE2EFixtureTag {
             [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData(
                     [System.IO.File]::ReadAllBytes((Join-Path $script:DeltaVectorsDir $_))))
         }) -join ','
-    $text += ($script:Scenarios.Keys | ForEach-Object { "$_=$($script:Scenarios[$_].Short)/$($script:Scenarios[$_]['Delta'])" }) -join ','
+    $text += ($script:Scenarios.Keys | ForEach-Object {
+            "$_=$($script:Scenarios[$_].Short)/$($script:Scenarios[$_]['Delta'])/$($script:Scenarios[$_]['Detached'])"
+        }) -join ','
     $hash = [System.Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($text -replace "`r`n", "`n")))
     return [Convert]::ToHexString($hash).Substring(0, 8).ToLowerInvariant()
 }
@@ -601,13 +625,18 @@ function Get-SuE2EFixtureTag {
 <#
 .SYNOPSIS
     Exports the variables the device suites read for the offers staged under
-    -RunId (also to $env:GITHUB_ENV when set). No remote call.
+    -RunId (also to $env:GITHUB_ENV when set): per scenario its model, and as
+    <Variable>_EXPECTED its expected job result. No remote call.
 #>
 function Export-SuE2EOfferVariables {
     param([Parameter(Mandatory)][string]$RunId)
     $names = Get-SuE2EOfferNames -RunId $RunId
     $exports = [ordered]@{ AZ_IOT_E2E_SU_OFFER_MANUFACTURER = $names.Manufacturer }
-    foreach ($scenario in $names.Offers.Keys) { $exports[$script:Scenarios[$scenario].Variable] = $names.Offers[$scenario].Model }
+    foreach ($scenario in $names.Offers.Keys) {
+        $s = $script:Scenarios[$scenario]
+        $exports[$s.Variable] = $names.Offers[$scenario].Model
+        $exports["$($s.Variable)_EXPECTED"] = $s.Expected
+    }
     foreach ($k in $exports.Keys) {
         Set-Item -Path "env:$k" -Value $exports[$k]
         if ($env:GITHUB_ENV) { Add-Content -Path $env:GITHUB_ENV -Value "$k=$($exports[$k])" }
@@ -664,7 +693,15 @@ function New-SuE2EOffers {
             Run    = $null
         }
     }
+    # Marks this set as used now, keyed by its tag as pruning groups sets. Recorded with the first
+    # offer, so Remove-SuE2EOffers deletes it.
+    $marker = $script:OfferSetUseMarkerPrefix + (@($names.Offers.Values)[0].Model -split '-')[1]
+    @($state.Offers.Values)[0].Blobs.Add($marker)
     & $save
+    az storage blob upload --auth-mode login --account-name $config.STORAGE_ACCOUNT --container-name $config.STORAGE_CONTAINER `
+        --name $marker --data (Get-Date -AsUTC -Format o) --overwrite --only-show-errors | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Upload of $marker failed" }
+    Remove-SuE2EOfferSetsToFit -Config $config -RunId $RunId
 
     foreach ($scenario in $names.Offers.Keys) {
         $n = $names.Offers[$scenario]
@@ -681,7 +718,8 @@ function New-SuE2EOffers {
                 try {
                     [void](Import-SuE2EUpdate -Config $config -Provider 'sdke2e' -Name $n.Model `
                             -Version '1.0.0' -Manufacturer $manufacturer -Model $n.Model -WorkDir $WorkDir `
-                            -Delta "$($script:Scenarios[$scenario]['Delta'])" -Blobs $offer.Blobs -OnChange $save)
+                            -Delta "$($script:Scenarios[$scenario]['Delta'])" -Detached:([bool]$script:Scenarios[$scenario]['Detached']) `
+                            -Blobs $offer.Blobs -OnChange $save)
                     break
                 }
                 catch {
@@ -781,16 +819,95 @@ function Test-SuE2EOffers {
 
 <#
 .SYNOPSIS
+    Makes room for the offers of -RunId under the provider's update name limit
+    by deleting other runs' offer sets (jobs, updates, blobs), least recently
+    imported first. Deletes nothing while the offers fit.
+
+.DESCRIPTION
+    Standing offer sets are kept for reuse, so each fixture change leaves one
+    behind; the provider holds at most $script:MaxUpdateNamesPerProvider names.
+    A run still using an evicted set fails; the next run stages it again.
+#>
+function Remove-SuE2EOfferSetsToFit {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$RunId
+    )
+    $wanted = @((Get-SuE2EOfferNames -RunId $RunId).Offers.Values | ForEach-Object { $_.Model })
+    $base = "https://$($Config.ADU_ENDPOINT)"
+    $updates = @()
+    $uri = "$base/updates?api-version=$script:ApiVersion"
+    while ($uri) {
+        $page = (Invoke-SuE2ERest -Method Get -Uri $uri -Resource $script:AduScope).Body
+        $updates += @($page.value | Where-Object { $_.updateId.provider -eq 'sdke2e' })
+        $uri = if ($page.PSObject.Properties['nextLink'] -and $page.nextLink) { $page.nextLink } else { $null }
+        if ($uri -and $uri -notmatch '^https?://') { $uri = "$base$uri" }
+    }
+    $names = @($updates | ForEach-Object { $_.updateId.name } | Sort-Object -Unique)
+    $excess = $names.Count + @($wanted | Where-Object { $_ -notin $names }).Count - $script:MaxUpdateNamesPerProvider
+    if ($excess -le 0) { return }
+
+    $lastUse = @{}
+    $markers = az storage blob list --auth-mode login --account-name $Config.STORAGE_ACCOUNT --container-name $Config.STORAGE_CONTAINER `
+        --prefix $script:OfferSetUseMarkerPrefix --query '[].{name:name, modified:properties.lastModified}' -o json
+    if ($LASTEXITCODE -ne 0) { throw 'Listing the offer set use markers failed' }
+    foreach ($marker in @($markers | ConvertFrom-Json)) {
+        $lastUse[$marker.name.Substring($script:OfferSetUseMarkerPrefix.Length)] = ([datetime]$marker.modified).ToUniversalTime()
+    }
+    # Other sets: models e2e-<tag>-<short> (Get-SuE2EOfferNames) of another tag, last used (use
+    # marker, else import) before a run that may still use them began; least recently used first.
+    $idleBefore = (Get-Date).ToUniversalTime().AddHours(-$script:OfferSetInUseHours)
+    $sets = @($updates | Where-Object { $_.updateId.name -notin $wanted -and $_.updateId.name -match '^e2e-[a-z0-9]+-[a-z]+$' } |
+            Group-Object { ($_.updateId.name -split '-')[1] } | ForEach-Object {
+                $used = if ($lastUse.ContainsKey($_.Name)) { $lastUse[$_.Name] } else {
+                    ($_.Group | ForEach-Object {
+                        if ($_.PSObject.Properties['importedDateTime']) { ([datetime]$_.importedDateTime).ToUniversalTime() } else { [datetime]::MinValue }
+                    } | Measure-Object -Maximum).Maximum
+                }
+                $_ | Add-Member -NotePropertyName LastUse -NotePropertyValue $used -PassThru
+            } | Where-Object { $_.LastUse -lt $idleBefore } | Sort-Object LastUse)
+    foreach ($set in $sets) {
+        if ($excess -le 0) { break }
+        $offers = @($set.Group | ForEach-Object {
+                $id = $_.updateId
+                $blobs = @(az storage blob list --auth-mode login --account-name $Config.STORAGE_ACCOUNT `
+                        --container-name $Config.STORAGE_CONTAINER --prefix "sdke2e/$($id.name)/" --query '[].name' -o tsv)
+                if ($LASTEXITCODE -ne 0) { throw "Listing the blobs of $($id.name) failed" }
+                @{ Job = "su-$($id.name)"; Update = "updates/providers/sdke2e/names/$($id.name)/versions/$($id.version)"; Blobs = $blobs }
+            })
+        $offers[0].Blobs = @($offers[0].Blobs) + "$script:OfferSetUseMarkerPrefix$($set.Name)"
+        $setNames = @($set.Group | ForEach-Object { $_.updateId.name } | Sort-Object -Unique)
+        Write-Warning "Provider sdke2e is $excess update name(s) over its limit: deleting offer set '$($set.Name)' ($($setNames -join ', '))"
+        Remove-SuE2EOfferItems -Config $Config -Offers $offers
+        $excess -= $setNames.Count
+    }
+    if ($excess -gt 0) { throw "Provider sdke2e is $excess update name(s) over its limit of $script:MaxUpdateNamesPerProvider after deleting the offer sets unused for $script:OfferSetInUseHours h" }
+}
+
+<#
+.SYNOPSIS
     Deletes the jobs and updates recorded in -StatePath. Best effort: every
     item is attempted, and the first error is rethrown at the end.
 #>
 function Remove-SuE2EOffers {
     param([Parameter(Mandatory)][string]$StatePath)
     if (-not (Test-Path $StatePath)) { return }
-    $config = Get-SuE2EConfig
     $state = Get-Content -Raw -Path $StatePath | ConvertFrom-Json -AsHashtable
+    Remove-SuE2EOfferItems -Config (Get-SuE2EConfig) -Offers @($state.Offers.Values)
+}
+
+<#
+.SYNOPSIS
+    Deletes each offer's job, update and blobs (-Offers: @{ Job; Update; Blobs }).
+    Best effort, as Remove-SuE2EOffers.
+#>
+function Remove-SuE2EOfferItems {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Offers
+    )
     $firstError = $null
-    foreach ($offer in $state.Offers.Values) {
+    foreach ($offer in $Offers) {
         # Each item separately, so one failure does not strand the others.
         $items = @()
         if ($offer.Job) { $items += , @('Job', $offer.Job) }
