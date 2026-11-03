@@ -376,9 +376,10 @@ static void finish_delegated_update(sample_state* s, az_iot_su_step_result resul
  * Downloads are simulated, so the file is read from SU_SIM_DETACHED_MANIFEST_FILE, a copy of the
  * file at the URL printed; an agent downloads it from that URL.
  *
- * @return true when the delegated manifest is the full one.
+ * @return 0 when the delegated manifest is the full one; else the AZ_IOT_SU_MANIFEST_ERROR_*
+ * sub-code to report.
  */
-static bool set_full_manifest_of_mini_manifest(sample_state* s)
+static uint32_t set_full_manifest_of_mini_manifest(sample_state* s)
 {
   static uint8_t file_bytes[AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE];
   delegated_update* u = &s->update;
@@ -395,15 +396,17 @@ static bool set_full_manifest_of_mini_manifest(sample_state* s)
   if (file == NULL)
   {
     fprintf(stderr, "Set SU_SIM_DETACHED_MANIFEST_FILE to a readable copy of that file.\n");
-    return false;
+    return AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_READ;
   }
   size_t size = fread(file_bytes, 1, sizeof(file_bytes), file);
-  bool read = !ferror(file) && fgetc(file) == EOF;
+  bool read_failed = ferror(file) != 0;
+  bool too_large = !read_failed && fgetc(file) != EOF;
   (void)fclose(file);
-  if (!read)
+  if (read_failed || too_large)
   {
     fprintf(stderr, "%s cannot be read, or is too large.\n", s->detached_manifest_file);
-    return false;
+    return read_failed ? AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_READ
+                       : AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE;
   }
 
   uint32_t error = 0;
@@ -416,7 +419,8 @@ static bool set_full_manifest_of_mini_manifest(sample_state* s)
         "Detached manifest file refused: %s (sub-code 0x%X).\n",
         az_iot_result_to_string(set),
         (unsigned)error);
-    return false;
+    /* No sub-code: refused before the content was checked, e.g. an empty file. */
+    return (error != 0) ? error : AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_INVALID;
   }
   for (uint32_t i = 0; i < manifest->instructions.steps_count; ++i)
   {
@@ -426,7 +430,7 @@ static bool set_full_manifest_of_mini_manifest(sample_state* s)
       "Full manifest: %u file(s), %u step(s).\n",
       (unsigned)manifest->files_count,
       (unsigned)manifest->instructions.steps_count);
-  return true;
+  return 0;
 }
 
 /**
@@ -474,15 +478,18 @@ static void advance_delegated_update(sample_state* s)
               az_iot_result_to_string(updated));
         }
       }
-      if (az_span_size(manifest->detached_manifest_file_id) > 0
-          && !set_full_manifest_of_mini_manifest(s))
+      uint32_t manifest_error = (az_span_size(manifest->detached_manifest_file_id) > 0)
+          ? set_full_manifest_of_mini_manifest(s)
+          : 0;
+      if (manifest_error != 0)
       {
-        finish_delegated_update(
-            s,
-            make_failed_result(
-                AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE,
-                AZ_IOT_SU_FACILITY_MANIFEST,
-                AZ_SPAN_FROM_STR("detached manifest file not set")));
+        az_iot_su_step_result failed = make_failed_result(
+            AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE,
+            AZ_IOT_SU_FACILITY_MANIFEST,
+            AZ_SPAN_FROM_STR("detached manifest file not set"));
+        failed.extended_result_code
+            = AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_MANIFEST, manifest_error);
+        finish_delegated_update(s, failed);
         return;
       }
       /* Library mode calls no is_installed_fn: the application checks. */
