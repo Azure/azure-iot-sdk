@@ -215,9 +215,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The returned twin.</returns>
         /// <remarks>
-        /// Concurrent calls with identical arguments share a single request to IoT hub and all receive its response. Calls with
-        /// different arguments are sent to IoT hub one at a time, each once the previous one has completed. If IoT hub
-        /// doesn't respond within a defensive timeout (5 to 15 minutes, growing with each attempt), the request is sent again.
+        /// This client has at most one get twin request out to IoT hub at a time, which it shares with its own desired
+        /// properties resync. A call that the outstanding request covers (its sections, and its if-not-match versions) shares
+        /// its response. Other concurrent calls are combined into the one request sent after it, which asks for every section
+        /// any of them asked for (and only keeps an if-not-match version that they all agree on). Each call's twin only
+        /// includes the sections that it asked for and that its own if-not-match versions don't exclude. If IoT hub doesn't
+        /// respond within a defensive timeout (5 to 15 minutes, growing with each attempt), the request is sent again.
         /// </remarks>
         /// <exception cref="ArgumentException">Thrown when neither desired nor reported properties are requested.</exception>
         /// <exception cref="DeviceException">
