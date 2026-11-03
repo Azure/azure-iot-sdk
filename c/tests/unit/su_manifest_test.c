@@ -569,8 +569,8 @@ static void step_type_and_detached_manifest_file_id_are_parsed(void** state)
       AZ_IOT_ERR_INVALID_ARG);
 }
 
-/* Mini manifests, manifests without steps and reference steps are refused, each with its own
- * sub-code; a manifest of inline steps passes. */
+/* Manifests without steps and reference steps are refused, each with its own sub-code; a mini
+ * manifest (checked once its full manifest is fetched) and a manifest of inline steps pass. */
 static void unsupported_manifests_are_refused_with_their_sub_code(void** state)
 {
   (void)state;
@@ -580,10 +580,8 @@ static void unsupported_manifests_are_refused_with_their_sub_code(void** state)
     az_iot_result result;
     uint32_t manifest_error;
   } cases[] = {
-    { k_mini_manifest, AZ_IOT_ERR_NOT_SUPPORTED, AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST },
-    { "{\"detachedManifestFile\\u0049d\":\"f1\"}",
-      AZ_IOT_ERR_NOT_SUPPORTED,
-      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST },
+    { k_mini_manifest, AZ_IOT_OK, 0 },
+    { "{\"detachedManifestFile\\u0049d\":\"f1\"}", AZ_IOT_OK, 0 },
     { "{\"instructions\":{\"steps\":[]}}",
       AZ_IOT_ERR_INVALID_ARG,
       AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS },

@@ -187,6 +187,19 @@ typedef enum
 #define E2E_SU_PATH_MAX (E2E_SU_DIR_MAX + 16)
 /* Longest file id kept, terminator included. */
 #define E2E_SU_FILE_ID_SIZE 64
+/* download_fn calls recorded: a mini manifest's detached manifest file, then the update's files. */
+#define E2E_SU_MAX_DOWNLOADS (E2E_SU_MAX_FILES + 1)
+
+/** @brief One download_fn call. */
+typedef struct
+{
+  /* The file's id, as the manifest has it (JSON escapes kept). */
+  char file_id[E2E_SU_FILE_ID_SIZE];
+  /* The URL is the one the request's `fileUrls` has for that id. */
+  bool url_is_from_file_urls;
+  /* The file is in the client's parsed manifest; false before the manifest is parsed. */
+  bool file_is_in_manifest;
+} download_record;
 
 /** @brief Platform-hook state: a scratch directory, an op log and injected faults. */
 typedef struct
@@ -194,6 +207,11 @@ typedef struct
   char dir[E2E_SU_DIR_MAX];
   op_kind ops[E2E_SU_MAX_OPS];
   size_t op_count;
+
+  /* The client whose request and manifest download_fn checks its file and URL against. */
+  const az_iot_su_client* client;
+  download_record downloads[E2E_SU_MAX_DOWNLOADS];
+  size_t download_count;
 
   int32_t fail_install_step; /* -1: never */
   bool already_installed;
@@ -263,6 +281,47 @@ static void file_path(const platform* p, uint32_t index, bool related, char* out
   (void)snprintf(out, cap, "%s/%c%u", p->dir, related ? 'r' : 'f', (unsigned)index);
 }
 
+/**
+ * @brief Records a download_fn call of @p file from @p url: whether @p url is the client's
+ * `fileUrls` entry for the file, and whether the client's parsed manifest lists the file.
+ */
+static void record_download(
+    platform* p,
+    const az_iot_su_client_update_manifest_file* file,
+    az_span url)
+{
+  if (p->download_count >= E2E_SU_MAX_DOWNLOADS)
+  {
+    p->download_count++;
+    return;
+  }
+  download_record* d = &p->downloads[p->download_count++];
+  (void)snprintf(
+      d->file_id,
+      sizeof(d->file_id),
+      "%.*s",
+      (int)az_span_size(file->id),
+      (const char*)az_span_ptr(file->id));
+
+  const az_iot_su_client_update_request* request = NULL;
+  const az_iot_su_client_update_manifest* manifest = NULL;
+  if (az_iot_su_client_get_current_update(p->client, &request, &manifest) != AZ_IOT_OK)
+  {
+    return;
+  }
+  for (uint32_t i = 0; i < request->file_urls_count; ++i)
+  {
+    d->url_is_from_file_urls = d->url_is_from_file_urls
+        || (az_iot_json_string_equals(file->id, request->file_urls[i].id, false)
+            && az_span_is_content_equal(url, request->file_urls[i].url));
+  }
+  for (uint32_t i = 0; manifest != NULL && i < manifest->files_count; ++i)
+  {
+    d->file_is_in_manifest
+        = d->file_is_in_manifest || az_span_is_content_equal(file->id, manifest->files[i].id);
+  }
+}
+
 /** @brief CURLOPT_WRITEFUNCTION: writes with this program's C runtime, not libcurl's (Windows). */
 static size_t write_downloaded_chunk(char* data, size_t size, size_t count, void* file)
 {
@@ -279,6 +338,7 @@ static int32_t hook_download(
   (void)file_count;
   platform* p = (platform*)ctx;
   op_log(p, OP_DOWNLOAD);
+  record_download(p, file, url);
 
   char url_z[2048];
   if (file_index >= E2E_SU_MAX_FILES || az_span_size(url) <= 0
@@ -1080,6 +1140,11 @@ typedef struct
   bool offered_manifest_recorded;
   bool offered_manifest_is_mini;
   bool detached_manifest_file_has_url;
+  /* A mini manifest's `detachedManifestFileId` (JSON escapes kept). */
+  char detached_manifest_file_id[E2E_SU_FILE_ID_SIZE];
+  /* Steps and files of the manifest the client parsed (a mini manifest's full manifest). */
+  uint32_t parsed_manifest_steps_count;
+  uint32_t parsed_manifest_files_count;
 
   /* Library mode: the update handed over by AZ_IOT_SU_EVENT_UPDATE_AVAILABLE. */
   size_t updates_available;
@@ -1100,7 +1165,8 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* ctx)
 
 /**
  * @brief Records whether the client's current offer is a mini manifest: its
- * `detachedManifestFileId`, and whether its `fileUrls` has a URL for that file.
+ * `detachedManifestFileId`, and whether its `fileUrls` has a URL for that file; and the steps and
+ * files of the manifest the client parsed, if any.
  */
 static void record_offered_manifest(fixture* fx)
 {
@@ -1111,6 +1177,11 @@ static void record_offered_manifest(fixture* fx)
     return;
   }
   fx->offered_manifest_recorded = true;
+  if (manifest != NULL)
+  {
+    fx->parsed_manifest_steps_count = manifest->instructions.steps_count;
+    fx->parsed_manifest_files_count = manifest->files_count;
+  }
   az_json_token id;
   if (!find_json_object_string_property(
           request->update_manifest, AZ_SPAN_FROM_STR("detachedManifestFileId"), &id))
@@ -1119,6 +1190,12 @@ static void record_offered_manifest(fixture* fx)
     return;
   }
   fx->offered_manifest_is_mini = true;
+  (void)snprintf(
+      fx->detached_manifest_file_id,
+      sizeof(fx->detached_manifest_file_id),
+      "%.*s",
+      (int)az_span_size(id.slice),
+      (const char*)az_span_ptr(id.slice));
   /* The manifest keeps the id escaped; `fileUrls` ids are decoded. */
   for (uint32_t i = 0; i < request->file_urls_count; ++i)
   {
@@ -1336,6 +1413,7 @@ static void fixture_open(fixture* fx, const fixture_options* o)
   fx->plat.fail_install_step = o->fail_install_step;
   fx->plat.already_installed = o->already_installed;
   fx->plat.has_delta_source = o->has_delta_source;
+  fx->plat.client = &fx->su;
 
   az_iot_certificate_provider_pem_options pem = az_iot_certificate_provider_pem_options_default();
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
@@ -1906,9 +1984,40 @@ static void assert_mini_manifest_refused(const fixture* fx, const spy_report* r)
 }
 
 /**
+ * @brief Asserts the managed client fetched the mini manifest's full manifest and installed it:
+ * download_fn got the detached manifest file before the manifest was parsed, then each file of
+ * the full manifest, each from its `fileUrls` URL. The report has the full manifest's steps.
+ */
+static void assert_full_manifest_fetched_and_installed(fixture* fx, const spy_report* r)
+{
+  assert_installed_and_reported_succeeded(fx, r);
+  platform* p = &fx->plat;
+  assert_true(fx->parsed_manifest_files_count >= 1);
+  assert_int_equal(p->download_count, 1u + fx->parsed_manifest_files_count);
+  for (size_t i = 0; i < p->download_count; ++i)
+  {
+    download_record* d = &p->downloads[i];
+    bool is_detached_manifest_file = az_iot_json_string_equals(
+        az_span_create_from_str(d->file_id),
+        az_span_create_from_str(fx->detached_manifest_file_id),
+        true);
+    assert_true(d->url_is_from_file_urls);
+    assert_int_equal(is_detached_manifest_file, i == 0);
+    assert_int_equal(d->file_is_in_manifest, i > 0);
+  }
+  assert_int_equal(r->step_count, (int32_t)fx->parsed_manifest_steps_count);
+  printf(
+      "  downloads: detached manifest file \"%s\", then %u file(s) of the full manifest; %u "
+      "step(s) reported\n",
+      p->downloads[0].file_id,
+      (unsigned)fx->parsed_manifest_files_count,
+      (unsigned)fx->parsed_manifest_steps_count);
+}
+
+/**
  * @brief An update manifest over 4,096 bytes is offered as a signed mini manifest, its detached
  * file in `fileUrls`. The managed client refuses it (FAILED, nothing downloaded) or, when expected
- * to succeed, installs it.
+ * to succeed, fetches its full manifest and installs it.
  */
 static void detached_manifest_offer_is_a_mini_manifest_handled_by_the_managed_client(void** state)
 {
@@ -1924,7 +2033,7 @@ static void detached_manifest_offer_is_a_mini_manifest_handled_by_the_managed_cl
   assert_offer_was_mini_manifest(fx);
   if (expected == AZ_IOT_SU_OUTCOME_SUCCEEDED)
   {
-    assert_installed_and_reported_succeeded(fx, r);
+    assert_full_manifest_fetched_and_installed(fx, r);
   }
   else
   {

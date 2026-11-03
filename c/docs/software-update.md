@@ -184,8 +184,8 @@ Your code does the device-side work. Every hook gets `hooks.user_ctx`, returns a
 
 | Hook | Needed | Called | May return |
 |---|---|---|---|
-| `download_fn` | Yes | Once per file (and per related file, see [Delta updates](#delta-updates)) | `SUCCESS`, `IN_PROGRESS`, `FAILURE` |
-| `read_file_fn` | Yes, unless your platform checks each file's integrity itself; required with download handlers | After each download, to check its SHA-256 against the signed manifest. NULL skips the check: the signature covers the manifest, not the downloaded bytes. | `SUCCESS`, `FAILURE` |
+| `download_fn` | Yes | Once per file (and per related file, see [Delta updates](#delta-updates)); for a mini manifest, first for its detached manifest file (`file_index` 0, `file_count` 1), which holds the full manifest | `SUCCESS`, `IN_PROGRESS`, `FAILURE` |
+| `read_file_fn` | Yes, unless your platform checks each file's integrity itself; required with download handlers and for mini manifests | After each download, to check its SHA-256 against the signed manifest. NULL skips the check: the signature covers the manifest, not the downloaded bytes. | `SUCCESS`, `FAILURE` |
 | `is_installed_fn` | Optional | Before anything is downloaded | `ALREADY_INSTALLED` (reported `SKIPPED`), `SUCCESS` |
 | `backup_fn` | Optional | Before each step's install | `SUCCESS`, `IN_PROGRESS`, `FAILURE` |
 | `install_fn` | Yes | Once per step | `SUCCESS`, `IN_PROGRESS`, `REBOOT_REQUIRED`, `FAILURE` |
@@ -418,9 +418,9 @@ PC samples run on Linux and Windows.
 - Only X.509 device authentication is supported for Software Update.
 - No root key package download or rotation, and no signing-key revocation.
 - Not supported: component targeting, proxy (gateway-to-leaf) updates, reference steps, mini
-  (detached) update manifests, step handlers (apt, script, swupdate), Delivery Optimization, log
-  upload. A mini manifest, or a manifest with a reference step or no step, fails before anything
-  is downloaded (`AZ_IOT_SU_MANIFEST_ERROR_*`).
+  (detached) update manifests in library mode, step handlers (apt, script, swupdate), Delivery
+  Optimization, log upload. A manifest with a reference step or no step, or a mini manifest in
+  library mode, fails before anything is downloaded (`AZ_IOT_SU_MANIFEST_ERROR_*`).
 - No built-in health check or automatic rollback after a reboot.
 - `AZ_IOT_SU_REPLACEMENT_ROLLBACK` is not supported yet.
 - An update refused by the device (`UPDATE_REFUSED`) is not reported to the service, which keeps

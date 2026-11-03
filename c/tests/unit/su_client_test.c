@@ -79,6 +79,10 @@ static const char k_patch_fmt[]
 /* Capacity of a test-built update payload. */
 #define SU_TEST_PATCH_SIZE 16384
 
+/* Persisted-record header size and format version (su_client.c). */
+#define SU_TEST_PERSIST_HEADER_SIZE 48u
+#define SU_TEST_PERSIST_VERSION 4
+
 /* Workspace for clients a test builds beside the fixture's; one extra byte
  * lets a test pass an unaligned workspace. */
 static uint8_t g_second_workspace[AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE + 1];
@@ -311,6 +315,11 @@ typedef struct
   char corrupt_file_id[32]; /* read_file_fn serves content that does not match its hash... */
   int corrupt_reads; /* ...this many times */
 
+  /* Detached manifest file: read_file_fn serves this content for this file id. */
+  const char* detached_file_content;
+  char detached_file_id[32];
+  bool detached_file_read_fails; /* read_file_fn fails for it */
+
   /* Key, exponent and signature of the last verify_rs256 call. */
   const uint8_t* first_verify_modulus; /* modulus of the first RS256 verify (the root key) */
   uint8_t verify_mod[8];
@@ -506,7 +515,8 @@ static az_iot_result mock_verify_rs256(
   return (l->verify_error != AZ_IOT_OK) ? l->verify_error : AZ_IOT_ERR_AUTH;
 }
 
-/* Serve fx->log.file_len bytes of dummy content in chunks, then EOF. */
+/* Serve fx->log.file_len bytes of dummy content in chunks, then EOF; the detached manifest file
+ * from fx->log.detached_file_content. */
 static int32_t mock_read_file(
     const az_iot_su_client_update_manifest_file* file,
     uint32_t file_index,
@@ -518,6 +528,17 @@ static int32_t mock_read_file(
 {
   (void)file_index;
   hook_log* l = (hook_log*)ctx;
+  if (l->detached_file_content != NULL
+      && az_span_is_content_equal(file->id, az_span_create_from_str(l->detached_file_id)))
+  {
+    size_t length = strlen(l->detached_file_content);
+    size_t n = (offset < length) ? length - offset : 0u;
+    n = (n < buffer_size) ? n : buffer_size;
+    n = (n > 100u) ? 100u : n; /* chunked */
+    memcpy(buffer, l->detached_file_content + offset, n);
+    *out_read = n;
+    return l->detached_file_read_fails ? AZ_IOT_SU_RESULT_FAILURE : AZ_IOT_SU_RESULT_SUCCESS;
+  }
   if (offset >= l->file_len)
   {
     *out_read = 0;
@@ -3120,7 +3141,7 @@ static void workspace_size_follows_the_limits(void** state)
           + AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES
               * (sizeof(az_iot_su_client_update_manifest_file) + 16u
                  + sizeof(az_iot_su_client_file_url))
-          + AZ_IOT_SU_MAX_FILE_COUNT * sizeof(az_iot_su_client_file_url)
+          + (AZ_IOT_SU_MAX_FILE_COUNT + 1u) * sizeof(az_iot_su_client_file_url)
           + sizeof(az_iot_su_workspace_alignment) - 1u);
   assert_int_equal(
       az_iot_su_workspace_size(&limits),
@@ -4778,26 +4799,26 @@ static void public_parser_fills_the_caller_storage(void** state)
   assert_int_equal(manifest.related_files_count, 3);
   assert_true(az_span_is_content_equal(manifest.related_files[2].id, AZ_SPAN_FROM_STR("d2")));
 
-  /* Without related-file storage, the URLs fit AZ_IOT_SU_MAX_FILE_COUNT. */
+  /* Without related-file storage, the URLs fit AZ_IOT_SU_FILE_URL_CAPACITY(0). */
   az_iot_su_update_request_storage none = { g_parse_file_urls, NULL, 0 };
   assert_int_equal(
       parse_with_storage(
           &fx->log,
-          delta_patch("p", AZ_IOT_SU_MAX_FILE_COUNT - 1),
+          delta_patch("p", AZ_IOT_SU_MAX_FILE_COUNT),
           k_root_keys,
           1,
           &none,
           &req,
           &manifest),
       AZ_IOT_OK);
-  assert_int_equal(req.file_urls_count, AZ_IOT_SU_MAX_FILE_COUNT);
+  assert_int_equal(req.file_urls_count, AZ_IOT_SU_FILE_URL_CAPACITY(0));
   assert_int_equal(manifest.related_files_count, 0);
   assert_int_equal(manifest.files[0].related_files_count, 0);
 
   assert_int_equal(
       parse_with_storage(
           &fx->log,
-          delta_patch("p", AZ_IOT_SU_MAX_FILE_COUNT),
+          delta_patch("p", AZ_IOT_SU_MAX_FILE_COUNT + 1),
           k_root_keys,
           1,
           &none,
@@ -5188,13 +5209,13 @@ static void a_snapshot_missing_a_needed_url_is_refused(void** state)
 
   /* Rename every URL's file id so none matches the manifest, then re-seal. */
   uint8_t* b = fresh->log.persist_blob;
-  uint32_t t = 40u + blob_u32(&b[36]);
+  uint32_t t = SU_TEST_PERSIST_HEADER_SIZE + blob_u32(&b[36]);
   uint32_t urls_at = t + 16u + blob_u32(&b[t + 12u]) * 16u;
   uint32_t n = blob_u32(&b[urls_at]);
   assert_true(n > 0);
   for (uint32_t i = 0; i < n; ++i)
   {
-    b[40u + blob_u32(&b[urls_at + 4u + i * 16u])] ^= 0x20u;
+    b[SU_TEST_PERSIST_HEADER_SIZE + blob_u32(&b[urls_at + 4u + i * 16u])] ^= 0x20u;
   }
   blob_reseal(b, fresh->log.persist_len);
 
@@ -5235,30 +5256,30 @@ static void a_snapshot_of_an_unsupported_manifest_is_refused(void** state)
   assert_int_equal(teardown(&fresh_state), 0);
 }
 
-/* A record of another magic or format version (versions 1 and 2 included) is
- * ignored, not resumed, with or without a persist hook. */
+/* A record of another magic or format version (versions 1 to 3) is ignored, not resumed, with
+ * or without a persist hook. */
 static void a_record_of_another_format_is_ignored(void** state)
 {
   fixture* source = (fixture*)*state;
-  for (int c = 0; c < 4; ++c)
+  for (int c = 0; c < 8; ++c)
   {
     void* fresh_state = NULL;
     fixture* fresh = resume_distinct_files_from_step_0(source, &fresh_state);
-    if (c >= 2)
+    if (c >= 4)
     {
       fresh->su._internal.hooks.persist_workflow_state_fn = NULL;
     }
     uint8_t* b = fresh->log.persist_blob;
     assert_memory_equal(b, "SUCP", 4);
-    assert_int_equal(b[4], 3);
+    assert_int_equal(b[4], SU_TEST_PERSIST_VERSION);
     assert_int_equal(b[5], 0);
-    if (c % 2 == 0)
+    if (c % 4 == 0)
     {
       memcpy(b, "XXXX", 4);
     }
     else
     {
-      b[4] = c == 1 ? 1 : 2; /* earlier formats */
+      b[4] = (uint8_t)(c % 4); /* earlier formats */
     }
     blob_reseal(b, fresh->log.persist_len);
     assert_int_equal(az_iot_su_client_resume(&fresh->su), AZ_IOT_OK);
@@ -5319,7 +5340,7 @@ static void a_failed_checkpoint_blocks_apply_until_it_is_written(void** state)
 /* Offset of the workflow-id length field of a blob. */
 static uint32_t blob_wf_field(const uint8_t* b)
 {
-  uint32_t t = 40u + blob_u32(&b[36]);
+  uint32_t t = SU_TEST_PERSIST_HEADER_SIZE + blob_u32(&b[36]);
   uint32_t p = t + 16u + blob_u32(&b[t + 12u]) * 16u;
   return p + 4u + blob_u32(&b[p]) * 16u;
 }
@@ -5556,7 +5577,7 @@ static void an_unacknowledged_terminal_report_survives_a_reboot(void** state)
   finish_with_report_unacknowledged(fx);
 
   assert_true(fx->log.have_persist);
-  assert_int_equal(fx->log.persist_blob[4], 3);
+  assert_int_equal(fx->log.persist_blob[4], SU_TEST_PERSIST_VERSION);
   assert_true((fx->log.persist_blob[6] & 0x4u) != 0);
   assert_int_equal(blob_u32(&fx->log.persist_blob[8]), AZ_IOT_SU_STATE_IDLE);
 
@@ -6740,11 +6761,11 @@ static void the_retry_record_round_trips_through_the_blob(void** state)
 
   const uint8_t* b = fx->log.persist_blob;
   assert_memory_equal(b, "SUCP", 4);
-  assert_int_equal(b[4], 3);
+  assert_int_equal(b[4], SU_TEST_PERSIST_VERSION);
   assert_int_equal(blob_u32(&b[4]) >> 16, 0x8u);
   assert_int_equal(blob_u32(&b[8]), AZ_IOT_SU_STATE_IDLE);
   assert_int_equal(blob_u32(&b[36]), 0);
-  assert_int_equal(blob_u32(&b[40]), AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(blob_u32(&b[SU_TEST_PERSIST_HEADER_SIZE]), AZ_IOT_SU_OUTCOME_FAILED);
   uint32_t wf = blob_wf_field(b);
   assert_int_equal(blob_u32(&b[wf]), strlen(SU_TEST_WORKFLOW_ID));
   assert_memory_equal(&b[wf + 4u], SU_TEST_WORKFLOW_ID, strlen(SU_TEST_WORKFLOW_ID));
@@ -7342,8 +7363,8 @@ static const unsupported_manifest k_unsupported_manifests[] = {
     AZ_IOT_ERR_NOT_SUPPORTED },
 };
 
-/* A verified manifest the client does not support fails before any hook runs, reported with
- * its sub-code; a normal manifest still installs. */
+/* A verified manifest the managed client does not support fails before any hook runs, reported
+ * with its sub-code; a normal manifest still installs. */
 static void unsupported_manifest_fails_before_any_hook(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -7353,6 +7374,10 @@ static void unsupported_manifest_fails_before_any_hook(void** state)
   for (size_t i = 0; i < sizeof(k_unsupported_manifests) / sizeof(k_unsupported_manifests[0]); ++i)
   {
     const unsupported_manifest* c = &k_unsupported_manifests[i];
+    if (c->manifest_error == AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST)
+    {
+      continue; /* a managed client fetches its full manifest */
+    }
     int failed_before = fx->failed_count;
     inject_patch(fx, signed_patch_for_manifest(c->workflow_id, c->manifest, c->file_urls));
     pump(fx, 60);
@@ -7375,6 +7400,464 @@ static void unsupported_manifest_fails_before_any_hook(void** state)
   pump(fx, 60);
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
   assert_int_equal((int)count_ops(&fx->log, OP_INSTALL), 1);
+}
+
+/* --- Detached (mini) manifests --------------------------------------------------------------- */
+
+/* Id of the detached manifest file in the test mini manifests. */
+#define SU_TEST_DETACHED_FILE_ID "fMini"
+/* What the mock SHA-256 hashes a detached manifest file to (it starts with '{'). */
+#define SU_TEST_DETACHED_FILE_HASH_B64 "q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6s="
+/* Download URL of each file of k_detached_full_manifest, after the detached file's. */
+#define SU_TEST_DETACHED_STEP_URLS \
+  "\"f01\":\"http://example.com/payload-01.bin\",\"f00\":\"http://example.com/payload-00.bin\""
+
+/* A full manifest of two steps, with escaped and multibyte (UTF-8 and \u) text. */
+static const char k_detached_full_manifest[]
+    = "{\"manifestVersion\":\"5\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Foobar\","
+      "\"version\":\"1.1\"},\"compatibility\":[{\"deviceManufacturer\":\"Contoso\","
+      "\"deviceModel\":\"Foobar\"}],\"description\":\"quote \\\" backslash \\\\ "
+      "e-acute \xc3\xa9 \\u00e9\",\"instructions\":{\"steps\":["
+      "{\"handler\":\"microsoft/swupdate:1\",\"files\":[\"f00\"]},"
+      "{\"handler\":\"microsoft/swupdate:1\",\"files\":[\"f01\"]}]},\"files\":{"
+      "\"f00\":{\"fileName\":\"payload-00.bin\",\"sizeInBytes\":64,"
+      "\"hashes\":{\"sha256\":\"" SU_TEST_FILE_HASH_B64 "\"}},"
+      "\"f01\":{\"fileName\":\"payload-01.bin\",\"sizeInBytes\":64,"
+      "\"hashes\":{\"sha256\":\"" SU_TEST_FILE_HASH_B64 "\"}}},"
+      "\"createdDateTime\":\"2026-11-01T00:00:00Z\"}";
+
+/** @brief How a test mini manifest and its detached manifest file differ from a valid pair. */
+typedef struct
+{
+  const char* full_manifest; /* unescaped; NULL: k_detached_full_manifest */
+  const char* detached_file; /* the whole file; NULL: the wrapper of full_manifest */
+  const char* mini_files; /* `files` members of the mini; NULL: the detached file's entry */
+  const char* file_urls; /* fileUrls members; NULL: the detached file's and the steps' */
+  const char* version; /* updateId version of the mini; NULL: "1.1" */
+  const char* sha256; /* hash of the detached file; NULL: SU_TEST_DETACHED_FILE_HASH_B64 */
+  int size_delta; /* added to the detached file's size in the mini */
+} detached_manifest_case;
+
+/** @brief The detached manifest file read_file_fn serves; valid until the next build. */
+static char g_detached_file[4096];
+
+/**
+ * @brief Build a signed payload with a mini manifest per @p c, and have fx's read_file_fn serve
+ * its detached manifest file.
+ *
+ * @return A static buffer, valid until the next call.
+ */
+static const char* detached_manifest_patch(
+    fixture* fx,
+    const char* workflow_id,
+    const detached_manifest_case* c)
+{
+  size_t used = 0;
+  if (c->detached_file != NULL)
+  {
+    used = append_text(g_detached_file, sizeof(g_detached_file), 0, c->detached_file);
+  }
+  else
+  {
+    const char* full = (c->full_manifest != NULL) ? c->full_manifest : k_detached_full_manifest;
+    used = append_text(g_detached_file, sizeof(g_detached_file), 0, "{\"updateManifest\":\"");
+    for (const char* at = full; *at != '\0'; ++at)
+    {
+      char one[3] = { '\\', *at, '\0' };
+      used = append_text(
+          g_detached_file,
+          sizeof(g_detached_file),
+          used,
+          (*at == '"' || *at == '\\') ? one : one + 1);
+    }
+    used = append_text(g_detached_file, sizeof(g_detached_file), used, "\"}");
+  }
+  fx->log.detached_file_content = g_detached_file;
+  copy_str(fx->log.detached_file_id, sizeof(fx->log.detached_file_id), SU_TEST_DETACHED_FILE_ID);
+
+  char entry[256];
+  (void)snprintf(
+      entry,
+      sizeof(entry),
+      "\"" SU_TEST_DETACHED_FILE_ID "\":{\"fileName\":\"contoso.foobar.1.1.updatemanifest.json\","
+      "\"sizeInBytes\":%d,\"hashes\":{\"sha256\":\"%s\"}}",
+      (int)used + c->size_delta,
+      (c->sha256 != NULL) ? c->sha256 : SU_TEST_DETACHED_FILE_HASH_B64);
+  static char mini[1024];
+  (void)snprintf(
+      mini,
+      sizeof(mini),
+      "{\"manifestVersion\":\"5\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Foobar\","
+      "\"version\":\"%s\"},\"detachedManifestFileId\":\"" SU_TEST_DETACHED_FILE_ID "\","
+      "\"files\":{%s},\"createdDateTime\":\"2026-11-01T00:00:00Z\"}",
+      (c->version != NULL) ? c->version : "1.1",
+      (c->mini_files != NULL) ? c->mini_files : entry);
+  return signed_patch_for_manifest(
+      workflow_id,
+      mini,
+      (c->file_urls != NULL)
+          ? c->file_urls
+          : "\"" SU_TEST_DETACHED_FILE_ID
+            "\":\"http://example.com/manifest.json\"," SU_TEST_DETACHED_STEP_URLS);
+}
+
+/** @brief Count the downloads of @p file_id. */
+static int count_downloads_of(const fixture* fx, const char* file_id)
+{
+  int count = 0;
+  for (int i = 0; i < fx->log.download_calls && i < MAX_OPS; ++i)
+  {
+    count += (strcmp(fx->log.download_file_ids[i], file_id) == 0) ? 1 : 0;
+  }
+  return count;
+}
+
+/* A mini manifest's detached manifest file is downloaded (IN_PROGRESS first), read back and
+ * verified; the steps of the full manifest it carries then run and are reported, with URLs
+ * found by file id, not by order. */
+static void a_mini_manifest_installs_its_full_manifest(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  const detached_manifest_case c = { 0 };
+  fx->log.download_in_progress = 1;
+  inject_patch(fx, detached_manifest_patch(fx, "mini-ok", &c));
+  pump(fx, 80);
+
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_string_equal(fx->chan.last_workflow_id, "mini-ok");
+  assert_int_equal(fx->chan.last_report.step_results_count, 2);
+  assert_int_equal(fx->log.download_calls, 4);
+  assert_string_equal(fx->log.download_file_ids[0], SU_TEST_DETACHED_FILE_ID);
+  assert_string_equal(fx->log.download_file_ids[1], SU_TEST_DETACHED_FILE_ID);
+  assert_string_equal(fx->log.download_urls[1], "http://example.com/manifest.json");
+  assert_string_equal(fx->log.download_file_ids[2], "f00");
+  assert_string_equal(fx->log.download_urls[2], "http://example.com/payload-00.bin");
+  assert_string_equal(fx->log.download_file_ids[3], "f01");
+  assert_int_equal((int)count_ops(&fx->log, OP_IS_INSTALLED), 1);
+  assert_int_equal((int)count_ops(&fx->log, OP_INSTALL), 2);
+  assert_int_equal((int)count_ops(&fx->log, OP_APPLY), 2);
+}
+
+/* The detached manifest file is stored after the request: one exactly the size of the space
+ * left by az_iot_su_limits::max_update_size fits, one byte more does not. */
+static void a_detached_manifest_file_must_fit_after_the_request(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  const detached_manifest_case c = { 0 };
+  const char* patch = detached_manifest_patch(fx, "mini-fit", &c);
+  size_t needed = strlen(patch) + strlen(g_detached_file);
+
+  for (size_t spare = 0; spare < 2; ++spare)
+  {
+    az_iot_su_platform_hooks hooks = fx->su._internal.hooks;
+    az_iot_su_client_deinit(&fx->su);
+    az_iot_su_limits limits = az_iot_su_limits_default();
+    limits.max_update_size = needed - 1u + spare;
+    init_fixture_client_with_limits(fx, &hooks, &limits);
+    assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+    fx->log.download_calls = 0;
+    fx->log.op_count = 0;
+    inject_patch(fx, detached_manifest_patch(fx, spare ? "mini-fit" : "mini-big", &c));
+    pump(fx, 80);
+    if (spare == 0)
+    {
+      int32_t expected = (int32_t)AZ_IOT_SU_EXTENDED_RESULT(
+          AZ_IOT_SU_FACILITY_MANIFEST, AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE);
+      assert_nothing_downloaded_or_installed(fx);
+      assert_int_equal(fx->chan.last_report.step_results[0].extended_result_code, expected);
+      assert_int_equal(fx->last_failed_reason, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    }
+    else
+    {
+      assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+      assert_int_equal(fx->chan.last_report.step_results_count, 2);
+    }
+  }
+}
+
+/** @brief A mini manifest or detached manifest file that fails, and how. */
+typedef struct
+{
+  const char* name;
+  detached_manifest_case shape;
+  bool no_reader; /* read_file_fn is NULL */
+  bool download_fails; /* download_fn fails for the detached file */
+  bool read_fails; /* read_file_fn fails for the detached file */
+  uint32_t facility;
+  uint32_t code;
+  az_iot_result failed_reason;
+  int downloads; /* download_fn calls */
+} detached_manifest_failure;
+
+/* Each check of a mini manifest and its detached manifest file fails the workflow with its own
+ * sub-code before any step runs. */
+static void a_bad_mini_manifest_fails_before_any_step(void** state)
+{
+  static const char nested_full[]
+      = "{\"manifestVersion\":\"5\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Foobar\","
+        "\"version\":\"1.1\"},\"detachedManifestFileId\":\"f00\",\"files\":{\"f00\":{"
+        "\"fileName\":\"m.json\",\"sizeInBytes\":64,\"hashes\":{\"sha256\":\"" SU_TEST_FILE_HASH_B64
+        "\"}}}}";
+  static const char no_steps_full[]
+      = "{\"manifestVersion\":\"5\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Foobar\","
+        "\"version\":\"1.1\"},\"instructions\":{\"steps\":[]},\"files\":{}}";
+  static const char other_entry[]
+      = "\"fOther\":{\"fileName\":\"m.json\",\"sizeInBytes\":10,\"hashes\":{\"sha256\":"
+        "\"" SU_TEST_DETACHED_FILE_HASH_B64 "\"}}";
+  static const char two_entries[]
+      = "\"" SU_TEST_DETACHED_FILE_ID "\":{\"fileName\":\"m.json\",\"sizeInBytes\":10,\"hashes\":{"
+        "\"sha256\":\"" SU_TEST_DETACHED_FILE_HASH_B64 "\"}},\"fOther\":{\"fileName\":\"o.json\","
+        "\"sizeInBytes\":10,\"hashes\":{\"sha256\":\"" SU_TEST_DETACHED_FILE_HASH_B64 "\"}}";
+  const detached_manifest_failure cases[] = {
+    { "no-entry",
+      { .mini_files = "" },
+      false,
+      false,
+      false,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_ENTRY,
+      AZ_IOT_ERR_PROTOCOL,
+      0 },
+    { "two-entries",
+      { .mini_files = two_entries },
+      false,
+      false,
+      false,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_ENTRY,
+      AZ_IOT_ERR_PROTOCOL,
+      0 },
+    { "other-entry",
+      { .mini_files = other_entry },
+      false,
+      false,
+      false,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_ENTRY,
+      AZ_IOT_ERR_PROTOCOL,
+      0 },
+    { "no-url",
+      { .file_urls = SU_TEST_DETACHED_STEP_URLS },
+      false,
+      false,
+      false,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_URL,
+      AZ_IOT_ERR_PROTOCOL,
+      0 },
+    { "no-reader",
+      { 0 },
+      true,
+      false,
+      false,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_NO_READER,
+      AZ_IOT_ERR_NOT_SUPPORTED,
+      0 },
+    { "download-fails",
+      { 0 },
+      false,
+      true,
+      false,
+      AZ_IOT_SU_FACILITY_DOWNLOAD,
+      (uint32_t)AZ_IOT_SU_RESULT_FAILURE,
+      AZ_IOT_ERR_INTERNAL,
+      1 },
+    { "read-fails",
+      { 0 },
+      false,
+      false,
+      true,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_READ,
+      AZ_IOT_ERR_INTERNAL,
+      1 },
+    { "hash",
+      { .sha256 = SU_TEST_FILE_HASH_B64 },
+      false,
+      false,
+      false,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_HASH,
+      AZ_IOT_ERR_AUTH,
+      1 },
+    { "shorter",
+      { .size_delta = 1 },
+      false,
+      false,
+      false,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_HASH,
+      AZ_IOT_ERR_AUTH,
+      1 },
+    { "longer",
+      { .size_delta = -1 },
+      false,
+      false,
+      false,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_HASH,
+      AZ_IOT_ERR_AUTH,
+      1 },
+    { "wrapper",
+      { .detached_file = "{\"manifest\":\"{}\"}" },
+      false,
+      false,
+      false,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_INVALID,
+      AZ_IOT_ERR_PROTOCOL,
+      1 },
+    { "update-id",
+      { .version = "1.2" },
+      false,
+      false,
+      false,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_UPDATE_ID,
+      AZ_IOT_ERR_PROTOCOL,
+      1 },
+    { "nested",
+      { .full_manifest = nested_full },
+      false,
+      false,
+      false,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_NESTED,
+      AZ_IOT_ERR_PROTOCOL,
+      1 },
+    { "no-steps",
+      { .full_manifest = no_steps_full },
+      false,
+      false,
+      false,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS,
+      AZ_IOT_ERR_PROTOCOL,
+      1 },
+  };
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  az_iot_su_platform_hooks hooks = fx->su._internal.hooks;
+
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    const detached_manifest_failure* c = &cases[i];
+    fx->su._internal.hooks.read_file_fn = c->no_reader ? NULL : hooks.read_file_fn;
+    copy_str(
+        fx->log.download_fail_id,
+        sizeof(fx->log.download_fail_id),
+        c->download_fails ? SU_TEST_DETACHED_FILE_ID : "");
+    fx->log.detached_file_read_fails = c->read_fails;
+    fx->log.download_calls = 0;
+    fx->log.op_count = 0;
+    int failed_before = fx->failed_count;
+    inject_patch(fx, detached_manifest_patch(fx, c->name, &c->shape));
+    pump(fx, 60);
+
+    int32_t expected = (int32_t)AZ_IOT_SU_EXTENDED_RESULT(c->facility, c->code);
+    assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+    assert_string_equal(fx->chan.last_workflow_id, c->name);
+    assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+    assert_int_equal(fx->chan.last_report.step_results_count, 1);
+    assert_int_equal(fx->chan.last_report.step_results[0].extended_result_code, expected);
+    assert_int_equal(fx->failed_count, failed_before + 1);
+    assert_int_equal(fx->last_failed_reason, c->failed_reason);
+    assert_int_equal(fx->log.download_calls, c->downloads);
+    assert_int_equal((int)count_ops(&fx->log, OP_IS_INSTALLED), 0);
+    assert_int_equal((int)count_ops(&fx->log, OP_BACKUP), 0);
+    assert_int_equal((int)count_ops(&fx->log, OP_INSTALL), 0);
+  }
+}
+
+/* After a reboot at install, a mini manifest's workflow resumes from the full manifest stored in
+ * the record: the detached manifest file is not downloaded or read again. */
+static void a_mini_manifest_resumes_from_its_stored_full_manifest(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  const detached_manifest_case c = { 0 };
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, detached_manifest_patch(fx, "mini-reboot", &c));
+  pump_to_checkpoint(fx);
+  const uint8_t* b = fx->log.persist_blob;
+  assert_int_equal(b[4], SU_TEST_PERSIST_VERSION);
+  assert_int_equal(blob_u32(&b[44]), strlen(k_detached_full_manifest));
+  assert_memory_equal(
+      &b[SU_TEST_PERSIST_HEADER_SIZE + blob_u32(&b[40])],
+      k_detached_full_manifest,
+      strlen(k_detached_full_manifest));
+  assert_int_equal(count_downloads_of(fx, SU_TEST_DETACHED_FILE_ID), 1);
+
+  reboot_client(fx);
+  fx->log.detached_file_content = NULL;
+  fx->log.install_result = AZ_IOT_SU_RESULT_SUCCESS;
+  fx->log.download_calls = 0;
+  assert_int_equal(az_iot_su_client_resume(&fx->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_INSTALL_COMPLETE);
+  assert_int_equal(fx->su._internal.current_manifest.instructions.steps_count, 2);
+  pump(fx, 80);
+
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_string_equal(fx->chan.last_workflow_id, "mini-reboot");
+  assert_int_equal(fx->chan.last_report.step_results_count, 2);
+  assert_int_equal(fx->log.download_calls, 1);
+  assert_string_equal(fx->log.download_file_ids[0], "f01");
+}
+
+/* A record past verification that holds a mini manifest without its full manifest can never be
+ * resumed: it is refused and retired. */
+static void a_mini_manifest_record_without_its_full_manifest_is_refused(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  const detached_manifest_case c = { 0 };
+  fx->log.install_result = AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
+  inject_patch(fx, detached_manifest_patch(fx, "mini-lost", &c));
+  pump_to_checkpoint(fx);
+  uint8_t* b = fx->log.persist_blob;
+  blob_put_u32(&b[40], 0u);
+  blob_put_u32(&b[44], 0u);
+  blob_reseal(b, fx->log.persist_len);
+
+  reboot_client(fx);
+  fx->log.download_calls = 0;
+  assert_int_equal(az_iot_su_client_resume(&fx->su), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->log.download_calls, 0);
+  assert_false(fx->log.have_persist);
+}
+
+/* A new workflow replaces one whose detached manifest file is still downloading. */
+static void a_new_workflow_replaces_one_fetching_its_full_manifest(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  const detached_manifest_case c = { 0 };
+  fx->log.download_in_progress = 1000;
+  inject_patch(fx, detached_manifest_patch(fx, "mini-replaced", &c));
+  for (int i = 0; i < 6; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_VERIFYING_MANIFEST);
+  assert_true(fx->log.download_calls > 0);
+  assert_int_equal(count_downloads_of(fx, SU_TEST_DETACHED_FILE_ID), fx->log.download_calls);
+
+  fx->log.download_in_progress = 0;
+  fx->log.download_calls = 0;
+  inject_patch(fx, signed_patch());
+  pump(fx, 60);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_string_not_equal(fx->chan.last_workflow_id, "mini-replaced");
+  assert_true(fx->log.download_calls > 0);
+  assert_int_equal(count_downloads_of(fx, SU_TEST_DETACHED_FILE_ID), 0);
+  assert_int_equal(fx->su._internal.current_manifest.instructions.steps_count, 0);
 }
 
 /* The update body carries service-issued download URLs; DEBUG logs only its
@@ -7425,23 +7908,23 @@ static void a_resumed_oversized_workflow_id_is_logged(void** state)
   uint32_t req_len = old_req_len + delta;
 
   uint8_t* b = fx->log.persist_blob;
-  memcpy(b, old_blob, 40u + wf_off);
-  memcpy(&b[40u + wf_off], id, strlen(id));
+  memcpy(b, old_blob, SU_TEST_PERSIST_HEADER_SIZE + wf_off);
+  memcpy(&b[SU_TEST_PERSIST_HEADER_SIZE + wf_off], id, strlen(id));
   memcpy(
-      &b[40u + wf_off + strlen(id)],
-      &old_blob[40u + wf_off + old_wf_len],
+      &b[SU_TEST_PERSIST_HEADER_SIZE + wf_off + strlen(id)],
+      &old_blob[SU_TEST_PERSIST_HEADER_SIZE + wf_off + old_wf_len],
       old_req_len - wf_off - old_wf_len);
   blob_put_u32(&b[24], (uint32_t)strlen(id));
   blob_put_u32(&b[28], blob_u32(&old_blob[28]) + delta);
   blob_put_u32(&b[36], req_len);
 
-  uint32_t old_t = 40u + old_req_len;
+  uint32_t old_t = SU_TEST_PERSIST_HEADER_SIZE + old_req_len;
   uint32_t old_urls = old_t + 16u + blob_u32(&old_blob[old_t + 12u]) * 16u;
   uint32_t url_count = blob_u32(&old_blob[old_urls]);
   uint32_t old_wf = old_urls + 4u + url_count * 16u;
   uint32_t old_after_wf = old_wf + 4u + blob_u32(&old_blob[old_wf]);
 
-  uint32_t p = 40u + req_len;
+  uint32_t p = SU_TEST_PERSIST_HEADER_SIZE + req_len;
   memcpy(&b[p], &old_blob[old_t], old_wf - old_t);
   uint32_t urls = p + (old_urls - old_t);
   for (uint32_t i = 0; i < url_count; ++i)
@@ -7567,7 +8050,7 @@ static void a_malformed_terminal_record_is_ignored(void** state)
         memset(&b[applied + 4u], 'x', blob_u32(&b[applied]));
         break;
       case 3: /* not a terminal outcome */
-        blob_put_u32(&b[40], AZ_IOT_SU_OUTCOME_IN_PROGRESS);
+        blob_put_u32(&b[SU_TEST_PERSIST_HEADER_SIZE], AZ_IOT_SU_OUTCOME_IN_PROGRESS);
         break;
       case 5: /* valid record followed by extra bytes */
         memset(&b[len], 0xA5, 8u);
@@ -11783,6 +12266,16 @@ int main(void)
         manifest_with_a_non_string_mime_type_fails_before_download, setup, teardown),
     cmocka_unit_test_setup_teardown(manifest_with_delta_file_members_installs, setup, teardown),
     cmocka_unit_test_setup_teardown(unsupported_manifest_fails_before_any_hook, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_mini_manifest_installs_its_full_manifest, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_detached_manifest_file_must_fit_after_the_request, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_bad_mini_manifest_fails_before_any_step, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_mini_manifest_resumes_from_its_stored_full_manifest, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_mini_manifest_record_without_its_full_manifest_is_refused, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_new_workflow_replaces_one_fetching_its_full_manifest, setup, teardown),
     cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_workflow_id_is_decoded, setup, teardown),

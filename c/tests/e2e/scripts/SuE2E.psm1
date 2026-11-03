@@ -86,8 +86,8 @@ $script:Scenarios = [ordered]@{
     MICROSOFT_DELTA   = @{ Short = 'msdelta'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA'; Expected = 'Succeeded'; Delta = 'Microsoft' }
     # Detached = $true: an update manifest over 4,096 bytes, which the service offers as a
     # signed mini manifest (see Import-SuE2EUpdate); managed and library mode. The device suite
-    # reads Expected too (<Variable>_EXPECTED): Failed while the client refuses mini manifests.
-    DETACHED              = @{ Short = 'mini'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED'; Expected = 'Failed'; Detached = $true }
+    # reads Expected too (<Variable>_EXPECTED): Failed while library mode refuses mini manifests.
+    DETACHED              = @{ Short = 'mini'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED'; Expected = 'Succeeded'; Detached = $true }
     DETACHED_LIBRARY_MODE = @{ Short = 'minilib'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_LIBRARY_MODE'; Expected = 'Failed'; Detached = $true }
 }
 
