@@ -59,6 +59,8 @@ $script:MicrosoftDeltaHandlerId = 'microsoft/delta:1'
 $script:DeltaVectorsDir = Join-Path $PSScriptRoot '../../unit/data/su_delta'
 # Device Update limit on the update names of one provider (Standard SKU).
 $script:MaxUpdateNamesPerProvider = 25
+# Blob a standing offer set's RunId is appended to, overwritten by each run that uses the set.
+$script:OfferSetUseMarkerPrefix = 'sdke2e/used/'
 
 # Scenario name -> device-suite variable holding its model, and the per-device
 # job result status the service is expected to record once the suite has run.
@@ -689,6 +691,12 @@ function New-SuE2EOffers {
         }
     }
     & $save
+    if ($Reuse) {
+        # Marks this standing set as used now: pruning evicts the least recently used set first.
+        az storage blob upload --auth-mode login --account-name $config.STORAGE_ACCOUNT --container-name $config.STORAGE_CONTAINER `
+            --name "$script:OfferSetUseMarkerPrefix$RunId" --data (Get-Date -AsUTC -Format o) --overwrite --only-show-errors | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Upload of the use marker of $RunId failed" }
+    }
     Remove-SuE2EOfferSetsToFit -Config $config -RunId $RunId
 
     foreach ($scenario in $names.Offers.Keys) {
@@ -835,12 +843,21 @@ function Remove-SuE2EOfferSetsToFit {
     $excess = $names.Count + @($wanted | Where-Object { $_ -notin $names }).Count - $script:MaxUpdateNamesPerProvider
     if ($excess -le 0) { return }
 
-    # Other sets: models e2e-<tag>-<short> (Get-SuE2EOfferNames) of another tag.
+    $lastUse = @{}
+    $markers = az storage blob list --auth-mode login --account-name $Config.STORAGE_ACCOUNT --container-name $Config.STORAGE_CONTAINER `
+        --prefix $script:OfferSetUseMarkerPrefix --query '[].{name:name, modified:properties.lastModified}' -o json
+    if ($LASTEXITCODE -ne 0) { throw 'Listing the offer set use markers failed' }
+    foreach ($marker in @($markers | ConvertFrom-Json)) {
+        $lastUse[$marker.name.Substring($script:OfferSetUseMarkerPrefix.Length)] = ([datetime]$marker.modified).ToUniversalTime()
+    }
+    # Other sets: models e2e-<tag>-<short> (Get-SuE2EOfferNames) of another tag, least recently used
+    # (use marker, else import) first.
     $sets = @($updates | Where-Object { $_.updateId.name -notin $wanted -and $_.updateId.name -match '^e2e-[a-z0-9]+-[a-z]+$' } |
             Group-Object { ($_.updateId.name -split '-')[1] } |
-            Sort-Object { ($_.Group | ForEach-Object {
+            Sort-Object { if ($lastUse.ContainsKey($_.Name)) { $lastUse[$_.Name] } else {
+                    ($_.Group | ForEach-Object {
                         if ($_.PSObject.Properties['importedDateTime']) { ([datetime]$_.importedDateTime).ToUniversalTime() } else { [datetime]::MinValue }
-                    } | Measure-Object -Maximum).Maximum })
+                    } | Measure-Object -Maximum).Maximum } })
     foreach ($set in $sets) {
         if ($excess -le 0) { break }
         $offers = @($set.Group | ForEach-Object {
@@ -850,6 +867,7 @@ function Remove-SuE2EOfferSetsToFit {
                 if ($LASTEXITCODE -ne 0) { throw "Listing the blobs of $($id.name) failed" }
                 @{ Job = "su-$($id.name)"; Update = "updates/providers/sdke2e/names/$($id.name)/versions/$($id.version)"; Blobs = $blobs }
             })
+        $offers[0].Blobs = @($offers[0].Blobs) + "$script:OfferSetUseMarkerPrefix$($set.Name)"
         $setNames = @($set.Group | ForEach-Object { $_.updateId.name } | Sort-Object -Unique)
         Write-Warning "Provider sdke2e is $excess update name(s) over its limit: deleting offer set '$($set.Name)' ($($setNames -join ', '))"
         Remove-SuE2EOfferItems -Config $Config -Offers $offers
