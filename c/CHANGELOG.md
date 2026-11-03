@@ -40,7 +40,8 @@ Service (DPS): a C99 device SDK for constrained and embedded devices.
   Crypto keys (e.g. the ESP32 Digital Signature peripheral), or a `sign()` hook. See
   [docs/connecting.md](docs/connecting.md#production-keys).
 - DPS TPM attestation over HTTPS (`az_iot_dps_tpm_client.h`), with the application's HTTPS stack
-  and TPM software stack.
+  and TPM software stack. The `dps_tpm` sample runs it on a software TPM or, through tpm2-tss
+  ESAPI, on a TPM (`samples/common/sample_tpm_tss.c`).
 - Crypto backends: OpenSSL 3 (`az_iot_crypto_openssl.h`), mbedTLS (`az_iot_crypto_mbedtls.h`), or
   the application's own (`az_iot_crypto.h`). See [docs/connecting.md](docs/connecting.md#crypto-backend).
 
