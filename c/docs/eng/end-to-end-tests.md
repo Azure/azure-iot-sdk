@@ -448,6 +448,14 @@ Offered-update scenarios:
 | delta update: the device holds the source, downloads only the related file and builds the file from it; SUCCEEDED with no delta code | `AZ_IOT_E2E_SU_OFFER_MODEL_DELTA` |
 | delta update, device without the source: the handler declines, the file is downloaded in full; SUCCEEDED with the delta `NO_SOURCE` code | `AZ_IOT_E2E_SU_OFFER_MODEL_DELTA_NO_SOURCE` |
 | delta update with the reference `microsoft/delta:1` handler and the real delta processor (POSIX only): built from the cached source, SUCCEEDED with no delta code; the file replaces the source in the cache | `AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA` |
+| detached manifest: full manifest metadata over 4,096 bytes, so the service sends a mini manifest (`detachedManifestFileId`, with a URL in `fileUrls`); expected `Succeeded` (`<variable>_EXPECTED`): `download_fn` gets the detached manifest file and then the full manifest's files, each by its `fileUrls` URL; install and apply run; the report has the full manifest's steps | `AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED` |
+| same, in library mode: expected `Failed`, for now FAILED with `AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST`, no hook run and nothing handed over | `AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_LIBRARY_MODE` |
+
+The detached offers pad their step's `handlerProperties` (kept by the service, unlike unknown import
+fields) to a full manifest of about 7 KB. Each scenario's `Expected` in `SuE2E.psm1` is the job result
+`Test-SuE2EOffers` checks; `Export-SuE2EOfferVariables` also exports it as `<variable>_EXPECTED`
+(`Succeeded` or `Failed`), which the detached scenarios read, so supporting mini manifests flips one
+line per mode. `Expected` is not part of the fixture tag: changing it restages nothing.
 
 The two delta offers are alike but for the model, since a device sees each offer once. Their file names
 the download handler `sdke2e/xor-delta:1`, which the suite registers, and has one related file: the
@@ -479,7 +487,11 @@ its `-RunId`, and only waits for runs it creates (or for what is left of the 5 m
 started less than 5 minutes ago). A reused job may hold several runs, so `Test-SuE2EOffers` looks for
 the device in every `Active` run, then in the newest. `Export-SuE2EOfferVariables` sets the offer
 variables for a `-RunId` without contacting Azure. `Get-SuE2EFixtureTag` hashes the code that defines the offers;
-appended to a reused `-RunId`, a change to that code stages a new set. With `-Reuse`, a failed import
+appended to a reused `-RunId`, a change to that code stages a new set. Device Update allows 25 update
+names per provider, so before importing, `New-SuE2EOffers` deletes other runs' sets (jobs, updates,
+blobs), least recently used first, until the new set fits. Each staging run overwrites the blob
+`sdke2e/used/<tag>` (`Remove-SuE2EOffers` deletes it); a set without one counts as used when imported. A set used in the last 8 h
+(longer than a workflow run) is never deleted; if the new set still does not fit, staging fails. With `-Reuse`, a failed import
 is treated as done if the update now exists (another run imported it), else retried up to 3 times.
 Each REST request is retried on a transient failure (no response; HTTP 408, 429, 500, 502, 503 or
 504; another 5xx with a transient error code such as `BadGatewayConnection`), up to 5 attempts,
