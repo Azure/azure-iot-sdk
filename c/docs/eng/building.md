@@ -128,6 +128,14 @@ MSVC (`/GS`, `/DYNAMICBASE`, `/NXCOMPAT` and `/HIGHENTROPYVA` are already on by 
 
 Each flag is probed first and skipped if the toolchain does not support it.
 
+Also on MSVC, independent of `AZ_IOT_ENABLE_HARDENING` (top-level [CMakeLists.txt](../../CMakeLists.txt),
+[cmake/compiler_warnings.cmake](../../cmake/compiler_warnings.cmake)), as BinSkim requires:
+
+| Flag | Effect | When |
+|---|---|---|
+| `/INCREMENTAL:NO`, `/OPT:REF`, `/OPT:ICF` | No incremental linking; unreferenced code removed, identical COMDATs folded | All but `Debug` |
+| `/W3` | Warning level for the fetched dependencies (azure-sdk-for-c, Paho), which otherwise build at `/W1`; first-party targets use `/W4` | Always |
+
 **Scope.** The flags apply to the SDK, its samples and tests, and the dependencies it
 fetches (azure-sdk-for-c, Paho), except `/sdl`, which the dependencies do not build
 cleanly with. They are not exported: a parent project that adds this
