@@ -40,7 +40,7 @@ extends:
       os: linux
     settings:
       # The organization's effective policy set, stated explicitly: Permissive (GitHub reachable for
-      # FetchContent and vcpkg) plus the required CFSClean policies.
+      # FetchContent) plus the required CFSClean policies.
       networkIsolationPolicy: Permissive, CFSClean, CFSClean2, CFSClean3
     sdl:
       sourceAnalysisPool:
@@ -148,43 +148,23 @@ extends:
                   Write-Host "##vso[task.setvariable variable=CMAKE]$cmake"
                   Write-Host "##vso[task.setvariable variable=CTEST]$ctest"
                 displayName: Locate CMake
-              # OpenSSL comes from the `paho` feature of c/vcpkg.json; static triplet to match /MT.
-              # vcpkg resolves port versions from the manifest's builtin-baseline commit,
-              # which the vcpkg clone must contain: fetch it when the image's clone is older.
+              # OpenSSL: the image's full slproweb install (static libraries, /MT to match the SDK).
+              # Not vcpkg: its OpenSSL port needs tools from hosts that network isolation blocks.
               - powershell: |
                   $ErrorActionPreference = 'Stop'
-                  $root = $env:VCPKG_INSTALLATION_ROOT
-                  if (-not $root -or -not (Test-Path "$root/scripts/buildsystems/vcpkg.cmake")) {
-                    $root = Join-Path $env:AGENT_TEMPDIRECTORY 'vcpkg'
-                    git clone https://github.com/microsoft/vcpkg $root
-                    if ($LASTEXITCODE) { exit $LASTEXITCODE }
-                    & "$root/bootstrap-vcpkg.bat" -disableMetrics
-                    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+                  $root = Join-Path $env:ProgramFiles 'OpenSSL'
+                  foreach ($lib in 'libcrypto_static.lib', 'libssl_static.lib') {
+                    if (-not (Test-Path (Join-Path $root "lib/VC/x64/MT/$lib"))) { throw "$lib not found under $root" }
                   }
-                  $baseline = (Get-Content c/vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
-                  git -C $root rev-parse --verify --quiet "$baseline^{commit}" | Out-Null
-                  if ($LASTEXITCODE) {
-                    # A plain fetch keeps a shallow clone's history boundary.
-                    $fetch = @('fetch', '--quiet', 'origin')
-                    if ((git -C $root rev-parse --is-shallow-repository) -eq 'true') {
-                      $fetch = @('fetch', '--quiet', '--unshallow', 'origin')
-                    }
-                    git -C $root @fetch
-                    if ($LASTEXITCODE) { exit $LASTEXITCODE }
-                    git -C $root rev-parse --verify --quiet "$baseline^{commit}" | Out-Null
-                    if ($LASTEXITCODE) {
-                      Write-Host "##vso[task.logissue type=error]vcpkg baseline $baseline not found in $root"
-                      exit 1
-                    }
-                  }
-                  Write-Host "##vso[task.setvariable variable=VCPKG_ROOT]$root"
-                displayName: Locate vcpkg
+                  & (Join-Path $root 'bin/openssl.exe') version
+                  Write-Host "##vso[task.setvariable variable=OPENSSL_ROOT]$root"
+                displayName: Locate OpenSSL
               - powershell: |
                   $log = Join-Path $env:AGENT_TEMPDIRECTORY 'configure.log'
                   & "$(CMAKE)" -S c -B c/build -G "Visual Studio 17 2022" -A x64 `
-                    "-DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake" `
-                    -DVCPKG_TARGET_TRIPLET=x64-windows-static `
-                    -DVCPKG_MANIFEST_FEATURES=paho `
+                    "-DOPENSSL_ROOT_DIR=$(OPENSSL_ROOT)" `
+                    -DOPENSSL_USE_STATIC_LIBS=TRUE `
+                    -DOPENSSL_MSVC_STATIC_RT=TRUE `
                     -DBUILD_SHARED_LIBS=ON `
                     -DAZ_IOT_BUILD_SAMPLES=OFF `
                     -DAZ_IOT_BUILD_TESTS=ON `
@@ -209,9 +189,9 @@ extends:
               # (Paho, OpenSSL crypto, managed certificates). Separate tree: shared builds skip samples.
               - powershell: |
                   & "$(CMAKE)" -S c -B c/build-static -G "Visual Studio 17 2022" -A x64 `
-                    "-DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake" `
-                    -DVCPKG_TARGET_TRIPLET=x64-windows-static `
-                    -DVCPKG_MANIFEST_FEATURES=paho `
+                    "-DOPENSSL_ROOT_DIR=$(OPENSSL_ROOT)" `
+                    -DOPENSSL_USE_STATIC_LIBS=TRUE `
+                    -DOPENSSL_MSVC_STATIC_RT=TRUE `
                     -DBUILD_SHARED_LIBS=OFF `
                     -DAZ_IOT_BUILD_SAMPLES=ON `
                     -DAZ_IOT_BUILD_TESTS=OFF `
