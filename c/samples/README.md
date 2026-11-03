@@ -84,12 +84,13 @@ sudo apt-get install -y git build-essential cmake ninja-build libssl-dev ca-cert
 
 **Windows:**
 
-- A C99 compiler. CI builds and tests the SDK on Windows with MSVC. Suggested setup, not a
-  requirement: [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) with the *Desktop
-  development with C++* workload, or the
+- A C99 compiler: MSVC is the Windows compiler CI builds and tests the SDK with; other compilers
+  that CMake supports are untested, and MinGW-w64 GCC does not build the SDK as is. Suggested
+  way to get MSVC, not a requirement:
+  [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) with the *Desktop development with
+  C++* workload, or the
   [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022).
-  Either installs MSVC, the Windows SDK, CMake and Ninja. Other compilers that CMake supports
-  may work but are not tested; MinGW-w64 GCC does not build the SDK as is. If you cannot install
+  Either installs MSVC, the Windows SDK, CMake and Ninja. If you cannot install
   a Windows compiler, follow the Linux steps above in
   [WSL](https://learn.microsoft.com/windows/wsl/install).
 - [Visual Studio Code](https://code.visualstudio.com/) is an editor, not a compiler: with its
