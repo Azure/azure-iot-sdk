@@ -170,6 +170,20 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             set => _twinClient.DesiredResyncTimeoutSchedule = value;
         }
 
+        /// <inheritdoc cref="TwinEngine.GetTwinResponseConnectionChecked"/>
+        internal Action? GetTwinResponseConnectionChecked
+        {
+            get => _twinClient.GetTwinResponseConnectionChecked;
+            set => _twinClient.GetTwinResponseConnectionChecked = value;
+        }
+
+        /// <inheritdoc cref="TwinEngine.GetTwinResponseReceived"/>
+        internal Action? GetTwinResponseReceived
+        {
+            get => _twinClient.GetTwinResponseReceived;
+            set => _twinClient.GetTwinResponseReceived = value;
+        }
+
         /// <summary>
         /// Get the full twin.
         /// </summary>

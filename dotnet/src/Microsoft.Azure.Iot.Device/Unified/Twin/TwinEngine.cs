@@ -130,6 +130,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         internal Func<int, TimeSpan> DesiredResyncTimeoutSchedule { get; set; } = DefensiveTimeoutSchedule.GetTimeout;
 
         /// <summary>
+        /// For tests. Invoked while holding _desiredStateLock, once a get twin response's connection was checked and before
+        /// the response is applied.
+        /// </summary>
+        internal Action? GetTwinResponseConnectionChecked { get; set; }
+
+        /// <summary>
+        /// For tests. Invoked once a get twin response was matched to the outstanding GET, before its connection is checked.
+        /// </summary>
+        internal Action? GetTwinResponseReceived { get; set; }
+
+        /// <summary>
         /// How long to wait for the response to the given attempt (starting at 1) of an application's get twin request
         /// before sending it again.
         /// </summary>
@@ -979,6 +990,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                     if (connectionNonce == null || connectionNonce != _getTwinLostConnectionNonce)
                     {
                         fetch.SentGetId = getId;
+                        fetch.SentConnectionNonce = connectionNonce;
 
                         // Only once sent, so that a request that is waiting for the device to reconnect isn't sent again.
                         ArmGetTwinTimer(fetch, getId);
@@ -1167,7 +1179,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         private bool TryTakeGetTwinFetch(
             Guid getId,
             [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out List<GetTwinWaiter>? waiters,
-            out DesiredResync? resync)
+            out DesiredResync? resync,
+            out bool isSent,
+            out Guid? sentConnectionNonce)
         {
             lock (_getTwinLock)
             {
@@ -1176,18 +1190,22 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 {
                     waiters = null;
                     resync = null;
+                    isSent = false;
+                    sentConnectionNonce = null;
                     return false;
                 }
 
                 waiters = TakeGetTwinWaiters(fetch);
                 resync = fetch.Resync;
+                isSent = fetch.SentGetId == getId;
+                sentConnectionNonce = fetch.SentConnectionNonce;
                 EndGetTwinFetch(fetch);
                 return true;
             }
         }
 
         // Delivers the response to the active GET whose latest attempt has this ID (if any) to the resync and the calls waiting for it.
-        private async Task HandleGetTwinResponseAsync(Guid getId, TwinGetResponse response, bool isClassic)
+        private async Task HandleGetTwinResponseAsync(Guid getId, TwinGetResponse response, bool isClassic, Guid? receivedConnectionNonce)
         {
             JsonObject? desired;
             JsonObject? reported;
@@ -1203,55 +1221,62 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            if (!TryTakeGetTwinFetch(getId, out List<GetTwinWaiter>? waiters, out DesiredResync? resync))
+            if (!TryTakeGetTwinFetch(getId, out List<GetTwinWaiter>? waiters, out DesiredResync? resync, out bool isSent, out Guid? sentConnectionNonce))
             {
                 Trace.TraceInformation("Dropping a get twin response that does not match the outstanding get twin request.");
                 return;
             }
 
-            // A resync's GET belongs to the connection that the resync started on, so a response to it that arrives once that
-            // connection was replaced (for example, by one as a different identity) describes a twin that this device may no
-            // longer have. It is dropped, and the calls sharing it fail as if the connection had been lost before it arrived.
-            Guid? connectionNonce = _connection.ConnectionNonce;
-            if (resync != null && resync.ConnectionNonce != connectionNonce)
-            {
-                Trace.TraceInformation("Dropping a get twin response that arrived after the connection it was requested on was replaced.");
-                lock (_desiredStateLock)
-                {
-                    DiscardDesiredResyncFromPreviousConnection(connectionNonce);
-                }
+            GetTwinResponseReceived?.Invoke();
 
-                foreach (GetTwinWaiter waiter in waiters)
-                {
-                    waiter.Response.TrySetException(CreateGetTwinConnectionLostException());
-                }
-
-                return;
-            }
-
-            RecordAuthoritativeVersions(connectionNonce, response.DesiredVersion, response.ReportedVersion);
-
-            // The resync goes first, since it may find this device's copy of the twin invalid (see ResetLocalDesiredVersionIfInvalid).
+            // A response that is handled once the connection that it arrived on, that its GET was sent on, or (for a resync's GET)
+            // that the resync started on was replaced, for example by one as a different identity, describes a twin that this
+            // device may no longer have. It is dropped, and the calls sharing it fail as if the connection had been lost before it
+            // arrived. The connection is checked and the response applied while holding _desiredStateLock, which a new
+            // connection's connect sync also holds while it replaces the resync and records the versions it starts from, so the
+            // two never interleave.
             DesiredStateOutcome outcome = new();
+            bool isFromReplacedConnection;
             try
             {
-                if (resync != null)
+                lock (_desiredStateLock)
                 {
-                    ApplyDesiredResyncGetResponse(resync, response, desired, outcome);
-                }
-
-                if (desired != null && waiters.Any(waiter => waiter.Request.GetDesired))
-                {
-                    lock (_desiredStateLock)
+                    Guid? connectionNonce = _connection.ConnectionNonce;
+                    isFromReplacedConnection = receivedConnectionNonce != connectionNonce
+                        || (isSent && sentConnectionNonce != connectionNonce)
+                        || (resync != null && resync.ConnectionNonce != connectionNonce);
+                    if (isFromReplacedConnection)
                     {
-                        // The application fetched the desired properties, so this device's view of them is now at least this version.
-                        AdvanceLocalDesiredVersion(response.DesiredVersion, desired, isPatch: false);
+                        DiscardDesiredResyncFromPreviousConnection(connectionNonce);
+                        if (resync != null && resync == _desiredResync)
+                        {
+                            // A resync of the current connection (for example, one that a desired patch on it started) had joined
+                            // this GET, so it needs a GET of its own.
+                            RequestDesiredResyncGet(resync, isNewAttemptRequired: false);
+                        }
                     }
-                }
+                    else
+                    {
+                        GetTwinResponseConnectionChecked?.Invoke();
+                        RecordAuthoritativeVersions(connectionNonce, response.DesiredVersion, response.ReportedVersion);
 
-                if (reported != null && waiters.Any(waiter => waiter.Request.GetReported))
-                {
-                    AdvanceLocalReportedVersion(response.ReportedVersion, reported);
+                        // The resync goes first, since it may find this device's copy of the twin invalid (see ResetLocalDesiredVersionIfInvalid).
+                        if (resync != null)
+                        {
+                            ApplyDesiredResyncGetResponse(resync, response, desired, outcome);
+                        }
+
+                        if (desired != null && waiters.Any(waiter => waiter.Request.GetDesired))
+                        {
+                            // The application fetched the desired properties, so this device's view of them is now at least this version.
+                            AdvanceLocalDesiredVersion(response.DesiredVersion, desired, isPatch: false);
+                        }
+
+                        if (reported != null && waiters.Any(waiter => waiter.Request.GetReported))
+                        {
+                            AdvanceLocalReportedVersion(response.ReportedVersion, reported);
+                        }
+                    }
                 }
             }
             catch (Exception e)
@@ -1264,6 +1289,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 }
 
                 throw;
+            }
+
+            if (isFromReplacedConnection)
+            {
+                Trace.TraceInformation("Dropping a get twin response that arrived after the connection it was requested on was replaced.");
+                foreach (GetTwinWaiter waiter in waiters)
+                {
+                    waiter.Response.TrySetException(CreateGetTwinConnectionLostException());
+                }
+
+                return;
             }
 
             foreach (GetTwinWaiter waiter in waiters)
@@ -1427,9 +1463,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
         private async Task HandleReceivedMqttPublishCoreAsync(MqttPublishReceivedEventArgs args)
         {
+            // The connection that the publish arrived on, read before a reconnect can get to replace it.
+            Guid? receivedConnectionNonce = _connection.ConnectionNonce;
             if (args.Publish.Topic.StartsWith(ClassicTwinTopicPrefix, StringComparison.Ordinal))
             {
-                await HandleReceivedClassicPublishAsync(args.Publish);
+                await HandleReceivedClassicPublishAsync(args.Publish, receivedConnectionNonce);
                 return;
             }
 
@@ -1498,7 +1536,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                     return;
                 }
 
-                await HandleGetTwinResponseAsync(getResponseCorrelationData.Value, twinGetResponse, isClassic: false);
+                await HandleGetTwinResponseAsync(getResponseCorrelationData.Value, twinGetResponse, isClassic: false, receivedConnectionNonce);
             }
             else if (type.Equals("reported-patch-response"))
             {
@@ -2291,6 +2329,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             // The ID of the latest attempt that was sent. Only sent attempts can lose their response to a connection loss.
             public Guid? SentGetId { get; set; }
+
+            // The connection that the attempt with SentGetId was sent on.
+            public Guid? SentConnectionNonce { get; set; }
 
             public int Attempt { get; set; } = 1;
 

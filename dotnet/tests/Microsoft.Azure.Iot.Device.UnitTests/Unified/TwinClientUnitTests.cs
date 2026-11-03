@@ -429,15 +429,24 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = CreateClassicConnection();
             TaskCompletionSource<MqttPublishAck> held = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource heldPublishStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
             int publishes = 0;
-            connection.OnPublish = _ => Interlocked.Increment(ref publishes) == 1
-                ? held.Task
-                : Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            connection.OnPublish = _ =>
+            {
+                if (Interlocked.Increment(ref publishes) == 1)
+                {
+                    heldPublishStarted.TrySetResult();
+                    return held.Task;
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
             using TwinClient twinClient = new(connection);
 
-            // The connection client holds the application's GET until the device has reconnected.
+            // The connection client holds the application's GET until the device has reconnected. The publish is recorded
+            // before OnPublish runs, so wait for OnPublish to make sure that the held publish is the application's GET.
             Task<DeviceTwin> getTask = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
-            await connection.WaitForPublishedMessagesAsync(1);
+            await heldPublishStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
             connection.SimulateConnectionLost();
             connection.ConnectionNonce = Guid.NewGuid();
             connection.SimulateClassicDevicePresenceEstablished();
@@ -517,6 +526,113 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             DeviceException exception = await Assert.ThrowsAsync<DeviceException>(() => getTask);
             Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
             Assert.Empty(snapshotVersions);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_Classic_SharedGetResponseFromAReplacedConnectionFailsTheCallAfterAPatchOnTheNewConnectionReplacedTheResync()
+        {
+            MockFeatureConnectionClient connection = CreateClassicConnection();
+            using TwinClient twinClient = new(connection);
+            await CompleteConnectSyncAsync(connection, desiredVersion: 1);
+            List<ulong> snapshotVersions = new();
+            twinClient.TwinPushReceived += args => snapshotVersions.Add(args.Desired!.PropertiesVersion);
+            int publishCount = connection.PublishedMessages.Count;
+
+            // The resync's timeout is scheduled once its GET counts as sent.
+            TaskCompletionSource resyncGetSent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            twinClient.DesiredResyncTimeoutSchedule = _ =>
+            {
+                resyncGetSent.TrySetResult();
+                return TimeSpan.FromHours(1);
+            };
+
+            await ReceiveClassicDesiredPatchAsync(connection, 3, "{\"fanSpeed\":3}");
+            MqttPublish resyncGet = await connection.WaitForPublishedMessagesAsync(publishCount + 1);
+            await resyncGetSent.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
+
+            // A patch on the next connection replaces the resync before the previous connection's response is handled.
+            connection.ConnectionNonce = Guid.NewGuid();
+            await ReceiveClassicDesiredPatchAsync(connection, 5, "{\"fanSpeed\":5}");
+            await RespondClassicAsync(connection, resyncGet, 200, payload: ClassicTwin(3, "{\"fanSpeed\":3}", 1, "{}"));
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(() => getTask);
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+            Assert.Empty(snapshotVersions);
+
+            // The new connection's resync gets a GET of its own.
+            MqttPublish newResyncGet = await connection.WaitForPublishedMessagesAsync(publishCount + 2);
+            await RespondClassicAsync(connection, newResyncGet, 200, payload: ClassicTwin(5, "{\"fanSpeed\":5}", 1, "{}"));
+            Assert.Equal(new[] { 5ul }, snapshotVersions);
+        }
+
+        [Fact]
+        public async Task GetTwinAsync_Classic_ResponseHandledAfterItsConnectionWasReplacedFailsTheCallEvenBeforeThePublishReturned()
+        {
+            MockFeatureConnectionClient connection = CreateClassicConnection();
+            using TwinClient twinClient = new(connection);
+            await CompleteConnectSyncAsync(connection, desiredVersion: 1, reportedVersion: 1);
+            int publishCount = connection.PublishedMessages.Count;
+
+            // The response arrives before the publish returns, so the GET hasn't counted as sent when it is handled.
+            TaskCompletionSource<MqttPublishAck> sent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connection.OnPublish = _ => sent.Task;
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(publishCount + 1);
+
+            // The device reconnects after the response arrived, but before it is checked against the connection.
+            twinClient.GetTwinResponseReceived = () => connection.ConnectionNonce = Guid.NewGuid();
+            await RespondClassicAsync(connection, getPublish, 200, payload: ClassicTwin(1, "{}", 7, "{\"temperature\":20}"));
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(() => getTask);
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+            Assert.Equal(1ul, twinClient.GetTwinState().ReportedVersion);
+            sent.SetResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+        }
+
+        [Fact]
+        public async Task ConnectSync_Classic_StartsFromTheVersionsThatAResponseFromThePreviousConnectionApplied()
+        {
+            MockFeatureConnectionClient connection = CreateClassicConnection();
+            using TwinClient twinClient = new(connection);
+            await CompleteConnectSyncAsync(connection, desiredVersion: 1, reportedVersion: 1);
+            List<TwinPushReceivedEventArgs> pushes = new();
+            twinClient.TwinPushReceived += pushes.Add;
+            int publishCount = connection.PublishedMessages.Count;
+
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(publishCount + 1);
+
+            // Pause the response once its connection was found current, but before it is applied.
+            using ManualResetEventSlim releaseResponse = new();
+            TaskCompletionSource responseChecked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            twinClient.GetTwinResponseConnectionChecked = () =>
+            {
+                responseChecked.TrySetResult();
+                releaseResponse.Wait(TimeSpan.FromSeconds(10));
+            };
+            Task responding = Task.Run(
+                () => RespondClassicAsync(connection, getPublish, 200, payload: ClassicTwin(1, "{}", 7, "{\"temperature\":20}")),
+                TestContext.Current.CancellationToken);
+            await responseChecked.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            // The device reconnects meanwhile, so the connect sync waits for the response to be applied.
+            Task connectSync = Task.Run(() => connection.SimulateClassicDevicePresenceEstablished(), TestContext.Current.CancellationToken);
+            await Task.Delay(200, TestContext.Current.CancellationToken);
+            Assert.False(connectSync.IsCompleted);
+
+            releaseResponse.Set();
+            await responding;
+            await connectSync;
+            Assert.Equal(7ul, (await getTask).ReportedVersion);
+
+            // The connect sync started from reported version 7, so it adopts IoT hub's different reported properties at that
+            // version. Had it started from version 1, it would keep the response's copy instead.
+            MqttPublish connectSyncGet = await connection.WaitForPublishedMessagesAsync(publishCount + 2);
+            await RespondClassicAsync(connection, connectSyncGet, 200, payload: ClassicTwin(1, "{}", 7, "{\"temperature\":21}"));
+            TwinPushReceivedEventArgs push = Assert.Single(pushes);
+            Assert.Equal(7ul, push.Reported!.PropertiesVersion);
+            Assert.Equal(21, (int)push.Reported.Properties!["temperature"]!);
         }
 
         [Fact]
