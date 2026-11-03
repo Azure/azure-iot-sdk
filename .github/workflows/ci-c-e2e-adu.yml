@@ -131,7 +131,7 @@ jobs:
     permissions:
       contents: read
       id-token: write   # azure/login OIDC
-    timeout-minutes: 140
+    timeout-minutes: 170
     env:
       AZ_IOT_E2E_SU_SUBSCRIPTION_ID: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
       AZ_IOT_E2E_SU_RESOURCE_GROUP: ${{ vars.E2E_MQTTV5_SHARED_RESOURCE_GROUP }}
@@ -153,9 +153,9 @@ jobs:
           subscription-id: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
 
       # Seconds when the offers are staged. Otherwise typically about 11 min; at
-      # most 8 x (10 min import + 5 min job) + 10 min to Active + 5 min grace.
+      # most 10 x (10 min import + 5 min job) + 10 min to Active + 5 min grace.
       - name: Ensure standing offers
-        timeout-minutes: 135
+        timeout-minutes: 165
         shell: pwsh
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
@@ -178,9 +178,9 @@ jobs:
     permissions:
       contents: read
       id-token: write   # azure/login OIDC
-    # Above the sum of the step budgets (about 200 min), so every step's own
+    # Above the sum of the step budgets (about 225 min), so every step's own
     # timeout fires first.
-    timeout-minutes: 220
+    timeout-minutes: 245
     strategy:
       fail-fast: false
       matrix:
@@ -301,11 +301,11 @@ jobs:
           $ca = ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $dir 'trusted-ca.pem')
           "SU_DEVICES=$dir", "AZ_IOT_E2E_SU_TRUSTED_CA=$ca" | Add-Content -Path $env:GITHUB_ENV
 
-      # Per adapter: e2e_su (10 min budget), then e2e_su_offer (65 min: 8 offers x
+      # Per adapter: e2e_su (10 min budget), then e2e_su_offer (78 min: 10 offers x
       # (90 s check + 300 s workflow), plus the scenarios without an offer and
       # setup), each on its own device.
       - name: Run software updates e2e
-        timeout-minutes: 160
+        timeout-minutes: 180
         shell: pwsh
         env:
           AZ_IOT_CURL_PREFIX: ${{ steps.curl.outputs.prefix }}
@@ -319,7 +319,7 @@ jobs:
             $suffix = if ($adapter -eq 'paho') { '' } else { '_az_mqtt' }
             $device = $adapter.Replace('_', '-')
             foreach ($suite in @(@{ Name = 'su'; Device = $device; Timeout = 600 },
-                                 @{ Name = 'su_offer'; Device = "$device-offer"; Timeout = 3900 })) {
+                                 @{ Name = 'su_offer'; Device = "$device-offer"; Timeout = 4680 })) {
               $test = "az_iot_tests_e2e_$($suite.Name)$suffix"
               $env:AZ_IOT_E2E_SU_REG_ID = [Environment]::GetEnvironmentVariable(
                 'SU_REG_ID_' + $suite.Device.Replace('-', '_').ToUpperInvariant())

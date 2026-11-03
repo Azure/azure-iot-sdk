@@ -77,6 +77,11 @@ $script:Scenarios = [ordered]@{
     DELTA_NO_SOURCE   = @{ Short = 'nosrc'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DELTA_NO_SOURCE'; Expected = 'Succeeded'; Delta = 'Test' }
     # The reference microsoft/delta:1 handler and the real delta processor.
     MICROSOFT_DELTA   = @{ Short = 'msdelta'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA'; Expected = 'Succeeded'; Delta = 'Microsoft' }
+    # Detached = $true: an update manifest over 4,096 bytes, which the service offers as a
+    # signed mini manifest (see Import-SuE2EUpdate); managed and library mode. The device suite
+    # reads Expected too (<Variable>_EXPECTED): Failed while the client refuses mini manifests.
+    DETACHED              = @{ Short = 'mini'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED'; Expected = 'Failed'; Detached = $true }
+    DETACHED_LIBRARY_MODE = @{ Short = 'minilib'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_LIBRARY_MODE'; Expected = 'Failed'; Detached = $true }
 }
 
 function Get-SuE2EConfig {
@@ -286,6 +291,9 @@ function Get-SuE2EJobsUri([hashtable]$Config) {
                  file XOR Get-SuE2EDeltaSource.
       Microsoft  microsoft/delta:1; the file is target.swu, the related file
                  delta.bin, the source source.swu ($script:DeltaVectorsDir).
+    With -Detached, the step's handler properties are padded until the update
+    manifest the service generates is well over 4,096 bytes (about 6.5 KB), so
+    the service offers a signed mini manifest that names it as a detached file.
 #>
 function Import-SuE2EUpdate {
     param(
@@ -297,6 +305,7 @@ function Import-SuE2EUpdate {
         [Parameter(Mandatory)][string]$Model,
         [Parameter(Mandatory)][string]$WorkDir,
         [ValidateSet('', 'Test', 'Microsoft')][string]$Delta = '',
+        [switch]$Detached,
         # Receives each uploaded blob name as soon as it exists, for cleanup.
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Blobs,
         # Called after each upload, so the caller can persist $Blobs at once.
@@ -348,6 +357,12 @@ function Import-SuE2EUpdate {
         $payloadFile.downloadHandler = @{ id = $handlerId }
     }
 
+    $handlerProperties = [ordered]@{ installedCriteria = $Version }
+    if ($Detached) {
+        # Kept in the update manifest, unlike unknown import manifest fields, which the service drops.
+        for ($i = 0; $i -lt 12; $i++) { $handlerProperties["sdke2ePadding$i"] = 'p' * 500 }
+    }
+
     $manifest = [ordered]@{
         updateId        = [ordered]@{ provider = $Provider; name = $Name; version = $Version }
         compatibility   = @([ordered]@{ manufacturer = $Manufacturer; model = $Model })
@@ -355,7 +370,7 @@ function Import-SuE2EUpdate {
             steps = @([ordered]@{
                     handler           = 'microsoft/swupdate:1'
                     files             = @("$Model.bin")
-                    handlerProperties = @{ installedCriteria = $Version }
+                    handlerProperties = $handlerProperties
                 })
         }
         files           = @($payloadFile)
@@ -593,7 +608,9 @@ function Get-SuE2EFixtureTag {
             [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData(
                     [System.IO.File]::ReadAllBytes((Join-Path $script:DeltaVectorsDir $_))))
         }) -join ','
-    $text += ($script:Scenarios.Keys | ForEach-Object { "$_=$($script:Scenarios[$_].Short)/$($script:Scenarios[$_]['Delta'])" }) -join ','
+    $text += ($script:Scenarios.Keys | ForEach-Object {
+            "$_=$($script:Scenarios[$_].Short)/$($script:Scenarios[$_]['Delta'])/$($script:Scenarios[$_]['Detached'])"
+        }) -join ','
     $hash = [System.Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes(($text -replace "`r`n", "`n")))
     return [Convert]::ToHexString($hash).Substring(0, 8).ToLowerInvariant()
 }
@@ -601,13 +618,18 @@ function Get-SuE2EFixtureTag {
 <#
 .SYNOPSIS
     Exports the variables the device suites read for the offers staged under
-    -RunId (also to $env:GITHUB_ENV when set). No remote call.
+    -RunId (also to $env:GITHUB_ENV when set): per scenario its model, and as
+    <Variable>_EXPECTED its expected job result. No remote call.
 #>
 function Export-SuE2EOfferVariables {
     param([Parameter(Mandatory)][string]$RunId)
     $names = Get-SuE2EOfferNames -RunId $RunId
     $exports = [ordered]@{ AZ_IOT_E2E_SU_OFFER_MANUFACTURER = $names.Manufacturer }
-    foreach ($scenario in $names.Offers.Keys) { $exports[$script:Scenarios[$scenario].Variable] = $names.Offers[$scenario].Model }
+    foreach ($scenario in $names.Offers.Keys) {
+        $s = $script:Scenarios[$scenario]
+        $exports[$s.Variable] = $names.Offers[$scenario].Model
+        $exports["$($s.Variable)_EXPECTED"] = $s.Expected
+    }
     foreach ($k in $exports.Keys) {
         Set-Item -Path "env:$k" -Value $exports[$k]
         if ($env:GITHUB_ENV) { Add-Content -Path $env:GITHUB_ENV -Value "$k=$($exports[$k])" }
@@ -681,7 +703,8 @@ function New-SuE2EOffers {
                 try {
                     [void](Import-SuE2EUpdate -Config $config -Provider 'sdke2e' -Name $n.Model `
                             -Version '1.0.0' -Manufacturer $manufacturer -Model $n.Model -WorkDir $WorkDir `
-                            -Delta "$($script:Scenarios[$scenario]['Delta'])" -Blobs $offer.Blobs -OnChange $save)
+                            -Delta "$($script:Scenarios[$scenario]['Delta'])" -Detached:([bool]$script:Scenarios[$scenario]['Detached']) `
+                            -Blobs $offer.Blobs -OnChange $save)
                     break
                 }
                 catch {

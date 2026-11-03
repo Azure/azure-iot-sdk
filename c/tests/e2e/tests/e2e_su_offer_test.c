@@ -31,6 +31,12 @@
  *   AZ_IOT_E2E_SU_OFFER_MODEL_DELTA              built from a related file
  *   AZ_IOT_E2E_SU_OFFER_MODEL_DELTA_NO_SOURCE    alike, device has no source
  *   AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA    built by the reference microsoft/delta:1 handler
+ *   AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED           offered as a mini manifest (managed client)
+ *   AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_LIBRARY_MODE  alike, library mode
+ *
+ * The DETACHED offers' update manifest is over 4,096 bytes, so the service sends a signed mini
+ * manifest naming it as a detached file (`detachedManifestFileId`). Their outcome is read from
+ * <model variable>_EXPECTED (`Failed` or `Succeeded`; SuE2E.psm1's scenario table).
  *
  * The DELTA offers name the test download handler E2E_SU_TEST_DELTA_HANDLER_ID: their file's
  * related file is the file XOR a source both sides generate (delta_source_byte()). The
@@ -118,6 +124,10 @@
 #define E2E_SU_TEST_DELTA_HANDLER_ID "sdke2e/xor-delta:1"
 /* Bytes of the source the delta offers' related file was made from. */
 #define E2E_SU_DELTA_SOURCE_SIZE 4096u
+
+/* The code a refused mini manifest is reported with. */
+#define E2E_SU_DETACHED_MANIFEST_REFUSED_CODE \
+  AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_MANIFEST, AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST)
 
 /* The delta engine's code the no-source scenario asserts on. */
 #define E2E_SU_DELTA_NO_SOURCE_CODE \
@@ -450,6 +460,41 @@ static bool finish_sha256_base64(
   return ok;
 }
 
+/**
+ * @brief Finds the top-level property @p name of the JSON object @p json.
+ *
+ * @return True when it is there and a string, then in @p out_value.
+ */
+static bool find_json_object_string_property(az_span json, az_span name, az_json_token* out_value)
+{
+  az_json_reader reader;
+  if (az_result_failed(az_json_reader_init(&reader, json, NULL))
+      || az_result_failed(az_json_reader_next_token(&reader))
+      || reader.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  {
+    return false;
+  }
+  while (az_result_succeeded(az_json_reader_next_token(&reader))
+         && reader.token.kind == AZ_JSON_TOKEN_PROPERTY_NAME)
+  {
+    bool is_name = az_json_token_is_text_equal(&reader.token, name);
+    if (az_result_failed(az_json_reader_next_token(&reader)))
+    {
+      return false;
+    }
+    if (is_name)
+    {
+      *out_value = reader.token;
+      return reader.token.kind == AZ_JSON_TOKEN_STRING;
+    }
+    if (az_result_failed(az_json_reader_skip_children(&reader)))
+    {
+      return false;
+    }
+  }
+  return false;
+}
+
 /** @brief Size of the file at @p path, or -1. */
 static int64_t size_of_file(const char* path)
 {
@@ -559,34 +604,10 @@ static bool compute_delta_source_hash(void)
 /** @brief True when @p related's `microsoft.sourceFileHash` property is the delta source's hash. */
 static bool is_made_from_delta_source(const az_iot_su_client_update_manifest_file* related)
 {
-  az_json_reader reader;
-  if (az_result_failed(az_json_reader_init(&reader, related->properties, NULL))
-      || az_result_failed(az_json_reader_next_token(&reader))
-      || reader.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-  {
-    return false;
-  }
-  while (az_result_succeeded(az_json_reader_next_token(&reader))
-         && reader.token.kind == AZ_JSON_TOKEN_PROPERTY_NAME)
-  {
-    bool is_source_hash
-        = az_json_token_is_text_equal(&reader.token, AZ_SPAN_FROM_STR("microsoft.sourceFileHash"));
-    if (az_result_failed(az_json_reader_next_token(&reader)))
-    {
-      return false;
-    }
-    if (is_source_hash)
-    {
-      return reader.token.kind == AZ_JSON_TOKEN_STRING
-          && az_json_token_is_text_equal(
-                 &reader.token, az_span_create_from_str(g_delta_source_hash));
-    }
-    if (az_result_failed(az_json_reader_skip_children(&reader)))
-    {
-      return false;
-    }
-  }
-  return false;
+  az_json_token hash;
+  return find_json_object_string_property(
+             related->properties, AZ_SPAN_FROM_STR("microsoft.sourceFileHash"), &hash)
+      && az_json_token_is_text_equal(&hash, az_span_create_from_str(g_delta_source_hash));
 }
 
 /** @brief Chooses the related file made from the delta source, when the device holds it. */
@@ -1053,6 +1074,12 @@ typedef struct
   az_iot_su_operation abandoned_op;
   az_iot_result abandoned_reason;
 
+  /* The offered manifest, once verified: whether it was recorded, its `detachedManifestFileId`
+   * (empty when it is a full manifest) and whether `fileUrls` has that file. */
+  bool offered_manifest_recorded;
+  char detached_manifest_file_id[E2E_SU_FILE_ID_SIZE];
+  bool detached_manifest_file_has_url;
+
   /* Library mode: the update handed over by AZ_IOT_SU_EVENT_UPDATE_AVAILABLE. */
   size_t updates_available;
   const az_iot_su_client_update_request* delegated_request;
@@ -1070,9 +1097,62 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* ctx)
   }
 }
 
+/**
+ * @brief Records whether the client's current offer is a mini manifest: its
+ * `detachedManifestFileId`, and whether its `fileUrls` has a URL for that file.
+ */
+static void record_offered_manifest(fixture* fx)
+{
+  const az_iot_su_client_update_request* request = NULL;
+  const az_iot_su_client_update_manifest* manifest = NULL;
+  if (az_iot_su_client_get_current_update(&fx->su, &request, &manifest) != AZ_IOT_OK)
+  {
+    return;
+  }
+  fx->offered_manifest_recorded = true;
+  az_json_token id;
+  if (!find_json_object_string_property(
+          request->update_manifest, AZ_SPAN_FROM_STR("detachedManifestFileId"), &id))
+  {
+    printf("  offered manifest: full, %d bytes\n", (int)az_span_size(request->update_manifest));
+    return;
+  }
+  if (az_result_failed(az_json_token_get_string(
+          &id,
+          fx->detached_manifest_file_id,
+          (int32_t)sizeof(fx->detached_manifest_file_id),
+          NULL)))
+  {
+    /* Not failed here: the observer runs inside the client. The scenario fails on the empty id. */
+    fx->detached_manifest_file_id[0] = '\0';
+    printf("  offered manifest: detachedManifestFileId of %d bytes not recorded\n", (int)id.size);
+    return;
+  }
+  az_span id_text = az_span_create_from_str(fx->detached_manifest_file_id);
+  for (uint32_t i = 0; i < request->file_urls_count; ++i)
+  {
+    fx->detached_manifest_file_has_url = fx->detached_manifest_file_has_url
+        || az_span_is_content_equal(request->file_urls[i].id, id_text);
+  }
+  printf(
+      "  offered manifest: mini, %d bytes, detachedManifestFileId \"%s\" %s in fileUrls (%u "
+      "URLs)\n",
+      (int)az_span_size(request->update_manifest),
+      fx->detached_manifest_file_id,
+      fx->detached_manifest_file_has_url ? "has a URL" : "has no URL",
+      (unsigned)request->file_urls_count);
+}
+
 static void on_su_event(const az_iot_su_event* event, void* ctx)
 {
   fixture* fx = (fixture*)ctx;
+  /* Leaving VERIFYING_MANIFEST: the offer is verified or refused, and nothing is downloaded yet. */
+  if (event->kind == AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED
+      && event->previous_state == AZ_IOT_SU_STATE_VERIFYING_MANIFEST
+      && !fx->offered_manifest_recorded)
+  {
+    record_offered_manifest(fx);
+  }
   if (event->kind == AZ_IOT_SU_EVENT_OPERATION_ABANDONED)
   {
     fx->abandoned++;
@@ -1475,20 +1555,10 @@ static const char* require_model(const char* name)
 
 /* --- scenarios ----------------------------------------------------------- */
 
-/* The terminal report of the first scenario, re-sent by the second. */
-static saved_report g_real_report;
-
-/* The user scenario: a real offer is fetched, verified against real roots,
- * downloaded, hashed, installed, applied and reported SUCCEEDED. */
-static void real_update_is_downloaded_verified_installed_and_reported(void** state)
+/** @brief Asserts a managed workflow downloaded, installed and applied its update, and reported
+ * SUCCEEDED. */
+static void assert_installed_and_reported_succeeded(fixture* fx, const spy_report* r)
 {
-  (void)state;
-  fixture* fx = &g_fx;
-  fixture_options o = fixture_options_default(g_model);
-  fixture_open(fx, &o);
-
-  const spy_report* r = run_offered_workflow(fx);
-
   static const op_kind k_order[]
       = { OP_IS_INSTALLED, OP_DOWNLOAD, OP_READ, OP_BACKUP, OP_INSTALL, OP_APPLY };
   assert_true(ops_in_order(&fx->plat, k_order, sizeof(k_order) / sizeof(k_order[0])));
@@ -1503,6 +1573,26 @@ static void real_update_is_downloaded_verified_installed_and_reported(void** sta
   assert_int_equal(r->step0_outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
   assert_int_equal(r->result, AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+}
+
+/* The terminal report of the first scenario, re-sent by the second. */
+static saved_report g_real_report;
+
+/* The user scenario: a real offer is fetched, verified against real roots,
+ * downloaded, hashed, installed, applied and reported SUCCEEDED. */
+static void real_update_is_downloaded_verified_installed_and_reported(void** state)
+{
+  (void)state;
+  fixture* fx = &g_fx;
+  fixture_options o = fixture_options_default(g_model);
+  fixture_open(fx, &o);
+
+  const spy_report* r = run_offered_workflow(fx);
+
+  assert_installed_and_reported_succeeded(fx, r);
+  /* A small update manifest is sent in full. */
+  assert_true(fx->offered_manifest_recorded);
+  assert_string_equal(fx->detached_manifest_file_id, "");
 
   g_real_report = fx->spy.last_terminal;
 }
@@ -1659,17 +1749,12 @@ static az_span find_file_url(
   return AZ_SPAN_EMPTY;
 }
 
-/* Library mode: the verified offer is handed to the application, which
- * downloads and hashes the files itself and reports progress, then success. */
-static void library_mode_hands_over_the_offer_and_reports_the_applications_result(void** state)
+/**
+ * @brief Library mode: the verified offer is handed to the application, which downloads and hashes
+ * the files itself and reports progress, then success. @p fx is open in library mode.
+ */
+static void run_library_mode_offer_to_success(fixture* fx)
 {
-  (void)state;
-  fixture* fx = &g_fx;
-  fixture_options o
-      = fixture_options_default(require_model("AZ_IOT_E2E_SU_OFFER_MODEL_LIBRARY_MODE"));
-  o.library_mode = true;
-  fixture_open(fx, &o);
-
   PUMP_UNTIL(
       fx,
       fx->updates_available > 0 || fx->abandoned > 0 || newest_sent_terminal_report(fx) != NULL,
@@ -1758,6 +1843,127 @@ static void library_mode_hands_over_the_offer_and_reports_the_applications_resul
   assert_int_equal(r->step0_outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
   assert_int_equal(r->result, AZ_IOT_OK);
   assert_int_equal(fx->updates_available, 1);
+}
+
+/* Library mode: the verified offer is handed to the application, which
+ * downloads and hashes the files itself and reports progress, then success. */
+static void library_mode_hands_over_the_offer_and_reports_the_applications_result(void** state)
+{
+  (void)state;
+  fixture* fx = &g_fx;
+  fixture_options o
+      = fixture_options_default(require_model("AZ_IOT_E2E_SU_OFFER_MODEL_LIBRARY_MODE"));
+  o.library_mode = true;
+  fixture_open(fx, &o);
+  run_library_mode_offer_to_success(fx);
+}
+
+/* --- detached manifest offers --------------------------------------------- */
+
+/**
+ * @brief The outcome expected for a DETACHED offer: environment variable @p name, `Failed` or
+ * `Succeeded` (the scenario's Expected in SuE2E.psm1).
+ */
+static az_iot_su_outcome require_expected_outcome(const char* name)
+{
+  char* value = e2e_su_env_require(name);
+  if (value == NULL)
+  {
+    fail_msg("%s is not set: export the offer variables", name);
+  }
+  bool succeeded = strcmp(value, "Succeeded") == 0;
+  bool failed = strcmp(value, "Failed") == 0;
+  free(value);
+  if (!succeeded && !failed)
+  {
+    fail_msg("%s must be Succeeded or Failed", name);
+  }
+  return succeeded ? AZ_IOT_SU_OUTCOME_SUCCEEDED : AZ_IOT_SU_OUTCOME_FAILED;
+}
+
+/** @brief Asserts the offer was a mini manifest whose detached file has a URL in `fileUrls`. */
+static void assert_offer_was_mini_manifest(const fixture* fx)
+{
+  assert_true(fx->offered_manifest_recorded);
+  if (fx->detached_manifest_file_id[0] == '\0')
+  {
+    fail_msg("the offer for model \"%s\" is not a mini manifest", fx->model);
+  }
+  assert_true(fx->detached_manifest_file_has_url);
+}
+
+/** @brief Asserts the client refused the mini manifest: reported FAILED with
+ * E2E_SU_DETACHED_MANIFEST_REFUSED_CODE, and no platform hook ran. */
+static void assert_mini_manifest_refused(const fixture* fx, const spy_report* r)
+{
+  assert_int_equal(fx->plat.op_count, 0);
+  assert_int_equal(fx->updates_available, 0);
+  assert_int_equal(r->outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(r->result_code, -(int32_t)AZ_IOT_SU_FACILITY_MANIFEST);
+  assert_int_equal(r->failure_origin, AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE);
+  assert_int_equal(r->step_count, 1);
+  assert_int_equal(r->step0_outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(r->result, AZ_IOT_OK);
+  const saved_report* sent = &fx->spy.last_terminal;
+  assert_true(sent->valid);
+  assert_int_equal(sent->steps[0].extended_result_code, E2E_SU_DETACHED_MANIFEST_REFUSED_CODE);
+  char expected[16];
+  az_iot_su__format_extended_result_code(
+      expected, sizeof(expected), E2E_SU_DETACHED_MANIFEST_REFUSED_CODE);
+  assert_string_equal(sent->extended_result_codes, expected);
+}
+
+/**
+ * @brief An update manifest over 4,096 bytes is offered as a signed mini manifest, its detached
+ * file in `fileUrls`. The managed client refuses it (FAILED, nothing downloaded) or, when expected
+ * to succeed, installs it.
+ */
+static void detached_manifest_offer_is_a_mini_manifest_handled_by_the_managed_client(void** state)
+{
+  (void)state;
+  fixture* fx = &g_fx;
+  az_iot_su_outcome expected
+      = require_expected_outcome("AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_EXPECTED");
+  fixture_options o = fixture_options_default(require_model("AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED"));
+  fixture_open(fx, &o);
+
+  const spy_report* r = run_offered_workflow(fx);
+
+  assert_offer_was_mini_manifest(fx);
+  if (expected == AZ_IOT_SU_OUTCOME_SUCCEEDED)
+  {
+    assert_installed_and_reported_succeeded(fx, r);
+  }
+  else
+  {
+    assert_mini_manifest_refused(fx, r);
+  }
+}
+
+/** @brief As detached_manifest_offer_is_a_mini_manifest_handled_by_the_managed_client(), in
+ * library mode: refused before the hand-off, or handed over and reported SUCCEEDED. */
+static void detached_manifest_offer_is_a_mini_manifest_handled_in_library_mode(void** state)
+{
+  (void)state;
+  fixture* fx = &g_fx;
+  az_iot_su_outcome expected
+      = require_expected_outcome("AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_LIBRARY_MODE_EXPECTED");
+  fixture_options o
+      = fixture_options_default(require_model("AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_LIBRARY_MODE"));
+  o.library_mode = true;
+  fixture_open(fx, &o);
+
+  if (expected == AZ_IOT_SU_OUTCOME_SUCCEEDED)
+  {
+    run_library_mode_offer_to_success(fx);
+    assert_offer_was_mini_manifest(fx);
+  }
+  else
+  {
+    const spy_report* r = run_offered_workflow(fx);
+    assert_offer_was_mini_manifest(fx);
+    assert_mini_manifest_refused(fx, r);
+  }
 }
 
 /**
@@ -1958,6 +2164,11 @@ int main(void)
         delta_update_is_built_from_the_related_file_and_reported, scenario_teardown),
     cmocka_unit_test_teardown(
         delta_update_without_source_falls_back_to_full_download, scenario_teardown),
+    cmocka_unit_test_teardown(
+        detached_manifest_offer_is_a_mini_manifest_handled_by_the_managed_client,
+        scenario_teardown),
+    cmocka_unit_test_teardown(
+        detached_manifest_offer_is_a_mini_manifest_handled_in_library_mode, scenario_teardown),
 #ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
     cmocka_unit_test_teardown(
         reference_delta_update_is_built_by_the_delta_processor_and_cached, scenario_teardown),
