@@ -58,20 +58,18 @@
  * @brief Detached manifest file carrying ESCAPED_FULL_MANIFEST, serialized with `\"`, `\\`,
  * `\n`, `\/`, `\uXXXX` (a surrogate pair included) and raw multibyte UTF-8.
  */
-#define WRAPPER_OF_ESCAPED_FULL_MANIFEST                                                      \
-  WRAPPER_PREFIX                                                                              \
-      "{\\\"manifestVersion\\\":\\\"5\\\",\\n"                                                \
-      "\\\"updateId\\\":{\\\"provider\\\":\\\"Contoso\\\",\\\"name\\\":\\\"Toaster\\\","      \
-      "\\\"version\\\":\\\"1.2\\\"},"                                                         \
-      "\\\"description\\\":\\\"Caf\\u00e9 \\\\\\\"quoted\\\\\\\" C:\\\\\\\\dir\\\\nnext "     \
-      "\\uD83D\\uDE00\\\","                                                                   \
-      "\\\"instructions\\\":{\\\"steps\\\":[{\\\"handler\\\":\\\"microsoft\\/swupdate:2\\\"," \
-      "\\\"files\\\":[\\\"f1\\\"],"                                                           \
-      "\\\"handlerProperties\\\":{\\\"installedCriteria\\\":\\\"\\\\\\\"1.2\\\\\\\" "         \
-      "\\\\\\\\ " UTF8_E_ACUTE " " UTF8_EURO_SIGN " " UTF8_GRINNING_FACE                      \
-      " \\\\u00e9\\\\n\\\"}}]},"                                                              \
-      "\\\"files\\\":{\\\"f1\\\":{\\\"fileName\\\":\\\"a.swu\\\",\\\"sizeInBytes\\\":4096,"   \
-      "\\\"hashes\\\":{\\\"sha256\\\":\\\"AAA=\\\"}}}}\"}"
+#define WRAPPER_OF_ESCAPED_FULL_MANIFEST                                                        \
+  "{\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\n"                                \
+  "\\\"updateId\\\":{\\\"provider\\\":\\\"Contoso\\\",\\\"name\\\":\\\"Toaster\\\","            \
+  "\\\"version\\\":\\\"1.2\\\"},"                                                               \
+  "\\\"description\\\":\\\"Caf\\u00e9 \\\\\\\"quoted\\\\\\\" C:\\\\\\\\dir\\\\nnext "           \
+  "\\uD83D\\uDE00\\\","                                                                         \
+  "\\\"instructions\\\":{\\\"steps\\\":[{\\\"handler\\\":\\\"microsoft\\/swupdate:2\\\","       \
+  "\\\"files\\\":[\\\"f1\\\"],"                                                                 \
+  "\\\"handlerProperties\\\":{\\\"installedCriteria\\\":\\\"\\\\\\\"1.2\\\\\\\" "               \
+  "\\\\\\\\ " UTF8_E_ACUTE " " UTF8_EURO_SIGN " " UTF8_GRINNING_FACE " \\\\u00e9\\\\n\\\"}}]}," \
+  "\\\"files\\\":{\\\"f1\\\":{\\\"fileName\\\":\\\"a.swu\\\",\\\"sizeInBytes\\\":4096,"         \
+  "\\\"hashes\\\":{\\\"sha256\\\":\\\"AAA=\\\"}}}}\"}"
 
 /** @brief The detached manifest file under test. */
 static uint8_t g_file[2048];
