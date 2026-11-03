@@ -1,0 +1,215 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# .NET device longhaul: one C# device, using the unified API set against an
+# MQTTv3 IoT hub provisioned per run (resource group
+# DotnetLonghaul-<run id>-<attempt>), kept connected for hours while it sends
+# telemetry, updates reported properties, receives desired property patches,
+# answers direct methods and receives cloud-to-device messages
+# (dotnet/tests/.../Longhaul/LonghaulScenarioTests.cs).
+#
+# The run writes an analysis (operation success rates and latency percentiles,
+# connection drops and outages, managed memory growth after warm-up) to the job
+# summary and to the longhaul-<scenario> artifact. It fails when an operation's
+# success rate drops below min-success-percent, managed memory grows more than
+# max-memory-growth-mb, an operation never runs, or the client faults
+# unrecoverably.
+#
+# A GitHub-hosted job runs for at most 360 minutes, which bounds
+# duration-minutes to 320 (build, setup and teardown included).
+
+name: longhaul-dotnet
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration-minutes:
+        description: How long the scenario runs, in minutes (1-320).
+        required: true
+        default: '320'
+      os:
+        description: Runner the device runs on.
+        required: true
+        default: ubuntu-24.04
+        type: choice
+        options:
+          - ubuntu-24.04
+          - windows-latest
+      min-success-percent:
+        description: Minimum success rate, in percent, every operation must reach.
+        required: true
+        default: '99'
+      max-memory-growth-mb:
+        description: Maximum managed memory growth, in MB, after warm-up.
+        required: true
+        default: '64'
+
+permissions:
+  contents: read
+
+# Derived from the run (not a job output) so teardown still finds the group
+# when setup is cancelled; see ci-dotnet.yml. The cleanup-e2e-resources
+# janitor reaps leaked groups with this prefix.
+env:
+  E2E_RESOURCE_GROUP: DotnetLonghaul-${{ github.run_id }}-${{ github.run_attempt }}
+  SCENARIO: UnifiedMQTTv3Hub
+
+jobs:
+  setup:
+    name: setup (provision MQTTv3 hub)
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Validate inputs
+        shell: bash
+        # Inputs are passed via env so they are data, never code.
+        env:
+          DURATION: ${{ inputs.duration-minutes }}
+          MIN_SUCCESS: ${{ inputs.min-success-percent }}
+          MAX_GROWTH: ${{ inputs.max-memory-growth-mb }}
+        run: |
+          set -euo pipefail
+
+          if ! [[ "$DURATION" =~ ^[0-9]+$ ]] || (( DURATION < 1 || DURATION > 320 )); then
+            echo "::error::duration-minutes must be a whole number from 1 to 320; got '$DURATION'."
+            exit 1
+          fi
+          number='^[0-9]+([.][0-9]+)?$'
+          if ! [[ "$MIN_SUCCESS" =~ $number ]] || ! awk -v v="$MIN_SUCCESS" 'BEGIN { exit !(v > 0 && v <= 100) }'; then
+            echo "::error::min-success-percent must be a number greater than 0 and at most 100; got '$MIN_SUCCESS'."
+            exit 1
+          fi
+          if ! [[ "$MAX_GROWTH" =~ $number ]] || ! awk -v v="$MAX_GROWTH" 'BEGIN { exit !(v > 0) }'; then
+            echo "::error::max-memory-growth-mb must be a positive number; got '$MAX_GROWTH'."
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Azure Login via OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Provision resources
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@b96d2aa2eb2b36e1e4dfbdb04aa56cf3dccecf8a # v1.0.1
+        with:
+          rg-name: ${{ env.E2E_RESOURCE_GROUP }}
+          # See ci-dotnet.yml for why the region fallback lives here.
+          azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
+          enable-file-upload: 'false'
+          enable-certificate-management: 'false'
+
+      - name: Upload test config
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: longhaul-test-config
+          path: test_config/set_test_env_vars.ps1
+          retention-days: 1
+          if-no-files-found: error
+
+  longhaul:
+    name: UnifiedMQTTv3Hub (${{ inputs.os }})
+    needs: setup
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Build tests
+        working-directory: dotnet
+        run: |
+          dotnet build ./Project.slnx
+
+      - name: Download MQTTv3 hub config
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: longhaul-test-config
+          path: test_config
+
+      - name: Run longhaul
+        shell: pwsh
+        env:
+          LONGHAUL_DURATION_MINUTES: ${{ inputs.duration-minutes }}
+          LONGHAUL_MIN_SUCCESS_PERCENT: ${{ inputs.min-success-percent }}
+          LONGHAUL_MAX_MANAGED_MEMORY_GROWTH_MB: ${{ inputs.max-memory-growth-mb }}
+        run: |
+          # Sets IOTHUB_CONNECTION_STRING, IOT_DPS_CONNECTION_STRING and IOT_DPS_ID_SCOPE.
+          . ./test_config/set_test_env_vars.ps1
+          $required = 'IOTHUB_CONNECTION_STRING', 'IOT_DPS_CONNECTION_STRING', 'IOT_DPS_ID_SCOPE'
+          $missing = $required | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
+          if ($missing) { throw "MQTTv3 e2e environment not configured; missing: $($missing -join ', ')." }
+
+          $env:LONGHAUL_OUTPUT_DIRECTORY = Join-Path $env:GITHUB_WORKSPACE 'longhaul-results'
+
+          dotnet test ./dotnet/Project.slnx `
+            --no-build `
+            --filter "Category=Longhaul&LonghaulScenario=$env:SCENARIO" `
+            --logger:"trx;LogFileName=longhaul-$env:SCENARIO.trx" `
+            --logger:"console;verbosity=normal" `
+            --results-directory ./test-results `
+            -- xunit.diagnosticMessages=true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # A filter that matches nothing, or a skipped test, still exits 0.
+          if (-not (Test-Path (Join-Path $env:LONGHAUL_OUTPUT_DIRECTORY "$env:SCENARIO.json"))) {
+            throw "The $env:SCENARIO longhaul produced no report."
+          }
+
+      - name: Publish analysis
+        if: always()
+        shell: pwsh
+        run: |
+          $reports = @(Get-ChildItem ./longhaul-results -Filter *.md -ErrorAction SilentlyContinue)
+          if ($reports.Count -eq 0) {
+            "## Longhaul: $env:SCENARIO ❌ no report`n`nThe run ended before writing its analysis; see the job log." |
+              Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+          $reports | ForEach-Object { Get-Content $_.FullName -Raw | Add-Content $env:GITHUB_STEP_SUMMARY }
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: longhaul-${{ env.SCENARIO }}
+          path: |
+            longhaul-results/
+            test-results/
+          if-no-files-found: warn
+
+  teardown:
+    name: teardown (delete MQTTv3 hub)
+    needs: [setup, longhaul]
+    # always() also covers cancellation; the destroy action no-ops when the
+    # group was never created.
+    if: ${{ always() }}
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Azure Login via OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete Azure resources
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@b96d2aa2eb2b36e1e4dfbdb04aa56cf3dccecf8a # v1.0.1
+        with:
+          resource-group: ${{ env.E2E_RESOURCE_GROUP }}

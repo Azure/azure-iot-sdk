@@ -234,8 +234,9 @@ recomputes the same name, it cleans up even when `setup` is cancelled or times
 out; `destroy-e2e-resources` no-ops when the group was never created.
 
 [`cleanup-e2e-resources.yml`](../../../.github/workflows/cleanup-e2e-resources.yml)
-is the nightly backstop: it reaps any `CSDKE2E*` (C) or `DotnetE2ETestPipeline-*`
-(dotnet) group older than 6 h (via `Remove-LeftoverAzureResourceGroups`),
+is the nightly backstop: it reaps any `CSDKE2E*` (C), `DotnetE2ETestPipeline-*`
+(dotnet) or `DotnetLonghaul-*` (dotnet longhaul) group older than 8 h (via
+`Remove-LeftoverAzureResourceGroups`),
 covering what teardown structurally cannot — an asynchronous `--no-wait` delete
 failure, or a runner that dies before teardown.
 
