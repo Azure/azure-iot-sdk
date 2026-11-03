@@ -318,10 +318,13 @@ extern "C"
    * so they agree on when the check is over.
    *
    * @param action          The verdict's action.
-   * @param retry_after_ms  The service-named delay in milliseconds; 0 for none.
-   * @return true for AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK with no delay.
+   * @param service_error   The service's error, or NULL; its `retry_after_ms` is the
+   *                        Retry-After delay, 0 for none.
+   * @return true for AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK with no Retry-After.
    */
-  bool az_iot_su__check_deferred_to_next(az_iot_su_error_action action, uint32_t retry_after_ms);
+  bool az_iot_su__check_deferred_to_next(
+      az_iot_su_error_action action,
+      const az_iot_su_service_error* service_error);
 
   /**
    * Extract the error signals from a device-facing failure body.

@@ -172,7 +172,7 @@ software updates. APIs may change before a stable release.
   accepted reports, a completed workflow and a retry wait. A failed workflow offered again is
   retried after 1 h, doubling up to 24 h; cancellation is service-side only. Service errors and
   report conflicts are handled as the service requires: an update check answered
-  `UPSTREAM_UNAVAILABLE` without a retry-after is abandoned and left to the next scheduled check.
+  `UPSTREAM_UNAVAILABLE` without `Retry-After` is abandoned and left to the next scheduled check.
 - Memory from one application-provided workspace, sized by run-time limits (`az_iot_su_limits`,
   `az_iot_su_workspace_size()`, `AZ_IOT_SU_WORKSPACE_SIZE()`); `az_iot_su_client_init()` refuses
   a client whose layout differs from the SDK build. See

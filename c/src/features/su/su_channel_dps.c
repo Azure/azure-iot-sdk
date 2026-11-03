@@ -532,8 +532,7 @@ static void emit_result(
   if (operation != AZ_IOT_SU_OP_REPORT_STATUS
       && (result == AZ_IOT_OK || action == AZ_IOT_SU_ERROR_ACTION_FATAL
           || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
-          || az_iot_su__check_deferred_to_next(
-              action, service_error != NULL ? service_error->retry_after_ms : 0)))
+          || az_iot_su__check_deferred_to_next(action, service_error)))
   {
     channel_release_hold(c);
   }

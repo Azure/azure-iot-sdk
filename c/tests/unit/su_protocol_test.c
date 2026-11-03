@@ -1561,11 +1561,17 @@ static void catalog_error_signals_and_actions(void** state)
 static void only_a_delayless_next_check_verdict_is_deferred(void** state)
 {
   (void)state;
-  assert_true(az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK, 0));
-  assert_false(az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK, 2000));
-  assert_false(az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_RETRY, 0));
-  assert_false(az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER, 0));
-  assert_false(az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_FATAL, 0));
+  az_iot_su_service_error no_delay = { 0 };
+  az_iot_su_service_error delayed = { 0 };
+  delayed.retry_after_ms = 2000;
+  assert_true(az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK, NULL));
+  assert_true(
+      az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK, &no_delay));
+  assert_false(
+      az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK, &delayed));
+  assert_false(az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_RETRY, &no_delay));
+  assert_false(az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER, NULL));
+  assert_false(az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_FATAL, NULL));
   /* A bare 503 cannot tell an unavailable upstream from a server fault. */
   assert_int_equal(
       az_iot_su__classify_error(NULL, AZ_IOT_SU_ERR_SERVICE_UNAVAILABLE, AZ_IOT_SU_OP_GET_UPDATE),

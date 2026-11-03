@@ -980,8 +980,7 @@ static bool verdict_is_final(
 {
   return result == AZ_IOT_OK || action == AZ_IOT_SU_ERROR_ACTION_NONE
       || action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
-      || action == AZ_IOT_SU_ERROR_ACTION_RECHECK
-      || az_iot_su__check_deferred_to_next(action, (se != NULL) ? se->retry_after_ms : 0);
+      || action == AZ_IOT_SU_ERROR_ACTION_RECHECK || az_iot_su__check_deferred_to_next(action, se);
 }
 
 static void spy_on_result(

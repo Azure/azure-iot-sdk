@@ -10515,7 +10515,7 @@ static void a_synchronous_retryable_verdict_is_not_lost(void** state)
   assert_int_equal(fx->chan.last_request_operation, AZ_IOT_SU_OP_GET_UPDATE);
 }
 
-/** @brief A retryable verdict with no service delay, as for a 500 with no retry-after. */
+/** @brief A retryable verdict with no service delay, as for a 500 with no Retry-After. */
 static void deliver_no_hint_retry(fixture* fx, az_iot_su_operation operation)
 {
   az_iot_su_service_error se = {

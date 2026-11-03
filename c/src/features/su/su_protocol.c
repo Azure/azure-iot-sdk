@@ -1258,9 +1258,12 @@ az_iot_su_error_action az_iot_su__classify_error(
   }
 }
 
-bool az_iot_su__check_deferred_to_next(az_iot_su_error_action action, uint32_t retry_after_ms)
+bool az_iot_su__check_deferred_to_next(
+    az_iot_su_error_action action,
+    const az_iot_su_service_error* service_error)
 {
-  return action == AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK && retry_after_ms == 0;
+  return action == AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK
+      && (service_error == NULL || service_error->retry_after_ms == 0);
 }
 
 az_iot_result az_iot_su__parse_tracking_id(
