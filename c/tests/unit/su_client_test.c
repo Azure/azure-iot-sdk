@@ -10790,6 +10790,34 @@ static void add_failure_details(const az_iot_su_event* event, void* user_ctx)
   }
 }
 
+/* A resend verdict gets one full fetch. The same verdict on that full fetch
+ * abandons the check instead of repeating it at pump frequency. */
+static void a_repeated_resend_verdict_on_a_fetch_is_abandoned(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static const char resend[]
+      = "{\"errorCode\":400004,\"info\":{\"aduErrorCode\":\"OUTDATED_AGENT_INFO\"}}";
+  memcpy(wire_channel(fx)->agent_info_etag, "cached-agent", sizeof("cached-agent"));
+  wire_fetch(fx, AZ_IOT_SU_OP_GET_UPDATE);
+  size_t sent = az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+
+  wire_pending_response(fx, 400, "", resend);
+  assert_int_equal(fx->abandoned_count, 0);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), sent + 1);
+  const az_iot_mock_call* pub = az_iot_mock_mqtt_client_last_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH);
+  assert_non_null(pub);
+  assert_null(strstr((const char*)pub->payload, "Etag"));
+
+  wire_pending_response(fx, 400, "", resend);
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_GET_UPDATE);
+  assert_int_equal(fx->last_abandoned_reason, AZ_IOT_ERR_DPS);
+  assert_int_equal(fx->last_error_code, 400004);
+  assert_int_equal(fx->su._internal.pending_fetch, 0);
+  assert_wire_pumps_do_not_publish(fx, sent + 1);
+}
+
 static void a_retryable_failed_report_preserves_all_wire_fields(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -11670,6 +11698,8 @@ int main(void)
   const struct CMUnitTest tests[] = {
     SU_ERROR_CASES(SU_REGISTER_ENGINE_CASE) cmocka_unit_test_setup_teardown(
         a_correlated_empty_200_report_is_accepted, setup_wire_error_case, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_repeated_resend_verdict_on_a_fetch_is_abandoned, setup_wire_error_case, teardown),
     { "failed_report_internal_server_error",
       a_retryable_failed_report_preserves_all_wire_fields,
       setup_wire_error_case,

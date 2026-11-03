@@ -995,9 +995,47 @@ static void an_oversized_string_code_still_classifies_by_the_body(void** state)
   int n = snprintf(
       body, sizeof(body), "{\"errorCode\":400004,\"info\":{\"aduErrorCode\":\"%0300d\"}}", 0);
   assert_true(n > 0 && (size_t)n < sizeof(body));
+  memcpy(fx->channel_state.agent_info_etag, "agent", sizeof("agent"));
   answer_operation(fx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, 503, "", body);
   assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO);
   assert_int_equal(fx->last_error_code, 400004);
+}
+
+/* A fetch sent without ETags already carried the full agentInfo: a resend
+ * verdict on it cannot be satisfied, so it is fatal rather than repeated. */
+static void a_resend_verdict_on_a_full_fetch_is_fatal(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  answer_operation(
+      fx,
+      AZ_IOT_SU_OP_GET_UPDATE,
+      400,
+      "",
+      "{\"errorCode\":400004,\"info\":{\"aduErrorCode\":\"OUTDATED_AGENT_INFO\"}}");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(fx->last_error_code, 400004);
+  assert_string_equal(fx->channel_state.agent_info_etag, "");
+  assert_string_equal(fx->channel_state.service_config_etag, "");
+}
+
+/* Either cached ETag makes the fetch a partial one, which a resend corrects. */
+static void a_resend_verdict_with_one_cached_etag_drops_it(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  memcpy(fx->channel_state.service_config_etag, "config", sizeof("config"));
+  answer_operation(fx, AZ_IOT_SU_OP_GET_UPDATE, 400, "", "{\"errorCode\":400004}");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO);
+  assert_string_equal(fx->channel_state.service_config_etag, "");
+}
+
+/* On a report the resend family is fatal and leaves the cached ETags alone. */
+static void a_resend_verdict_on_a_report_is_fatal_and_keeps_the_etags(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  memcpy(fx->channel_state.agent_info_etag, "agent", sizeof("agent"));
+  answer_operation(fx, AZ_IOT_SU_OP_REPORT_STATUS, 400, "", "{\"errorCode\":400004}");
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_string_equal(fx->channel_state.agent_info_etag, "agent");
 }
 
 /* The status fallback must not widen every bodyless failure into a retry. */
@@ -3920,6 +3958,11 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_bodyless_4xx_stays_fatal, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_oversized_string_code_still_classifies_by_the_body, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_resend_verdict_on_a_full_fetch_is_fatal, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_resend_verdict_with_one_cached_etag_drops_it, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_resend_verdict_on_a_report_is_fatal_and_keeps_the_etags, setup, teardown),
     cmocka_unit_test_setup_teardown(a_bodyless_409_report_stays_fatal, setup, teardown),
     cmocka_unit_test_setup_teardown(a_typed_body_takes_precedence_over_the_status, setup, teardown),
     cmocka_unit_test_setup_teardown(

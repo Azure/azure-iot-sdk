@@ -361,6 +361,9 @@ is valid only during the callback. Names below omit the `AZ_IOT_SU_EVENT_` prefi
 
 - **Transient service errors** are retried by the client (1 s doubling to 60 s, or the service's
   `Retry-After`), within the request timeout.
+- **Stale agent info** (`400004`, `OUTDATED_AGENT_INFO`, `UNKNOWN_AGENT_INFO_VERSION`) on a check
+  is answered at once with a full check, without cached ETags. Received again for a full check, or
+  for a report (which carries no agent info), the operation is abandoned (`OPERATION_ABANDONED`).
 - **A failed update** offered again is retried after 1 h, doubling up to 24 h, with jitter. The wait
   survives a restart when persistence is set.
 - **A new update while one runs** replaces it until its first `install_fn` call: an update still
