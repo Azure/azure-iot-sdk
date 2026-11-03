@@ -4585,7 +4585,13 @@ static void a_probe_redelivered_after_its_abandon_is_not_answered(void** state)
   uint8_t ready_id[16];
   probe_and_accept(fx, request_id, "dump", 300, ready_id);
   ack_last_phase(fx, "probe-ack:1");
-  fx->dm._internal.ready_pool[0]._internal.expires_at_ms = az_iot_time_mono_ms();
+  for (size_t i = 0; i < CONCURRENT_CAPACITY; ++i)
+  {
+    if (memcmp(fx->dm._internal.ready_pool[i]._internal.request_id, request_id, 16) == 0)
+    {
+      fx->dm._internal.ready_pool[i]._internal.expires_at_ms = az_iot_time_mono_ms();
+    }
+  }
   az_iot_mock_mqtt_client_clear_calls(fx->mock);
   (void)az_iot_connection_client_do_work(&fx->conn, 0);
   assert_int_equal(count_phase(fx->mock, "abandon:1"), 1);
