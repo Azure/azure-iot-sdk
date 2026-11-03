@@ -11248,12 +11248,16 @@ static void catalog_engine_error(void** state)
     if (row->delay_ms != 0)
     {
       wire_channel(fx)->retry_after_deadline_ms = az_iot_time_mono_ms();
-      if (row->action != AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER)
+    }
+    /* A named throttle delay is the only gate: it resends with no backoff armed. */
+    if (row->delay_ms == 0 || row->action != AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER)
+    {
+      if (row->delay_ms != 0)
       {
         assert_wire_pumps_do_not_publish(fx, sent);
       }
+      fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
     }
-    fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
   }
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH), sent + 1);
