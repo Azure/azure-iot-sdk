@@ -304,6 +304,13 @@ report delivery and retries) and hands each verified update to your code.
 3. Download, check each file with `az_iot_su_verify_file_hash()`, install.
 4. Report progress and the outcome with `az_iot_su_client_report_status()`, one result per step.
 
+A mini manifest (non-empty `event->manifest->detached_manifest_file_id`, no steps) needs one more
+step before 3: download that file from `event->request->file_urls` and pass its bytes to
+`az_iot_su_client_set_detached_manifest()`. It checks them against the signed mini manifest and
+replaces `event->manifest` with the full manifest, whose steps you install and report. Without a
+client, `az_iot_su_parse_detached_manifest()` does the same for a mini manifest from
+`az_iot_su_parse_update_request()`.
+
 `az_iot_su_client_get_current_update()` returns the current update in either mode.
 
 > **Note** Library mode is not persisted: after a restart the service offers the update again.
@@ -414,10 +421,9 @@ PC samples run on Linux and Windows.
 - Updates go over DPS only; there is no IoT Hub route.
 - Only X.509 device authentication is supported for Software Update.
 - No root key package download or rotation, and no signing-key revocation.
-- Not supported: component targeting, proxy (gateway-to-leaf) updates, reference steps, mini
-  (detached) update manifests in library mode, step handlers (apt, script, swupdate), Delivery
-  Optimization, log upload. A manifest with a reference step or no step, or a mini manifest in
-  library mode, fails before anything is downloaded (`AZ_IOT_SU_MANIFEST_ERROR_*`).
+- Not supported: component targeting, proxy (gateway-to-leaf) updates, reference steps, step
+  handlers (apt, script, swupdate), Delivery Optimization, log upload. A manifest with a
+  reference step or no step fails before anything is downloaded (`AZ_IOT_SU_MANIFEST_ERROR_*`).
 - No built-in health check or automatic rollback after a reboot.
 - `AZ_IOT_SU_REPLACEMENT_ROLLBACK` is not supported yet.
 - An update refused by the device (`UPDATE_REFUSED`) is not reported to the service, which keeps
