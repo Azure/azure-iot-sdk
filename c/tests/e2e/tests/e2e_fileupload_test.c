@@ -99,6 +99,7 @@ typedef struct
 {
   const char* cert;
   const char* key;
+  int last_status; /* HTTP status of the last hub answer; 0 when none arrived. */
 } hub_http_ctx;
 
 /* Split "https://host/path..." into host + origin-form path. */
@@ -227,11 +228,13 @@ static az_iot_result e2e_http_send(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
+  hc->last_status = 0;
   if (!hub_https_request(
           host, method, path, hc->cert, hc->key, content_type, NULL, body, body_len, response))
   {
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
+  hc->last_status = response->status_code;
   return AZ_IOT_OK;
 }
 
@@ -604,20 +607,24 @@ static void test_upload_round_trip_and_failure_reporting(void** state)
 
     /* 4. Report success. The hub can refuse the completion of an upload it
      *    granted seconds earlier, and the same calls succeed again moments
-     *    later; hub_https_request() logs its answer. The next attempt starts a
-     *    fresh upload; the last one must be accepted. */
+     *    later; hub_https_request() logs its answer. Only such a refusal (an
+     *    HTTP 4xx) starts the next attempt with a fresh upload; any other
+     *    failure, and any failure of the last attempt, fails the test. */
     assert_int_equal(
         AZ_IOT_OK,
         az_iot_mqttv3_file_upload_client_notify_complete(
             &fx->fu, u.correlation_id, true, on_notify, &u));
     assert_true(u.notify_done);
-    if (u.notify_status != AZ_IOT_OK && attempt < E2E_ROUND_TRIP_ATTEMPTS)
+    int notify_http_status = fx->http_ctx.last_status;
+    if (u.notify_status != AZ_IOT_OK && notify_http_status >= 400 && notify_http_status <= 499
+        && attempt < E2E_ROUND_TRIP_ATTEMPTS)
     {
       fprintf(
           stderr,
-          "file upload e2e: the hub refused the completion for attempt %d (%s). "
+          "file upload e2e: the hub refused the completion for attempt %d (HTTP %d, %s). "
           "Uploading again.\n",
           attempt,
+          notify_http_status,
           az_iot_result_to_string(u.notify_status));
       continue;
     }
