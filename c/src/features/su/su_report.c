@@ -160,6 +160,44 @@ static bool copy_cstr(char* dst, size_t cap, const char* src)
  * The engine sets no overall result details, so none are kept. An installed
  * update id longer than AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE is not kept.
  */
+/**
+ * @brief Copy an installed update id as provider, name and version, each NUL-terminated.
+ *
+ * @param[out] packed AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE bytes.
+ * @param[in]  id     The id; may be NULL.
+ * @return true if the id is complete and fits; else nothing is kept.
+ */
+static bool pack_installed_update_id(char* packed, const az_iot_su_report_update_id* id)
+{
+  if (id == NULL || id->provider == NULL || id->name == NULL || id->version == NULL)
+  {
+    return false;
+  }
+  az_iot_span_writer writer;
+  az_iot_span_writer_init(
+      &writer, az_span_create((uint8_t*)packed, (int32_t)AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE));
+  az_iot_span_writer_append_str(&writer, id->provider);
+  az_iot_span_writer_append_u8(&writer, 0);
+  az_iot_span_writer_append_str(&writer, id->name);
+  az_iot_span_writer_append_u8(&writer, 0);
+  az_iot_span_writer_append_str(&writer, id->version);
+  az_iot_span_writer_append_u8(&writer, 0);
+  return az_iot_span_writer_end(&writer, NULL) == AZ_IOT_OK;
+}
+
+/**
+ * @brief Point an installed update id at one kept by pack_installed_update_id().
+ *
+ * @param[in]  packed The kept id.
+ * @param[out] id     The id; it points into @p packed.
+ */
+static void unpack_installed_update_id(const char* packed, az_iot_su_report_update_id* id)
+{
+  id->provider = packed;
+  id->name = id->provider + strlen(id->provider) + 1;
+  id->version = id->name + strlen(id->name) + 1;
+}
+
 static void keep_sent_terminal(
     az_iot_su_client* client,
     uint8_t slot,
@@ -173,22 +211,7 @@ static void keep_sent_terminal(
   (void)copy_cstr(t->workflow_id, sizeof(t->workflow_id), report->workflow_id);
   (void)copy_cstr(
       t->extended_result_codes, sizeof(t->extended_result_codes), report->extended_result_codes);
-  t->has_installed = false;
-  const az_iot_su_report_update_id* id = report->installed_update_id;
-  if (id != NULL && id->provider != NULL && id->name != NULL && id->version != NULL)
-  {
-    /* provider, name, version, each NUL-terminated; not kept unless all fit. */
-    az_iot_span_writer writer;
-    az_iot_span_writer_init(
-        &writer, az_span_create((uint8_t*)t->installed, (int32_t)sizeof(t->installed)));
-    az_iot_span_writer_append_str(&writer, id->provider);
-    az_iot_span_writer_append_u8(&writer, 0);
-    az_iot_span_writer_append_str(&writer, id->name);
-    az_iot_span_writer_append_u8(&writer, 0);
-    az_iot_span_writer_append_str(&writer, id->version);
-    az_iot_span_writer_append_u8(&writer, 0);
-    t->has_installed = az_iot_span_writer_end(&writer, NULL) == AZ_IOT_OK;
-  }
+  t->has_installed = pack_installed_update_id(t->installed, report->installed_update_id);
   size_t d = SU_I(client).step_details_size;
   uint8_t* region = SU_I(client).sent_details + (size_t)slot * (size_t)AZ_IOT_SU_MAX_STEP_COUNT * d;
   int32_t count = report->step_results_count;
@@ -233,9 +256,7 @@ bool az_iot_su__sent_terminal_report(
   out->extended_result_codes = t->extended_result_codes;
   if (t->has_installed)
   {
-    installed->provider = t->installed;
-    installed->name = installed->provider + strlen(installed->provider) + 1;
-    installed->version = installed->name + strlen(installed->name) + 1;
+    unpack_installed_update_id(t->installed, installed);
     out->installed_update_id = installed;
   }
   if (t->step_results_count > 0)
@@ -337,7 +358,15 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
   return sent;
 }
 
-void az_iot_su__build_refused_report_view(const az_iot_su_client* client, az_iot_su__report_view* v)
+/**
+ * @brief Build the FAILED report of the refused update named by
+ * `refused_workflow_id`, with `refused_extended_result_code` and the current
+ * installed update id.
+ *
+ * @param[in]  client The client.
+ * @param[out] v      The report; it points into @p v.
+ */
+static void build_refused_report_view(const az_iot_su_client* client, az_iot_su__report_view* v)
 {
   memset(&v->report, 0, sizeof(v->report));
   memcpy(v->workflow_id, SU_I(client).refused_workflow_id, sizeof(v->workflow_id));
@@ -355,8 +384,22 @@ void az_iot_su__build_refused_report_view(const az_iot_su_client* client, az_iot
 az_iot_result az_iot_su__report_refused_update(az_iot_su_client* client)
 {
   az_iot_su__report_view v;
-  az_iot_su__build_refused_report_view(client, &v);
+  build_refused_report_view(client, &v);
+  /* The installed id may change before the verdict; the event names the one sent. */
+  SU_I(client).refused_sent_has_installed
+      = pack_installed_update_id(SU_I(client).refused_sent_installed, v.report.installed_update_id);
   return SU_I(client).channel.vtable->report(SU_I(client).channel.ctx, &v.report);
+}
+
+void az_iot_su__sent_refused_report_view(const az_iot_su_client* client, az_iot_su__report_view* v)
+{
+  build_refused_report_view(client, v);
+  v->report.installed_update_id = NULL;
+  if (SU_I(client).refused_sent_has_installed)
+  {
+    unpack_installed_update_id(SU_I(client).refused_sent_installed, &v->installed);
+    v->report.installed_update_id = &v->installed;
+  }
 }
 
 /* ------------------------------------------------------------------------- */

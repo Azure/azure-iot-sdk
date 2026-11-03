@@ -10801,6 +10801,42 @@ static void a_refused_update_is_reported_failed(void** state)
   assert_int_equal(fx->chan.report_count, 1);
 }
 
+/* REPORT_ACCEPTED carries the refused update's report as sent, though the
+ * installed update id changed before the verdict. */
+static void a_refused_update_report_is_accepted_as_sent(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar2";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "1.0";
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
+  fx->chan.report_verdict_deferred = true;
+  inject_patch(fx, REFUSED_PATCH);
+  pump(fx, 3);
+  assert_true(fx->su._internal.refused_report_in_flight);
+  assert_string_equal(fx->chan.last_installed_version, "1.0");
+
+  device_properties.installed_update_id.version = "1.1";
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->accepted_report_count, 1);
+  assert_string_equal(fx->accepted_workflow_id, "wf-refused");
+  assert_true(fx->accepted_has_installed);
+  assert_string_equal(fx->accepted_installed[2], "1.0");
+}
+
 /* The workflow id is found wherever it sits: a property refused before it is
  * read does not hide it. */
 static void a_refused_update_is_reported_whatever_its_property_order(void** state)
@@ -12436,6 +12472,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_synchronous_retryable_report_verdict_is_not_lost, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_update_is_reported_failed, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_refused_update_report_is_accepted_as_sent, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_update_is_reported_whatever_its_property_order, setup, teardown),
     cmocka_unit_test_setup_teardown(

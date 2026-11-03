@@ -1415,6 +1415,10 @@ extern "C"
       bool refused_report_in_flight;
       /** The service accepted the FAILED report of `refused_workflow_id`. */
       bool refused_report_accepted;
+      /** The refused update's report as sent carried an installed update id. */
+      bool refused_sent_has_installed;
+      /** That installed update id: provider, name, version; NUL each. */
+      char refused_sent_installed[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
     } _internal;
   } az_iot_su_client;
 

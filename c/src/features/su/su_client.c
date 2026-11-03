@@ -2533,7 +2533,7 @@ static void settle_refused_update_report(
     SU_I(client).refused_report_accepted = true;
     AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_SU, "refused update reported FAILED");
     az_iot_su__report_view sent;
-    az_iot_su__build_refused_report_view(client, &sent);
+    az_iot_su__sent_refused_report_view(client, &sent);
     raise_simple(
         client, AZ_IOT_SU_EVENT_REPORT_ACCEPTED, AZ_IOT_SU_OP_REPORT_STATUS, true, &sent.report);
     return;
