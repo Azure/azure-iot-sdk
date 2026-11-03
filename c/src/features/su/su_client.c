@@ -220,7 +220,12 @@ static void result_set_step_count(az_iot_su_client* client, int32_t step_count)
   {
     step_count = AZ_IOT_SU_MAX_STEP_COUNT;
   }
-  for (int32_t i = SU_I(client).step_results_count; i < step_count; ++i)
+  int32_t first_new_step = SU_I(client).step_results_count;
+  if (first_new_step < 0)
+  {
+    first_new_step = 0;
+  }
+  for (int32_t i = first_new_step; i < step_count; ++i)
   {
     SU_I(client).step_results[i].outcome = AZ_IOT_SU_OUTCOME_SKIPPED;
     SU_I(client).step_results[i].failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;

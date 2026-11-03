@@ -298,14 +298,23 @@ static int32_t read_downloaded_file(
       reader->simulation_control);
 }
 
-/** @brief The URL the service sent for @p file, or an empty span. */
-static az_span find_file_url(
-    const az_iot_su_client_update_request* request,
-    const az_iot_su_client_update_manifest_file* file)
+/**
+ * @brief The URL the service sent for the file with manifest id @p id, or an empty span.
+ *
+ * Manifest ids keep their JSON escapes and request ids are decoded, so @p id is decoded first.
+ */
+static az_span find_file_url(const az_iot_su_client_update_request* request, az_span id)
 {
+  uint8_t decoded_buffer[256];
+  az_span decoded_id = AZ_SPAN_EMPTY;
+  if (az_iot_su_decode_manifest_string(id, AZ_SPAN_FROM_BUFFER(decoded_buffer), &decoded_id)
+      != AZ_IOT_OK)
+  {
+    return AZ_SPAN_EMPTY;
+  }
   for (uint32_t i = 0; i < request->file_urls_count; ++i)
   {
-    if (az_span_is_content_equal(request->file_urls[i].id, file->id))
+    if (az_span_is_content_equal(request->file_urls[i].id, decoded_id))
     {
       return request->file_urls[i].url;
     }
@@ -374,14 +383,7 @@ static bool set_full_manifest_of_mini_manifest(sample_state* s)
   static uint8_t file_bytes[AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE];
   delegated_update* u = &s->update;
   const az_iot_su_client_update_manifest* manifest = u->manifest;
-  az_span url = AZ_SPAN_EMPTY;
-  for (uint32_t i = 0; i < manifest->files_count; ++i)
-  {
-    if (az_span_is_content_equal(manifest->files[i].id, manifest->detached_manifest_file_id))
-    {
-      url = find_file_url(u->request, &manifest->files[i]);
-    }
-  }
+  az_span url = find_file_url(u->request, manifest->detached_manifest_file_id);
   printf(
       "Mini manifest: its full manifest is in the detached manifest file at %.*s\n",
       az_span_size(url),
@@ -518,7 +520,7 @@ static void advance_delegated_update(sample_state* s)
         downloaded_file_reader reader = { file, index, &s->simulation_control };
         if (simulate_update_file_download(
                 file,
-                find_file_url(u->request, file),
+                find_file_url(u->request, file->id),
                 index,
                 manifest->files_count,
                 &s->simulation_control)
