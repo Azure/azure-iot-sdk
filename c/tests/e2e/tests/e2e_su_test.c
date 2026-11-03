@@ -415,8 +415,22 @@ static void an_unknown_workflow_report_is_not_treated_as_delivered(void** state)
   report.extended_result_codes = "";
   report.result_details = "e2e";
 
-  assert_int_equal(fx.channel.vtable->report(fx.channel.ctx, &report), AZ_IOT_OK);
-  wait_for_result(&fx, 1);
+  /* A retryable result (a 5xx or no answer in time) is not the service's verdict: resent, as the
+   * client would. */
+  for (size_t attempt = 1; attempt <= 3; ++attempt)
+  {
+    az_iot_result sent = AZ_IOT_ERR_BUSY;
+    PUMP_UNTIL(
+        &fx, (sent = fx.channel.vtable->report(fx.channel.ctx, &report)) != AZ_IOT_ERR_BUSY, 30);
+    assert_int_equal(sent, AZ_IOT_OK);
+    wait_for_result(&fx, attempt);
+    if (fx.last_action != AZ_IOT_SU_ERROR_ACTION_RETRY)
+    {
+      break;
+    }
+    printf("  report answered with a retryable error, resending\n");
+    PUMP_UNTIL(&fx, false, 2);
+  }
 
   assert_int_equal(fx.last_op, AZ_IOT_SU_OP_REPORT_STATUS);
   assert_int_not_equal(fx.last_result, AZ_IOT_OK);

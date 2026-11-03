@@ -1885,6 +1885,7 @@ inc/azure/iot/az_iot_su.h        public API
 src/features/su/
 ├── su_client.c                  engine: state machine, step dispatch, persistence
 ├── su_channel_dps.c             software updates channel over the DPS session
+├── su_detached_manifest.c       detached manifest file: verify, unwrap, parse
 ├── su_protocol.c                request/response codec
 ├── su_report.c                  structured result for the channel
 ├── su_root_keys_microsoft.c     compiled-in Microsoft root keys
