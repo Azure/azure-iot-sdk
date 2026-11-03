@@ -131,7 +131,7 @@ jobs:
     permissions:
       contents: read
       id-token: write   # azure/login OIDC
-    timeout-minutes: 170
+    timeout-minutes: 185
     env:
       AZ_IOT_E2E_SU_SUBSCRIPTION_ID: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
       AZ_IOT_E2E_SU_RESOURCE_GROUP: ${{ vars.E2E_MQTTV5_SHARED_RESOURCE_GROUP }}
@@ -153,9 +153,10 @@ jobs:
           subscription-id: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
 
       # Seconds when the offers are staged. Otherwise typically about 11 min; at
-      # most 10 x (10 min import + 5 min job) + 10 min to Active + 5 min grace.
+      # most 10 x (10 min import + 5 min job) + 10 min to Active + 5 min grace,
+      # + 15 min to delete older offer sets (about 30 s per update name).
       - name: Ensure standing offers
-        timeout-minutes: 165
+        timeout-minutes: 180
         shell: pwsh
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1

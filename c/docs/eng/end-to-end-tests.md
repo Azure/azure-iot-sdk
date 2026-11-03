@@ -490,8 +490,8 @@ variables for a `-RunId` without contacting Azure. `Get-SuE2EFixtureTag` hashes 
 appended to a reused `-RunId`, a change to that code stages a new set. Device Update allows 25 update
 names per provider, so before importing, `New-SuE2EOffers` deletes other runs' sets (jobs, updates,
 blobs), least recently used first, until the new set fits. Each `-Reuse` run overwrites the blob
-`sdke2e/used/<RunId>`; a set without one counts as used when imported. A run still using a deleted
-set fails, and the next run stages it again. With `-Reuse`, a failed import
+`sdke2e/used/<tag>`; a set without one counts as used when imported. A set used in the last 8 h
+(longer than a workflow run) is never deleted; if the new set still does not fit, staging fails. With `-Reuse`, a failed import
 is treated as done if the update now exists (another run imported it), else retried up to 3 times.
 Each REST request is retried on a transient failure (no response; HTTP 408, 429, 500, 502, 503 or
 504; another 5xx with a transient error code such as `BadGatewayConnection`), up to 5 attempts,
