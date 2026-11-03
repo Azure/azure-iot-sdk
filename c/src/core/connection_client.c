@@ -6129,10 +6129,11 @@ static uint32_t limit_sessionless_wait_to_deadlines(
 {
   uint32_t wait_ms = limit_wait_to_connection_deadlines(c, timeout_ms);
   uint64_t const now = az_iot_time_mono_ms();
-  /* Monotonic deadlines; 0: none. A token request to ask or to resume is due now. */
-  uint64_t const due_now = now != 0 ? now : 1u;
+  /* Monotonic deadlines; 0: none. */
   uint64_t deadlines[2 + 2 * AZ_IOT_CONN_SCOPE_COUNT] = { 0 };
   size_t count = 0;
+  /* A token request to ask or to resume. */
+  bool due_now = false;
   if (c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RETRY_PENDING
       || c->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RETRY_PENDING)
   {
@@ -6150,13 +6151,13 @@ static uint32_t limit_sessionless_wait_to_deadlines(
     }
     if (!c->sas_token_request[scope].asked)
     {
-      deadlines[count++]
-          = c->sas_token_ask_after_ms[scope] != 0 ? c->sas_token_ask_after_ms[scope] : due_now;
+      due_now = due_now || c->sas_token_ask_after_ms[scope] == 0;
+      deadlines[count++] = c->sas_token_ask_after_ms[scope];
     }
     if (!c->sas_token_request[scope].for_renewal)
     {
-      deadlines[count++]
-          = c->sas_token_request[scope].ready ? due_now : c->sas_token_request[scope].deadline_ms;
+      due_now = due_now || c->sas_token_request[scope].ready;
+      deadlines[count++] = c->sas_token_request[scope].deadline_ms;
     }
   }
   for (size_t i = 0; i < count; ++i)
@@ -6167,7 +6168,7 @@ static uint32_t limit_sessionless_wait_to_deadlines(
       wait_ms = (uint64_t)wait_ms > left ? (uint32_t)left : wait_ms;
     }
   }
-  return wait_ms;
+  return due_now ? 0 : wait_ms;
 }
 
 /**

@@ -2346,7 +2346,7 @@ extern "C"
    * @param[in,out] client     The client.
    * @param[in]     timeout_ms Longest wait for network activity when idle.
    * @return AZ_IOT_ERR_INVALID_ARG for a NULL client; otherwise the MQTT adapter's
-   *         process_loop() result, AZ_IOT_OK with no session.
+   *         process_loop() result, or AZ_IOT_OK when no adapter's process_loop() ran.
    */
   az_iot_result az_iot_connection_client_do_work(
       az_iot_connection_client* client,
