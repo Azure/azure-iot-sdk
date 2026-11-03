@@ -693,14 +693,14 @@ function New-SuE2EOffers {
             Run    = $null
         }
     }
+    # Marks this set as used now, keyed by its tag as pruning groups sets. Recorded with the first
+    # offer, so Remove-SuE2EOffers deletes it.
+    $marker = $script:OfferSetUseMarkerPrefix + (@($names.Offers.Values)[0].Model -split '-')[1]
+    @($state.Offers.Values)[0].Blobs.Add($marker)
     & $save
-    if ($Reuse) {
-        # Marks this standing set as used now, keyed by its tag as pruning groups sets.
-        $setTag = (@($names.Offers.Values)[0].Model -split '-')[1]
-        az storage blob upload --auth-mode login --account-name $config.STORAGE_ACCOUNT --container-name $config.STORAGE_CONTAINER `
-            --name "$script:OfferSetUseMarkerPrefix$setTag" --data (Get-Date -AsUTC -Format o) --overwrite --only-show-errors | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Upload of the use marker of $setTag failed" }
-    }
+    az storage blob upload --auth-mode login --account-name $config.STORAGE_ACCOUNT --container-name $config.STORAGE_CONTAINER `
+        --name $marker --data (Get-Date -AsUTC -Format o) --overwrite --only-show-errors | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Upload of $marker failed" }
     Remove-SuE2EOfferSetsToFit -Config $config -RunId $RunId
 
     foreach ($scenario in $names.Offers.Keys) {
