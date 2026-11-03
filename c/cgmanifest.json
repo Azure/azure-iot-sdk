@@ -24,10 +24,11 @@
     },
     {
       "component": {
-        "type": "git",
-        "git": {
-          "repositoryUrl": "https://gitlab.com/cmocka/cmocka",
-          "commitHash": "a01cc69ee9536f90e57c61a198f2d1944d3d4313"
+        "type": "other",
+        "other": {
+          "name": "cmocka",
+          "version": "1.1.7",
+          "downloadUrl": "https://cmocka.org/files/1.1/cmocka-1.1.7.tar.xz"
         }
       },
       "developmentDependency": true
