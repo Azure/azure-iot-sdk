@@ -50,8 +50,10 @@ extern "C"
    *                            `swtpm:host=127.0.0.1,port=2321`. NULL: the
    *                            tpm2-tss default.
    * @param[in] hmac_key_handle Persistent handle (0x81000000-0x817FFFFF) for the
-   *                            key DPS sends; a key already there is used by
-   *                            sample_tpm_tss_hmac() until import_key replaces it.
+   *                            key DPS sends, other than #SAMPLE_TPM_TSS_EK_HANDLE
+   *                            and #SAMPLE_TPM_TSS_SRK_HANDLE; a key already there
+   *                            is used by sample_tpm_tss_hmac() until import_key
+   *                            replaces it.
    * @return The TPM, or NULL on failure.
    */
   sample_tpm_tss* sample_tpm_tss_create(const char* tcti_config, uint32_t hmac_key_handle);

@@ -184,7 +184,10 @@ static bool ek_load(sample_tpm_tss* tpm)
 
 sample_tpm_tss* sample_tpm_tss_create(const char* tcti_config, uint32_t hmac_key_handle)
 {
-  if (hmac_key_handle < TPM2_PERSISTENT_FIRST || hmac_key_handle > TPM2_PLATFORM_PERSISTENT - 1)
+  /* EvictControl would replace a persistent EK or SRK with the DPS key. */
+  if (hmac_key_handle < TPM2_PERSISTENT_FIRST || hmac_key_handle > TPM2_PLATFORM_PERSISTENT - 1
+      || hmac_key_handle == SAMPLE_TPM_TSS_EK_HANDLE
+      || hmac_key_handle == SAMPLE_TPM_TSS_SRK_HANDLE)
   {
     return NULL;
   }

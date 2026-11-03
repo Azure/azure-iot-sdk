@@ -521,22 +521,211 @@ static void a_tampered_or_malformed_key_is_refused(void** state)
   sample_tpm_tss_destroy(tpm);
 }
 
-static void create_rejects_a_non_persistent_handle(void** state)
+/** @brief Opens an ESAPI context on the swtpm. */
+static ESYS_CONTEXT* esys_open(TSS2_TCTI_CONTEXT** tcti)
+{
+  ESYS_CONTEXT* esys = NULL;
+  assert_int_equal(Tss2_TctiLdr_Initialize(swtpm.tcti, tcti), TSS2_RC_SUCCESS);
+  assert_int_equal(Esys_Initialize(&esys, *tcti, NULL), TSS2_RC_SUCCESS);
+  return esys;
+}
+
+/** @brief Closes what esys_open() opened. */
+static void esys_close(ESYS_CONTEXT** esys, TSS2_TCTI_CONTEXT** tcti)
+{
+  Esys_Finalize(esys);
+  Tss2_TctiLdr_Finalize(tcti);
+}
+
+/**
+ * @brief Provisions a primary at persistent @p handle, as a TPM provisioning
+ * tool would: CreatePrimary from the template of @p pub (zero unique), then
+ * EvictControl.
+ */
+static void persist_primary(
+    ESYS_CONTEXT* esys,
+    ESYS_TR hierarchy,
+    const uint8_t* pub,
+    size_t pub_len,
+    uint32_t handle)
+{
+  TPM2B_PUBLIC key_template;
+  memset(&key_template, 0, sizeof(key_template));
+  size_t offset = 0;
+  assert_int_equal(
+      Tss2_MU_TPM2B_PUBLIC_Unmarshal(pub, pub_len, &offset, &key_template), TSS2_RC_SUCCESS);
+  memset(key_template.publicArea.unique.rsa.buffer, 0, key_template.publicArea.unique.rsa.size);
+  key_template.size = 0;
+  TPM2B_SENSITIVE_CREATE no_sensitive = { 0 };
+  TPM2B_DATA no_outside_info = { 0 };
+  TPML_PCR_SELECTION no_pcrs = { 0 };
+  ESYS_TR primary = ESYS_TR_NONE;
+  assert_int_equal(
+      Esys_CreatePrimary(
+          esys,
+          hierarchy,
+          ESYS_TR_PASSWORD,
+          ESYS_TR_NONE,
+          ESYS_TR_NONE,
+          &no_sensitive,
+          &key_template,
+          &no_outside_info,
+          &no_pcrs,
+          &primary,
+          NULL,
+          NULL,
+          NULL,
+          NULL),
+      TSS2_RC_SUCCESS);
+  ESYS_TR persistent = ESYS_TR_NONE;
+  assert_int_equal(
+      Esys_EvictControl(
+          esys,
+          ESYS_TR_RH_OWNER,
+          primary,
+          ESYS_TR_PASSWORD,
+          ESYS_TR_NONE,
+          ESYS_TR_NONE,
+          handle,
+          &persistent),
+      TSS2_RC_SUCCESS);
+  assert_int_equal(Esys_FlushContext(esys, primary), TSS2_RC_SUCCESS);
+  assert_int_equal(Esys_TR_Close(esys, &persistent), TSS2_RC_SUCCESS);
+}
+
+/** @brief Removes the persistent object at @p handle. */
+static void evict_persistent(ESYS_CONTEXT* esys, uint32_t handle)
+{
+  ESYS_TR persistent = ESYS_TR_NONE;
+  assert_int_equal(
+      Esys_TR_FromTPMPublic(esys, handle, ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, &persistent),
+      TSS2_RC_SUCCESS);
+  ESYS_TR none = ESYS_TR_NONE;
+  assert_int_equal(
+      Esys_EvictControl(
+          esys,
+          ESYS_TR_RH_OWNER,
+          persistent,
+          ESYS_TR_PASSWORD,
+          ESYS_TR_NONE,
+          ESYS_TR_NONE,
+          handle,
+          &none),
+      TSS2_RC_SUCCESS);
+}
+
+/** @brief Whether the swtpm holds an object at persistent @p handle. */
+static bool persistent_exists(ESYS_CONTEXT* esys, uint32_t handle)
+{
+  TPMI_YES_NO more = TPM2_NO;
+  TPMS_CAPABILITY_DATA* caps = NULL;
+  assert_int_equal(
+      Esys_GetCapability(
+          esys,
+          ESYS_TR_NONE,
+          ESYS_TR_NONE,
+          ESYS_TR_NONE,
+          TPM2_CAP_HANDLES,
+          handle,
+          1,
+          &more,
+          &caps),
+      TSS2_RC_SUCCESS);
+  bool found = caps->data.handles.count == 1 && caps->data.handles.handle[0] == handle;
+  Esys_Free(caps);
+  return found;
+}
+
+/** @brief Asserts that @p tpm reports the public areas @p ek and @p srk. */
+static void assert_publics(
+    const sample_tpm_tss* tpm,
+    const uint8_t* ek,
+    size_t ek_len,
+    const uint8_t* srk,
+    size_t srk_len)
+{
+  const uint8_t* pub = NULL;
+  size_t len = 0;
+  sample_tpm_tss_ek_public(tpm, &pub, &len);
+  assert_int_equal(len, ek_len);
+  assert_memory_equal(pub, ek, ek_len);
+  sample_tpm_tss_srk_public(tpm, &pub, &len);
+  assert_int_equal(len, srk_len);
+  assert_memory_equal(pub, srk, srk_len);
+}
+
+static void provisioned_ek_and_srk_are_used_and_kept(void** state)
+{
+  (void)state;
+  static uint8_t ek[TPM2_MAX_COMMAND_SIZE];
+  static uint8_t srk[TPM2_MAX_COMMAND_SIZE];
+  static const uint8_t bytes[32] = { 0x3C, 0x5A, 0x96, 0x69 };
+  static uint8_t key[DPS_KEY_MAX];
+  uint8_t expected[AZ_IOT_SHA256_SIZE];
+  uint8_t mac[AZ_IOT_SHA256_SIZE];
+  const uint8_t* pub = NULL;
+  size_t ek_len = 0;
+  size_t srk_len = 0;
+
+  sample_tpm_tss* tpm = open_tpm(HANDLE_FOR_TESTS);
+  sample_tpm_tss_ek_public(tpm, &pub, &ek_len);
+  memcpy(ek, pub, ek_len);
+  sample_tpm_tss_srk_public(tpm, &pub, &srk_len);
+  memcpy(srk, pub, srk_len);
+  sample_tpm_tss_destroy(tpm);
+
+  TSS2_TCTI_CONTEXT* tcti = NULL;
+  ESYS_CONTEXT* esys = esys_open(&tcti);
+  persist_primary(esys, ESYS_TR_RH_ENDORSEMENT, ek, ek_len, SAMPLE_TPM_TSS_EK_HANDLE);
+  persist_primary(esys, ESYS_TR_RH_OWNER, srk, srk_len, SAMPLE_TPM_TSS_SRK_HANDLE);
+  esys_close(&esys, &tcti);
+
+  size_t key_len = dps_key_for_tpm(bytes, sizeof(bytes), key);
+  tpm = open_tpm(HANDLE_FOR_TESTS);
+  assert_publics(tpm, ek, ek_len, srk, srk_len);
+  az_iot_dps_tpm_ops ops = sample_tpm_tss_ops(tpm);
+  assert_int_equal(ops.import_key(ops.ctx, key, key_len), AZ_IOT_OK);
+  assert_true(sample_tpm_tss_hmac(tpm, (const uint8_t*)MESSAGE, strlen(MESSAGE), mac));
+  expected_hmac(bytes, sizeof(bytes), MESSAGE, expected);
+  assert_memory_equal(mac, expected, sizeof(mac));
+  sample_tpm_tss_destroy(tpm);
+
+  /* Destroy releases the persistent primaries without evicting them. */
+  esys = esys_open(&tcti);
+  assert_true(persistent_exists(esys, SAMPLE_TPM_TSS_EK_HANDLE));
+  assert_true(persistent_exists(esys, SAMPLE_TPM_TSS_SRK_HANDLE));
+  esys_close(&esys, &tcti);
+  tpm = open_tpm(HANDLE_FOR_TESTS);
+  assert_publics(tpm, ek, ek_len, srk, srk_len);
+  assert_true(sample_tpm_tss_hmac(tpm, (const uint8_t*)MESSAGE, strlen(MESSAGE), mac));
+  assert_memory_equal(mac, expected, sizeof(mac));
+  sample_tpm_tss_destroy(tpm);
+
+  esys = esys_open(&tcti);
+  evict_persistent(esys, SAMPLE_TPM_TSS_EK_HANDLE);
+  evict_persistent(esys, SAMPLE_TPM_TSS_SRK_HANDLE);
+  esys_close(&esys, &tcti);
+}
+
+static void create_rejects_a_non_persistent_or_reserved_handle(void** state)
 {
   (void)state;
   assert_null(sample_tpm_tss_create(swtpm.tcti, 0x80000000u));
   assert_null(sample_tpm_tss_create(swtpm.tcti, 0x81800000u));
+  assert_null(sample_tpm_tss_create(swtpm.tcti, SAMPLE_TPM_TSS_EK_HANDLE));
+  assert_null(sample_tpm_tss_create(swtpm.tcti, SAMPLE_TPM_TSS_SRK_HANDLE));
   sample_tpm_tss_destroy(NULL);
 }
 
 int main(void)
 {
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(create_rejects_a_non_persistent_handle),
+    cmocka_unit_test(create_rejects_a_non_persistent_or_reserved_handle),
     cmocka_unit_test(public_areas_are_rsa2048_ek_and_srk),
     cmocka_unit_test(hmac_fails_before_a_key_is_imported),
     cmocka_unit_test(imports_the_dps_key_and_persists_it),
     cmocka_unit_test(a_tampered_or_malformed_key_is_refused),
+    cmocka_unit_test(provisioned_ek_and_srk_are_used_and_kept),
   };
   return cmocka_run_group_tests(tests, swtpm_start, swtpm_stop);
 }
