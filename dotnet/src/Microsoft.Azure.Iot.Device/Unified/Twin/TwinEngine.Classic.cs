@@ -1,4 +1,4 @@
-// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Google.Protobuf;
@@ -52,13 +52,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
 
             Guid? connectionNonce = _connection.ConnectionNonce;
-            ulong reportedVersionAtStart;
-            lock (_reportedStateLock)
-            {
-                reportedVersionAtStart = _localReportedVersion;
-            }
-
-            DesiredStateOutcome outcome = new();
             lock (_desiredStateLock)
             {
                 if (_isDisposed || (connectionNonce != null && _classicConnectSyncConnectionNonce == connectionNonce))
@@ -71,25 +64,25 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 DiscardDesiredResyncFromPreviousConnection(connectionNonce);
                 if (_desiredResync == null)
                 {
-                    StartDesiredResync(connectionNonce, null, outcome);
-                }
-                else
-                {
-                    // A resync that a desired patch started on this connection may have sent its GET before the device
-                    // subscribed to the responses, so send a new one.
-                    SendNewDesiredResyncGet(_desiredResync, outcome);
+                    _desiredResync = new DesiredResync(connectionNonce);
                 }
 
-                _desiredResync!.IsConnectSync = true;
+                _desiredResync.IsConnectSync = true;
                 _desiredResync.DesiredVersionAtStart = _localDesiredVersion;
-                _desiredResync.ReportedVersionAtStart = reportedVersionAtStart;
+                lock (_reportedStateLock)
+                {
+                    // While holding _desiredStateLock, so that a get twin response from the previous connection is either applied
+                    // before this or dropped (see HandleGetTwinResponseAsync).
+                    _desiredResync.ReportedVersionAtStart = _localReportedVersion;
+                }
+
+                // A GET sent on this connection (for the resync that a desired patch started, or for an application's call)
+                // may have been sent before the device subscribed to the responses, so send a new one. The GET is sent off
+                // this thread, since the connection client raises this while it holds the lock that reconnecting needs.
+                RequestDesiredResyncGet(_desiredResync, isNewAttemptRequired: true);
             }
 
             Trace.TraceInformation("Connected to IoT hub, so getting the twin before sending any reported properties patches.");
-
-            // The connection client raises this while it holds the lock that reconnecting needs, so the GET must not be sent
-            // (which may wait for a reconnection if the connection is lost meanwhile) on this thread.
-            _ = Task.Run(() => CompleteAsync(outcome));
         }
 
         // Must be called while holding _desiredStateLock. IoT hub's versions never decrease, so if this device held a newer version
@@ -195,11 +188,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             };
         }
 
-        private async Task HandleReceivedClassicPublishAsync(MqttPublish publish)
+        private async Task HandleReceivedClassicPublishAsync(MqttPublish publish, Guid? receivedConnectionNonce)
         {
             if (publish.Topic.StartsWith(ClassicTwinResponseTopic, StringComparison.Ordinal))
             {
-                await HandleReceivedClassicResponseAsync(publish);
+                await HandleReceivedClassicResponseAsync(publish, receivedConnectionNonce);
             }
             else if (publish.Topic.StartsWith(ClassicTwinDesiredPropertiesPatchTopic, StringComparison.Ordinal))
             {
@@ -207,7 +200,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
         }
 
-        private async Task HandleReceivedClassicResponseAsync(MqttPublish publish)
+        private async Task HandleReceivedClassicResponseAsync(MqttPublish publish, Guid? receivedConnectionNonce)
         {
             Match match = s_classicResponseTopicRegex.Match(publish.Topic);
             if (!match.Success
@@ -224,10 +217,15 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            GetTwinExchange? exchange = TryTakeGetTwinExchange(requestId);
-            if (exchange != null)
+            bool isGetResponse;
+            lock (_getTwinLock)
             {
-                HandleClassicGetTwinExchangeResponse(exchange, status, publish);
+                isGetResponse = _activeGetTwinFetch?.GetId == requestId;
+            }
+
+            if (isGetResponse)
+            {
+                await HandleClassicGetTwinResponseAsync(requestId, status, publish, receivedConnectionNonce);
                 return;
             }
 
@@ -248,33 +246,16 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            if (!IsClassicSuccessStatus(status))
-            {
-                // If this was the response to the resync GET, it is sent again once it times out.
-                Trace.TraceWarning("IoT hub rejected a get twin request with status {0}.", status);
-                return;
-            }
-
-            if (publish.Payload == null || publish.Payload.Length == 0)
-            {
-                // For example, the response to an earlier attempt of a reported properties patch.
-                Trace.TraceInformation("Dropping a twin response that does not match any outstanding twin request.");
-                return;
-            }
-
-            if (!TryParseClassicTwin(publish, out TwinGetResponse? response))
-            {
-                return;
-            }
-
-            await HandleDesiredResyncGetResponseAsync(requestId, response);
+            // For example, the response to an earlier attempt of a GET or reported properties patch.
+            Trace.TraceInformation("Dropping a twin response that does not match any outstanding twin request.");
         }
 
-        private void HandleClassicGetTwinExchangeResponse(GetTwinExchange exchange, int status, MqttPublish publish)
+        private async Task HandleClassicGetTwinResponseAsync(Guid requestId, int status, MqttPublish publish, Guid? receivedConnectionNonce)
         {
             if (!IsClassicSuccessStatus(status))
             {
-                exchange.Response.TrySetException(new DeviceException($"IoT hub rejected the get twin request with status {status}.")
+                Trace.TraceWarning("IoT hub rejected a get twin request with status {0}.", status);
+                FailGetTwinFetchAttempt(requestId, new DeviceException($"IoT hub rejected the get twin request with status {status}.")
                 {
                     Retryability = IsClassicRetryableStatus(status) ? ErrorRetryability.Retryable : ErrorRetryability.Terminal,
                     IsContained = true,
@@ -284,7 +265,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             if (!TryParseClassicTwin(publish, out TwinGetResponse? response))
             {
-                exchange.Response.TrySetException(new DeviceException("IoT hub returned a malformed twin.")
+                FailGetTwinFetchAttempt(requestId, new DeviceException("IoT hub returned a malformed twin.")
                 {
                     Retryability = ErrorRetryability.Retryable,
                     IsContained = true,
@@ -292,19 +273,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            // IoT hub always returns the full twin, so drop the sections that the request's if-not-match versions exclude.
-            GetTwinRequest request = exchange.Request;
-            if (request.IfNotMatchDesired != 0 && request.IfNotMatchDesired >= response.DesiredVersion)
-            {
-                response.ClearDesiredPayload();
-            }
-
-            if (request.IfNotMatchReported != 0 && request.IfNotMatchReported >= response.ReportedVersion)
-            {
-                response.ClearReportedPayload();
-            }
-
-            HandleGetTwinExchangeResponse(exchange, response);
+            await HandleGetTwinResponseAsync(requestId, response, receivedConnectionNonce);
         }
 
         private async Task HandleReceivedClassicDesiredPatchAsync(MqttPublish publish)
