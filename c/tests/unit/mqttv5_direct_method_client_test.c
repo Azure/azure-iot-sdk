@@ -4556,6 +4556,34 @@ static void a_probe_redelivered_during_its_invocation_is_not_answered(void** sta
   assert_int_equal(count_live_tokens(fx), 0);
 }
 
+#if DM_TEST_HOLDS_TWO_AT_ONCE
+/* A long-running invocation outlives its id in the ended-token ring: the in-flight check alone
+ * still keeps its redelivered probe from being answered. */
+static void a_probe_redelivered_after_its_id_left_the_ring_is_not_answered_while_running(
+    void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record pending = { 0 };
+  fx->rec = &pending;
+  run_one_invocation(fx, &pending, 0xB4);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  for (uint8_t i = 0; i < CONCURRENT_CAPACITY; ++i)
+  {
+    run_one_invocation(fx, &rec, (uint8_t)(0xD0 + i));
+    assert_int_equal(
+        az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+    ack_last_phase(fx, "result:1");
+  }
+
+  assert_int_equal(redeliver_probe(fx, 0xB4), 0);
+  assert_int_equal(count_live_tokens(fx), 0);
+}
+#endif
+
 /* Answered and acknowledged, the invocation is gone; its probe redelivered creates no token. */
 static void a_probe_redelivered_after_its_result_is_not_answered(void** state)
 {
@@ -5556,6 +5584,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_reclaimed_exec_slot_names_the_method, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_probe_redelivered_during_its_invocation_is_not_answered, setup, teardown),
+#if DM_TEST_HOLDS_TWO_AT_ONCE
+    cmocka_unit_test_setup_teardown(
+        a_probe_redelivered_after_its_id_left_the_ring_is_not_answered_while_running,
+        setup,
+        teardown),
+#endif
     cmocka_unit_test_setup_teardown(
         a_probe_redelivered_after_its_result_is_not_answered, setup, teardown),
     cmocka_unit_test_setup_teardown(
