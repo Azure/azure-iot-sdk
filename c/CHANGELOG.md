@@ -140,7 +140,9 @@ software updates. APIs may change before a stable release.
   whose steps name a missing file, is refused before any step runs.
 - Supported manifests: inline steps, and in managed mode detached (mini) manifests
   (`detachedManifestFileId`, sent when a manifest exceeds 4,096 bytes): the client downloads the
-  detached manifest file with `download_fn`, reads it into the update copy with `read_file_fn`,
+  detached manifest file with `download_fn`, reads it into the update copy with `read_file_fn`
+  (both with `file_index` `AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX`, so hooks keep it apart from the
+  update's files; the ESP32 OTA hooks hold it in RAM),
   checks its size and SHA-256 against the signed mini manifest and installs the full manifest it
   carries; it is persisted, so resume does not download it again
   (`AZ_IOT_SU_MANIFEST_ERROR_DETACHED_*` on failure; `AZ_IOT_SU_FILE_URL_CAPACITY()` counts its

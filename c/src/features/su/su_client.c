@@ -4120,7 +4120,8 @@ static az_span file_download_url(const az_iot_su_client* client, az_span json_id
  * @brief Fetch the detached manifest file of the verified mini manifest in current_manifest, and
  * replace current_manifest with the full manifest it carries.
  *
- * download_fn gets the file; read_file_fn reads it into request_buffer after the request, where
+ * download_fn gets the file and read_file_fn reads it, both with file_index
+ * AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX, into request_buffer after the request, where
  * it is verified, decoded in place, parsed and kept (request_len grows) so it is persisted with the
  * request.
  *
@@ -4174,8 +4175,9 @@ static int32_t fetch_detached_manifest(
     return AZ_IOT_SU_RESULT_FAILURE;
   }
 
-  int32_t dr = (h->download_fn != NULL) ? h->download_fn(file, url, 0, 1, h->user_ctx)
-                                        : AZ_IOT_SU_RESULT_FAILURE;
+  int32_t dr = (h->download_fn != NULL)
+      ? h->download_fn(file, url, AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX, 1, h->user_ctx)
+      : AZ_IOT_SU_RESULT_FAILURE;
   if (dr == AZ_IOT_SU_RESULT_IN_PROGRESS)
   {
     return dr;
@@ -4197,7 +4199,9 @@ static int32_t fetch_detached_manifest(
     uint8_t* into = (total < size) ? content + total : &extra;
     size_t want = (total < size) ? size - total : 1u;
     size_t got = 0;
-    if (h->read_file_fn(file, 0, total, into, want, &got, h->user_ctx) != AZ_IOT_SU_RESULT_SUCCESS
+    if (h->read_file_fn(
+            file, AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX, total, into, want, &got, h->user_ctx)
+            != AZ_IOT_SU_RESULT_SUCCESS
         || got > want)
     {
       *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_READ;

@@ -47,6 +47,7 @@ sequenceDiagram
 |---|---|
 | `download` | `esp_http_client` GET → `esp_ota_write` into the next OTA partition |
 | `read_file` | `esp_partition_read`, so core can run the SHA-256 check on the written image |
+| `download` / `read_file` of a mini manifest's detached manifest file | A heap buffer of its `sizeInBytes`, freed at the next download. The client stores the file after the request, so it must fit what `SU_MAX_UPDATE_SIZE` (8192) leaves |
 | `is_installed` | Compares the manifest version with `SU_UPDATE_VERSION` |
 | `install` | `esp_ota_end` + `esp_ota_set_boot_partition`; returns `REBOOT_REQUIRED` |
 | `apply` | No-op; the new image is already running |

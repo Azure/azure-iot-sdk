@@ -184,8 +184,8 @@ Your code does the device-side work. Every hook gets `hooks.user_ctx`, returns a
 
 | Hook | Needed | Called | May return |
 |---|---|---|---|
-| `download_fn` | Yes | Once per file (and per related file, see [Delta updates](#delta-updates)); for a mini manifest, first for its detached manifest file (`file_index` 0, `file_count` 1), which holds the full manifest | `SUCCESS`, `IN_PROGRESS`, `FAILURE` |
-| `read_file_fn` | Yes, unless your platform checks each file's integrity itself; required with download handlers and for mini manifests | After each download, to check its SHA-256 against the signed manifest. NULL skips the check: the signature covers the manifest, not the downloaded bytes. | `SUCCESS`, `FAILURE` |
+| `download_fn` | Yes | Once per file (and per related file, see [Delta updates](#delta-updates)); for a mini manifest, first for its detached manifest file (`file_index` `AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX`, `file_count` 1), which holds the full manifest: keep it apart from the update's files | `SUCCESS`, `IN_PROGRESS`, `FAILURE` |
+| `read_file_fn` | Yes, unless your platform checks each file's integrity itself; required with download handlers and for mini manifests | After each download, to check its SHA-256 against the signed manifest; for a mini manifest, to read its detached manifest file (same `file_index`). NULL skips the check: the signature covers the manifest, not the downloaded bytes. | `SUCCESS`, `FAILURE` |
 | `is_installed_fn` | Optional | Before anything is downloaded | `ALREADY_INSTALLED` (reported `SKIPPED`), `SUCCESS` |
 | `backup_fn` | Optional | Before each step's install | `SUCCESS`, `IN_PROGRESS`, `FAILURE` |
 | `install_fn` | Yes | Once per step | `SUCCESS`, `IN_PROGRESS`, `REBOOT_REQUIRED`, `FAILURE` |

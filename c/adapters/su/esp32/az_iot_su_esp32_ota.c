@@ -6,6 +6,7 @@
 #include "az_iot_su_esp32_ota.h"
 
 #include <inttypes.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -64,8 +65,19 @@ static uint32_t ota_download_url_hash(az_span url)
   return hash;
 }
 
-/** @brief Close the HTTP download and abort an unfinished OTA write, if open. */
-static void ota_download_close(az_iot_su_esp32_ota_context* c, bool abort_ota_write)
+/** @brief Free the detached manifest file, if held. */
+static void ota_detached_manifest_file_free(az_iot_su_esp32_ota_context* c)
+{
+  free(c->detached_manifest_file);
+  c->detached_manifest_file = NULL;
+  c->detached_manifest_file_size = 0;
+}
+
+/**
+ * @brief Close the HTTP download, if open. @p discard also aborts an unfinished OTA write and
+ * frees the detached manifest file.
+ */
+static void ota_download_close(az_iot_su_esp32_ota_context* c, bool discard)
 {
   if (c->http_client != NULL)
   {
@@ -73,18 +85,26 @@ static void ota_download_close(az_iot_su_esp32_ota_context* c, bool abort_ota_wr
     esp_http_client_cleanup(c->http_client);
     c->http_client = NULL;
   }
-  if (abort_ota_write && c->ota_in_progress)
+  if (discard && c->ota_in_progress)
   {
     esp_ota_abort(c->ota_handle);
     c->ota_in_progress = false;
   }
+  if (discard)
+  {
+    ota_detached_manifest_file_free(c);
+  }
 }
 
-/** @brief Open the HTTP download and the OTA write. Returns IN_PROGRESS or FAILURE. */
+/**
+ * @brief Open the HTTP download and its destination: the OTA write, or for a mini manifest's
+ * detached manifest file a RAM buffer of its size. Returns IN_PROGRESS or FAILURE.
+ */
 static int32_t ota_download_open(
     az_iot_su_esp32_ota_context* c,
     const az_iot_su_client_update_manifest_file* file,
-    az_span download_url)
+    az_span download_url,
+    bool is_detached_manifest_file)
 {
   char url[1024];
   if (!span_to_cstr(download_url, url, sizeof(url)))
@@ -93,18 +113,40 @@ static int32_t ota_download_open(
     return AZ_IOT_SU_RESULT_FAILURE;
   }
 
-  c->update_partition = esp_ota_get_next_update_partition(NULL);
-  if (!c->update_partition)
+  /* A new download: an earlier detached manifest file was read and an earlier image is stale. */
+  ota_download_close(c, true);
+  if (is_detached_manifest_file)
   {
-    ESP_LOGE(TAG, "no free OTA partition");
-    return AZ_IOT_SU_RESULT_FAILURE;
+    /* The client checked sizeInBytes fits its request buffer. */
+    if (file->size_in_bytes < 0 || (uint64_t)file->size_in_bytes > SIZE_MAX)
+    {
+      return AZ_IOT_SU_RESULT_FAILURE;
+    }
+    size_t const size = (size_t)file->size_in_bytes;
+    c->detached_manifest_file = malloc(size > 0 ? size : 1u);
+    if (c->detached_manifest_file == NULL)
+    {
+      ESP_LOGE(TAG, "no memory for the %zu-byte detached manifest file", size);
+      return AZ_IOT_SU_RESULT_FAILURE;
+    }
+    c->detached_manifest_file_size = size;
+    ESP_LOGI(TAG, "downloading the %zu-byte detached manifest file to RAM", size);
   }
-  ESP_LOGI(
-      TAG,
-      "downloading %lld bytes -> partition '%s' @0x%08" PRIx32,
-      (long long)file->size_in_bytes,
-      c->update_partition->label,
-      c->update_partition->address);
+  else
+  {
+    c->update_partition = esp_ota_get_next_update_partition(NULL);
+    if (!c->update_partition)
+    {
+      ESP_LOGE(TAG, "no free OTA partition");
+      return AZ_IOT_SU_RESULT_FAILURE;
+    }
+    ESP_LOGI(
+        TAG,
+        "downloading %lld bytes -> partition '%s' @0x%08" PRIx32,
+        (long long)file->size_in_bytes,
+        c->update_partition->label,
+        c->update_partition->address);
+  }
 
   /* timeout_ms bounds each blocking read; it must stay well below the MQTT keep-alive. */
   esp_http_client_config_t http = {
@@ -134,12 +176,15 @@ static int32_t ota_download_open(
     return AZ_IOT_SU_RESULT_FAILURE;
   }
 
-  if (esp_ota_begin(c->update_partition, OTA_SIZE_UNKNOWN, &c->ota_handle) != ESP_OK)
+  if (!is_detached_manifest_file)
   {
-    ESP_LOGE(TAG, "esp_ota_begin failed");
-    return AZ_IOT_SU_RESULT_FAILURE;
+    if (esp_ota_begin(c->update_partition, OTA_SIZE_UNKNOWN, &c->ota_handle) != ESP_OK)
+    {
+      ESP_LOGE(TAG, "esp_ota_begin failed");
+      return AZ_IOT_SU_RESULT_FAILURE;
+    }
+    c->ota_in_progress = true;
   }
-  c->ota_in_progress = true;
   c->bytes_written = 0;
   c->download_url_hash = ota_download_url_hash(download_url);
   return AZ_IOT_SU_RESULT_IN_PROGRESS;
@@ -168,7 +213,16 @@ static int32_t ota_download_continue(az_iot_su_esp32_ota_context* c)
       ESP_LOGI(TAG, "download complete: %zu bytes written", c->bytes_written);
       return AZ_IOT_SU_RESULT_SUCCESS;
     }
-    if (esp_ota_write(c->ota_handle, buf, (size_t)r) != ESP_OK)
+    if (!c->ota_in_progress)
+    {
+      if ((size_t)r > c->detached_manifest_file_size - c->bytes_written)
+      {
+        ESP_LOGE(TAG, "detached manifest file is longer than its sizeInBytes");
+        return AZ_IOT_SU_RESULT_FAILURE;
+      }
+      memcpy(c->detached_manifest_file + c->bytes_written, buf, (size_t)r);
+    }
+    else if (esp_ota_write(c->ota_handle, buf, (size_t)r) != ESP_OK)
     {
       ESP_LOGE(TAG, "esp_ota_write failed at %zu", c->bytes_written);
       return AZ_IOT_SU_RESULT_FAILURE;
@@ -188,25 +242,30 @@ static int32_t ota_download(
     void* user_ctx)
 {
   az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)user_ctx;
+  bool const is_detached_manifest_file = file_index == AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX;
 
   /* The single payload is the new ESP32 app image; multi-file updates would need a
    * partition/file map. */
-  if (file_index != 0)
+  if (file_index != 0 && !is_detached_manifest_file)
   {
     ESP_LOGW(TAG, "ignoring extra file %u/%u", file_index + 1, file_count);
     return AZ_IOT_SU_RESULT_SUCCESS;
   }
 
-  if (c->http_client != NULL && c->download_url_hash != ota_download_url_hash(download_url))
+  if (c->http_client != NULL
+      && (c->download_url_hash != ota_download_url_hash(download_url)
+          || c->ota_in_progress == is_detached_manifest_file))
   {
     /* A different download replaced the one in progress. */
     ota_download_close(c, true);
   }
-  int32_t result = c->http_client == NULL ? ota_download_open(c, file, download_url)
-                                          : ota_download_continue(c);
+  int32_t result = c->http_client == NULL
+      ? ota_download_open(c, file, download_url, is_detached_manifest_file)
+      : ota_download_continue(c);
   if (result != AZ_IOT_SU_RESULT_IN_PROGRESS)
   {
-    /* Keep a complete image's OTA write open for install_fn. */
+    /* Keep a complete image's OTA write open for install_fn, and a complete detached manifest
+     * file for read_file. */
     ota_download_close(c, result != AZ_IOT_SU_RESULT_SUCCESS);
   }
   return result;
@@ -225,16 +284,19 @@ static int32_t ota_read_file(
     size_t* out_read,
     void* user_ctx)
 {
-  (void)file_index;
   az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)user_ctx;
-  if (!c->update_partition)
+  bool const is_detached_manifest_file = file_index == AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX;
+  if (is_detached_manifest_file ? c->detached_manifest_file == NULL || c->http_client != NULL
+                                : !c->update_partition)
   {
     *out_read = 0;
     return AZ_IOT_SU_RESULT_FAILURE;
   }
 
-  size_t size = c->bytes_written ? c->bytes_written
-                                 : (file->size_in_bytes > 0 ? (size_t)file->size_in_bytes : 0);
+  /* bytes_written is the complete detached manifest file's while it is held. */
+  size_t size = (is_detached_manifest_file || c->bytes_written)
+      ? c->bytes_written
+      : (file->size_in_bytes > 0 ? (size_t)file->size_in_bytes : 0);
   if (offset >= size)
   {
     *out_read = 0;
@@ -243,7 +305,11 @@ static int32_t ota_read_file(
 
   size_t remain = size - offset;
   size_t n = remain < buffer_size ? remain : buffer_size;
-  if (esp_partition_read(c->update_partition, offset, buffer, n) != ESP_OK)
+  if (is_detached_manifest_file)
+  {
+    memcpy(buffer, c->detached_manifest_file + offset, n);
+  }
+  else if (esp_partition_read(c->update_partition, offset, buffer, n) != ESP_OK)
   {
     *out_read = 0;
     return AZ_IOT_SU_RESULT_FAILURE;

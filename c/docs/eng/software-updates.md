@@ -395,8 +395,10 @@ Within `VerifyingManifest`, once the mini manifest verifies and parses, the mana
 2. finds its URL in `fileUrls`;
 3. requires `read_file_fn`;
 4. checks the file fits the space `max_update_size` leaves after the request (logs both sizes);
-5. calls `download_fn` for it (`file_index` 0, `file_count` 1; `IN_PROGRESS` is re-entered);
-6. reads it with `read_file_fn` into the request buffer, after the request;
+5. calls `download_fn` for it (`file_index` `AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX`,
+   `file_count` 1; `IN_PROGRESS` is re-entered), so a hook can tell it from the step files, which
+   start again at `file_index` 0 (the ESP32 OTA adapter keeps it in RAM, not in the OTA partition);
+6. reads it with `read_file_fn` (same `file_index`) into the request buffer, after the request;
 7. checks its size and SHA-256, unwraps and decodes it in place, and parses the full manifest;
 8. checks the full manifest has the mini manifest's `updateId`, is not itself a mini manifest,
    has steps and no reference step, and that each step file has a URL.
@@ -2029,7 +2031,7 @@ Operations MUST NOT be long-blocking. Each `do_work` invocation MUST process at 
 | 2 | Root key provisioning | **Both compiled-in and runtime-loadable, core-owned.** Core ships Microsoft defaults (`az_iot_su_microsoft_root_keys()`), callers MAY override at `init`. Runtime Root Key Package rotation is not implemented (§11). |
 | 3 | Manifest algorithm | **RS256 only (v1).** Core MUST reject any JWS with `alg != RS256`; the crypto backend MUST implement `verify_rs256`. |
 | 4 | Manifest version | **v5 only.** The client MUST support manifest v5. Earlier versions MUST NOT be supported. |
-| 5 | Multi-file handling | **Per-file.** `download_fn` MUST be called at most once per do_work (for a file, or the related file a download handler chose), with `file_index`/`file_count` for progress awareness. Operations MUST NOT be long-blocking. |
+| 5 | Multi-file handling | **Per-file.** `download_fn` MUST be called at most once per do_work (for a file, or the related file a download handler chose), with `file_index`/`file_count` for progress awareness (`AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX` for a mini manifest's detached manifest file). Operations MUST NOT be long-blocking. |
 | 6 | Thread safety | **Single-threaded.** The software updates client MUST NOT use internal locks or threads. Applications that need concurrency MUST wrap externally. |
 
 ---

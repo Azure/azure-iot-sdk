@@ -308,6 +308,8 @@ typedef struct
   int download_calls;
   char download_file_ids[MAX_OPS][32];
   char download_urls[MAX_OPS][64];
+  uint32_t download_file_indexes[MAX_OPS];
+  uint32_t download_file_counts[MAX_OPS];
 
   /* Download handlers: per-file faults, by file id. */
   int download_in_progress; /* download_fn returns IN_PROGRESS this many times first */
@@ -386,14 +388,14 @@ static int32_t mock_download(
     uint32_t file_count,
     void* ctx)
 {
-  (void)file_index;
-  (void)file_count;
   hook_log* l = (hook_log*)ctx;
   int slot = l->download_calls++;
   if (slot < MAX_OPS)
   {
     span_to_cstr(file->id, l->download_file_ids[slot], sizeof(l->download_file_ids[slot]));
     span_to_cstr(url, l->download_urls[slot], sizeof(l->download_urls[slot]));
+    l->download_file_indexes[slot] = file_index;
+    l->download_file_counts[slot] = file_count;
   }
   int32_t n = az_span_size(url);
   if (n < 0 || (size_t)n >= sizeof(l->last_download_url))
@@ -516,7 +518,7 @@ static az_iot_result mock_verify_rs256(
 }
 
 /* Serve fx->log.file_len bytes of dummy content in chunks, then EOF; the detached manifest file
- * from fx->log.detached_file_content. */
+ * from fx->log.detached_file_content, for AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX only. */
 static int32_t mock_read_file(
     const az_iot_su_client_update_manifest_file* file,
     uint32_t file_index,
@@ -526,10 +528,14 @@ static int32_t mock_read_file(
     size_t* out_read,
     void* ctx)
 {
-  (void)file_index;
   hook_log* l = (hook_log*)ctx;
-  if (l->detached_file_content != NULL
-      && az_span_is_content_equal(file->id, az_span_create_from_str(l->detached_file_id)))
+  bool const is_detached_file = l->detached_file_content != NULL
+      && az_span_is_content_equal(file->id, az_span_create_from_str(l->detached_file_id));
+  if (is_detached_file != (file_index == AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX))
+  {
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  if (is_detached_file)
   {
     size_t length = strlen(l->detached_file_content);
     size_t n = (offset < length) ? length - offset : 0u;
@@ -7535,6 +7541,13 @@ static void a_mini_manifest_installs_its_full_manifest(void** state)
   assert_string_equal(fx->log.download_file_ids[2], "f00");
   assert_string_equal(fx->log.download_urls[2], "http://example.com/payload-00.bin");
   assert_string_equal(fx->log.download_file_ids[3], "f01");
+  /* Only the detached manifest file has the reserved file_index; the steps' start at 0. */
+  for (int i = 0; i < 4; ++i)
+  {
+    assert_int_equal(
+        fx->log.download_file_indexes[i], i < 2 ? AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX : 0u);
+    assert_int_equal(fx->log.download_file_counts[i], 1u);
+  }
   assert_int_equal((int)count_ops(&fx->log, OP_IS_INSTALLED), 1);
   assert_int_equal((int)count_ops(&fx->log, OP_INSTALL), 2);
   assert_int_equal((int)count_ops(&fx->log, OP_APPLY), 2);

@@ -451,6 +451,10 @@ extern "C"
 
   /* --- Platform hooks (vtable) --------------------------------------------- */
 
+/** @brief The `file_index` download_fn and read_file_fn get for a mini manifest's detached
+ * manifest file, which no step uses: keep it apart from the update's files. */
+#define AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX UINT32_MAX
+
   /**
    * Platform-specific operations the application (or a bundled adapter) provides.
    * The core software updates library MUST NOT link any platform/OS/network code; everything
@@ -469,8 +473,10 @@ extern "C"
      * crypto backend. Also called for the related file a download handler
      * chose: @p file is then that related file, and @p file_index that of the
      * file it belongs to, so store it apart (e.g. by id). For a mini manifest it
-     * is first called for the detached manifest file (@p file_index 0,
-     * @p file_count 1), before any step runs.
+     * is first called for the detached manifest file (@p file_index
+     * #AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX, @p file_count 1), before any step
+     * runs; its `sizeInBytes` fits the free space of
+     * az_iot_su_limits::max_update_size.
      */
     int32_t (*download_fn)(
         const az_iot_su_client_update_manifest_file* file,
@@ -489,8 +495,9 @@ extern "C"
      * @p buffer_size); set @p out_read to the number of bytes read (0 signals
      * end-of-file). MUST return AZ_IOT_SU_RESULT_SUCCESS on a successful read.
      * Also reads related files and built files, as download_fn names them.
-     * Required for a mini manifest: it reads the detached manifest file into
-     * the request buffer.
+     * Required for a mini manifest: it reads the detached manifest file
+     * (@p file_index #AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX) into the request
+     * buffer, in one pass right after its download_fn succeeds.
      */
     int32_t (*read_file_fn)(
         const az_iot_su_client_update_manifest_file* file,

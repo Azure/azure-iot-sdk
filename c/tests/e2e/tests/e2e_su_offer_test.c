@@ -195,6 +195,8 @@ typedef struct
 {
   /* The file's id, as the manifest has it (JSON escapes kept). */
   char file_id[E2E_SU_FILE_ID_SIZE];
+  /* The file_index download_fn got. */
+  uint32_t file_index;
   /* The URL is the one the request's `fileUrls` has for that id. */
   bool url_is_from_file_urls;
   /* The file is in the client's parsed manifest; false before the manifest is parsed. */
@@ -282,12 +284,13 @@ static void file_path(const platform* p, uint32_t index, bool related, char* out
 }
 
 /**
- * @brief Records a download_fn call of @p file from @p url: whether @p url is the client's
- * `fileUrls` entry for the file, and whether the client's parsed manifest lists the file.
+ * @brief Records a download_fn call of @p file, @p file_index, from @p url: whether @p url is the
+ * client's `fileUrls` entry for the file, and whether the client's parsed manifest lists the file.
  */
 static void record_download(
     platform* p,
     const az_iot_su_client_update_manifest_file* file,
+    uint32_t file_index,
     az_span url)
 {
   if (p->download_count >= E2E_SU_MAX_DOWNLOADS)
@@ -296,6 +299,7 @@ static void record_download(
     return;
   }
   download_record* d = &p->downloads[p->download_count++];
+  d->file_index = file_index;
   (void)snprintf(
       d->file_id,
       sizeof(d->file_id),
@@ -338,10 +342,11 @@ static int32_t hook_download(
   (void)file_count;
   platform* p = (platform*)ctx;
   op_log(p, OP_DOWNLOAD);
-  record_download(p, file, url);
+  record_download(p, file, file_index, url);
 
+  bool const is_detached_manifest_file = file_index == AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX;
   char url_z[2048];
-  if (file_index >= E2E_SU_MAX_FILES || az_span_size(url) <= 0
+  if ((file_index >= E2E_SU_MAX_FILES && !is_detached_manifest_file) || az_span_size(url) <= 0
       || (size_t)az_span_size(url) >= sizeof(url_z))
   {
     return AZ_IOT_SU_RESULT_FAILURE;
@@ -391,7 +396,7 @@ static int32_t hook_download(
         "  download of file %u failed: %s (HTTP %ld)\n", file_index, curl_easy_strerror(rc), http);
     return AZ_IOT_SU_RESULT_FAILURE;
   }
-  if (!related)
+  if (!related && !is_detached_manifest_file)
   {
     p->expected_size[file_index] = file->size_in_bytes;
     p->downloaded_size[file_index] = size;
@@ -1985,7 +1990,8 @@ static void assert_mini_manifest_refused(const fixture* fx, const spy_report* r)
 
 /**
  * @brief Asserts the managed client fetched the mini manifest's full manifest and installed it:
- * download_fn got the detached manifest file before the manifest was parsed, then each file of
+ * download_fn got the detached manifest file (file_index AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX)
+ * before the manifest was parsed, then each file of
  * the full manifest, each from its `fileUrls` URL. The report has the full manifest's steps.
  */
 static void assert_full_manifest_fetched_and_installed(fixture* fx, const spy_report* r)
@@ -2003,6 +2009,7 @@ static void assert_full_manifest_fetched_and_installed(fixture* fx, const spy_re
         true);
     assert_true(d->url_is_from_file_urls);
     assert_int_equal(is_detached_manifest_file, i == 0);
+    assert_int_equal(d->file_index == AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX, i == 0);
     assert_int_equal(d->file_is_in_manifest, i > 0);
   }
   assert_int_equal(r->step_count, (int32_t)fx->parsed_manifest_steps_count);
