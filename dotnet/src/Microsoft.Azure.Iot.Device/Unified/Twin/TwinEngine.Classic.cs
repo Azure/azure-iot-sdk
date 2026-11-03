@@ -57,12 +57,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
 
             Guid? connectionNonce = _connection.ConnectionNonce;
-            ulong reportedVersionAtStart;
-            lock (_reportedStateLock)
-            {
-                reportedVersionAtStart = _localReportedVersion;
-            }
-
             lock (_desiredStateLock)
             {
                 if (_isDisposed || (connectionNonce != null && _classicConnectSyncConnectionNonce == connectionNonce))
@@ -80,7 +74,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
                 _desiredResync.IsConnectSync = true;
                 _desiredResync.DesiredVersionAtStart = _localDesiredVersion;
-                _desiredResync.ReportedVersionAtStart = reportedVersionAtStart;
+                lock (_reportedStateLock)
+                {
+                    // While holding _desiredStateLock, so that a get twin response from the previous connection is either applied
+                    // before this or dropped (see HandleGetTwinResponseAsync).
+                    _desiredResync.ReportedVersionAtStart = _localReportedVersion;
+                }
 
                 // A GET sent on this connection (for the resync that a desired patch started, or for an application's call)
                 // may have been sent before the device subscribed to the responses, so send a new one. The GET is sent off
@@ -197,7 +196,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             };
         }
 
-        private async Task HandleReceivedClassicPublishAsync(MqttPublish publish)
+        private async Task HandleReceivedClassicPublishAsync(MqttPublish publish, Guid? receivedConnectionNonce)
         {
             if (!IsClassicConnection())
             {
@@ -206,7 +205,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             if (publish.Topic.StartsWith(ClassicTwinResponseTopic, StringComparison.Ordinal))
             {
-                await HandleReceivedClassicResponseAsync(publish);
+                await HandleReceivedClassicResponseAsync(publish, receivedConnectionNonce);
             }
             else if (publish.Topic.StartsWith(ClassicTwinDesiredPropertiesPatchTopic, StringComparison.Ordinal))
             {
@@ -214,7 +213,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
         }
 
-        private async Task HandleReceivedClassicResponseAsync(MqttPublish publish)
+        private async Task HandleReceivedClassicResponseAsync(MqttPublish publish, Guid? receivedConnectionNonce)
         {
             Match match = s_classicResponseTopicRegex.Match(publish.Topic);
             if (!match.Success
@@ -239,7 +238,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             if (isGetResponse)
             {
-                await HandleClassicGetTwinResponseAsync(requestId, status, publish);
+                await HandleClassicGetTwinResponseAsync(requestId, status, publish, receivedConnectionNonce);
                 return;
             }
 
@@ -264,7 +263,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             Trace.TraceInformation("Dropping a twin response that does not match any outstanding twin request.");
         }
 
-        private async Task HandleClassicGetTwinResponseAsync(Guid requestId, int status, MqttPublish publish)
+        private async Task HandleClassicGetTwinResponseAsync(Guid requestId, int status, MqttPublish publish, Guid? receivedConnectionNonce)
         {
             if (!IsClassicSuccessStatus(status))
             {
@@ -287,7 +286,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            await HandleGetTwinResponseAsync(requestId, response, isClassic: true);
+            await HandleGetTwinResponseAsync(requestId, response, isClassic: true, receivedConnectionNonce);
         }
 
         private async Task HandleReceivedClassicDesiredPatchAsync(MqttPublish publish)
