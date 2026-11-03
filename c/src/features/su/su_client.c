@@ -32,6 +32,7 @@
 #include "azure/iot/az_iot_su.h"
 
 #include "internal/su_internal.h"
+#include "internal/su_detached_manifest_internal.h"
 #include "internal/su_manifest_internal.h"
 #include "internal/base64.h"
 #include "internal/crypto.h"
@@ -42,7 +43,7 @@
 #include "internal/span_writer.h"
 
 /** @brief Bytes of the persisted-record header, which precedes the request. */
-#define AZ_IOT_SU_PERSIST_HEADER_SIZE 40u
+#define AZ_IOT_SU_PERSIST_HEADER_SIZE 48u
 
 /** @brief How far the current file has got (az_iot_su_client::file_download_phase). */
 typedef enum
@@ -55,6 +56,9 @@ typedef enum
   SU_FILE_PHASE_BUILD,
   /** The file is downloaded in full, then its hash is checked. */
   SU_FILE_PHASE_FULL_DOWNLOAD,
+  /** In VERIFYING_MANIFEST: the mini manifest is verified and parsed; download_fn fetches its
+   * detached manifest file. */
+  SU_FILE_PHASE_DETACHED_MANIFEST,
 } su_file_download_phase;
 
 /* The public header reserves opaque storage for the SDK-built channel so the
@@ -1335,6 +1339,7 @@ static void reset_to_idle(az_iot_su_client* client)
   SU_I(client).download_handler_end_owed = false;
   memset(&SU_I(client).current_request, 0, sizeof(SU_I(client).current_request));
   memset(&SU_I(client).current_manifest, 0, sizeof(SU_I(client).current_manifest));
+  SU_I(client).full_manifest_text = AZ_SPAN_EMPTY;
   SU_I(client).request_len = 0;
 }
 
@@ -1363,17 +1368,43 @@ static az_iot_result decode_manifest(az_iot_su_client* client)
 }
 
 /**
+ * @brief Refuse a mini manifest where its detached manifest file is not fetched: in library mode
+ * and in az_iot_su_parse_update_request().
+ *
+ * @param manifest           A parsed manifest.
+ * @param out_manifest_error Set to AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST when refused.
+ * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_SUPPORTED (logged) for a mini manifest.
+ */
+static az_iot_result refuse_mini_manifest(
+    const az_iot_su_client_update_manifest* manifest,
+    uint32_t* out_manifest_error)
+{
+  if (az_span_size(manifest->detached_manifest_file_id) <= 0)
+  {
+    return AZ_IOT_OK;
+  }
+  AZ_IOT_LOG_ERRORF(
+      AZ_IOT_LOG_COMPONENT_SU,
+      "mini manifest (detachedManifestFileId '%.*s') is not supported here",
+      (int)az_span_size(manifest->detached_manifest_file_id),
+      (const char*)az_span_ptr(manifest->detached_manifest_file_id));
+  *out_manifest_error = AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST;
+  return AZ_IOT_ERR_NOT_SUPPORTED;
+}
+
+/**
  * @brief Parse the verified manifest_text into current_manifest, check that the client can install
  * it, and that every step file is described by it and has a download URL.
  *
- * current_manifest holds spans into manifest_text (client-owned request_buffer).
+ * current_manifest holds spans into manifest_text (client-owned request_buffer). A mini manifest
+ * has no steps yet: fetch_detached_manifest() replaces it.
  *
  * @param client             The client; decode_manifest() and verify_manifest() succeeded.
  * @param out_manifest_error Set to the AZ_IOT_SU_MANIFEST_ERROR_* sub-code when the manifest is
  *                           not supported; else 0.
  * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE when over a limit; AZ_IOT_ERR_INVALID_ARG when
  * malformed, without steps or a step file is unresolved; AZ_IOT_ERR_NOT_SUPPORTED for a mini
- * manifest or a reference step.
+ * manifest in library mode or a reference step.
  */
 static az_iot_result parse_manifest(az_iot_su_client* client, uint32_t* out_manifest_error)
 {
@@ -1386,6 +1417,10 @@ static az_iot_result parse_manifest(az_iot_su_client* client, uint32_t* out_mani
   if (r == AZ_IOT_OK)
   {
     r = az_iot_su__check_manifest_supported(&SU_I(client).current_manifest, out_manifest_error);
+  }
+  if (r == AZ_IOT_OK && SU_I(client).library_mode)
+  {
+    r = refuse_mini_manifest(&SU_I(client).current_manifest, out_manifest_error);
   }
   if (r == AZ_IOT_OK)
   {
@@ -1933,6 +1968,7 @@ static void process_update_metadata(
   SU_I(client).have_request = true;
   SU_I(client).checkpoint_pending = false;
   SU_I(client).install_called = false;
+  SU_I(client).full_manifest_text = AZ_SPAN_EMPTY;
   SU_I(client).current_step = 0;
   SU_I(client).current_file = 0;
   result_init_steps(client, 0);
@@ -2183,12 +2219,21 @@ static az_iot_result failure_reason(int32_t extended_result_code)
       switch (code & 0x0FFFFFFFu)
       {
         case AZ_IOT_SU_MANIFEST_ERROR_CRYPTO:
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_READ:
           return AZ_IOT_ERR_INTERNAL;
         case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST:
         case AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP:
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_NO_READER:
           return AZ_IOT_ERR_NOT_SUPPORTED;
         case AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS:
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_ENTRY:
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_URL:
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_INVALID:
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_UPDATE_ID:
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_NESTED:
           return AZ_IOT_ERR_PROTOCOL;
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE:
+          return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
         default:
           return AZ_IOT_ERR_AUTH;
       }
@@ -3310,8 +3355,11 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
  *   [28] u32 manifest_off      (offset into request_buffer)
  *   [32] u32 manifest_len
  *   [36] u32 request_len
- *   [40] request_buffer[request_len]
- *   --- trailer (T = 40 + request_len) ---
+ *   [40] u32 full_manifest_off (offset into request_buffer; of a mini manifest whose
+ *                               detached manifest file is stored after the request)
+ *   [44] u32 full_manifest_len (0 = none)
+ *   [48] request_buffer[request_len]
+ *   --- trailer (T = 48 + request_len) ---
  *   [T+0]  u32 outcome            (latched terminal outcome)
  *   [T+4]  i32 result_code        (accumulated install_result)
  *   [T+8]  i32 extended_result_code
@@ -3343,20 +3391,20 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
 #define AZ_IOT_SU_PERSIST_MAGIC2 'C'
 #define AZ_IOT_SU_PERSIST_MAGIC3 'P'
 /* Bump on any change to the layout above: resume() ignores a record of another version. */
-#define AZ_IOT_SU_PERSIST_VERSION 3u
+#define AZ_IOT_SU_PERSIST_VERSION 4u
 #define AZ_IOT_SU_PERSIST_FLAG_HAVE_REQUEST 0x2u
 #define AZ_IOT_SU_PERSIST_FLAG_REPORT_OWED 0x4u
 #define AZ_IOT_SU_PERSIST_FLAG_RETRY 0x8u
 /* Fixed part of the trailer (outcome + 3 result ints). */
 #define AZ_IOT_SU_PERSIST_TRAILER_FIXED 16u
 #define AZ_IOT_SU_PERSIST_STEP_RECORD 16u
-/* Upper bound on the trailer + crc with AZ_IOT_SU_MAX_FILE_COUNT URLs; each URL past those has
+/* Upper bound on the trailer + crc with AZ_IOT_SU_MAX_FILE_COUNT + 1 URLs; each URL past those has
  * AZ_IOT_SU_PERSIST_URL_RECORD_SIZE more in the workspace, per az_iot_su_limits::max_related_files.
  */
 #define AZ_IOT_SU_PERSIST_TRAILER_MAX                                                              \
   (AZ_IOT_SU_PERSIST_TRAILER_FIXED                                                                 \
    + ((uint32_t)(AZ_IOT_SU_MAX_STEP_COUNT) * AZ_IOT_SU_PERSIST_STEP_RECORD) + 4u                   \
-   + ((uint32_t)(AZ_IOT_SU_MAX_FILE_COUNT) * AZ_IOT_SU_PERSIST_URL_RECORD_SIZE) + 4u               \
+   + ((uint32_t)(AZ_IOT_SU_MAX_FILE_COUNT + 1) * AZ_IOT_SU_PERSIST_URL_RECORD_SIZE) + 4u           \
    + (uint32_t)(AZ_IOT_SU_WORKFLOW_ID_SIZE) + 4u + (uint32_t)(AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE)    \
    + 4u + (uint32_t)(AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + 4u * (uint32_t)(AZ_IOT_SU_MAX_STEP_COUNT) \
    + AZ_IOT_RETRY_STATE_RECORD_SIZE + 4u)
@@ -3519,6 +3567,8 @@ static az_iot_result su_persist(az_iot_su_client* client, su_record kind)
   wr_u32le(&blob[28], terminal ? 0u : request_offset(client, SU_I(client).manifest_text));
   wr_u32le(&blob[32], terminal ? 0u : (uint32_t)az_span_size(SU_I(client).manifest_text));
   wr_u32le(&blob[36], request_len);
+  wr_u32le(&blob[40], terminal ? 0u : request_offset(client, SU_I(client).full_manifest_text));
+  wr_u32le(&blob[44], terminal ? 0u : (uint32_t)az_span_size(SU_I(client).full_manifest_text));
 
   uint32_t t = AZ_IOT_SU_PERSIST_HEADER_SIZE + request_len;
   const az_iot_su_client_install_result* r = &SU_I(client).install_result;
@@ -3904,8 +3954,11 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   uint32_t wf_len = rd_u32le(&blob[24]);
   uint32_t mf_off = rd_u32le(&blob[28]);
   uint32_t mf_len = rd_u32le(&blob[32]);
+  uint32_t full_off = rd_u32le(&blob[40]);
+  uint32_t full_len = rd_u32le(&blob[44]);
   if (mf_off > request_len || mf_len > request_len - mf_off || wf_off > request_len
-      || wf_len > request_len - wf_off)
+      || wf_len > request_len - wf_off || full_off > request_len
+      || full_len > request_len - full_off)
   {
     return AZ_IOT_OK;
   }
@@ -3933,9 +3986,13 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
 
   az_span manifest_text = az_span_create(SU_I(client).request_buffer + mf_off, (int32_t)mf_len);
   SU_I(client).manifest_text = manifest_text;
+  /* A mini manifest's full manifest is parsed from the stored detached manifest file. */
+  az_span full_manifest_text
+      = az_span_create(SU_I(client).request_buffer + full_off, (int32_t)full_len);
+  SU_I(client).full_manifest_text = full_manifest_text;
 
   if (az_iot_su__parse_update_manifest(
-          manifest_text,
+          full_len > 0 ? full_manifest_text : manifest_text,
           SU_I(client).related_file_storage,
           SU_I(client).max_related_files,
           &SU_I(client).current_manifest)
@@ -3963,8 +4020,15 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   bool step_installed = state == (uint32_t)AZ_IOT_SU_STATE_INSTALL_COMPLETE
       || state == (uint32_t)AZ_IOT_SU_STATE_APPLY_STARTED;
   uint32_t from = step_installed ? step + 1u : step;
+  bool verified = state != (uint32_t)AZ_IOT_SU_STATE_MANIFEST_RECEIVED
+      && state != (uint32_t)AZ_IOT_SU_STATE_VERIFYING_MANIFEST;
+  /* Past verification a mini manifest has its full manifest stored; before it, none. */
+  bool full_manifest_consistent = verified
+      ? az_span_size(SU_I(client).current_manifest.detached_manifest_file_id) <= 0
+      : full_len == 0;
   uint32_t manifest_error = 0;
-  if (az_iot_su__check_manifest_supported(&SU_I(client).current_manifest, &manifest_error)
+  if (!full_manifest_consistent
+      || az_iot_su__check_manifest_supported(&SU_I(client).current_manifest, &manifest_error)
           != AZ_IOT_OK
       || az_iot_su__check_step_file_references(
              &SU_I(client).current_manifest, from, req->file_urls, url_count)
@@ -3989,8 +4053,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   SU_I(client).checkpoint_retry = false;
   SU_I(client).checkpoint_superseded = false;
   /* A resumed workflow past verification owes its end to the download handlers. */
-  SU_I(client).download_handler_end_owed = state != (uint32_t)AZ_IOT_SU_STATE_MANIFEST_RECEIVED
-      && state != (uint32_t)AZ_IOT_SU_STATE_VERIFYING_MANIFEST;
+  SU_I(client).download_handler_end_owed = verified;
 
   /* Restore the accumulated result so completed step results of a multi-step
    * deployment survive a mid-deployment reboot. */
@@ -4054,6 +4117,130 @@ static az_span file_download_url(const az_iot_su_client* client, az_span json_id
       SU_I(client).current_request.file_urls_count,
       json_id);
   return (file_url != NULL) ? file_url->url : AZ_SPAN_EMPTY;
+}
+
+/**
+ * @brief Fetch the detached manifest file of the verified mini manifest in current_manifest, and
+ * replace current_manifest with the full manifest it carries.
+ *
+ * download_fn gets the file; read_file_fn reads it into request_buffer after the request, where
+ * it is verified, decoded in place, parsed and kept (request_len grows) so it is persisted with the
+ * request.
+ *
+ * @param client        The client, in VERIFYING_MANIFEST.
+ * @param out_facility  On failure, the AZ_IOT_SU_FACILITY_* of the step 0 result.
+ * @param out_code      On failure, the sub-code or download_fn result.
+ * @return AZ_IOT_SU_RESULT_SUCCESS; AZ_IOT_SU_RESULT_IN_PROGRESS while download_fn is;
+ * AZ_IOT_SU_RESULT_FAILURE otherwise.
+ */
+static int32_t fetch_detached_manifest(
+    az_iot_su_client* client,
+    uint32_t* out_facility,
+    int32_t* out_code)
+{
+  const az_iot_su_platform_hooks* h = &SU_I(client).hooks;
+  *out_facility = AZ_IOT_SU_FACILITY_MANIFEST;
+  const az_iot_su_client_update_manifest_file* file
+      = az_iot_su__find_detached_manifest_file(&SU_I(client).current_manifest);
+  if (file == NULL)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "mini manifest must have exactly one file, its detachedManifestFileId");
+    *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_ENTRY;
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  az_span url = file_download_url(client, file->id);
+  if (az_span_size(url) <= 0)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "detached manifest file has no download URL");
+    *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_URL;
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  if (h->read_file_fn == NULL)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "a mini manifest needs read_file_fn to read its detached file");
+    *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_NO_READER;
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  size_t free_space = SU_I(client).request_buffer_size - SU_I(client).request_len;
+  if (file->size_in_bytes < 0 || (uint64_t)file->size_in_bytes > (uint64_t)free_space)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "detached manifest file is %lld bytes; az_iot_su_limits::max_update_size leaves %lu "
+        "after the request",
+        (long long)file->size_in_bytes,
+        (unsigned long)free_space);
+    *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE;
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+
+  int32_t dr = (h->download_fn != NULL) ? h->download_fn(file, url, 0, 1, h->user_ctx)
+                                        : AZ_IOT_SU_RESULT_FAILURE;
+  if (dr == AZ_IOT_SU_RESULT_IN_PROGRESS)
+  {
+    return dr;
+  }
+  if (dr != AZ_IOT_SU_RESULT_SUCCESS)
+  {
+    *out_facility = AZ_IOT_SU_FACILITY_DOWNLOAD;
+    *out_code = dr;
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+
+  /* Read up to sizeInBytes, plus one byte to tell a longer file. */
+  uint8_t* content = SU_I(client).request_buffer + SU_I(client).request_len;
+  size_t size = (size_t)file->size_in_bytes;
+  size_t total = 0;
+  uint8_t extra = 0;
+  for (;;)
+  {
+    uint8_t* into = (total < size) ? content + total : &extra;
+    size_t want = (total < size) ? size - total : 1u;
+    size_t got = 0;
+    if (h->read_file_fn(file, 0, total, into, want, &got, h->user_ctx) != AZ_IOT_SU_RESULT_SUCCESS
+        || got > want)
+    {
+      *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_READ;
+      return AZ_IOT_SU_RESULT_FAILURE;
+    }
+    if (got == 0 || total >= size)
+    {
+      total += got;
+      break;
+    }
+    total += got;
+  }
+  if (total > size)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "detached manifest file is longer than sizeInBytes");
+    *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_HASH;
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+
+  az_span full_manifest_text = AZ_SPAN_EMPTY;
+  uint32_t manifest_error = 0;
+  az_iot_result r = az_iot_su__parse_detached_manifest(
+      SU_I(client).crypto,
+      &SU_I(client).current_manifest,
+      az_span_create(content, (int32_t)total),
+      SU_I(client).current_request.file_urls,
+      SU_I(client).current_request.file_urls_count,
+      SU_I(client).related_file_storage,
+      SU_I(client).max_related_files,
+      &SU_I(client).current_manifest,
+      &full_manifest_text,
+      &manifest_error);
+  if (r != AZ_IOT_OK)
+  {
+    *out_code = (int32_t)manifest_error;
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  SU_I(client).request_len += total;
+  SU_I(client).full_manifest_text = full_manifest_text;
+  return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
 /**
@@ -4485,28 +4672,54 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
     case AZ_IOT_SU_STATE_VERIFYING_MANIFEST:
     {
       /* The manifest is parsed only after its signature verifies. */
-      uint32_t verify_error = 0;
-      if (verify_manifest(client, &verify_error) != AZ_IOT_SU_RESULT_SUCCESS)
+      if (SU_I(client).file_download_phase != (uint8_t)SU_FILE_PHASE_DETACHED_MANIFEST)
       {
-        result_init_steps(client, 1);
-        result_step_failure(client, 0, AZ_IOT_SU_FACILITY_MANIFEST, (int32_t)verify_error);
-        fail_workflow(client);
-        (void)az_iot_su__report_state(client);
-        break;
+        uint32_t verify_error = 0;
+        if (verify_manifest(client, &verify_error) != AZ_IOT_SU_RESULT_SUCCESS)
+        {
+          result_init_steps(client, 1);
+          result_step_failure(client, 0, AZ_IOT_SU_FACILITY_MANIFEST, (int32_t)verify_error);
+          fail_workflow(client);
+          (void)az_iot_su__report_state(client);
+          break;
+        }
+        uint32_t manifest_error = 0;
+        if (parse_manifest(client, &manifest_error) != AZ_IOT_OK)
+        {
+          /* An unsupported manifest has its own sub-code; any other parse failure is internal. */
+          result_init_steps(client, 1);
+          result_step_failure(
+              client,
+              0,
+              manifest_error != 0 ? AZ_IOT_SU_FACILITY_MANIFEST : AZ_IOT_SU_FACILITY_INTERNAL,
+              (int32_t)manifest_error);
+          fail_workflow(client);
+          (void)az_iot_su__report_state(client);
+          break;
+        }
+        if (az_span_size(SU_I(client).current_manifest.detached_manifest_file_id) > 0)
+        {
+          SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_DETACHED_MANIFEST;
+        }
       }
-      uint32_t manifest_error = 0;
-      if (parse_manifest(client, &manifest_error) != AZ_IOT_OK)
+      if (SU_I(client).file_download_phase == (uint8_t)SU_FILE_PHASE_DETACHED_MANIFEST)
       {
-        /* An unsupported manifest has its own sub-code; any other parse failure is internal. */
-        result_init_steps(client, 1);
-        result_step_failure(
-            client,
-            0,
-            manifest_error != 0 ? AZ_IOT_SU_FACILITY_MANIFEST : AZ_IOT_SU_FACILITY_INTERNAL,
-            (int32_t)manifest_error);
-        fail_workflow(client);
-        (void)az_iot_su__report_state(client);
-        break;
+        uint32_t facility = 0;
+        int32_t code = 0;
+        int32_t fr = fetch_detached_manifest(client, &facility, &code);
+        if (fr == AZ_IOT_SU_RESULT_IN_PROGRESS)
+        {
+          break; /* re-enter on next do_work */
+        }
+        if (fr != AZ_IOT_SU_RESULT_SUCCESS)
+        {
+          result_init_steps(client, 1);
+          result_step_failure(client, 0, facility, code);
+          fail_workflow(client);
+          (void)az_iot_su__report_state(client);
+          break;
+        }
+        SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_CHOOSE;
       }
       result_init_steps(client, (int32_t)SU_I(client).current_manifest.instructions.steps_count);
       SU_I(client).download_handler_end_owed = true;
@@ -5256,6 +5469,10 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
   {
     uint32_t manifest_error = 0;
     r = az_iot_su__check_manifest_supported(&manifest, &manifest_error);
+    if (r == AZ_IOT_OK)
+    {
+      r = refuse_mini_manifest(&manifest, &manifest_error);
+    }
   }
   if (r == AZ_IOT_OK)
   {
