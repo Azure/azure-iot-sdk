@@ -93,6 +93,7 @@
 #include "azure/iot/az_iot_su.h"
 
 #include "internal/connection_client_internal.h"
+#include "internal/json_string.h"
 
 #include "su_internal.h"
 #include "su_protocol_internal.h"
@@ -461,7 +462,7 @@ static bool finish_sha256_base64(
 }
 
 /**
- * @brief Finds the top-level property @p name of the JSON object @p json.
+ * @brief Finds the top-level property @p name of the JSON object @p json, names compared decoded.
  *
  * @return True when it is there and a string, then in @p out_value.
  */
@@ -477,7 +478,7 @@ static bool find_json_object_string_property(az_span json, az_span name, az_json
   while (az_result_succeeded(az_json_reader_next_token(&reader))
          && reader.token.kind == AZ_JSON_TOKEN_PROPERTY_NAME)
   {
-    bool is_name = az_json_token_is_text_equal(&reader.token, name);
+    bool is_name = az_iot_json_string_equals(reader.token.slice, name, false);
     if (az_result_failed(az_json_reader_next_token(&reader)))
     {
       return false;
@@ -1074,10 +1075,10 @@ typedef struct
   az_iot_su_operation abandoned_op;
   az_iot_result abandoned_reason;
 
-  /* The offered manifest, once verified: whether it was recorded, its `detachedManifestFileId`
-   * (empty when it is a full manifest) and whether `fileUrls` has that file. */
+  /* The offered manifest, once verified: whether it was recorded, whether it is a mini manifest
+   * (has `detachedManifestFileId`) and whether `fileUrls` has that file. */
   bool offered_manifest_recorded;
-  char detached_manifest_file_id[E2E_SU_FILE_ID_SIZE];
+  bool offered_manifest_is_mini;
   bool detached_manifest_file_has_url;
 
   /* Library mode: the update handed over by AZ_IOT_SU_EVENT_UPDATE_AVAILABLE. */
@@ -1117,28 +1118,19 @@ static void record_offered_manifest(fixture* fx)
     printf("  offered manifest: full, %d bytes\n", (int)az_span_size(request->update_manifest));
     return;
   }
-  if (az_result_failed(az_json_token_get_string(
-          &id,
-          fx->detached_manifest_file_id,
-          (int32_t)sizeof(fx->detached_manifest_file_id),
-          NULL)))
-  {
-    /* Not failed here: the observer runs inside the client. The scenario fails on the empty id. */
-    fx->detached_manifest_file_id[0] = '\0';
-    printf("  offered manifest: detachedManifestFileId of %d bytes not recorded\n", (int)id.size);
-    return;
-  }
-  az_span id_text = az_span_create_from_str(fx->detached_manifest_file_id);
+  fx->offered_manifest_is_mini = true;
+  /* The manifest keeps the id escaped; `fileUrls` ids are decoded. */
   for (uint32_t i = 0; i < request->file_urls_count; ++i)
   {
     fx->detached_manifest_file_has_url = fx->detached_manifest_file_has_url
-        || az_span_is_content_equal(request->file_urls[i].id, id_text);
+        || az_iot_json_string_equals(id.slice, request->file_urls[i].id, false);
   }
   printf(
-      "  offered manifest: mini, %d bytes, detachedManifestFileId \"%s\" %s in fileUrls (%u "
+      "  offered manifest: mini, %d bytes, detachedManifestFileId \"%.*s\" %s in fileUrls (%u "
       "URLs)\n",
       (int)az_span_size(request->update_manifest),
-      fx->detached_manifest_file_id,
+      (int)az_span_size(id.slice),
+      (const char*)az_span_ptr(id.slice),
       fx->detached_manifest_file_has_url ? "has a URL" : "has no URL",
       (unsigned)request->file_urls_count);
 }
@@ -1592,7 +1584,7 @@ static void real_update_is_downloaded_verified_installed_and_reported(void** sta
   assert_installed_and_reported_succeeded(fx, r);
   /* A small update manifest is sent in full. */
   assert_true(fx->offered_manifest_recorded);
-  assert_string_equal(fx->detached_manifest_file_id, "");
+  assert_false(fx->offered_manifest_is_mini);
 
   g_real_report = fx->spy.last_terminal;
 }
@@ -1885,7 +1877,7 @@ static az_iot_su_outcome require_expected_outcome(const char* name)
 static void assert_offer_was_mini_manifest(const fixture* fx)
 {
   assert_true(fx->offered_manifest_recorded);
-  if (fx->detached_manifest_file_id[0] == '\0')
+  if (!fx->offered_manifest_is_mini)
   {
     fail_msg("the offer for model \"%s\" is not a mini manifest", fx->model);
   }

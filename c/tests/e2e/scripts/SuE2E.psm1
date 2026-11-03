@@ -57,6 +57,8 @@ $script:TestDeltaHandlerId = 'sdke2e/xor-delta:1'
 # vectors, shared with the unit tests: target.swu = source.swu + delta.bin.
 $script:MicrosoftDeltaHandlerId = 'microsoft/delta:1'
 $script:DeltaVectorsDir = Join-Path $PSScriptRoot '../../unit/data/su_delta'
+# Device Update limit on the update names of one provider (Standard SKU).
+$script:MaxUpdateNamesPerProvider = 25
 
 # Scenario name -> device-suite variable holding its model, and the per-device
 # job result status the service is expected to record once the suite has run.
@@ -687,6 +689,7 @@ function New-SuE2EOffers {
         }
     }
     & $save
+    Remove-SuE2EOfferSetsToFit -Config $config -RunId $RunId
 
     foreach ($scenario in $names.Offers.Keys) {
         $n = $names.Offers[$scenario]
@@ -804,16 +807,81 @@ function Test-SuE2EOffers {
 
 <#
 .SYNOPSIS
+    Makes room for the offers of -RunId under the provider's update name limit
+    by deleting other runs' offer sets (jobs, updates, blobs), least recently
+    imported first. Deletes nothing while the offers fit.
+
+.DESCRIPTION
+    Standing offer sets are kept for reuse, so each fixture change leaves one
+    behind; the provider holds at most $script:MaxUpdateNamesPerProvider names.
+    A run still using an evicted set fails; the next run stages it again.
+#>
+function Remove-SuE2EOfferSetsToFit {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][string]$RunId
+    )
+    $wanted = @((Get-SuE2EOfferNames -RunId $RunId).Offers.Values | ForEach-Object { $_.Model })
+    $base = "https://$($Config.ADU_ENDPOINT)"
+    $updates = @()
+    $uri = "$base/updates?api-version=$script:ApiVersion"
+    while ($uri) {
+        $page = (Invoke-SuE2ERest -Method Get -Uri $uri -Resource $script:AduScope).Body
+        $updates += @($page.value | Where-Object { $_.updateId.provider -eq 'sdke2e' })
+        $uri = if ($page.PSObject.Properties['nextLink'] -and $page.nextLink) { $page.nextLink } else { $null }
+        if ($uri -and $uri -notmatch '^https?://') { $uri = "$base$uri" }
+    }
+    $names = @($updates | ForEach-Object { $_.updateId.name } | Sort-Object -Unique)
+    $excess = $names.Count + @($wanted | Where-Object { $_ -notin $names }).Count - $script:MaxUpdateNamesPerProvider
+    if ($excess -le 0) { return }
+
+    # Other sets: models e2e-<tag>-<short> (Get-SuE2EOfferNames) of another tag.
+    $sets = @($updates | Where-Object { $_.updateId.name -notin $wanted -and $_.updateId.name -match '^e2e-[a-z0-9]+-[a-z]+$' } |
+            Group-Object { ($_.updateId.name -split '-')[1] } |
+            Sort-Object { ($_.Group | ForEach-Object {
+                        if ($_.PSObject.Properties['importedDateTime']) { ([datetime]$_.importedDateTime).ToUniversalTime() } else { [datetime]::MinValue }
+                    } | Measure-Object -Maximum).Maximum })
+    foreach ($set in $sets) {
+        if ($excess -le 0) { break }
+        $offers = @($set.Group | ForEach-Object {
+                $id = $_.updateId
+                $blobs = @(az storage blob list --auth-mode login --account-name $Config.STORAGE_ACCOUNT `
+                        --container-name $Config.STORAGE_CONTAINER --prefix "sdke2e/$($id.name)/" --query '[].name' -o tsv)
+                if ($LASTEXITCODE -ne 0) { throw "Listing the blobs of $($id.name) failed" }
+                @{ Job = "su-$($id.name)"; Update = "updates/providers/sdke2e/names/$($id.name)/versions/$($id.version)"; Blobs = $blobs }
+            })
+        $setNames = @($set.Group | ForEach-Object { $_.updateId.name } | Sort-Object -Unique)
+        Write-Warning "Provider sdke2e is $excess update name(s) over its limit: deleting offer set '$($set.Name)' ($($setNames -join ', '))"
+        Remove-SuE2EOfferItems -Config $Config -Offers $offers
+        $excess -= $setNames.Count
+    }
+    if ($excess -gt 0) { throw "Provider sdke2e is $excess update name(s) over its limit of $script:MaxUpdateNamesPerProvider after deleting other offer sets" }
+}
+
+<#
+.SYNOPSIS
     Deletes the jobs and updates recorded in -StatePath. Best effort: every
     item is attempted, and the first error is rethrown at the end.
 #>
 function Remove-SuE2EOffers {
     param([Parameter(Mandatory)][string]$StatePath)
     if (-not (Test-Path $StatePath)) { return }
-    $config = Get-SuE2EConfig
     $state = Get-Content -Raw -Path $StatePath | ConvertFrom-Json -AsHashtable
+    Remove-SuE2EOfferItems -Config (Get-SuE2EConfig) -Offers @($state.Offers.Values)
+}
+
+<#
+.SYNOPSIS
+    Deletes each offer's job, update and blobs (-Offers: @{ Job; Update; Blobs }).
+    Best effort, as Remove-SuE2EOffers.
+#>
+function Remove-SuE2EOfferItems {
+    param(
+        [Parameter(Mandatory)][hashtable]$Config,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Offers
+    )
     $firstError = $null
-    foreach ($offer in $state.Offers.Values) {
+    foreach ($offer in $Offers) {
         # Each item separately, so one failure does not strand the others.
         $items = @()
         if ($offer.Job) { $items += , @('Job', $offer.Job) }

@@ -487,7 +487,10 @@ its `-RunId`, and only waits for runs it creates (or for what is left of the 5 m
 started less than 5 minutes ago). A reused job may hold several runs, so `Test-SuE2EOffers` looks for
 the device in every `Active` run, then in the newest. `Export-SuE2EOfferVariables` sets the offer
 variables for a `-RunId` without contacting Azure. `Get-SuE2EFixtureTag` hashes the code that defines the offers;
-appended to a reused `-RunId`, a change to that code stages a new set. With `-Reuse`, a failed import
+appended to a reused `-RunId`, a change to that code stages a new set. Device Update allows 25 update
+names per provider, so before importing, `New-SuE2EOffers` deletes other runs' sets (jobs, updates,
+blobs), least recently imported first, until the new set fits; a run still using a deleted set fails,
+and the next run stages it again. With `-Reuse`, a failed import
 is treated as done if the update now exists (another run imported it), else retried up to 3 times.
 Each REST request is retried on a transient failure (no response; HTTP 408, 429, 500, 502, 503 or
 504; another 5xx with a transient error code such as `BadGatewayConnection`), up to 5 attempts,
