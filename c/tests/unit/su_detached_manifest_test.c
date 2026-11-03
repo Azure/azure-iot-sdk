@@ -4,7 +4,8 @@
 
 /* SPDX-License-Identifier: MIT */
 /* Unit tests for az_iot_su__verify_and_parse_detached_manifest_file(): size and SHA-256 checks,
- * the `updateManifest` wrapper, in-place decoding, parsing and step file references. */
+ * the `updateManifest` wrapper, in-place decoding of escapes and multibyte UTF-8, parsing, limits
+ * and step file references. */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -28,6 +29,47 @@
   "\"files\":{\"f1\":{\"fileName\":\"a.swu\",\"sizeInBytes\":4096,"                        \
   "\"hashes\":{\"sha256\":\"AAA=\"}}},"                                                    \
   "\"createdDateTime\":\"2022-07-07T03:02:48.8449038Z\"}"
+
+/** @brief UTF-8 of U+00E9 (2 bytes). */
+#define UTF8_E_ACUTE "\xC3\xA9"
+
+/** @brief UTF-8 of U+20AC (3 bytes). */
+#define UTF8_EURO_SIGN "\xE2\x82\xAC"
+
+/** @brief UTF-8 of U+1F600 (4 bytes). */
+#define UTF8_GRINNING_FACE "\xF0\x9F\x98\x80"
+
+/** @brief Start of a detached manifest file, up to the `updateManifest` value. */
+#define WRAPPER_PREFIX "{\"updateManifest\":\""
+
+/** @brief Full manifest with escapes and multibyte UTF-8 in its string values. */
+#define ESCAPED_FULL_MANIFEST                                                                 \
+  "{\"manifestVersion\":\"5\",\n"                                                             \
+  "\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Toaster\",\"version\":\"1.2\"},"         \
+  "\"description\":\"Caf" UTF8_E_ACUTE " \\\"quoted\\\" C:\\\\dir\\nnext " UTF8_GRINNING_FACE \
+  "\","                                                                                       \
+  "\"instructions\":{\"steps\":[{\"handler\":\"microsoft/swupdate:2\",\"files\":[\"f1\"],"    \
+  "\"handlerProperties\":{\"installedCriteria\":\"\\\"1.2\\\" \\\\ " UTF8_E_ACUTE             \
+  " " UTF8_EURO_SIGN " " UTF8_GRINNING_FACE " \\u00e9\\n\"}}]},"                              \
+  "\"files\":{\"f1\":{\"fileName\":\"a.swu\",\"sizeInBytes\":4096,"                           \
+  "\"hashes\":{\"sha256\":\"AAA=\"}}}}"
+
+/**
+ * @brief Detached manifest file carrying ESCAPED_FULL_MANIFEST, serialized with `\"`, `\\`,
+ * `\n`, `\/`, `\uXXXX` (a surrogate pair included) and raw multibyte UTF-8.
+ */
+#define WRAPPER_OF_ESCAPED_FULL_MANIFEST                                                        \
+  "{\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\",\\n"                                \
+  "\\\"updateId\\\":{\\\"provider\\\":\\\"Contoso\\\",\\\"name\\\":\\\"Toaster\\\","            \
+  "\\\"version\\\":\\\"1.2\\\"},"                                                               \
+  "\\\"description\\\":\\\"Caf\\u00e9 \\\\\\\"quoted\\\\\\\" C:\\\\\\\\dir\\\\nnext "           \
+  "\\uD83D\\uDE00\\\","                                                                         \
+  "\\\"instructions\\\":{\\\"steps\\\":[{\\\"handler\\\":\\\"microsoft\\/swupdate:2\\\","       \
+  "\\\"files\\\":[\\\"f1\\\"],"                                                                 \
+  "\\\"handlerProperties\\\":{\\\"installedCriteria\\\":\\\"\\\\\\\"1.2\\\\\\\" "               \
+  "\\\\\\\\ " UTF8_E_ACUTE " " UTF8_EURO_SIGN " " UTF8_GRINNING_FACE " \\\\u00e9\\\\n\\\"}}]}," \
+  "\\\"files\\\":{\\\"f1\\\":{\\\"fileName\\\":\\\"a.swu\\\",\\\"sizeInBytes\\\":4096,"         \
+  "\\\"hashes\\\":{\\\"sha256\\\":\\\"AAA=\\\"}}}}\"}"
 
 /** @brief The detached manifest file under test. */
 static uint8_t g_file[2048];
@@ -254,6 +296,106 @@ static void wrong_size_is_rejected(void** state)
   assert_rejected(process(), AZ_IOT_ERR_AUTH, AZ_IOT_SU__DETACHED_MANIFEST_ERROR_SIZE_MISMATCH);
 }
 
+static void escaped_and_multibyte_manifest_is_decoded(void** state)
+{
+  (void)state;
+  /* sizeInBytes is the exact wrapper byte count, escapes and multibyte characters included. */
+  set_file(WRAPPER_OF_ESCAPED_FULL_MANIFEST);
+  assert_int_equal(g_detached_file.size_in_bytes, sizeof(WRAPPER_OF_ESCAPED_FULL_MANIFEST) - 1);
+
+  assert_int_equal(process(), AZ_IOT_OK);
+  assert_int_equal(g_error, AZ_IOT_SU__DETACHED_MANIFEST_ERROR_NONE);
+  assert_memory_equal(
+      g_file + sizeof(WRAPPER_PREFIX) - 1,
+      ESCAPED_FULL_MANIFEST,
+      sizeof(ESCAPED_FULL_MANIFEST) - 1);
+  assert_span_equal(g_manifest.update_id.name, "Toaster");
+  assert_span_equal(g_manifest.instructions.steps[0].handler, "microsoft/swupdate:2");
+
+  uint8_t buffer[64];
+  az_span installed_criteria;
+  assert_int_equal(
+      az_iot_su_decode_manifest_string(
+          g_manifest.instructions.steps[0].handler_properties.installed_criteria,
+          AZ_SPAN_FROM_BUFFER(buffer),
+          &installed_criteria),
+      AZ_IOT_OK);
+  assert_span_equal(
+      installed_criteria,
+      "\"1.2\" \\ " UTF8_E_ACUTE " " UTF8_EURO_SIGN " " UTF8_GRINNING_FACE " " UTF8_E_ACUTE "\n");
+}
+
+static void escaped_manifest_with_size_off_by_one_is_rejected(void** state)
+{
+  (void)state;
+  static const int64_t size_offsets[] = { -1, 1 };
+  for (size_t i = 0; i < sizeof(size_offsets) / sizeof(size_offsets[0]); ++i)
+  {
+    set_file(WRAPPER_OF_ESCAPED_FULL_MANIFEST);
+    g_detached_file.size_in_bytes += size_offsets[i];
+    assert_rejected(process(), AZ_IOT_ERR_AUTH, AZ_IOT_SU__DETACHED_MANIFEST_ERROR_SIZE_MISMATCH);
+  }
+}
+
+static void size_is_compared_with_escaped_wrapper_length(void** state)
+{
+  (void)state;
+  /* Lengths of the decoded wrapper and of the decoded manifest alone: both rejected. */
+  static const int64_t decoded_sizes[] = {
+    (int64_t)(sizeof(WRAPPER_PREFIX) - 1 + sizeof(ESCAPED_FULL_MANIFEST) - 1 + 2),
+    (int64_t)(sizeof(ESCAPED_FULL_MANIFEST) - 1),
+  };
+  for (size_t i = 0; i < sizeof(decoded_sizes) / sizeof(decoded_sizes[0]); ++i)
+  {
+    set_file(WRAPPER_OF_ESCAPED_FULL_MANIFEST);
+    assert_true(decoded_sizes[i] < g_detached_file.size_in_bytes);
+    g_detached_file.size_in_bytes = decoded_sizes[i];
+    assert_rejected(process(), AZ_IOT_ERR_AUTH, AZ_IOT_SU__DETACHED_MANIFEST_ERROR_SIZE_MISMATCH);
+  }
+}
+
+/** @brief Write a manifest with @p step_count steps, each using file `f1`, into @p out. */
+static void write_manifest_with_steps(char* out, size_t out_size, uint32_t step_count)
+{
+  size_t used = (size_t)snprintf(
+      out,
+      out_size,
+      "{\"manifestVersion\":\"5\","
+      "\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Toaster\",\"version\":\"1.2\"},"
+      "\"instructions\":{\"steps\":[");
+  for (uint32_t i = 0; i < step_count; ++i)
+  {
+    assert_true(used < out_size);
+    used += (size_t)snprintf(
+        out + used,
+        out_size - used,
+        "%s{\"handler\":\"microsoft/script:1\",\"files\":[\"f1\"]}",
+        i > 0 ? "," : "");
+  }
+  assert_true(used < out_size);
+  used += (size_t)snprintf(
+      out + used,
+      out_size - used,
+      "]},\"files\":{\"f1\":{\"fileName\":\"a.swu\",\"sizeInBytes\":1,"
+      "\"hashes\":{\"sha256\":\"AAA=\"}}}}");
+  assert_true(used < out_size);
+}
+
+static void manifest_over_step_limit_is_rejected(void** state)
+{
+  (void)state;
+  char manifest[1024];
+  write_manifest_with_steps(manifest, sizeof(manifest), AZ_IOT_SU_MAX_STEP_COUNT);
+  set_wrapped_manifest("", manifest, "");
+  assert_int_equal(process(), AZ_IOT_OK);
+  assert_int_equal(g_manifest.instructions.steps_count, AZ_IOT_SU_MAX_STEP_COUNT);
+
+  write_manifest_with_steps(manifest, sizeof(manifest), AZ_IOT_SU_MAX_STEP_COUNT + 1);
+  set_wrapped_manifest("", manifest, "");
+  assert_rejected(
+      process(), AZ_IOT_ERR_NOT_ENOUGH_SPACE, AZ_IOT_SU__DETACHED_MANIFEST_ERROR_MANIFEST_INVALID);
+}
+
 static void wrong_hash_is_rejected(void** state)
 {
   (void)state;
@@ -402,12 +544,16 @@ int main(void)
     cmocka_unit_test(other_wrapper_properties_are_ignored),
     cmocka_unit_test(escaped_property_name_is_decoded),
     cmocka_unit_test(wrong_size_is_rejected),
+    cmocka_unit_test(escaped_and_multibyte_manifest_is_decoded),
+    cmocka_unit_test(escaped_manifest_with_size_off_by_one_is_rejected),
+    cmocka_unit_test(size_is_compared_with_escaped_wrapper_length),
     cmocka_unit_test(wrong_hash_is_rejected),
     cmocka_unit_test(file_not_json_object_is_rejected),
     cmocka_unit_test(missing_update_manifest_is_rejected),
     cmocka_unit_test(non_string_update_manifest_is_rejected),
     cmocka_unit_test(undecodable_update_manifest_is_rejected),
     cmocka_unit_test(unparsable_full_manifest_is_rejected),
+    cmocka_unit_test(manifest_over_step_limit_is_rejected),
     cmocka_unit_test(step_file_missing_from_files_is_rejected),
     cmocka_unit_test(invalid_arguments_are_rejected),
   };
