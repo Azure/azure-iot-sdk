@@ -84,7 +84,9 @@ extern "C"
   {
     /** Direct method state machines held at once: ready tokens awaiting their execute
      * authorization, plus invocations not answered yet. A probe past it is refused with
-     * DEVICE_BUSY, creating no token and reserving nothing. The client reserves twice this many of
+     * DEVICE_BUSY, creating no token and reserving nothing. The request ids of this many ended
+     * tokens are also kept, so a redelivered probe is answered by its PUBACK alone, as one whose
+     * token is live or whose invocation is in flight is. The client reserves twice this many of
      * the connection's limits.max_pending_publishes (AZ_IOT_MQTTV5_DM_RESERVED_PUBACKS()). Default
      * AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_DEFAULT_MAX_CONCURRENT_INVOCATIONS (4), at most
      * AZ_IOT_MQTTV5_DIRECT_METHOD_CLIENT_MAX_CONCURRENT_INVOCATIONS_LIMIT (255). */
@@ -320,6 +322,8 @@ extern "C"
    + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                                \
        (size_t)(max_concurrent_invocations) * sizeof(az_iot_mqttv5_direct_method_ready_slot)) \
    + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                                \
+       (size_t)(max_concurrent_invocations) * AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN)                \
+   + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                                \
        (size_t)(max_methods) * sizeof(az_iot_mqttv5_direct_method_registration))              \
    + AZ_IOT_CONNECTION_CLIENT_WORKSPACE_ALIGN(                                                \
        (size_t)(max_queued_notices) * sizeof(az_iot_mqttv5_direct_method_notice))             \
@@ -374,6 +378,12 @@ extern "C"
        * limits.max_concurrent_invocations budget, so a probe is only accepted when
        * an invocation will be free to run it. In the workspace. */
       az_iot_mqttv5_direct_method_ready_slot* ready_pool;
+      /* Request ids of the last limits.max_concurrent_invocations ended tokens, oldest overwritten
+       * first, in the workspace: a probe redelivered after its token ended is not answered. */
+      uint8_t (*ended_request_ids)[AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN];
+      /* ended_request_ids entries filled, and the next one to write. */
+      size_t ended_request_count;
+      size_t next_ended_request;
       /* limits.max_methods entries, in the workspace. */
       az_iot_mqttv5_direct_method_registration* methods;
       /* Built by the connect-time bind callback, once the assigned device id is
