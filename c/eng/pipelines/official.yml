@@ -32,16 +32,20 @@ resources:
 extends:
   template: v1/1ES.Official.PipelineTemplate.yml@1ESPipelineTemplates
   parameters:
-    # Microsoft-hosted agents, as the other C SDK pipelines in this project use. `vmImage` is passed
-    # through as is; the template maps `image` to vmImage only for macOS.
+    # 1ES PT runs only on 1ES hosted pools whose images carry the 1es-pt-prerequisites artifact.
+    # `image` becomes the demand `ImageOverride -equals <image>`, matched against the pool image aliases.
     pool:
-      name: Azure Pipelines
-      vmImage: ubuntu-24.04
+      name: azure-iot-sdk-c-ubuntu-2404
+      image: ubuntu-24.04
       os: linux
+    settings:
+      # The organization's effective policy set, stated explicitly: Permissive (GitHub reachable for
+      # FetchContent and vcpkg) plus the required CFSClean policies.
+      networkIsolationPolicy: Permissive, CFSClean, CFSClean2, CFSClean3
     sdl:
       sourceAnalysisPool:
-        name: Azure Pipelines
-        vmImage: windows-2022
+        name: azure-iot-sdk-c-windows-2022
+        image: windows-2022
         os: windows
       codeql:
         language: cpp
@@ -73,11 +77,21 @@ extends:
             steps:
               - checkout: self
                 submodules: false
+              # The image normally has these. Network isolation blocks some apt sources
+              # (archive.ubuntu.com, Launchpad PPAs), so apt runs only for what is missing.
               - bash: |
                   set -euo pipefail
-                  sudo apt-get update
-                  sudo apt-get install -y --no-install-recommends \
-                    cmake ninja-build libssl-dev libcurl4-openssl-dev
+                  missing=()
+                  command -v cmake >/dev/null || missing+=(cmake)
+                  command -v ninja >/dev/null || missing+=(ninja-build)
+                  for pkg in libssl-dev libcurl4-openssl-dev; do
+                    dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+                  done
+                  if [ ${#missing[@]} -gt 0 ]; then
+                    sudo apt-get update || true
+                    sudo apt-get install -y --no-install-recommends "${missing[@]}"
+                  fi
+                  cmake --version | head -1; ninja --version
                 displayName: Install toolchain
               # Warnings are gated on GitHub Actions; this image's compiler may differ.
               - bash: |
@@ -110,8 +124,8 @@ extends:
           - job: windows
             displayName: Windows (MSVC x64, shared, RelWithDebInfo)
             pool:
-              name: Azure Pipelines
-              vmImage: windows-2022
+              name: azure-iot-sdk-c-windows-2022
+              image: windows-2022
               os: windows
             templateContext:
               outputs:
