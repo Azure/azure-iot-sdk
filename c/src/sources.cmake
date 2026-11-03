@@ -30,6 +30,7 @@ set(AZ_IOT_CORE_SOURCES
     core/sas_token.c
     core/dps_tpm_client.c
     features/su/su_client.c
+    features/su/su_detached_manifest.c
     features/su/su_device_properties.c
     features/su/su_manifest.c
     features/su/su_root_keys_microsoft.c
