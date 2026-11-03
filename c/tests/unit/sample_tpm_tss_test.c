@@ -149,7 +149,8 @@ static struct
   sample_tpm_tss* tpm;
   ESYS_CONTEXT* esys;
   TSS2_TCTI_CONTEXT* tcti;
-} opened;
+  ESYS_TR session; /**< The test's auth session on esys, if any. */
+} opened = { .session = ESYS_TR_NONE };
 
 static sample_tpm_tss* open_tpm(uint32_t hmac_key_handle)
 {
@@ -175,9 +176,20 @@ static ESYS_CONTEXT* esys_open(void)
   return opened.esys;
 }
 
+/** @brief Flushes the session duplicate_policy() started. */
+static void session_flush(void)
+{
+  if (opened.session != ESYS_TR_NONE)
+  {
+    (void)Esys_FlushContext(opened.esys, opened.session);
+    opened.session = ESYS_TR_NONE;
+  }
+}
+
 /** @brief Closes what esys_open() opened. */
 static void esys_close(void)
 {
+  session_flush();
   if (opened.esys != NULL)
   {
     Esys_Finalize(&opened.esys);
@@ -247,9 +259,13 @@ static void expected_hmac(
   assert_int_equal(len, AZ_IOT_SHA256_SIZE);
 }
 
-/** @brief The digest of PolicyCommandCode(TPM2_CC_Duplicate), from a trial session. */
+/**
+ * @brief The digest of PolicyCommandCode(TPM2_CC_Duplicate), from a session of
+ * @p type. The session is tracked in #opened: release it with session_flush().
+ */
 static TPM2B_DIGEST duplicate_policy(ESYS_CONTEXT* esys, TPM2_SE type, ESYS_TR* session)
 {
+  assert_int_equal(opened.session, ESYS_TR_NONE);
   TPMT_SYM_DEF none = { .algorithm = TPM2_ALG_NULL };
   assert_int_equal(
       Esys_StartAuthSession(
@@ -263,8 +279,9 @@ static TPM2B_DIGEST duplicate_policy(ESYS_CONTEXT* esys, TPM2_SE type, ESYS_TR* 
           type,
           &none,
           TPM2_ALG_SHA256,
-          session),
+          &opened.session),
       TSS2_RC_SUCCESS);
+  *session = opened.session;
   assert_int_equal(
       Esys_PolicyCommandCode(
           esys, *session, ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, TPM2_CC_Duplicate),
@@ -385,7 +402,7 @@ static size_t build_dps_key(
   key_template.publicArea.nameAlg = TPM2_ALG_SHA256;
   key_template.publicArea.objectAttributes = TPMA_OBJECT_USERWITHAUTH | TPMA_OBJECT_SIGN_ENCRYPT;
   key_template.publicArea.authPolicy = duplicate_policy(esys, TPM2_SE_TRIAL, &trial);
-  assert_int_equal(Esys_FlushContext(esys, trial), TSS2_RC_SUCCESS);
+  session_flush();
   key_template.publicArea.parameters.keyedHashDetail.scheme.scheme = TPM2_ALG_HMAC;
   key_template.publicArea.parameters.keyedHashDetail.scheme.details.hmac.hashAlg = TPM2_ALG_SHA256;
   TPM2B_SENSITIVE_CREATE key_sensitive = { 0 };
@@ -468,7 +485,7 @@ static size_t build_dps_key(
   Esys_Free(key_out);
   Esys_Free(duplicate);
   Esys_Free(seed);
-  (void)Esys_FlushContext(esys, policy);
+  session_flush();
   (void)Esys_FlushContext(esys, key);
   (void)Esys_FlushContext(esys, parent);
   (void)Esys_FlushContext(esys, srk_handle);
