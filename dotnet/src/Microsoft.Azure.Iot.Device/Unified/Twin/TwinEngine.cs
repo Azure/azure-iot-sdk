@@ -136,6 +136,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         internal Action? GetTwinResponseConnectionChecked { get; set; }
 
         /// <summary>
+        /// For tests. Invoked once a get twin response was matched to the outstanding GET, before its connection is checked.
+        /// </summary>
+        internal Action? GetTwinResponseReceived { get; set; }
+
+        /// <summary>
         /// How long to wait for the response to the given attempt (starting at 1) of an application's get twin request
         /// before sending it again.
         /// </summary>
@@ -1200,7 +1205,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         }
 
         // Delivers the response to the active GET whose latest attempt has this ID (if any) to the resync and the calls waiting for it.
-        private async Task HandleGetTwinResponseAsync(Guid getId, TwinGetResponse response, bool isClassic)
+        private async Task HandleGetTwinResponseAsync(Guid getId, TwinGetResponse response, bool isClassic, Guid? receivedConnectionNonce)
         {
             JsonObject? desired;
             JsonObject? reported;
@@ -1222,12 +1227,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            // A response that arrives once the connection that its GET was sent on (or, for a resync's GET that hasn't counted as
-            // sent yet, that the resync started on) was replaced, for example by one as a different identity, describes a twin
-            // that this device may no longer have. It is dropped, and the calls sharing it fail as if the connection had been
-            // lost before it arrived. The connection is checked and the response applied while holding _desiredStateLock, which
-            // a new connection's connect sync also holds while it replaces the resync and records the versions it starts from,
-            // so the two never interleave.
+            GetTwinResponseReceived?.Invoke();
+
+            // A response that is handled once the connection that it arrived on, that its GET was sent on, or (for a resync's GET)
+            // that the resync started on was replaced, for example by one as a different identity, describes a twin that this
+            // device may no longer have. It is dropped, and the calls sharing it fail as if the connection had been lost before it
+            // arrived. The connection is checked and the response applied while holding _desiredStateLock, which a new
+            // connection's connect sync also holds while it replaces the resync and records the versions it starts from, so the
+            // two never interleave.
             DesiredStateOutcome outcome = new();
             bool isFromReplacedConnection;
             try
@@ -1235,9 +1242,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 lock (_desiredStateLock)
                 {
                     Guid? connectionNonce = _connection.ConnectionNonce;
-                    isFromReplacedConnection = isSent
-                        ? sentConnectionNonce != connectionNonce
-                        : resync != null && resync.ConnectionNonce != connectionNonce;
+                    isFromReplacedConnection = receivedConnectionNonce != connectionNonce
+                        || (isSent && sentConnectionNonce != connectionNonce)
+                        || (resync != null && resync.ConnectionNonce != connectionNonce);
                     if (isFromReplacedConnection)
                     {
                         DiscardDesiredResyncFromPreviousConnection(connectionNonce);
@@ -1456,9 +1463,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
         private async Task HandleReceivedMqttPublishCoreAsync(MqttPublishReceivedEventArgs args)
         {
+            // The connection that the publish arrived on, read before a reconnect can get to replace it.
+            Guid? receivedConnectionNonce = _connection.ConnectionNonce;
             if (args.Publish.Topic.StartsWith(ClassicTwinTopicPrefix, StringComparison.Ordinal))
             {
-                await HandleReceivedClassicPublishAsync(args.Publish);
+                await HandleReceivedClassicPublishAsync(args.Publish, receivedConnectionNonce);
                 return;
             }
 
@@ -1527,7 +1536,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                     return;
                 }
 
-                await HandleGetTwinResponseAsync(getResponseCorrelationData.Value, twinGetResponse, isClassic: false);
+                await HandleGetTwinResponseAsync(getResponseCorrelationData.Value, twinGetResponse, isClassic: false, receivedConnectionNonce);
             }
             else if (type.Equals("reported-patch-response"))
             {
