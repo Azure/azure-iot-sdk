@@ -65,7 +65,10 @@ walks through creating the DPS instance, the linked IoT Hub and the enrollment.
 
 ### Build tools
 
-The build fetches Paho MQTT C and azure-sdk-for-c itself.
+The SDK is a C99 library built with CMake. You need a C99 compiler, CMake 3.21 or newer (the
+minimum set in [c/CMakeLists.txt](../CMakeLists.txt)) and the dependencies listed for your
+platform below, whichever compiler you pick. The build fetches Paho MQTT C and azure-sdk-for-c
+itself.
 
 **Linux** (Debian/Ubuntu package names):
 
@@ -81,10 +84,20 @@ sudo apt-get install -y git build-essential cmake ninja-build libssl-dev ca-cert
 
 **Windows:**
 
-- [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) with the *Desktop development with
-  C++* workload, or the
+- A C99 compiler. CI builds and tests the SDK on Windows with MSVC. Suggested setup, not a
+  requirement: [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) with the *Desktop
+  development with C++* workload, or the
   [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022).
-- [CMake 3.21+](https://cmake.org/download/) (bundled with Visual Studio).
+  Either installs MSVC, the Windows SDK, CMake and Ninja. Other compilers that CMake supports
+  may work but are not tested; MinGW-w64 GCC does not build the SDK as is. If you cannot install
+  a Windows compiler, follow the Linux steps above in
+  [WSL](https://learn.microsoft.com/windows/wsl/install).
+- [Visual Studio Code](https://code.visualstudio.com/) is an editor, not a compiler: with its
+  [C/C++](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools) and
+  [CMake Tools](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cmake-tools)
+  extensions it drives a compiler you install separately.
+- [CMake 3.21+](https://cmake.org/download/) and [Ninja](https://ninja-build.org/), which the
+  `windows-msvc-debug` preset uses (both bundled with Visual Studio).
 - OpenSSL 3.0 to 4.1 visible to CMake, either:
   - the full Win64 installer (not *Light*, which has no headers or libraries) from
     [OpenSSL for Windows](https://slproweb.com/products/Win32OpenSSL.html). CMake finds its default
@@ -96,7 +109,7 @@ sudo apt-get install -y git build-essential cmake ninja-build libssl-dev ca-cert
     enough.
 
   Or build without OpenSSL: see [Windows without OpenSSL](#windows-without-openssl).
-- Run the build from a *Developer PowerShell for VS 2022*.
+- With MSVC, run the build from a *Developer PowerShell for VS 2022*, so CMake finds the compiler.
 
 ### Windows without OpenSSL
 
