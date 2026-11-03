@@ -2338,10 +2338,15 @@ extern "C"
    * in the process, from one thread, or serialize the calls (docs/architecture.md).
    * Not AZ_NODISCARD: it is called in a loop, and results surface on the state callback.
    *
+   * With no MQTT session (IDLE, RETRY_PENDING, FAULTED) it waits through the platform sleep
+   * (az_platform_sleep_msec()) until @p timeout_ms passes or the client's next deadline, such
+   * as a pending retry, is due, so a do_work() loop does not spin. 0 never waits, nor does a build
+   * whose platform has no sleep (az_noplatform).
+   *
    * @param[in,out] client     The client.
    * @param[in]     timeout_ms Longest wait for network activity when idle.
    * @return AZ_IOT_ERR_INVALID_ARG for a NULL client; otherwise the MQTT adapter's
-   *         process_loop() result.
+   *         process_loop() result, AZ_IOT_OK with no session.
    */
   az_iot_result az_iot_connection_client_do_work(
       az_iot_connection_client* client,

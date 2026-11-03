@@ -6118,6 +6118,81 @@ static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, 
   return (uint64_t)timeout_ms > remaining ? (uint32_t)remaining : timeout_ms;
 }
 
+/**
+ * @brief @p timeout_ms, capped by limit_wait_to_connection_deadlines() and the deadlines a client
+ * with no session acts on: a pending retry, a SAS token request's ask and timeout, and the pacing
+ * of a provisioning session its users want.
+ */
+static uint32_t limit_sessionless_wait_to_deadlines(
+    az_iot_connection_client* c,
+    uint32_t timeout_ms)
+{
+  uint32_t wait_ms = limit_wait_to_connection_deadlines(c, timeout_ms);
+  uint64_t const now = az_iot_time_mono_ms();
+  /* Monotonic deadlines; 0: none. A token request to ask or to resume is due now. */
+  uint64_t const due_now = now != 0 ? now : 1u;
+  uint64_t deadlines[2 + 2 * AZ_IOT_CONN_SCOPE_COUNT] = { 0 };
+  size_t count = 0;
+  if (c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RETRY_PENDING
+      || c->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RETRY_PENDING)
+  {
+    deadlines[count++] = c->reconnect_due_ms;
+  }
+  if (dps_session_demanded(c))
+  {
+    deadlines[count++] = c->dps_user_retry._internal.due_ms;
+  }
+  for (size_t scope = 0; scope < AZ_IOT_CONN_SCOPE_COUNT; ++scope)
+  {
+    if (c->sas_token_request[scope].request_id == 0 || c->sas_token_request[scope].held)
+    {
+      continue;
+    }
+    if (!c->sas_token_request[scope].asked)
+    {
+      deadlines[count++]
+          = c->sas_token_ask_after_ms[scope] != 0 ? c->sas_token_ask_after_ms[scope] : due_now;
+    }
+    if (!c->sas_token_request[scope].for_renewal)
+    {
+      deadlines[count++]
+          = c->sas_token_request[scope].ready ? due_now : c->sas_token_request[scope].deadline_ms;
+    }
+  }
+  for (size_t i = 0; i < count; ++i)
+  {
+    if (deadlines[i] != 0)
+    {
+      uint64_t const left = deadlines[i] > now ? deadlines[i] - now : 0;
+      wait_ms = (uint64_t)wait_ms > left ? (uint32_t)left : wait_ms;
+    }
+  }
+  return wait_ms;
+}
+
+/**
+ * @brief Waits, with no MQTT session to wait on, for @p timeout_ms or until the next deadline
+ * (limit_sessionless_wait_to_deadlines()), so a do_work() loop does not spin.
+ */
+static void wait_without_session(az_iot_connection_client* c, uint32_t timeout_ms)
+{
+  if (timeout_ms == 0)
+  {
+    return;
+  }
+  uint32_t wait_ms = limit_sessionless_wait_to_deadlines(c, timeout_ms);
+  if (wait_ms > (uint32_t)INT32_MAX)
+  {
+    wait_ms = (uint32_t)INT32_MAX;
+  }
+  if (wait_ms > 0)
+  {
+    /* Without a platform sleep (az_noplatform) do_work() returns at once, as before. */
+    az_result const sleep_result = az_platform_sleep_msec((int32_t)wait_ms);
+    (void)sleep_result;
+  }
+}
+
 static void apply_deferred(az_iot_connection_client* c)
 {
   if (c->deferred == DEFER_NONE)
@@ -7511,6 +7586,7 @@ static void settle_spent_dps_retry(az_iot_connection_client* c)
 /** @brief One do_work() pass, without the tick observers. */
 static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t timeout_ms)
 {
+  bool session_pumped = false;
   process_sas_token_request(client);
 
   /* --- DPS provisioning pump --- */
@@ -7648,6 +7724,7 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
       /* Bounded by the connection's deadlines, as the hub's wait is. */
       wait_ms = limit_wait_to_connection_deadlines(client, wait_ms);
       r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, wait_ms);
+      session_pumped = true;
     }
 
     /* Deferred out of the SUBACK handler, so observers do not run inside the
@@ -7692,6 +7769,7 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
   {
     r = client->active_client->iface->process_loop(
         client->active_client, limit_wait_to_connection_deadlines(client, timeout_ms));
+    session_pumped = true;
   }
 
   apply_deferred(client);
@@ -7892,6 +7970,12 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
         settle_spent_dps_retry(client);
       }
     }
+  }
+
+  /* IDLE, RETRY_PENDING or FAULTED: no adapter waited, so wait here. */
+  if (!session_pumped && client->active_client == NULL && client->dps_mqtt == NULL)
+  {
+    wait_without_session(client, timeout_ms);
   }
 
   return r;
