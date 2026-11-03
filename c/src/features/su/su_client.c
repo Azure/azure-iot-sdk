@@ -2384,9 +2384,12 @@ static void on_channel_result(
     /* The accepted fetch has its verdict; nothing is awaited any more. */
     SU_I(client).fetch_in_flight = SU_FETCH_NONE;
   }
+  /* An update check deferred to the next scheduled one ends here, like FATAL. */
+  bool deferred = az_iot_su__check_deferred_to_next(
+      action, service_error != NULL ? service_error->retry_after_ms : 0);
   if (result == AZ_IOT_OK || action == AZ_IOT_SU_ERROR_ACTION_FATAL
       || action == AZ_IOT_SU_ERROR_ACTION_PROCEED || action == AZ_IOT_SU_ERROR_ACTION_RECHECK
-      || action == AZ_IOT_SU_ERROR_ACTION_NONE)
+      || action == AZ_IOT_SU_ERROR_ACTION_NONE || deferred)
   {
     if (result == AZ_IOT_OK)
     {
@@ -2423,8 +2426,14 @@ static void on_channel_result(
     }
     if (result != AZ_IOT_OK
         && (action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
-            || action == AZ_IOT_SU_ERROR_ACTION_RECHECK))
+            || action == AZ_IOT_SU_ERROR_ACTION_RECHECK || deferred))
     {
+      if (deferred)
+      {
+        AZ_IOT_LOG_INFO(
+            AZ_IOT_LOG_COMPONENT_SU,
+            "update service unavailable upstream; the next scheduled check retries");
+      }
       raise_abandoned(client, operation, result, service_error);
     }
     if (operation == AZ_IOT_SU_OP_REPORT_STATUS)

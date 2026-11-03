@@ -1139,8 +1139,15 @@ az_iot_su_error_action az_iot_su__classify_error(
     {
       return AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO;
     }
-    if (strcmp(error_code, "UPSTREAM_UNAVAILABLE") == 0
-        || strcmp(error_code, "INTERNAL_SERVER_ERROR") == 0)
+    /* Per the update service: an unavailable upstream is retried after its
+     * Retry-After, else at the next scheduled check, so an outage does not turn
+     * each check into a burst of retries. A report must still be delivered. */
+    if (strcmp(error_code, "UPSTREAM_UNAVAILABLE") == 0)
+    {
+      return (operation == AZ_IOT_SU_OP_REPORT_STATUS) ? AZ_IOT_SU_ERROR_ACTION_RETRY
+                                                       : AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK;
+    }
+    if (strcmp(error_code, "INTERNAL_SERVER_ERROR") == 0)
     {
       return AZ_IOT_SU_ERROR_ACTION_RETRY;
     }
@@ -1249,6 +1256,11 @@ az_iot_su_error_action az_iot_su__classify_error(
        * credential fault. Fix the request, do not repeat it unchanged. */
       return AZ_IOT_SU_ERROR_ACTION_FATAL;
   }
+}
+
+bool az_iot_su__check_deferred_to_next(az_iot_su_error_action action, uint32_t retry_after_ms)
+{
+  return action == AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK && retry_after_ms == 0;
 }
 
 az_iot_result az_iot_su__parse_tracking_id(

@@ -1557,10 +1557,26 @@ static void catalog_error_signals_and_actions(void** state)
 #define SU_REGISTER_PROTOCOL_CASE(name, op, code, status, numeric, action, shape, query, delay) \
   { #name, catalog_error_signals_and_actions, NULL, NULL, (void*)&name },
 
+/* Only an unavailable upstream with no named delay ends a check for the next one. */
+static void only_a_delayless_next_check_verdict_is_deferred(void** state)
+{
+  (void)state;
+  assert_true(az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK, 0));
+  assert_false(az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK, 2000));
+  assert_false(az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_RETRY, 0));
+  assert_false(az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER, 0));
+  assert_false(az_iot_su__check_deferred_to_next(AZ_IOT_SU_ERROR_ACTION_FATAL, 0));
+  /* A bare 503 cannot tell an unavailable upstream from a server fault. */
+  assert_int_equal(
+      az_iot_su__classify_error(NULL, AZ_IOT_SU_ERR_SERVICE_UNAVAILABLE, AZ_IOT_SU_OP_GET_UPDATE),
+      AZ_IOT_SU_ERROR_ACTION_RETRY);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     SU_ERROR_CASES(SU_REGISTER_PROTOCOL_CASE) cmocka_unit_test(topics_match_the_operation_names),
+    cmocka_unit_test(only_a_delayless_next_check_verdict_is_deferred),
     cmocka_unit_test(the_declared_topic_bound_is_sufficient),
     cmocka_unit_test(a_short_topic_buffer_is_rejected_not_truncated),
     cmocka_unit_test(an_empty_request_id_is_rejected),

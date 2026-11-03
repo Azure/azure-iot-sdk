@@ -237,6 +237,11 @@ extern "C"
     /* Transient upstream failure: retry. A fetch may proceed meanwhile; a report
      * must not be dropped. */
     AZ_IOT_SU_ERROR_ACTION_RETRY,
+    /* An update check found the update service's upstream unavailable. Retried
+     * after a service-named delay; without one, the check ends and the next
+     * scheduled check tries again (az_iot_su__check_deferred_to_next()).
+     * Update checks only: a report gets AZ_IOT_SU_ERROR_ACTION_RETRY. */
+    AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK,
     /* The request or our credentials are wrong. Do not retry unchanged. */
     AZ_IOT_SU_ERROR_ACTION_FATAL,
     /* A report conflicts with the service's state: drop it like FATAL, then
@@ -305,6 +310,18 @@ extern "C"
       const char* error_code,
       int32_t numeric_code,
       az_iot_su_operation operation);
+
+  /**
+   * @brief Whether a failed update check ends now, for the next scheduled check to retry.
+   *
+   * The channel (DPS hold) and the engine (re-arming) both decide with this,
+   * so they agree on when the check is over.
+   *
+   * @param action          The verdict's action.
+   * @param retry_after_ms  The service-named delay in milliseconds; 0 for none.
+   * @return true for AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK with no delay.
+   */
+  bool az_iot_su__check_deferred_to_next(az_iot_su_error_action action, uint32_t retry_after_ms);
 
   /**
    * Extract the error signals from a device-facing failure body.

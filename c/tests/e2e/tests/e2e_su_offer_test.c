@@ -973,11 +973,15 @@ static void spy_on_update(const uint8_t* payload, size_t len, void* ctx)
 }
 
 /** @brief True when the engine will not retry after this verdict (mirrors on_channel_result). */
-static bool verdict_is_final(az_iot_result result, az_iot_su_error_action action)
+static bool verdict_is_final(
+    az_iot_result result,
+    az_iot_su_error_action action,
+    const az_iot_su_service_error* se)
 {
   return result == AZ_IOT_OK || action == AZ_IOT_SU_ERROR_ACTION_NONE
       || action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
-      || action == AZ_IOT_SU_ERROR_ACTION_RECHECK;
+      || action == AZ_IOT_SU_ERROR_ACTION_RECHECK
+      || az_iot_su__check_deferred_to_next(action, (se != NULL) ? se->retry_after_ms : 0);
 }
 
 static void spy_on_result(
@@ -988,7 +992,7 @@ static void spy_on_result(
     void* ctx)
 {
   spy_channel* s = (spy_channel*)ctx;
-  if (!verdict_is_final(result, action))
+  if (!verdict_is_final(result, action, se))
   {
     /* The engine retries; the resend gets its own entry and verdict. */
     printf("  retryable verdict on op %d: %s\n", (int)op, az_iot_result_to_string(result));
