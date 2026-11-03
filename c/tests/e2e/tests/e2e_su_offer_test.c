@@ -1535,6 +1535,14 @@ static void fixture_close(fixture* fx)
     file_path(&fx->plat, i, true, path, sizeof(path));
     (void)remove(path);
   }
+  char detached_manifest_path[E2E_SU_PATH_MAX];
+  file_path(
+      &fx->plat,
+      AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX,
+      false,
+      detached_manifest_path,
+      sizeof(detached_manifest_path));
+  (void)remove(detached_manifest_path);
 #ifdef _WIN32
   (void)_rmdir(fx->plat.dir);
 #else
