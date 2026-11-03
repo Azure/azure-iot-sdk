@@ -64,25 +64,28 @@ static TPM2B_PUBLIC rsa_storage_template(TPMA_OBJECT attributes)
   return t;
 }
 
-/** @brief Whether the TPM holds an object at persistent @p handle. */
-static bool persistent_exists(ESYS_CONTEXT* esys, uint32_t handle)
+/**
+ * @brief Sets @p exists to whether the TPM holds an object at persistent
+ * @p handle. @return false when the TPM could not be queried.
+ */
+static bool persistent_lookup(ESYS_CONTEXT* esys, uint32_t handle, bool* exists)
 {
   TPMI_YES_NO more = TPM2_NO;
   TPMS_CAPABILITY_DATA* caps = NULL;
-  bool found = Esys_GetCapability(
-                   esys,
-                   ESYS_TR_NONE,
-                   ESYS_TR_NONE,
-                   ESYS_TR_NONE,
-                   TPM2_CAP_HANDLES,
-                   handle,
-                   1,
-                   &more,
-                   &caps)
-          == TSS2_RC_SUCCESS
-      && caps->data.handles.count == 1 && caps->data.handles.handle[0] == handle;
+  bool queried = Esys_GetCapability(
+                     esys,
+                     ESYS_TR_NONE,
+                     ESYS_TR_NONE,
+                     ESYS_TR_NONE,
+                     TPM2_CAP_HANDLES,
+                     handle,
+                     1,
+                     &more,
+                     &caps)
+      == TSS2_RC_SUCCESS;
+  *exists = queried && caps->data.handles.count == 1 && caps->data.handles.handle[0] == handle;
   Esys_Free(caps);
-  return found;
+  return queried;
 }
 
 /**
@@ -99,7 +102,12 @@ static bool primary_load(
   TPM2B_PUBLIC* pub = NULL;
   TSS2_RC rc;
   out->transient = false;
-  if (persistent_exists(esys, persistent_handle))
+  bool exists = false;
+  if (!persistent_lookup(esys, persistent_handle, &exists))
+  {
+    return false;
+  }
+  if (exists)
   {
     rc = Esys_TR_FromTPMPublic(
         esys, persistent_handle, ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, &out->handle);
@@ -213,7 +221,9 @@ sample_tpm_tss* sample_tpm_tss_create(const char* tcti_config, uint32_t hmac_key
   {
     primary_release(tpm->esys, &tpm->ek);
   }
-  if (ok && persistent_exists(tpm->esys, hmac_key_handle))
+  bool hmac_key_exists = false;
+  ok = ok && persistent_lookup(tpm->esys, hmac_key_handle, &hmac_key_exists);
+  if (ok && hmac_key_exists)
   {
     ok = Esys_TR_FromTPMPublic(
              tpm->esys, hmac_key_handle, ESYS_TR_NONE, ESYS_TR_NONE, ESYS_TR_NONE, &tpm->hmac_key)
@@ -395,6 +405,35 @@ static bool persist_hmac_key(sample_tpm_tss* tpm, ESYS_TR loaded)
       == TSS2_RC_SUCCESS;
 }
 
+/** @brief TPM2_HMAC (SHA-256) of @p data with the loaded or persistent @p key. */
+static bool key_hmac_sha256(
+    ESYS_CONTEXT* esys,
+    ESYS_TR key,
+    const uint8_t* data,
+    size_t len,
+    uint8_t out[AZ_IOT_SHA256_SIZE])
+{
+  TPM2B_MAX_BUFFER buffer;
+  if (len > sizeof(buffer.buffer))
+  {
+    return false;
+  }
+  buffer.size = (UINT16)len;
+  memcpy(buffer.buffer, data, len);
+  TPM2B_DIGEST* mac = NULL;
+  bool ok
+      = Esys_HMAC(
+            esys, key, ESYS_TR_PASSWORD, ESYS_TR_NONE, ESYS_TR_NONE, &buffer, TPM2_ALG_SHA256, &mac)
+          == TSS2_RC_SUCCESS
+      && mac->size == AZ_IOT_SHA256_SIZE;
+  if (ok)
+  {
+    memcpy(out, mac->buffer, AZ_IOT_SHA256_SIZE);
+  }
+  Esys_Free(mac);
+  return ok;
+}
+
 static az_iot_result tss_import_key(void* ctx, const uint8_t* key, size_t key_len)
 {
   sample_tpm_tss* tpm = (sample_tpm_tss*)ctx;
@@ -453,7 +492,14 @@ static az_iot_result tss_import_key(void* ctx, const uint8_t* key, size_t key_le
              &loaded)
           == TSS2_RC_SUCCESS;
   az_iot_result result = ok ? AZ_IOT_OK : AZ_IOT_ERR_AUTH;
-  if (ok && !persist_hmac_key(tpm, loaded))
+  /* A key that cannot sign HMAC-SHA256 (e.g. another scheme) must not replace the current one. */
+  static const uint8_t probe_data[1] = { 0 };
+  uint8_t probe_mac[AZ_IOT_SHA256_SIZE];
+  if (ok && !key_hmac_sha256(tpm->esys, loaded, probe_data, sizeof(probe_data), probe_mac))
+  {
+    result = AZ_IOT_ERR_PROTOCOL;
+  }
+  else if (ok && !persist_hmac_key(tpm, loaded))
   {
     result = AZ_IOT_ERR_INTERNAL;
   }
@@ -478,31 +524,8 @@ bool sample_tpm_tss_hmac(
     size_t len,
     uint8_t out[AZ_IOT_SHA256_SIZE])
 {
-  TPM2B_MAX_BUFFER buffer;
-  if (tpm == NULL || tpm->hmac_key == ESYS_TR_NONE || len > sizeof(buffer.buffer))
-  {
-    return false;
-  }
-  buffer.size = (UINT16)len;
-  memcpy(buffer.buffer, data, len);
-  TPM2B_DIGEST* mac = NULL;
-  bool ok = Esys_HMAC(
-                tpm->esys,
-                tpm->hmac_key,
-                ESYS_TR_PASSWORD,
-                ESYS_TR_NONE,
-                ESYS_TR_NONE,
-                &buffer,
-                TPM2_ALG_SHA256,
-                &mac)
-          == TSS2_RC_SUCCESS
-      && mac->size == AZ_IOT_SHA256_SIZE;
-  if (ok)
-  {
-    memcpy(out, mac->buffer, AZ_IOT_SHA256_SIZE);
-  }
-  Esys_Free(mac);
-  return ok;
+  return tpm != NULL && tpm->hmac_key != ESYS_TR_NONE
+      && key_hmac_sha256(tpm->esys, tpm->hmac_key, data, len, out);
 }
 
 static az_iot_result tss_hmac_op(

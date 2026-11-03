@@ -82,8 +82,9 @@ static bool port_accepts(uint16_t port)
 static int swtpm_start(void** state)
 {
   (void)state;
-  /* A port pair per process, so parallel runs do not collide. */
-  uint16_t port = (uint16_t)(20000 + (getpid() % 20000) * 2);
+  /* A port pair per process, so parallel runs do not collide, below Linux's
+   * ephemeral range (32768+) so no client socket in TIME_WAIT holds it. */
+  uint16_t port = (uint16_t)(12000 + (getpid() % 10000) * 2);
   snprintf(swtpm.state_dir, sizeof(swtpm.state_dir), "/tmp/az_iot_tpm_tss_XXXXXX");
   if (mkdtemp(swtpm.state_dir) == NULL)
   {
@@ -320,13 +321,15 @@ static ESYS_TR load_public(ESYS_CONTEXT* esys, const uint8_t* pub, size_t pub_le
 
 /**
  * @brief Builds a DPS `authenticationKey` (decoded) holding the HMAC key
- * @p hmac_key, for the TPM whose EK and SRK public areas are @p ek and @p srk.
+ * @p hmac_key (HMAC scheme hashing with @p hmac_hash), for the TPM whose EK and
+ * SRK public areas are @p ek and @p srk.
  */
 static size_t build_dps_key(
     const uint8_t* ek,
     size_t ek_len,
     const uint8_t* srk,
     size_t srk_len,
+    TPMI_ALG_HASH hmac_hash,
     const uint8_t* hmac_key,
     size_t hmac_key_len,
     uint8_t out[DPS_KEY_MAX])
@@ -404,7 +407,7 @@ static size_t build_dps_key(
   key_template.publicArea.authPolicy = duplicate_policy(esys, TPM2_SE_TRIAL, &trial);
   session_flush();
   key_template.publicArea.parameters.keyedHashDetail.scheme.scheme = TPM2_ALG_HMAC;
-  key_template.publicArea.parameters.keyedHashDetail.scheme.details.hmac.hashAlg = TPM2_ALG_SHA256;
+  key_template.publicArea.parameters.keyedHashDetail.scheme.details.hmac.hashAlg = hmac_hash;
   TPM2B_SENSITIVE_CREATE key_sensitive = { 0 };
   assert_true(hmac_key_len <= sizeof(key_sensitive.sensitive.data.buffer));
   key_sensitive.sensitive.data.size = (UINT16)hmac_key_len;
@@ -493,9 +496,13 @@ static size_t build_dps_key(
   return len;
 }
 
-/** @brief A DPS key for the swtpm's EK and SRK. swtpm serves one client at a
- * time, so the backend is closed while the key is built. */
-static size_t dps_key_for_tpm(
+/**
+ * @brief A DPS key for the swtpm's EK and SRK, whose HMAC scheme hashes with
+ * @p hmac_hash. swtpm serves one client at a time, so the backend is closed
+ * while the key is built.
+ */
+static size_t dps_key_for_tpm_with_hash(
+    TPMI_ALG_HASH hmac_hash,
     const uint8_t* hmac_key,
     size_t hmac_key_len,
     uint8_t out[DPS_KEY_MAX])
@@ -511,7 +518,16 @@ static size_t dps_key_for_tpm(
   sample_tpm_tss_srk_public(tpm, &pub, &srk_len);
   memcpy(srk, pub, srk_len);
   close_tpm();
-  return build_dps_key(ek, ek_len, srk, srk_len, hmac_key, hmac_key_len, out);
+  return build_dps_key(ek, ek_len, srk, srk_len, hmac_hash, hmac_key, hmac_key_len, out);
+}
+
+/** @brief dps_key_for_tpm_with_hash() for an HMAC-SHA256 key, as DPS sends. */
+static size_t dps_key_for_tpm(
+    const uint8_t* hmac_key,
+    size_t hmac_key_len,
+    uint8_t out[DPS_KEY_MAX])
+{
+  return dps_key_for_tpm_with_hash(TPM2_ALG_SHA256, hmac_key, hmac_key_len, out);
 }
 
 static void public_areas_are_rsa2048_ek_and_srk(void** state)
@@ -700,6 +716,30 @@ static void evict_persistent(ESYS_CONTEXT* esys, uint32_t handle)
       TSS2_RC_SUCCESS);
 }
 
+static void a_key_that_cannot_sign_sha256_is_refused_and_the_old_key_kept(void** state)
+{
+  (void)state;
+  static const uint8_t current[32] = { 0x11, 0x22, 0x33 };
+  static const uint8_t sha512_key[32] = { 0x44, 0x55, 0x66 };
+  static uint8_t key[DPS_KEY_MAX];
+  uint8_t expected[AZ_IOT_SHA256_SIZE];
+  uint8_t mac[AZ_IOT_SHA256_SIZE];
+
+  size_t key_len = dps_key_for_tpm(current, sizeof(current), key);
+  sample_tpm_tss* tpm = open_tpm(HANDLE_FOR_TESTS);
+  az_iot_dps_tpm_ops ops = sample_tpm_tss_ops(tpm);
+  assert_int_equal(ops.import_key(ops.ctx, key, key_len), AZ_IOT_OK);
+  close_tpm();
+
+  key_len = dps_key_for_tpm_with_hash(TPM2_ALG_SHA512, sha512_key, sizeof(sha512_key), key);
+  tpm = open_tpm(HANDLE_FOR_TESTS);
+  ops = sample_tpm_tss_ops(tpm);
+  assert_int_equal(ops.import_key(ops.ctx, key, key_len), AZ_IOT_ERR_PROTOCOL);
+  assert_true(sample_tpm_tss_hmac(tpm, (const uint8_t*)MESSAGE, strlen(MESSAGE), mac));
+  expected_hmac(current, sizeof(current), MESSAGE, expected);
+  assert_memory_equal(mac, expected, sizeof(mac));
+}
+
 /** @brief Whether the swtpm holds an object at persistent @p handle. */
 static bool persistent_exists(ESYS_CONTEXT* esys, uint32_t handle)
 {
@@ -811,6 +851,8 @@ int main(void)
     cmocka_unit_test_teardown(hmac_fails_before_a_key_is_imported, connections_release),
     cmocka_unit_test_teardown(imports_the_dps_key_and_persists_it, connections_release),
     cmocka_unit_test_teardown(a_tampered_or_malformed_key_is_refused, connections_release),
+    cmocka_unit_test_teardown(
+        a_key_that_cannot_sign_sha256_is_refused_and_the_old_key_kept, connections_release),
     cmocka_unit_test_teardown(provisioned_ek_and_srk_are_used_and_kept, connections_release),
   };
   return cmocka_run_group_tests(tests, swtpm_start, swtpm_stop);
