@@ -2320,6 +2320,29 @@ static bool dps_session_demanded(const az_iot_connection_client* c)
   return c->dps_session_wanted || c->dps_standing_ref;
 }
 
+/**
+ * @brief Whether the connection state forbids starting a provisioning session for its users.
+ *
+ * @return AZ_IOT_OK if not; AZ_IOT_ERR_NOT_SUPPORTED from FAULTED; AZ_IOT_ERR_BUSY while a retry
+ * is pending, except a hub session waiting for the provisioning session (none scheduled).
+ */
+static az_iot_result connection_state_blocks_dps_session(const az_iot_connection_client* c)
+{
+  for (size_t i = 0; i < AZ_IOT_CONN_SCOPE_COUNT; ++i)
+  {
+    if (c->state[i] == AZ_IOT_CONN_STATE_FAULTED)
+    {
+      return AZ_IOT_ERR_NOT_SUPPORTED;
+    }
+    if (c->state[i] == AZ_IOT_CONN_STATE_RETRY_PENDING
+        && !(i == AZ_IOT_CONN_SCOPE_HUB && c->hub_waits_for_provisioning_session))
+    {
+      return AZ_IOT_ERR_BUSY;
+    }
+  }
+  return AZ_IOT_OK;
+}
+
 static az_iot_result dps_session_ensure(az_iot_connection_client* client);
 
 /**
@@ -6139,7 +6162,9 @@ static uint32_t limit_sessionless_wait_to_deadlines(
   {
     deadlines[count++] = c->reconnect_due_ms;
   }
-  if (dps_session_demanded(c))
+  /* Only while dps_session_ensure() could consume it: a stale one must not end every wait. */
+  if (dps_session_demanded(c) && !c->dps_user_retry_blocked
+      && connection_state_blocks_dps_session(c) == AZ_IOT_OK)
   {
     deadlines[count++] = c->dps_user_retry._internal.due_ms;
   }
@@ -8474,18 +8499,10 @@ static az_iot_result dps_session_ensure(az_iot_connection_client* client)
    *
    * Here rather than in each caller: the rule is a property of the connection
    * state, and every caller would otherwise need its own copy. */
-  for (size_t i = 0; i < AZ_IOT_CONN_SCOPE_COUNT; ++i)
+  az_iot_result const state_gate = connection_state_blocks_dps_session(client);
+  if (state_gate != AZ_IOT_OK)
   {
-    if (client->state[i] == AZ_IOT_CONN_STATE_FAULTED)
-    {
-      return AZ_IOT_ERR_NOT_SUPPORTED;
-    }
-    /* A hub session waiting for this session has no retry scheduled. */
-    if (client->state[i] == AZ_IOT_CONN_STATE_RETRY_PENDING
-        && !(i == AZ_IOT_CONN_SCOPE_HUB && client->hub_waits_for_provisioning_session))
-    {
-      return AZ_IOT_ERR_BUSY;
-    }
+    return state_gate;
   }
 
   /* A provisioning run is mid-flight and owns the session it is about to

@@ -486,6 +486,54 @@ static void do_work_when_retry_pending_waits_until_the_retry_is_due(void** state
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
 }
 
+static void lower_remaining_to_sessionless_wait(
+    const az_iot_connection_feature_event* event,
+    void* user_ctx)
+{
+  (void)user_ctx;
+  if (event->kind == AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE
+      && *event->remaining_ms > SESSIONLESS_WAIT_MS)
+  {
+    *event->remaining_ms = SESSIONLESS_WAIT_MS;
+  }
+}
+
+/* IDLE: a NEXT_DEADLINE observer ends the wait by its deadline. */
+static void do_work_when_idle_waits_until_a_feature_deadline(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          fx->client,
+          AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE,
+          lower_remaining_to_sessionless_wait,
+          NULL),
+      AZ_IOT_OK);
+  uint64_t const waited_ms = measure_do_work_ms(fx->client, 60000u);
+  assert_true(waited_ms >= SESSIONLESS_WAIT_MS - 1u);
+  assert_true(waited_ms < 30000u);
+  az_iot_connection_client__remove_feature_observer(
+      fx->client, lower_remaining_to_sessionless_wait, NULL);
+}
+
+/* FAULTED: a passed pacing deadline of a wanted provisioning session, which the fault keeps from
+ * being used, does not end the wait. */
+static void do_work_when_faulted_ignores_a_blocked_provisioning_session_retry(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(
+      az_iot_mock_mqtt_adapter_last_client(), AZ_IOT_ERR_AUTH));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_FAULTED);
+
+  fx->client->dps_session_wanted = true;
+  fx->client->dps_user_retry._internal.due_ms = 1u;
+  assert_true(measure_do_work_ms(fx->client, SESSIONLESS_WAIT_MS) >= SESSIONLESS_WAIT_MS - 1u);
+  fx->client->dps_session_wanted = false;
+  fx->client->dps_user_retry._internal.due_ms = 0u;
+}
+
 /* ------------------------------------------------------------------------- */
 /* dispatch + profile (Phase 2.3) integration                                */
 /* ------------------------------------------------------------------------- */
@@ -3501,6 +3549,10 @@ int main(void)
         do_work_when_retry_pending_waits_for_the_timeout, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         do_work_when_retry_pending_waits_until_the_retry_is_due, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        do_work_when_idle_waits_until_a_feature_deadline, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        do_work_when_faulted_ignores_a_blocked_provisioning_session_retry, setup, teardown),
     cmocka_unit_test_setup_teardown(inbound_message_routes_through_dispatch, setup, teardown),
     cmocka_unit_test_setup_teardown(mqtt_v3_connack_announces_connected_at_once, setup, teardown),
     cmocka_unit_test_setup_teardown(mqtt_v3_connect_asks_to_resume_the_session, setup, teardown),
