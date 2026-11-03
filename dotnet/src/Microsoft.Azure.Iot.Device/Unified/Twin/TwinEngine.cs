@@ -111,6 +111,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         internal Func<int, TimeSpan> DesiredResyncTimeoutSchedule { get; set; } = DefensiveTimeoutSchedule.GetTimeout;
 
         /// <summary>
+        /// For tests. Invoked while holding _desiredStateLock, once a get twin response's connection was checked and before
+        /// the response is applied.
+        /// </summary>
+        internal Action? GetTwinResponseConnectionChecked { get; set; }
+
+        /// <summary>
         /// How long to wait for the response to the given attempt (starting at 1) of an application's get twin request
         /// before sending it again.
         /// </summary>
@@ -874,6 +880,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                     if (connectionNonce == null || connectionNonce != _getTwinLostConnectionNonce)
                     {
                         fetch.SentGetId = getId;
+                        fetch.SentConnectionNonce = connectionNonce;
 
                         // Only once sent, so that a request that is waiting for the device to reconnect isn't sent again.
                         ArmGetTwinTimer(fetch, getId);
@@ -1062,7 +1069,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         private bool TryTakeGetTwinFetch(
             Guid getId,
             [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out List<GetTwinWaiter>? waiters,
-            out DesiredResync? resync)
+            out DesiredResync? resync,
+            out bool isSent,
+            out Guid? sentConnectionNonce)
         {
             lock (_getTwinLock)
             {
@@ -1071,11 +1080,15 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 {
                     waiters = null;
                     resync = null;
+                    isSent = false;
+                    sentConnectionNonce = null;
                     return false;
                 }
 
                 waiters = TakeGetTwinWaiters(fetch);
                 resync = fetch.Resync;
+                isSent = fetch.SentGetId == getId;
+                sentConnectionNonce = fetch.SentConnectionNonce;
                 EndGetTwinFetch(fetch);
                 return true;
             }
@@ -1098,17 +1111,18 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            if (!TryTakeGetTwinFetch(getId, out List<GetTwinWaiter>? waiters, out DesiredResync? resync))
+            if (!TryTakeGetTwinFetch(getId, out List<GetTwinWaiter>? waiters, out DesiredResync? resync, out bool isSent, out Guid? sentConnectionNonce))
             {
                 Trace.TraceInformation("Dropping a get twin response that does not match the outstanding get twin request.");
                 return;
             }
 
-            // A resync's GET belongs to the connection that the resync started on, so a response to it that arrives once that
-            // connection was replaced (for example, by one as a different identity) describes a twin that this device may no
-            // longer have. It is dropped, and the calls sharing it fail as if the connection had been lost before it arrived. The
-            // connection is checked and the response applied while holding _desiredStateLock, which a new connection's connect
-            // sync also holds while it replaces the resync and records the versions it starts from, so the two never interleave.
+            // A response that arrives once the connection that its GET was sent on (or, for a resync's GET that hasn't counted as
+            // sent yet, that the resync started on) was replaced, for example by one as a different identity, describes a twin
+            // that this device may no longer have. It is dropped, and the calls sharing it fail as if the connection had been
+            // lost before it arrived. The connection is checked and the response applied while holding _desiredStateLock, which
+            // a new connection's connect sync also holds while it replaces the resync and records the versions it starts from,
+            // so the two never interleave.
             DesiredStateOutcome outcome = new();
             bool isFromReplacedConnection;
             try
@@ -1116,13 +1130,22 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 lock (_desiredStateLock)
                 {
                     Guid? connectionNonce = _connection.ConnectionNonce;
-                    isFromReplacedConnection = resync != null && resync.ConnectionNonce != connectionNonce;
+                    isFromReplacedConnection = isSent
+                        ? sentConnectionNonce != connectionNonce
+                        : resync != null && resync.ConnectionNonce != connectionNonce;
                     if (isFromReplacedConnection)
                     {
                         DiscardDesiredResyncFromPreviousConnection(connectionNonce);
+                        if (resync != null && resync == _desiredResync)
+                        {
+                            // A resync of the current connection (for example, one that a desired patch on it started) had joined
+                            // this GET, so it needs a GET of its own.
+                            RequestDesiredResyncGet(resync, isNewAttemptRequired: false);
+                        }
                     }
                     else
                     {
+                        GetTwinResponseConnectionChecked?.Invoke();
                         // The resync goes first, since it may find this device's copy of the twin invalid (see ResetLocalDesiredVersionIfInvalid).
                         if (resync != null)
                         {
@@ -1754,6 +1777,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             // The ID of the latest attempt that was sent. Only sent attempts can lose their response to a connection loss.
             public Guid? SentGetId { get; set; }
+
+            // The connection that the attempt with SentGetId was sent on.
+            public Guid? SentConnectionNonce { get; set; }
 
             public int Attempt { get; set; } = 1;
 
