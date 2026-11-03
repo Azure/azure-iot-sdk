@@ -1219,7 +1219,12 @@ static bool dps_service_auth(e2e_conn_info* info, char* sas, size_t sas_size)
              info->host, info->key_name, info->key, true, sas_expiry(), sas, sas_size);
 }
 
-/** @brief A DPS service REST call; true for a 2xx (or 404 when @p allow_404). */
+/**
+ * @brief A DPS service REST call; true for a 2xx (or 404 when @p allow_404).
+ *
+ * PUT (create or replace with the same body) and DELETE are idempotent, so a stalled attempt is
+ * sent again.
+ */
 static bool dps_service_call(const char* method, const char* path, const char* body, bool allow_404)
 {
   e2e_conn_info info;
@@ -1241,7 +1246,7 @@ static bool dps_service_call(const char* method, const char* path, const char* b
       strcmp(method, "DELETE") == 0 ? "If-Match: *" : NULL,
       body,
       body != NULL ? strlen(body) : 0,
-      strcmp(method, "DELETE") == 0,
+      strcmp(method, "PUT") == 0 || strcmp(method, "DELETE") == 0,
       &status,
       resp,
       sizeof(resp),
