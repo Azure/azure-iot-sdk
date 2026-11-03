@@ -188,7 +188,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             };
         }
 
-        public static async Task<MQTTv5DeviceTestContext> CreateConnectedMQTTv5ConnectionClientAsync(DeviceTwin? initialTwin, Device.MQTTv5.Models.ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
+        public static async Task<MQTTv5DeviceTestContext> CreateConnectedMQTTv5ConnectionClientAsync(DeviceTwin? initialTwin, Device.MQTTv5.Models.ConnectionClientOptions? options = null, CancellationToken cancellationToken = default, TimeSpan? certificateValidity = null)
         {
             using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient(testAgainstClassicHub: false);
 
@@ -197,7 +197,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             string certId = Guid.NewGuid().ToString();
             string certPath = $"./{certId}.cer";
             string pfxPath = $"./{certId}.pfx";
-            CreateTestCertificates(pfxPath, certPath, deviceId);
+            CreateTestCertificates(pfxPath, certPath, deviceId, certificateValidity);
 
             X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
             X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
@@ -226,7 +226,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             };
         }
 
-        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
+        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default, TimeSpan? certificateValidity = null)
         {
             using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient(testAgainstClassicHub);
 
@@ -235,7 +235,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             string certId = Guid.NewGuid().ToString();
             string certPath = $"./{certId}.cer";
             string pfxPath = $"./{certId}.pfx";
-            CreateTestCertificates(pfxPath, certPath, deviceId);
+            CreateTestCertificates(pfxPath, certPath, deviceId, certificateValidity);
 
             X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
             X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
@@ -397,12 +397,12 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             }
         }
 
-        public static void CreateTestCertificates(string pfxPath, string certPath, string deviceId)
+        public static void CreateTestCertificates(string pfxPath, string certPath, string deviceId, TimeSpan? validity = null)
         {
             var ecdsa = ECDsa.Create(); // generate asymmetric key pair
             var rsa = RSA.Create();
             var req = new CertificateRequest($"cn={deviceId}, O=TEST, C=US", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-            var cert = req.CreateSelfSigned(DateTimeOffset.Now, DateTimeOffset.Now.AddHours(1));
+            var cert = req.CreateSelfSigned(DateTimeOffset.Now, DateTimeOffset.Now.Add(validity ?? TimeSpan.FromHours(1)));
 
             // Create PFX (PKCS #12) with private key
             File.WriteAllBytes(pfxPath, cert.Export(X509ContentType.Pfx, TestCertificatesPassword));
