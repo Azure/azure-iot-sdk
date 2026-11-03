@@ -272,10 +272,24 @@ extern "C"
 #define AZ_IOT_SU_MANIFEST_ERROR_ROOT_SIGNATURE 0x6u /* sjwk does not verify with the root key */
 #define AZ_IOT_SU_MANIFEST_ERROR_SIGNATURE 0x7u /* manifest does not verify with the sjwk key */
 #define AZ_IOT_SU_MANIFEST_ERROR_HASH 0x8u /* manifest SHA-256 differs from the signed one */
-/* A mini manifest (`detachedManifestFileId`), not supported */
+/* A mini manifest (`detachedManifestFileId`) in library mode, not supported */
 #define AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST 0x9u
 #define AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS 0xAu /* the manifest has no step */
 #define AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP 0xBu /* a `reference` step, not supported */
+/* A mini manifest whose `files` is not exactly its detached manifest file */
+#define AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_ENTRY 0xCu
+#define AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_URL 0xDu /* no `fileUrls` entry for that file */
+#define AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_NO_READER 0xEu /* no read_file_fn to read it */
+/* The detached manifest file exceeds the free space of max_update_size (logged) */
+#define AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE 0xFu
+#define AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_READ 0x10u /* read_file_fn failed */
+/* The detached manifest file size or SHA-256 differs from the mini manifest's */
+#define AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_HASH 0x11u
+/* The detached manifest file is not `{"updateManifest":"..."}` with a valid manifest */
+#define AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_INVALID 0x12u
+/* The full manifest `updateId` differs from the mini manifest's */
+#define AZ_IOT_SU_MANIFEST_ERROR_DETACHED_UPDATE_ID 0x13u
+#define AZ_IOT_SU_MANIFEST_ERROR_DETACHED_NESTED 0x14u /* the full manifest is itself a mini */
 
 /* Sub-codes of AZ_IOT_SU_FACILITY_DELTA: why a file naming a download handler was downloaded in
  * full. The first in a step is kept. */
@@ -320,9 +334,10 @@ extern "C"
 #define AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES 40
 #endif
 
-/** @brief Download URLs an update request may carry: one per file and per related file. */
+/** @brief Download URLs an update request may carry: one per file, one for a detached manifest
+ * file and one per related file. */
 #define AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files) \
-  ((size_t)(AZ_IOT_SU_MAX_FILE_COUNT) + (size_t)(max_related_files))
+  ((size_t)(AZ_IOT_SU_MAX_FILE_COUNT) + 1u + (size_t)(max_related_files))
 
 /** @brief Default az_iot_su_limits::max_update_size: the service's 64 KiB response ceiling. */
 #ifndef AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE
@@ -366,14 +381,14 @@ extern "C"
 #define AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE 256
 
 /** @brief Persisted-state bytes beyond the update metadata and the step result details: header
- * (40 bytes) and trailer (16 fixed, 16 per step, 4 + 16 per file URL, then length-prefixed
- * workflow id, applied update id, channel state and the details of each step, 16 retry schedule,
- * 4 CRC). Grows with the step and file limits. */
+ * (48 bytes) and trailer (16 fixed, 16 per step, 4 + 16 per file URL including the detached
+ * manifest file's, then length-prefixed workflow id, applied update id, channel state and the
+ * details of each step, 16 retry schedule, 4 CRC). Grows with the step and file limits. */
 #ifndef AZ_IOT_SU_PERSIST_OVERHEAD
-#define AZ_IOT_SU_PERSIST_OVERHEAD                                         \
-  (92u + (AZ_IOT_SU_WORKFLOW_ID_SIZE) + (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE) \
-   + (AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + 20u * (AZ_IOT_SU_MAX_STEP_COUNT) \
-   + 16u * (AZ_IOT_SU_MAX_FILE_COUNT))
+#define AZ_IOT_SU_PERSIST_OVERHEAD                                          \
+  (100u + (AZ_IOT_SU_WORKFLOW_ID_SIZE) + (AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE) \
+   + (AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + 20u * (AZ_IOT_SU_MAX_STEP_COUNT)  \
+   + 16u * ((AZ_IOT_SU_MAX_FILE_COUNT) + 1u))
 #endif
 
 /**
@@ -409,7 +424,7 @@ extern "C"
 #error "AZ_IOT_SU_PERSIST_MAX_ATTEMPTS must be between 1 and 0xFFFFFFFF"
 #endif
 
-/** @brief Persisted bytes per download URL beyond AZ_IOT_SU_MAX_FILE_COUNT. */
+/** @brief Persisted bytes per download URL beyond AZ_IOT_SU_MAX_FILE_COUNT + 1. */
 #define AZ_IOT_SU_PERSIST_URL_RECORD_SIZE 16
 
 /** @brief Largest blob passed to persist_workflow_state_fn for a client with these
@@ -460,7 +475,9 @@ extern "C"
      * Hash verification is performed by core with the connection client's
      * crypto backend. Also called for the related file a download handler
      * chose: @p file is then that related file, and @p file_index that of the
-     * file it belongs to, so store it apart (e.g. by id).
+     * file it belongs to, so store it apart (e.g. by id). For a mini manifest it
+     * is first called for the detached manifest file (@p file_index 0,
+     * @p file_count 1), before any step runs.
      */
     int32_t (*download_fn)(
         const az_iot_su_client_update_manifest_file* file,
@@ -479,6 +496,8 @@ extern "C"
      * @p buffer_size); set @p out_read to the number of bytes read (0 signals
      * end-of-file). MUST return AZ_IOT_SU_RESULT_SUCCESS on a successful read.
      * Also reads related files and built files, as download_fn names them.
+     * Required for a mini manifest: it reads the detached manifest file into
+     * the request buffer.
      */
     int32_t (*read_file_fn)(
         const az_iot_su_client_update_manifest_file* file,
@@ -1074,10 +1093,14 @@ extern "C"
      * AZ_IOT_SU_FACILITY_MANIFEST with an AZ_IOT_SU_MANIFEST_ERROR_* sub-code),
      * else the overall one. `reason` is then AZ_IOT_ERR_AUTH when the manifest
      * or a file failed verification (a file hash that cannot be read
-     * included), AZ_IOT_ERR_PROTOCOL for a manifest that cannot be decoded or
-     * parsed or has no steps, AZ_IOT_ERR_NOT_SUPPORTED for a mini manifest or a
-     * `reference` step, AZ_IOT_ERR_INTERNAL otherwise (AZ_IOT_SU_MANIFEST_ERROR_CRYPTO
-     * included). 0 for other events. */
+     * included, and a detached manifest file whose size or SHA-256 differs),
+     * AZ_IOT_ERR_PROTOCOL for a manifest that cannot be decoded or parsed or has
+     * no steps, or a mini manifest whose detached manifest file is missing, invalid
+     * or inconsistent with it, AZ_IOT_ERR_NOT_SUPPORTED for a mini manifest without
+     * read_file_fn or in library mode, or a `reference` step,
+     * AZ_IOT_ERR_NOT_ENOUGH_SPACE for a detached manifest file over the free space
+     * of az_iot_su_limits::max_update_size, AZ_IOT_ERR_INTERNAL otherwise
+     * (AZ_IOT_SU_MANIFEST_ERROR_CRYPTO included). 0 for other events. */
     int32_t extended_result_code;
     /** REPORT_ACCEPTED: the report carried a terminal outcome. */
     bool report_terminal;
@@ -1379,6 +1402,9 @@ extern "C"
       size_t step_details_size; /**< az_iot_su_limits::result_details_size. */
       /** Overall result details, NUL-terminated: result_details_size + 1 bytes. */
       uint8_t* overall_details;
+      /** Of a mini manifest: the full manifest text within request_buffer, after the request;
+       * else empty. */
+      az_span full_manifest_text;
       /** Decoded workflow id of the last refused update, NUL-terminated. */
       char refused_workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1];
       /** Extended result code of the refused update's FAILED report. */
@@ -1422,7 +1448,8 @@ extern "C"
   {
     /** Largest update metadata accepted, in bytes; a larger one raises
      * AZ_IOT_SU_EVENT_UPDATE_REFUSED. Also bounds the persisted state:
-     * AZ_IOT_SU_STATE_BLOB_MAX_SIZE(). At least 256. */
+     * AZ_IOT_SU_STATE_BLOB_MAX_SIZE(). With a mini manifest the detached manifest file is
+     * stored after the metadata, so both must fit. At least 256. */
     size_t max_update_size;
     /** Decode and signature-verification scratch, in bytes. A signature part or file
      * URL that does not fit is refused. At least 256. */

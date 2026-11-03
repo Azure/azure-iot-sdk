@@ -34,9 +34,10 @@ The `su_client` is a **feature client** in the azure-iot-sdk SDK that implements
 - adu-shell or privilege escalation (we assume the application has sufficient privileges).
 - Component-level targeting (component enumerators).
 - Proxy/nested updates (IoT Edge parent proxying updates to leaf devices).
-- Reference steps with detached manifests (`"type": "reference"` + `detachedManifestFileId`), and
-  mini (detached) update manifests: refused with `AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP` /
-  `_DETACHED_MANIFEST`.
+- Reference steps with detached manifests (`"type": "reference"` + `detachedManifestFileId`):
+  refused with `AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP`. Mini (detached) update manifests in
+  library mode: refused with `AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST` (the managed client
+  fetches their full manifest: Detached Manifests, §4).
 
 ---
 
@@ -380,6 +381,32 @@ authenticate the manifest, *then* trust its hashes, *then* verify payloads — i
 mandatory; verifying payload hashes from an unverified manifest provides no
 security.
 
+### Detached Manifests
+
+When the full manifest exceeds 4,096 UTF-8 bytes, Device Update sends a signed **mini manifest**
+instead: `updateId`, `detachedManifestFileId` and one `files` entry with that id (size and
+SHA-256), no `instructions`. That **detached manifest file** is exactly
+`{"updateManifest":"<serialized full manifest>"}`, unsigned, bound by the size and SHA-256 in the
+signed mini manifest; its URL is in `fileUrls` with the step files (matched by id).
+
+Within `VerifyingManifest`, once the mini manifest verifies and parses, the managed client:
+
+1. checks the mini manifest has exactly one `files` entry, its `detachedManifestFileId`;
+2. finds its URL in `fileUrls`;
+3. requires `read_file_fn`;
+4. checks the file fits the space `max_update_size` leaves after the request (logs both sizes);
+5. calls `download_fn` for it (`file_index` 0, `file_count` 1; `IN_PROGRESS` is re-entered);
+6. reads it with `read_file_fn` into the request buffer, after the request;
+7. checks its size and SHA-256, unwraps and decodes it in place, and parses the full manifest;
+8. checks the full manifest has the mini manifest's `updateId`, is not itself a mini manifest,
+   has steps and no reference step, and that each step file has a URL.
+
+The full manifest then replaces the mini manifest: `is_installed_fn`, the steps and the reports
+use it. Any failure fails the workflow with its `AZ_IOT_SU_MANIFEST_ERROR_DETACHED_*` sub-code
+(a `download_fn` failure with `AZ_IOT_SU_FACILITY_DOWNLOAD`) before any step runs. The file stays
+in the request buffer, so a persisted record carries it and resume does not download it again.
+The service does not see a separate state. Library mode refuses mini manifests.
+
 ### Delta Downloads (Download Handlers)
 
 A manifest file MAY name a download handler (`downloadHandler.id`, e.g. `microsoft/delta:1`) and
@@ -575,16 +602,27 @@ Facility `0x1` sub-codes (`AZ_IOT_SU_MANIFEST_ERROR_*`) say why verification or 
 | `0x6` | `ROOT_SIGNATURE` | `sjwk` rejected by the root key (`verify_rs256`: `AZ_IOT_ERR_AUTH` or `AZ_IOT_ERR_INVALID_ARG`) |
 | `0x7` | `SIGNATURE` | manifest rejected by the `sjwk` signing key (as for `0x6`) |
 | `0x8` | `HASH` | manifest SHA-256 ≠ signed hash |
-| `0x9` | `DETACHED_MANIFEST` | verified mini manifest (`detachedManifestFileId`), not supported |
+| `0x9` | `DETACHED_MANIFEST` | verified mini manifest (`detachedManifestFileId`) in library mode, not supported |
 | `0xA` | `NO_STEPS` | verified manifest has no step |
 | `0xB` | `REFERENCE_STEP` | verified manifest has a `"type": "reference"` step, not supported |
+| `0xC` | `DETACHED_FILE_ENTRY` | mini manifest `files` is not exactly its detached manifest file |
+| `0xD` | `DETACHED_FILE_URL` | no `fileUrls` entry for the detached manifest file |
+| `0xE` | `DETACHED_FILE_NO_READER` | no `read_file_fn` to read the detached manifest file |
+| `0xF` | `DETACHED_FILE_TOO_LARGE` | detached manifest file over the space `max_update_size` leaves after the request (both logged) |
+| `0x10` | `DETACHED_FILE_READ` | `read_file_fn` failed on the detached manifest file |
+| `0x11` | `DETACHED_FILE_HASH` | detached manifest file size or SHA-256 differs from the mini manifest's |
+| `0x12` | `DETACHED_FILE_INVALID` | detached manifest file is not `{"updateManifest":"..."}` with a valid manifest whose step files have URLs |
+| `0x13` | `DETACHED_UPDATE_ID` | full manifest `updateId` differs from the mini manifest's |
+| `0x14` | `DETACHED_NESTED` | full manifest is itself a mini manifest |
 
 Entering Failed raises `AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED` with
 `extended_result_code` (the first failed step's code, else the overall one) and
 `reason`: `AZ_IOT_ERR_AUTH` for facility `0x1`/`0x3` (`0x1` sub-code `CRYPTO`:
-`AZ_IOT_ERR_INTERNAL`; `DETACHED_MANIFEST`, `REFERENCE_STEP`: `AZ_IOT_ERR_NOT_SUPPORTED`;
-`NO_STEPS`: `AZ_IOT_ERR_PROTOCOL`), `AZ_IOT_ERR_PROTOCOL` for `0xF`, `AZ_IOT_ERR_INTERNAL`
-otherwise.
+`AZ_IOT_ERR_INTERNAL`; `DETACHED_MANIFEST`, `REFERENCE_STEP`, `DETACHED_FILE_NO_READER`:
+`AZ_IOT_ERR_NOT_SUPPORTED`; `NO_STEPS`, `DETACHED_FILE_ENTRY`, `DETACHED_FILE_URL`,
+`DETACHED_FILE_INVALID`, `DETACHED_UPDATE_ID`, `DETACHED_NESTED`: `AZ_IOT_ERR_PROTOCOL`;
+`DETACHED_FILE_TOO_LARGE`: `AZ_IOT_ERR_NOT_ENOUGH_SPACE`; `DETACHED_FILE_READ`:
+`AZ_IOT_ERR_INTERNAL`), `AZ_IOT_ERR_PROTOCOL` for `0xF`, `AZ_IOT_ERR_INTERNAL` otherwise.
 
 **`result_details`.** OPTIONAL free-form string (the service allows 1024 characters). When set,
 it MUST be a copy into a client-owned buffer (no pointer into hook-owned memory), consistent with
@@ -723,12 +761,13 @@ internal and may change between SDK versions. Library mode never calls these hoo
   header just before it, its trailer just after. A terminal record has no request and is built
   in a separate workspace part, so a newer update copy is never overwritten. `resume()` loads
   the record in place, so it returns `AZ_IOT_ERR_BUSY` while a workflow is in progress.
-- **Versioned** — magic `"SUCP"` and a `u16` format version (currently 3). A
-  record of any other magic or version (versions 1 and 2 included) is ignored. Any layout change
+- **Versioned** — magic `"SUCP"` and a `u16` format version (currently 4). A
+  record of any other magic or version (versions 1 to 3 included) is ignored. Any layout change
   bumps the version. All integers are little-endian.
 - **Integrity-checked** — a CRC-32 over the rest of the blob, stored in its last four bytes; a record with extra bytes after it is ignored.
 - **Contents** — workflow state, step/file position, flags (have-request,
-  report-owed, retry record), the raw request buffer (manifest, workflow id),
+  report-owed, retry record), the raw request buffer (manifest, workflow id, and a mini
+  manifest's detached manifest file with the offset and length of its full manifest),
   the latched outcome, the overall and per-step results, the download URLs, the
   active workflow id, the applied update id, opaque channel state (the DPS
   channel's `agentInfoEtag` / `serviceConfigEtag`), and the retry schedule
@@ -2069,8 +2108,9 @@ Device Update allows 10 files and 10 steps per update. The manifest arrays are s
 definitions on `az_iot_core`, its installed CMake package and its pkg-config file;
 `az_iot_su_client_init()` refuses an application built with other values.
 
-The request's `file_urls` hold `AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files)` entries, one per file
-and per related file, in the workspace (or the caller's `az_iot_su_update_request_storage`).
+The request's `file_urls` hold `AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files)` entries, one per file,
+one for a detached manifest file and one per related file, in the workspace (or the caller's
+`az_iot_su_update_request_storage`).
 
 The parser counts steps, files, files of a step and hashes of a file past their limits (entries
 past a limit are still type-checked but not stored), logs each exceeded limit, and fails the
@@ -2080,8 +2120,8 @@ update before processing (`AZ_IOT_SU_EVENT_UPDATE_REFUSED`, `AZ_IOT_ERR_NOT_ENOU
 
 The largest status report grows 117 bytes per step, so `AZ_IOT_SU_MIN_MESSAGE_SIZE` is
 2176 + 128 × `AZ_IOT_SU_MAX_STEP_COUNT` (3456 by default; the base fits a 128-byte workflow id, fully
-escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 8240 bytes
-(4080), default workspace 96400 (89424), parsed manifest
+escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_client` 8264 bytes
+(4104), default workspace 96480 (89504), parsed manifest
 4048 (656). See [client-configuration.md](../client-configuration.md#software-updates-manifest-limits).
 
 ### Not Parsed (Matches Our Non-Goals)
@@ -2089,7 +2129,6 @@ escaped). Memory cost of the default limits against 2/2 on 64-bit: `az_iot_su_cl
 | Feature | Parser | Our Position |
 |---------|--------|---------------|
 | Reference steps (`"type": "reference"`) | Not recognized (`type` skipped) | Non-Goal |
-| Detached manifest file ID | Not recognized (skipped) | Non-Goal |
 | Delta updates (`relatedFiles`, `downloadHandler`) | Kept (`related_files`, `download_handler_id`, `properties`) | Managed client: registered download handlers build files from related files, with a full-download fallback (§4 Delta Downloads); library mode hands them to the application's own handler |
 | `mimeType` field | Must be a string; kept as `mime_type` | Not used by the SDK |
 
