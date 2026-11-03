@@ -52,12 +52,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
 
             Guid? connectionNonce = _connection.ConnectionNonce;
-            ulong reportedVersionAtStart;
-            lock (_reportedStateLock)
-            {
-                reportedVersionAtStart = _localReportedVersion;
-            }
-
             lock (_desiredStateLock)
             {
                 if (_isDisposed || (connectionNonce != null && _classicConnectSyncConnectionNonce == connectionNonce))
@@ -75,7 +69,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
                 _desiredResync.IsConnectSync = true;
                 _desiredResync.DesiredVersionAtStart = _localDesiredVersion;
-                _desiredResync.ReportedVersionAtStart = reportedVersionAtStart;
+                lock (_reportedStateLock)
+                {
+                    // While holding _desiredStateLock, so that a get twin response from the previous connection is either applied
+                    // before this or dropped (see HandleGetTwinResponseAsync).
+                    _desiredResync.ReportedVersionAtStart = _localReportedVersion;
+                }
 
                 // A GET sent on this connection (for the resync that a desired patch started, or for an application's call)
                 // may have been sent before the device subscribed to the responses, so send a new one. The GET is sent off

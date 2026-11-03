@@ -428,15 +428,24 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             MockFeatureConnectionClient connection = CreateClassicConnection();
             TaskCompletionSource<MqttPublishAck> held = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource heldPublishStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
             int publishes = 0;
-            connection.OnPublish = _ => Interlocked.Increment(ref publishes) == 1
-                ? held.Task
-                : Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            connection.OnPublish = _ =>
+            {
+                if (Interlocked.Increment(ref publishes) == 1)
+                {
+                    heldPublishStarted.TrySetResult();
+                    return held.Task;
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
             using TwinClient twinClient = new(connection);
 
-            // The connection client holds the application's GET until the device has reconnected.
+            // The connection client holds the application's GET until the device has reconnected. The publish is recorded
+            // before OnPublish runs, so wait for OnPublish to make sure that the held publish is the application's GET.
             Task<DeviceTwin> getTask = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
-            await connection.WaitForPublishedMessagesAsync(1);
+            await heldPublishStarted.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
             connection.SimulateConnectionLost();
             connection.ConnectionNonce = Guid.NewGuid();
             connection.SimulateClassicDevicePresenceEstablished();
