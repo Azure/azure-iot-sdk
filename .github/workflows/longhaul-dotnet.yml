@@ -73,7 +73,9 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! [[ "$DURATION" =~ ^[0-9]+$ ]] || (( DURATION < 1 || DURATION > 320 )); then
+          # Force base 10: bash arithmetic would read a leading zero as octal
+          # (0400 -> 256) while the test parses it as decimal (400).
+          if ! [[ "$DURATION" =~ ^[0-9]{1,9}$ ]] || (( 10#$DURATION < 1 || 10#$DURATION > 320 )); then
             echo "::error::duration-minutes must be a whole number from 1 to 320; got '$DURATION'."
             exit 1
           fi

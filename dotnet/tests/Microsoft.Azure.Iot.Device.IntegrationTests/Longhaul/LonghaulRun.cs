@@ -78,8 +78,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
                 lock (_connectionLock)
                 {
                     // The MQTT client may report the end of one connection more than once, and also reports failed
-                    // connect attempts, so only the transition from connected to disconnected counts as a drop.
-                    if (_recordingConnection && _disconnectedSince == null)
+                    // connect attempts, so only the transition from connected to disconnected counts as a drop. A
+                    // delayed callback can also arrive after the client has already reconnected; that is not a drop.
+                    if (_recordingConnection && _disconnectedSince == null && !mqttClient.IsConnected())
                     {
                         _disconnects++;
                         _disconnectedSince = DateTimeOffset.UtcNow;

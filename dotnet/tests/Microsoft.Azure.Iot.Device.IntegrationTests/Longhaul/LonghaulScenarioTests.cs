@@ -62,7 +62,15 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
             {
                 HighWaterMark desiredSequence = new();
                 ConcurrentDictionary<string, TaskCompletionSource> pendingCloudToDevice = new();
-                twinClient.DesiredPatchReceived += args => DeviceOperations.ObserveDesiredPatch(args, desiredSequence);
+                twinClient.DesiredPatchReceived += args => DeviceOperations.ObserveDesired(args.DesiredProperties, desiredSequence);
+                // After a reconnect or a missed patch, the client delivers the desired properties as a snapshot instead.
+                twinClient.TwinPushReceived += args =>
+                {
+                    if (args.Desired != null)
+                    {
+                        DeviceOperations.ObserveDesired(args.Desired.Properties, desiredSequence);
+                    }
+                };
                 directMethodClient.DirectMethodInvokedAsync += DeviceOperations.RespondToDirectMethodAsync;
                 telemetryClient.CloudToDeviceTelemetryReceivedAsync += message =>
                 {
@@ -225,9 +233,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
                 }
             }
 
-            public static void ObserveDesiredPatch(DesiredPatchReceivedEventArgs args, HighWaterMark desiredSequence)
+            public static void ObserveDesired(JsonObject desiredProperties, HighWaterMark desiredSequence)
             {
-                if (args.DesiredProperties[DesiredSequenceProperty] is JsonValue value && value.TryGetValue(out long sequence))
+                if (desiredProperties[DesiredSequenceProperty] is JsonValue value && value.TryGetValue(out long sequence))
                 {
                     desiredSequence.Observe(sequence);
                 }
@@ -305,8 +313,11 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
                     {
                         await ServiceClient.SendAsync(deviceId, message).WaitAsync(cancellationToken);
                     }
-                    catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                    catch (Exception)
                     {
+                        // Includes this attempt timing out: WaitAsync leaves the send running on a link that may be stuck,
+                        // so replace the client (disposing the old one aborts that send) before the next attempt. At the
+                        // end of the run this just swaps in an unused client, which Dispose then releases.
                         ServiceClient broken = Interlocked.Exchange(ref _serviceClient, Create());
                         broken.Dispose();
                         throw;
