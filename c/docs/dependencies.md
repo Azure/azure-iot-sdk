@@ -9,7 +9,7 @@ Libraries the C SDK builds against, and the known issues of each.
 | [OpenSSL](https://www.openssl.org/) | 3.0 to 4.1, [tested](#openssl) (Paho TLS alone: any Paho supports) | Paho TLS and key custody, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=openssl`), the OpenSSL crypto backend, the managed certificate provider | Only for the components listed; az_mqtt can use Mbed TLS, or Schannel on Windows ([Windows without OpenSSL](../samples/README.md#windows-without-openssl)) |
 | [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) | 3.6 LTS or 4.1+ | mbedTLS crypto backend, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=mbedtls`) | Optional |
 | az_mqtt | Published from this repository: [deps/az_mqtt](../deps/az_mqtt/README.md) | az_mqtt adapter | `AZ_IOT_WITH_AZ_MQTT` |
-| [cmocka](https://gitlab.com/cmocka/cmocka) | 1.1.7 (`CMOCKA_TAG`) | Tests only | `AZ_IOT_BUILD_TESTS` |
+| [cmocka](https://cmocka.org/) | 1.1.7 (`CMOCKA_URL`, signed release tarball) | Tests only | `AZ_IOT_BUILD_TESTS` |
 | [libcurl](https://curl.se/libcurl/) | Any | Samples (file upload, DPS TPM) | Optional for samples |
 
 Exact commits are in [cgmanifest.json](../cgmanifest.json). How to use installed copies instead of
