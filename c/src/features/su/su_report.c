@@ -22,6 +22,31 @@
 #define AZ_IOT_SU_RESULT_CODE_SUCCESS 700
 #define AZ_IOT_SU_RESULT_CODE_FAILURE (-1)
 
+/**
+ * @brief The installed update id from the cached device properties, copied into @p v.
+ *
+ * @return &v->installed; NULL when no complete id is cached.
+ */
+static const az_iot_su_report_update_id* cached_installed_update_id(
+    const az_iot_su_client* client,
+    az_iot_su__report_view* v)
+{
+  if (SU_I(client).device_properties_buffer == NULL)
+  {
+    return NULL;
+  }
+  const az_iot_su_device_properties* cached = &SU_I(client).device_properties;
+  if (cached->installed_update_id.provider == NULL || cached->installed_update_id.name == NULL
+      || cached->installed_update_id.version == NULL)
+  {
+    return NULL;
+  }
+  v->installed.provider = cached->installed_update_id.provider;
+  v->installed.name = cached->installed_update_id.name;
+  v->installed.version = cached->installed_update_id.version;
+  return &v->installed;
+}
+
 bool az_iot_su__build_report_view(const az_iot_su_client* client, az_iot_su__report_view* v)
 {
   /* With no active workflow there is no correlation key, and therefore nothing
@@ -86,17 +111,9 @@ bool az_iot_su__build_report_view(const az_iot_su_client* client, az_iot_su__rep
   {
     installed_ptr = &SU_I(client).applied_update_id;
   }
-  else if (SU_I(client).device_properties_buffer != NULL)
+  else
   {
-    const az_iot_su_device_properties* cached = &SU_I(client).device_properties;
-    if (cached->installed_update_id.provider != NULL && cached->installed_update_id.name != NULL
-        && cached->installed_update_id.version != NULL)
-    {
-      v->installed.provider = cached->installed_update_id.provider;
-      v->installed.name = cached->installed_update_id.name;
-      v->installed.version = cached->installed_update_id.version;
-      installed_ptr = &v->installed;
-    }
+    installed_ptr = cached_installed_update_id(client, v);
   }
 
   az_iot_su_report* report = &v->report;
@@ -318,6 +335,23 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
     SU_I(client).device_properties_report_pending = true;
   }
   return sent;
+}
+
+az_iot_result az_iot_su__report_refused_update(az_iot_su_client* client)
+{
+  az_iot_su__report_view v;
+  memset(&v.report, 0, sizeof(v.report));
+  memcpy(v.workflow_id, SU_I(client).refused_workflow_id, sizeof(v.workflow_id));
+  az_iot_su__format_extended_result_code(
+      v.extended, sizeof(v.extended), SU_I(client).refused_extended_result_code);
+  v.report.workflow_id = v.workflow_id;
+  v.report.installed_update_id = cached_installed_update_id(client, &v);
+  v.report.outcome = AZ_IOT_SU_OUTCOME_FAILED;
+  v.report.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE;
+  /* Non-positive and naming the facility, as for a failed step. */
+  v.report.result_code = -(int32_t)AZ_IOT_SU_FACILITY_REFUSED;
+  v.report.extended_result_codes = v.extended;
+  return SU_I(client).channel.vtable->report(SU_I(client).channel.ctx, &v.report);
 }
 
 /* ------------------------------------------------------------------------- */

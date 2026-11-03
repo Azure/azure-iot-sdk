@@ -492,6 +492,15 @@ superseded. The client MUST distinguish:
 | Same `workflowId` after it `FAILED`, wait elapsed | **Retry** | MUST restart from ManifestReceived under the same id, keeping the failure count; deferred (`AZ_IOT_SU_EVENT_UPDATE_DEFERRED`, `AZ_IOT_ERR_BUSY`) while the previous attempt's terminal report is not settled |
 | `workflowId` longer than `AZ_IOT_SU_WORKFLOW_ID_SIZE` | **Refused** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` (`AZ_IOT_ERR_NOT_ENOUGH_SPACE`). Not truncated: reports correlate on the exact id |
 | Payload that cannot be decoded (not JSON, required field missing or mistyped, invalid escape) | **Refused** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` (`AZ_IOT_ERR_PROTOCOL`) |
+| Payload over `max_update_size`, or a string or file count over its limit | **Refused** | MUST NOT process; raises `AZ_IOT_SU_EVENT_UPDATE_REFUSED` (`AZ_IOT_ERR_NOT_ENOUGH_SPACE`) |
+
+A refused update whose `workflowId` is known (decodable, at most
+`AZ_IOT_SU_WORKFLOW_ID_SIZE` bytes, and not the active workflow's) is reported
+`FAILED` with facility `0xB`, so the service stops offering it. The report is
+sent from `do_work`, before any update check, and retried after the backoff on
+a retryable verdict. Only the last refusal is kept, a newly accepted workflow
+drops it, and it is not persisted: a redelivery after a restart is refused and
+reported again.
 
 A deployment is validated as a whole, so from its first `install_fn` call it is
 not interleaved with another: a partly applied or not yet activated deployment
@@ -539,6 +548,7 @@ defines a structured layout:
 | `0x8` | Persist | `persist_workflow_state_fn` kept failing at a reboot boundary (`AZ_IOT_SU_PERSIST_MAX_ATTEMPTS`); low bits carry its last return value |
 | `0x9` | Superseded | reserved for `AZ_IOT_SU_REPLACEMENT_ROLLBACK` (not yet supported) |
 | `0xA` | Delta | a file naming a download handler was downloaded in full (sub-codes in Delta Downloads above); reported on a `SUCCEEDED` step |
+| `0xB` | Refused | a delivered update was not processed (Duplicate vs. Replacement Detection above); sub-code `1` (`TOO_LARGE`) over a limit, `2` (`MALFORMED`) undecodable; result code `-11`, origin agent core |
 | `0xF` | Internal / client | parser, state, or buffer error inside the software updates client |
 
 The low 28 bits MUST carry the originating hook's raw return value (or an SDK
@@ -1128,7 +1138,7 @@ az_iot_su_client_config_options az_iot_su_client_config_options_default(void);
  *     AZ_IOT_SU_PERSIST_MAX_ATTEMPTS).
  *   UPDATE_REFUSED         -- a delivered update was not processed because it
  *     does not fit a compile-time limit (workflow id or request buffer) or
- *     cannot be decoded.
+ *     cannot be decoded. Reported FAILED when its workflow id is known.
  *   UPDATE_DEFERRED        -- a delivered update with a new workflow id was not
  *     started: the current workflow has changed the device, or a reboot its
  *     last apply asked for is owed; or a due retry waits for the failed

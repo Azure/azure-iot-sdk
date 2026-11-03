@@ -66,7 +66,7 @@ static void set_su_state(az_iot_su_client* client, az_iot_su_state next);
 static void arm_pending_fetch_deadline(az_iot_su_client* client, uint32_t timeout_ms);
 static bool fetch_in_flight_overdue(const az_iot_su_client* client);
 static bool expire_fetch_in_flight(az_iot_su_client* client);
-static void raise_refused(az_iot_su_client* client, az_iot_result reason);
+static void refuse_update(az_iot_su_client* client, az_iot_result reason, az_span raw_workflow_id);
 static void raise_deferred(az_iot_su_client* client);
 static void raise_retry_wait(az_iot_su_client* client, uint32_t retry_after_ms);
 static void notify_download_handlers_of_end(az_iot_su_client* client, az_iot_su_outcome outcome);
@@ -1765,6 +1765,19 @@ static void process_update_metadata(
   {
     return;
   }
+
+  /* Probe the transient buffer for the workflow identity. These spans are only
+   * valid for the duration of this call, which is enough to decide what to do,
+   * and to name the workflow in the report of a refusal. */
+  az_span transient = AZ_SPAN_EMPTY;
+  az_iot_su_client_update_request probe;
+  memset(&probe, 0, sizeof(probe));
+  az_iot_result pr = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  if (patch_len <= (size_t)INT32_MAX)
+  {
+    transient = az_span_create((uint8_t*)(uintptr_t)patch, (int32_t)patch_len);
+    pr = parse_update_metadata(transient, NULL, file_url_capacity(client), AZ_SPAN_EMPTY, &probe);
+  }
   if (patch_len > SU_I(client).request_buffer_size)
   {
     AZ_IOT_LOG_ERRORF(
@@ -1772,7 +1785,7 @@ static void process_update_metadata(
         "update payload of %u bytes exceeds az_iot_su_limits::max_update_size (%u); ignored",
         (unsigned)patch_len,
         (unsigned)SU_I(client).request_buffer_size);
-    raise_refused(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    refuse_update(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE, probe.workflow.id);
     return;
   }
 
@@ -1782,22 +1795,16 @@ static void process_update_metadata(
   AZ_IOT_LOG_TRACEF(
       AZ_IOT_LOG_COMPONENT_SU, "update payload: %.*s", (int)patch_len, (const char*)patch);
 
-  /* Probe the transient buffer for the workflow identity. These spans are only
-   * valid for the duration of this call, which is enough to decide what to do. */
-  az_span transient = az_span_create((uint8_t*)(uintptr_t)patch, (int32_t)patch_len);
-  az_iot_su_client_update_request probe;
-  az_iot_result pr
-      = parse_update_metadata(transient, NULL, file_url_capacity(client), AZ_SPAN_EMPTY, &probe);
   if (pr == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
   {
-    raise_refused(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    refuse_update(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE, probe.workflow.id);
     return;
   }
   if (pr != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_SU, "update payload not understood (%d); ignored", (int)pr);
-    raise_refused(client, AZ_IOT_ERR_PROTOCOL);
+    refuse_update(client, AZ_IOT_ERR_PROTOCOL, probe.workflow.id);
     return;
   }
 
@@ -1813,7 +1820,7 @@ static void process_update_metadata(
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_SU, "update payload has an undecodable workflowId; ignored");
-    raise_refused(client, AZ_IOT_ERR_PROTOCOL);
+    refuse_update(client, AZ_IOT_ERR_PROTOCOL, probe.workflow.id);
     return;
   }
   if (dr == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
@@ -1824,7 +1831,7 @@ static void process_update_metadata(
         "update refused",
         (unsigned)sizeof(id_scratch),
         (int)az_span_size(probe.workflow.id));
-    raise_refused(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    refuse_update(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE, probe.workflow.id);
     return;
   }
   bool retry = dr == AZ_IOT_OK && same_workflow_id(client, probe_id);
@@ -1868,13 +1875,13 @@ static void process_update_metadata(
         AZ_IOT_LOG_COMPONENT_SU,
         "update payload has a string over az_iot_su_limits::scratch_size (%u); ignored",
         (unsigned)SU_I(client).scratch_size);
-    raise_refused(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    refuse_update(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE, probe.workflow.id);
     return;
   }
   if (sr != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "update payload has an undecodable string; ignored");
-    raise_refused(client, AZ_IOT_ERR_PROTOCOL);
+    refuse_update(client, AZ_IOT_ERR_PROTOCOL, probe.workflow.id);
     return;
   }
 
@@ -1909,6 +1916,9 @@ static void process_update_metadata(
 
   /* The replaced workflow's manifest points into request_buffer: end it first. */
   notify_download_handlers_of_end(client, AZ_IOT_SU_OUTCOME_CANCELED);
+
+  /* The service's offer is now this workflow: a refused one is no longer reported. */
+  SU_I(client).refused_report_owed = false;
 
   /* Stage the patch into client-owned storage and re-parse so current_request
    * / current_manifest reference stable memory. */
@@ -2069,9 +2079,38 @@ static void raise_completed(
   dispatch_event(client, &event);
 }
 
-/** @brief Raise AZ_IOT_SU_EVENT_UPDATE_REFUSED for an update not processed. */
-static void raise_refused(az_iot_su_client* client, az_iot_result reason)
+/**
+ * @brief Refuse a delivered update the client cannot process.
+ *
+ * Queues its FAILED report, so the service stops offering it, then raises
+ * AZ_IOT_SU_EVENT_UPDATE_REFUSED. Nothing is queued when the workflow id is
+ * missing, undecodable or longer than AZ_IOT_SU_WORKFLOW_ID_SIZE (it cannot be
+ * reported exactly), or is the active workflow's, whose own reports speak for
+ * it. Only the last refusal is kept; a redelivery queues it again.
+ *
+ * @param client          The client.
+ * @param reason          AZ_IOT_ERR_NOT_ENOUGH_SPACE or AZ_IOT_ERR_PROTOCOL.
+ * @param raw_workflow_id The update's `workflowId` as delivered (JSON-escaped); empty if unknown.
+ */
+static void refuse_update(az_iot_su_client* client, az_iot_result reason, az_span raw_workflow_id)
 {
+  uint8_t id_scratch[AZ_IOT_SU_WORKFLOW_ID_SIZE];
+  az_span id = AZ_SPAN_EMPTY;
+  if (az_span_size(raw_workflow_id) > 0
+      && az_iot_json_string_decode(raw_workflow_id, AZ_SPAN_FROM_BUFFER(id_scratch), &id)
+          == AZ_IOT_OK
+      && az_span_size(id) > 0 && memchr(az_span_ptr(id), '\0', (size_t)az_span_size(id)) == NULL
+      && !same_workflow_id(client, id))
+  {
+    memcpy(SU_I(client).refused_workflow_id, az_span_ptr(id), (size_t)az_span_size(id));
+    SU_I(client).refused_workflow_id[az_span_size(id)] = '\0';
+    SU_I(client).refused_extended_result_code = AZ_IOT_SU_EXTENDED_RESULT(
+        AZ_IOT_SU_FACILITY_REFUSED,
+        reason == AZ_IOT_ERR_NOT_ENOUGH_SPACE ? AZ_IOT_SU_REFUSED_ERROR_TOO_LARGE
+                                              : AZ_IOT_SU_REFUSED_ERROR_MALFORMED);
+    SU_I(client).refused_report_owed = true;
+    AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_SU, "refused update will be reported FAILED");
+  }
   az_iot_su_event event = {
     .kind = AZ_IOT_SU_EVENT_UPDATE_REFUSED,
     .state = SU_I(client).state,
@@ -2080,6 +2119,39 @@ static void raise_refused(az_iot_su_client* client, az_iot_result reason)
     .service_error = k_no_service_error,
   };
   dispatch_event(client, &event);
+}
+
+/**
+ * @brief Hand the channel the owed FAILED report of a refused update.
+ *
+ * Waits out the backoff of a retryable verdict. Kept owed when the channel is
+ * busy or has no session; dropped on any other refusal.
+ *
+ * @param client The client.
+ */
+static void send_refused_update_report(az_iot_su_client* client)
+{
+  if (!SU_I(client).refused_report_owed || SU_I(client).refused_report_in_flight
+      || SU_I(client).terminal_report_in_flight || az_iot_retry_state__pending(&SU_I(client).retry))
+  {
+    return;
+  }
+  /* Set before the call: a synchronous channel may deliver the verdict from inside it. */
+  SU_I(client).refused_report_owed = false;
+  SU_I(client).refused_report_in_flight = true;
+  az_iot_result r = az_iot_su__report_refused_update(client);
+  if (r == AZ_IOT_OK)
+  {
+    return;
+  }
+  SU_I(client).refused_report_in_flight = false;
+  if (r == AZ_IOT_ERR_BUSY || r == AZ_IOT_ERR_NOT_CONNECTED)
+  {
+    SU_I(client).refused_report_owed = true;
+    return;
+  }
+  AZ_IOT_LOG_ERRORF(
+      AZ_IOT_LOG_COMPONENT_SU, "refused update's report not sent (%d); dropped", (int)r);
 }
 
 /** @brief Raise AZ_IOT_SU_EVENT_UPDATE_DEFERRED for a new workflow not started. */
@@ -2338,6 +2410,39 @@ static void queue_conflict_recheck(az_iot_su_client* client)
   arm_pending_fetch_deadline(client, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS);
 }
 
+/**
+ * @brief Settle the refused update's FAILED report on the channel's verdict.
+ *
+ * A retryable verdict sends it again after the backoff; any other failure drops it.
+ *
+ * @param client        The client.
+ * @param result        The verdict.
+ * @param action        How to proceed when @p result is not AZ_IOT_OK.
+ * @param service_error What the service said; may be NULL.
+ */
+static void settle_refused_update_report(
+    az_iot_su_client* client,
+    az_iot_result result,
+    az_iot_su_error_action action,
+    const az_iot_su_service_error* service_error)
+{
+  SU_I(client).refused_report_in_flight = false;
+  if (result == AZ_IOT_OK)
+  {
+    az_iot_retry_state__reset(&SU_I(client).retry);
+    AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_SU, "refused update reported FAILED");
+    return;
+  }
+  if (action == AZ_IOT_SU_ERROR_ACTION_RETRY || action == AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER)
+  {
+    (void)arm_retry_backoff(client, result, action, service_error);
+    SU_I(client).refused_report_owed = true;
+    return;
+  }
+  AZ_IOT_LOG_ERRORF(
+      AZ_IOT_LOG_COMPONENT_SU, "refused update's report failed (%d); dropped", (int)result);
+}
+
 static az_iot_su_operation fetch_operation(uint8_t fetch);
 
 static void on_channel_result(
@@ -2350,6 +2455,12 @@ static void on_channel_result(
   az_iot_su_client* client = (az_iot_su_client*)engine_ctx;
   if (client == NULL || SU_I(client).detached)
   {
+    return;
+  }
+  /* Verdicts carry no request identity: the channel takes one operation at a time. */
+  if (operation == AZ_IOT_SU_OP_REPORT_STATUS && SU_I(client).refused_report_in_flight)
+  {
+    settle_refused_update_report(client, result, action, service_error);
     return;
   }
   if (operation != AZ_IOT_SU_OP_REPORT_STATUS)
@@ -2723,7 +2834,12 @@ static void drive_pending_fetch(az_iot_su_client* client)
   }
   /* An owed terminal report goes first: until the service has the outcome, a
    * check advertises the previous state and may be offered the same update
-   * again. Queued here if nothing will send it (e.g. its session was lost). */
+   * again. Queued here if nothing will send it (e.g. its session was lost).
+   * A refused update's report goes first for the same reason. */
+  if (SU_I(client).refused_report_owed || SU_I(client).refused_report_in_flight)
+  {
+    return;
+  }
   if (SU_I(client).report_owed || SU_I(client).terminal_report_in_flight)
   {
     if (!SU_I(client).terminal_report_in_flight && !SU_I(client).device_properties_report_pending)
@@ -4438,6 +4554,8 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
     drive_pending_fetch(client);
     return AZ_IOT_OK;
   }
+
+  send_refused_update_report(client);
 
   /* Retry a requested update check that could not be issued earlier (e.g. the
    * channel was not ready, or the service rejected it retryably). Self-heals

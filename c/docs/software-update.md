@@ -350,7 +350,7 @@ is valid only during the callback. Names below omit the `AZ_IOT_SU_EVENT_` prefi
 | `NO_UPDATE` | A check found nothing | Wait for the next check |
 | `REPORT_ACCEPTED` | The service accepted a report | — |
 | `OPERATION_ABANDONED` | A check or report was given up (`operation`, `reason`, `service_error`) | A check: log `service_error` and ask again later on the **same** route. A report: log only; the client reports again at its next reporting point (a rejected final report: see the header) |
-| `UPDATE_REFUSED` | An offer is too large or malformed; not processed | Raise the limit named by `reason`, or fix the update |
+| `UPDATE_REFUSED` | An offer is too large or malformed; not processed, reported `FAILED` | Raise the limit named by `reason`, or fix the update |
 | `UPDATE_DEFERRED` | A new update waits: the current one has started installing (or awaits its reboot) | Ask again once the current one ends |
 | `UPDATE_DUPLICATE` | The same update was offered again | — |
 | `UPDATE_RETRY_WAIT` | A failed update was offered before its retry time | Ask again after `retry_after_ms` |
@@ -420,8 +420,10 @@ PC samples run on Linux and Windows.
   is downloaded (`AZ_IOT_SU_MANIFEST_ERROR_*`).
 - No built-in health check or automatic rollback after a reboot.
 - `AZ_IOT_SU_REPLACEMENT_ROLLBACK` is not supported yet.
-- An update refused by the device (`UPDATE_REFUSED`) is not reported to the service, which keeps
-  offering it.
+- An update refused by the device (`UPDATE_REFUSED`) is reported `FAILED` (facility `0xB`) so the
+  service stops offering it, unless its workflow ID is missing, undecodable or longer than
+  `AZ_IOT_SU_WORKFLOW_ID_SIZE`. That report is not persisted: after a restart, an offer refused
+  again is reported again.
 - A skipped update is reported with result code -1.
 - During a service outage a check is retried until its timeout, not deferred to the next scheduled
   check.

@@ -159,8 +159,8 @@ software updates. APIs may change before a stable release.
   [docs/software-update.md](docs/software-update.md#delta-updates).
 - Device properties (`az_iot_su_client_update_device_properties()`) and, when set, the installed
   update id are sent with every check; the applied update id is adopted after a successful update.
-- Events for each stage (`AZ_IOT_SU_EVENT_*`), including no update, duplicate and refused offers,
-  accepted reports, a completed workflow and a retry wait. A failed workflow offered again is
+- Events for each stage (`AZ_IOT_SU_EVENT_*`), including no update, duplicate and refused offers
+  (a refused offer is reported failed, so the service stops offering it), accepted reports, a completed workflow and a retry wait. A failed workflow offered again is
   retried after 1 h, doubling up to 24 h; cancellation is service-side only. Service errors and
   report conflicts are handled as the service requires.
 - Memory from one application-provided workspace, sized by run-time limits (`az_iot_su_limits`,

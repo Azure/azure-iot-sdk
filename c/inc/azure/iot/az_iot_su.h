@@ -254,6 +254,9 @@ extern "C"
 /* A download handler could not produce a file, which was downloaded in full; see
  * AZ_IOT_SU_DELTA_ERROR_*. Reported on a SUCCEEDED step and the overall result. */
 #define AZ_IOT_SU_FACILITY_DELTA 0xAu
+/* A delivered update the client refused before processing it (AZ_IOT_SU_EVENT_UPDATE_REFUSED);
+ * see AZ_IOT_SU_REFUSED_ERROR_*. */
+#define AZ_IOT_SU_FACILITY_REFUSED 0xBu
 #define AZ_IOT_SU_FACILITY_INTERNAL 0xFu /* parser/state/buffer error in the client */
 
 /* Compose a 32-bit extended_result_code from a facility nibble + sub-code. */
@@ -282,6 +285,10 @@ extern "C"
 #define AZ_IOT_SU_DELTA_ERROR_RELATED_HASH 0x4u /* related file SHA-256 != manifest hash */
 #define AZ_IOT_SU_DELTA_ERROR_BUILD 0x5u /* build_file_from_related_fn failed */
 #define AZ_IOT_SU_DELTA_ERROR_BUILT_HASH 0x6u /* built file SHA-256 != manifest hash */
+
+/* Sub-codes of AZ_IOT_SU_FACILITY_REFUSED: why a delivered update was refused. */
+#define AZ_IOT_SU_REFUSED_ERROR_TOO_LARGE 0x1u /* over a limit (AZ_IOT_ERR_NOT_ENOUGH_SPACE) */
+#define AZ_IOT_SU_REFUSED_ERROR_MALFORMED 0x2u /* cannot be decoded (AZ_IOT_ERR_PROTOCOL) */
 
   /* --- Compile-time capacities --------------------------------------------- */
 
@@ -930,13 +937,16 @@ extern "C"
     AZ_IOT_SU_EVENT_PERSIST_RECOVERED,
 
     /* A delivered update was refused before processing, so nothing was
-     * installed or reported for it. Carries `state` (unchanged) and `reason`:
+     * installed for it. Carries `state` (unchanged) and `reason`:
      * AZ_IOT_ERR_NOT_ENOUGH_SPACE when its workflow id exceeds
      * AZ_IOT_SU_WORKFLOW_ID_SIZE, it has more `fileUrls` than
      * AZ_IOT_SU_MAX_FILE_COUNT or the payload exceeds
      * az_iot_su_limits::max_update_size; AZ_IOT_ERR_PROTOCOL when the payload
      * cannot be decoded (not JSON, a required field missing or of the wrong
-     * type, or an invalid string escape). Raised again on each redelivery. */
+     * type, or an invalid string escape). Raised again on each redelivery.
+     * The update is reported FAILED (AZ_IOT_SU_FACILITY_REFUSED), so the
+     * service stops offering it, unless its workflow id is missing, cannot be
+     * decoded, exceeds AZ_IOT_SU_WORKFLOW_ID_SIZE or is the active workflow's. */
     AZ_IOT_SU_EVENT_UPDATE_REFUSED,
 
     /* A delivered update with a new workflow id was not started because the
@@ -1367,6 +1377,14 @@ extern "C"
       size_t step_details_size; /**< az_iot_su_limits::result_details_size. */
       /** Overall result details, NUL-terminated: result_details_size + 1 bytes. */
       uint8_t* overall_details;
+      /** Decoded workflow id of the last refused update, NUL-terminated. */
+      char refused_workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1];
+      /** Extended result code of the refused update's FAILED report. */
+      int32_t refused_extended_result_code;
+      /** The refused update's FAILED report is due to be handed to the channel. */
+      bool refused_report_owed;
+      /** The refused update's FAILED report awaits its verdict. */
+      bool refused_report_in_flight;
     } _internal;
   } az_iot_su_client;
 

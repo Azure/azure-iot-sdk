@@ -1742,6 +1742,14 @@ static void oversized_update_metadata_is_ignored(void** state)
   assert_int_equal((int)fx->log.op_count, 0);
   assert_int_equal(fx->refused_count, 1);
   assert_int_equal(fx->last_refused_reason, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  /* Its workflow id is known, so it is reported FAILED as too large. */
+  pump(fx, 5);
+  assert_int_equal((int)fx->log.op_count, 0);
+  assert_int_equal(fx->chan.report_count, 1);
+  assert_string_equal(fx->chan.last_workflow_id, "51552a54-765e-419f-892a-c822549b6f38");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_string_equal(fx->chan.last_extended, "b0000001");
 }
 
 static void verify_failure_blocks_download_and_fails(void** state)
@@ -10259,6 +10267,138 @@ static void a_synchronous_retryable_report_verdict_is_not_lost(void** state)
   assert_int_equal(fx->chan.report_count, sent + 2);
 }
 
+/** @brief A payload the client refuses as malformed, whose workflow id is "wf-refused". */
+#define REFUSED_PATCH \
+  "{\"workflowId\":\"wf\\u002drefused\",\"updateManifest\":\"{}\",\"fileUrls\":{\"f\":1}}"
+
+/* A refused update with a known workflow id is reported FAILED once, from the
+ * tick, so the service stops offering it; nothing runs. */
+static void a_refused_update_is_reported_failed(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar2";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "1.0";
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
+
+  inject_patch(fx, REFUSED_PATCH);
+  assert_int_equal(fx->refused_count, 1);
+  assert_int_equal(fx->last_refused_reason, AZ_IOT_ERR_PROTOCOL);
+  assert_int_equal(fx->chan.report_count, 0);
+
+  pump(fx, 5);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal((int)fx->log.op_count, 0);
+  assert_int_equal(fx->chan.report_count, 1);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-refused");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->chan.last_report.failure_origin, AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE);
+  assert_int_equal(fx->chan.last_report.result_code, -(int32_t)AZ_IOT_SU_FACILITY_REFUSED);
+  assert_string_equal(fx->chan.last_extended, "b0000002");
+  assert_int_equal(fx->chan.last_report.step_results_count, 0);
+  assert_true(fx->chan.last_had_installed_update_id);
+  assert_string_equal(fx->chan.last_installed_version, "1.0");
+  assert_int_equal(fx->completed_count, 0);
+  assert_false(fx->su._internal.refused_report_owed);
+  assert_false(fx->su._internal.refused_report_in_flight);
+}
+
+/* The active workflow's id, refused on redelivery, is not reported FAILED: its
+ * own reports speak for it. */
+static void a_refused_redelivery_of_the_active_workflow_is_not_reported(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  inject_patch(fx, signed_patch());
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+
+  inject_patch(
+      fx,
+      "{\"workflowId\":\"51552a54-765e-419f-892a-c822549b6f38\",\"updateManifest\":\"{}\","
+      "\"fileUrls\":{\"f\":1}}");
+  assert_int_equal(fx->refused_count, 1);
+  assert_false(fx->su._internal.refused_report_owed);
+
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  for (int i = 0; i < fx->chan.report_count; ++i)
+  {
+    assert_true(fx->chan.outcomes[i] != AZ_IOT_SU_OUTCOME_FAILED);
+  }
+}
+
+/* A refused update's report holds update checks until it settles: a retryable
+ * verdict sends it again after the backoff, a fatal one drops it. */
+static void a_refused_update_report_is_retried_then_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_verdict_deferred = true;
+  inject_patch(fx, REFUSED_PATCH);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, 1);
+  assert_true(fx->su._internal.refused_report_in_flight);
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  int checks = fx->chan.request_update_count;
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_true(fx->su._internal.refused_report_owed);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, 1);
+  assert_int_equal(fx->chan.request_update_count, checks);
+
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, 2);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-refused");
+  assert_int_equal(fx->chan.request_update_count, checks);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      &(az_iot_su_service_error){ .code = 400000, .message = "", .tracking_id = "" },
+      fx->chan.engine_ctx);
+  assert_false(fx->su._internal.refused_report_owed);
+  assert_false(fx->su._internal.refused_report_in_flight);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, 2);
+  assert_int_equal(fx->chan.request_update_count, checks + 1);
+}
+
+/* A refused update's report the channel cannot take yet stays owed; one for an
+ * update since superseded by an accepted workflow is not sent. */
+static void an_accepted_workflow_drops_an_owed_refused_report(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_result = AZ_IOT_ERR_BUSY;
+  inject_patch(fx, REFUSED_PATCH);
+  pump(fx, 3);
+  assert_true(fx->su._internal.refused_report_owed);
+  assert_false(fx->su._internal.refused_report_in_flight);
+
+  fx->chan.report_result = AZ_IOT_OK;
+  int sent = fx->chan.report_count;
+  inject_patch(fx, signed_patch());
+  assert_false(fx->su._internal.refused_report_owed);
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_true(fx->chan.report_count > sent);
+  for (int i = sent; i < fx->chan.report_count; ++i)
+  {
+    assert_string_equal(fx->chan.workflow_ids[i], "51552a54-765e-419f-892a-c822549b6f38");
+  }
+}
+
 /* A late verdict for an older report does not pace a report the application
  * queued since. */
 static void a_late_report_verdict_does_not_pace_a_newer_report(void** state)
@@ -11735,6 +11875,13 @@ int main(void)
         a_stale_fallback_does_not_hold_an_excluded_report_retry, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_synchronous_retryable_report_verdict_is_not_lost, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_refused_update_is_reported_failed, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_redelivery_of_the_active_workflow_is_not_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_update_report_is_retried_then_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_accepted_workflow_drops_an_owed_refused_report, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_late_report_verdict_does_not_pace_a_newer_report, setup, teardown),
     cmocka_unit_test_setup_teardown(the_fallback_backs_off_and_resets_on_success, setup, teardown),

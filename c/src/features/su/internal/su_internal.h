@@ -63,6 +63,15 @@ extern "C"
    * Returns AZ_IOT_OK when the channel accepted the report. */
   az_iot_result az_iot_su__report_state(az_iot_su_client* client);
 
+  /**
+   * @brief Hand the channel the FAILED report of the refused update named by
+   * `refused_workflow_id`, with `refused_extended_result_code`.
+   *
+   * @param[in] client The client; its channel is bound.
+   * @return The channel's result.
+   */
+  az_iot_result az_iot_su__report_refused_update(az_iot_su_client* client);
+
   /* Internal entry point: bind the engine to an explicit channel and crypto
    * backend. The public az_iot_su_client_init() builds the shipping channel,
    * takes the connection client's backend and calls this. Kept internal so
