@@ -7,7 +7,6 @@ using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Models.Twin;
-using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
@@ -42,7 +41,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
             LonghaulSettings settings = GetSettingsOrSkip();
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
 
-            MqttNetClient mqttClient = new();
+            // Setup provisions through the default global DPS endpoint; see CreateConnectedUnifiedConnectionClientAsync.
+            EndpointTrackingMqttClient mqttClient = new(new ProvisioningSettings(Setup.DpsIdScope).GlobalEndpointAddress);
             Device.Unified.Models.ConnectionClientOptions options = new()
             {
                 MqttClient = mqttClient,
