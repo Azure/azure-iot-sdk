@@ -28,6 +28,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
@@ -337,16 +338,18 @@ void app_main(void)
   device_properties.installed_update_id.name = SU_UPDATE_NAME;
   device_properties.installed_update_id.version = SU_UPDATE_VERSION;
 
-  /* Largest update accepted. A one-file offer is about 5 KiB, and NVS
+  /* Largest detached manifest file of a mini manifest, which the service sends for a full
+   * manifest over 4 KiB. 20 KiB holds a full manifest of about 16 KiB once JSON-escaped. */
+#define SU_MAX_DETACHED_MANIFEST_FILE_SIZE 20480
+  /* Largest update accepted: a mini manifest's request (about 3 KiB, plus about 160 bytes per file
+   * URL) followed by its detached manifest file. A request with a full manifest is smaller. NVS
    * (partitions*.csv) must hold two generations of the largest checkpoint
-   * (AZ_IOT_SU_STATE_BLOB_MAX_SIZE(), about 11 KiB) while one
-   * replaces the other. */
-#define SU_MAX_UPDATE_SIZE 8192
-  /* A mini manifest's detached manifest file, which the client bounds to SU_MAX_UPDATE_SIZE. */
-  static uint8_t detached_manifest_buffer[SU_MAX_UPDATE_SIZE];
-  ota.detached_manifest_buffer = AZ_SPAN_FROM_BUFFER(detached_manifest_buffer);
-  /* The client's memory, about 35 KB: too large for the 12 KB main task stack. */
-  static uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_SIZE(
+   * (AZ_IOT_SU_STATE_BLOB_MAX_SIZE(), about 27 KiB) while one replaces the other. */
+#define SU_MAX_UPDATE_SIZE (SU_MAX_DETACHED_MANIFEST_FILE_SIZE + 4096)
+  /* The client's memory (about 55 KB) and the detached manifest file's buffer come from the heap,
+   * once: the ESP32's static DRAM is too small for them, and the heap also uses DRAM that static
+   * data cannot. The workspace needs no alignment. */
+  const size_t su_workspace_size = AZ_IOT_SU_WORKSPACE_SIZE(
       SU_MAX_UPDATE_SIZE,
       AZ_IOT_SU_VERIFY_SCRATCH_SIZE,
       AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE,
@@ -354,7 +357,20 @@ void app_main(void)
       AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE,
       AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS,
       AZ_IOT_SU_DEFAULT_MAX_OBSERVERS,
-      AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES)];
+      AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES);
+  uint8_t* const su_workspace = malloc(su_workspace_size);
+  uint8_t* const detached_manifest_buffer = malloc(SU_MAX_DETACHED_MANIFEST_FILE_SIZE);
+  if (su_workspace == NULL || detached_manifest_buffer == NULL)
+  {
+    ESP_LOGE(
+        TAG,
+        "out of memory for the software update client (%u + %u bytes)",
+        (unsigned)su_workspace_size,
+        (unsigned)SU_MAX_DETACHED_MANIFEST_FILE_SIZE);
+    esp_restart();
+  }
+  ota.detached_manifest_buffer
+      = az_span_create(detached_manifest_buffer, SU_MAX_DETACHED_MANIFEST_FILE_SIZE);
   static az_iot_su_client su;
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
@@ -367,7 +383,7 @@ void app_main(void)
   su_opts.limits.device_properties_size = AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE;
   su_opts.limits.result_details_size = AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE;
   su_opts.workspace = su_workspace;
-  su_opts.workspace_size = sizeof(su_workspace);
+  su_opts.workspace_size = su_workspace_size;
   if (az_iot_su_client_init(&su, &conn, &su_opts) != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "az_iot_su_client_init failed");

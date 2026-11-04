@@ -45,16 +45,39 @@ sequenceDiagram
 
 | Platform hook | ESP32 implementation |
 |---|---|
-| `download` | `esp_http_client` GET → `esp_ota_write` into the next OTA partition. A mini manifest's detached manifest file, fetched while the workflow is in `VERIFYING_MANIFEST`, goes to `detached_manifest_buffer` (`SU_MAX_UPDATE_SIZE` bytes) instead |
+| `download` | `esp_http_client` GET → `esp_ota_write` into the next OTA partition. A mini manifest's detached manifest file, fetched while the workflow is in `VERIFYING_MANIFEST`, goes to `detached_manifest_buffer` (`SU_MAX_DETACHED_MANIFEST_FILE_SIZE` bytes) instead |
 | `read_file` | `esp_partition_read`, so core can run the SHA-256 check on the written image; the detached manifest file is read from `detached_manifest_buffer` |
 | `is_installed` | Compares the manifest version with `SU_UPDATE_VERSION` |
 | `install` | `esp_ota_end` + `esp_ota_set_boot_partition`; returns `REBOOT_REQUIRED` |
 | `apply` | No-op; the new image is already running |
 | `restore` | Rollback to the running partition |
-| `persist` / `load` state | NVS namespace `su_sample`, key `wf_state` (resume across the reboot). The 36 KB `nvs` partition holds two generations of the largest checkpoint; [main/app_main.c](main/app_main.c) sets `limits.max_update_size` to 8192 (`SU_MAX_UPDATE_SIZE`) to bound it. Erase the flash when moving from the earlier 24 KB layout. |
+| `persist` / `load` state | NVS namespace `su_sample`, key `wf_state` (resume across the reboot). The 80 KB `nvs` partition holds two generations of the largest checkpoint (about 27 KB); [main/app_main.c](main/app_main.c) sets `limits.max_update_size` to `SU_MAX_UPDATE_SIZE` (24 KiB) to bound it. Erase the flash when moving from an earlier layout. |
 
 The hooks learn the workflow state from `az_iot_su_esp32_ota_handle_event()`, which must be
 registered as an observer before `az_iot_su_client_resume()`.
+
+### Mini manifests
+
+When an update's full manifest is over 4 KiB, Device Update sends a mini manifest instead and the
+full manifest as a detached manifest file. The client stores that file after the request, in
+`limits.max_update_size` bytes, and the hooks download it into `detached_manifest_buffer`. As
+shipped, [main/app_main.c](main/app_main.c) accepts a detached manifest file of up to
+`SU_MAX_DETACHED_MANIFEST_FILE_SIZE` (20 KiB): a full manifest of about 16 KiB, once
+JSON-escaped. `SU_MAX_UPDATE_SIZE` adds 4 KiB for the request (the signature, about 2.4 KB, the
+mini manifest and about 160 bytes per file URL). A larger file fails verification with
+`AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE` (logged as `detached manifest file is <n> bytes;
+az_iot_su_limits::max_update_size leaves <m> after the request` or `ota: detached manifest file of
+<n> bytes exceeds detached_manifest_buffer`).
+
+[main/app_main.c](main/app_main.c) allocates the client's workspace (about 55 KB) and
+`detached_manifest_buffer` from the heap at boot, since the ESP32's static DRAM is too small for
+them. To accept larger full manifests, raise `SU_MAX_DETACHED_MANIFEST_FILE_SIZE`. Each extra byte
+costs 2 bytes of heap (`detached_manifest_buffer` and the client's workspace) and 2 bytes of NVS
+(two generations of the checkpoint): grow the `nvs` partition in
+[partitions.csv](partitions.csv) and [partitions_secure.csv](partitions_secure.csv) to at least
+`2 × ceil(AZ_IOT_SU_STATE_BLOB_MAX_SIZE() / 4000) + 4` pages of 4 KiB (NVS stores at most 4000
+blob bytes per page and keeps one page free; Wi-Fi and PHY data use the rest), and erase the flash
+before flashing the new layout. The shipped 20 pages leave 2 spare.
 
 Once connected to its hub, the new image calls `az_iot_su_esp32_ota_mark_running_image_valid()`
 (`esp_ota_mark_app_valid_cancel_rollback`). If it crashes or never connects, the
@@ -411,6 +434,7 @@ I (...) su_esp32: resumed persisted workflow at state: <state>
 | `ota: http status ...` or `ota: http open failed` | Download URL unreachable, or TLS to the storage host failed. |
 | `ota: esp_ota_write failed` | Image larger than the 1856 KB OTA slot. |
 | `NVS write failing; update reboot deferred` | NVS full or failing; the reboot waits until the workflow state is stored. |
+| `detached manifest file is <n> bytes; ...` or `ota: detached manifest file of <n> bytes exceeds detached_manifest_buffer` | The update's full manifest is too large for this build. See [Mini manifests](#mini-manifests). |
 | New image boots, then the old version comes back | The new image crashed or never connected, so the bootloader rolled back. |
 
 The SDK logs at `INFO`; change the level in `app_main()` for more detail.
