@@ -88,6 +88,8 @@ $script:Scenarios = [ordered]@{
     # signed mini manifest (see Import-SuE2EUpdate); managed and library mode.
     DETACHED              = @{ Short = 'mini'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED'; Expected = 'Succeeded'; Detached = $true }
     DETACHED_LIBRARY_MODE = @{ Short = 'minilib'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_LIBRARY_MODE'; Expected = 'Succeeded'; Detached = $true }
+    # A mini manifest whose full manifest is a delta update (test handler), managed client.
+    DETACHED_DELTA        = @{ Short = 'minidelta'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_DELTA'; Expected = 'Succeeded'; Delta = 'Test'; Detached = $true }
 }
 
 function Get-SuE2EConfig {
