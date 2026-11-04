@@ -54,7 +54,8 @@ sequenceDiagram
 | `persist` / `load` state | NVS namespace `su_sample`, key `wf_state` (resume across the reboot). The 36 KB `nvs` partition holds two generations of the largest checkpoint; [main/app_main.c](main/app_main.c) sets `limits.max_update_size` to 8192 (`SU_MAX_UPDATE_SIZE`) to bound it. Erase the flash when moving from the earlier 24 KB layout. |
 
 The hooks learn the workflow state from `az_iot_su_esp32_ota_handle_event()`, which must be
-registered as an observer before `az_iot_su_client_resume()`.
+registered as an observer before `az_iot_su_client_resume()`; until it gets an event, `download`
+fails.
 
 Once connected to its hub, the new image calls `az_iot_su_esp32_ota_mark_running_image_valid()`
 (`esp_ota_mark_app_valid_cancel_rollback`). If it crashes or never connects, the

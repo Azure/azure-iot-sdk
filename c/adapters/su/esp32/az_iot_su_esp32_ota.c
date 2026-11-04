@@ -90,8 +90,8 @@ static bool ota_is_detached_manifest_phase(const az_iot_su_esp32_ota_context* c)
 }
 
 /**
- * @brief Open the HTTP download, and the OTA write unless @p detached_manifest. Returns
- * IN_PROGRESS or FAILURE.
+ * @brief Abort a stale OTA write, then open the HTTP download, and the OTA write unless
+ * @p detached_manifest. Returns IN_PROGRESS or FAILURE.
  */
 static int32_t ota_download_open(
     az_iot_su_esp32_ota_context* c,
@@ -99,6 +99,9 @@ static int32_t ota_download_open(
     az_span download_url,
     bool detached_manifest)
 {
+  /* A complete image never installed is stale once another download opens. */
+  ota_download_close(c, true);
+
   char url[1024];
   if (!span_to_cstr(download_url, url, sizeof(url)))
   {
@@ -108,7 +111,7 @@ static int32_t ota_download_open(
 
   if (detached_manifest)
   {
-    if (file->size_in_bytes < 0
+    if (file->size_in_bytes < 0 || az_span_size(c->detached_manifest_buffer) == 0
         || file->size_in_bytes > (int64_t)az_span_size(c->detached_manifest_buffer))
     {
       AZ_IOT_LOG_ERRORF(
@@ -259,7 +262,7 @@ static int32_t ota_download_continue(az_iot_su_esp32_ota_context* c, bool detach
 /**
  * @brief download_fn: a mini manifest's detached manifest file into #detached_manifest_buffer,
  * else the app image into the OTA partition. Called again on each do_work() while it returns
- * IN_PROGRESS.
+ * IN_PROGRESS. Fails until az_iot_su_esp32_ota_handle_event() gets an event.
  */
 static int32_t ota_download(
     const az_iot_su_client_update_manifest_file* file,
@@ -269,6 +272,13 @@ static int32_t ota_download(
     void* user_ctx)
 {
   az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)user_ctx;
+  if (c->workflow_state == AZ_IOT_SU_STATE_IDLE)
+  {
+    /* The client never downloads in IDLE: no state was announced to the observer. */
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "ota: az_iot_su_esp32_ota_handle_event() is not registered");
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
   bool const detached_manifest = ota_is_detached_manifest_phase(c);
 
   /* The single payload is the new ESP32 app image; multi-file updates would need a
