@@ -184,7 +184,7 @@ Your code does the device-side work. Every hook gets `hooks.user_ctx`, returns a
 
 | Hook | Needed | Called | May return |
 |---|---|---|---|
-| `download_fn` | Yes | Once per file (and per related file, see [Delta updates](#delta-updates)); for a mini manifest, first for its detached manifest file (`file_index` 0, `file_count` 1), which holds the full manifest | `SUCCESS`, `IN_PROGRESS`, `FAILURE` |
+| `download_fn` | Yes | Once per file (and per related file, see [Delta updates](#delta-updates)); for a mini manifest, first for its detached manifest file (`file_index` 0, `file_count` 1), which holds the full manifest; only that file is downloaded in `AZ_IOT_SU_STATE_VERIFYING_MANIFEST` | `SUCCESS`, `IN_PROGRESS`, `FAILURE` |
 | `read_file_fn` | Yes, unless your platform checks each file's integrity itself; required with download handlers and for mini manifests | After each download, to check its SHA-256 against the signed manifest. NULL skips the check: the signature covers the manifest, not the downloaded bytes. | `SUCCESS`, `FAILURE` |
 | `is_installed_fn` | Optional | Before anything is downloaded | `ALREADY_INSTALLED` (reported `SKIPPED`), `SUCCESS` |
 | `backup_fn` | Optional | Before each step's install | `SUCCESS`, `IN_PROGRESS`, `FAILURE` |
