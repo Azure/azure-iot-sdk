@@ -10962,6 +10962,24 @@ static void a_refused_update_report_is_retried_then_dropped(void** state)
 
 /* A refused update's report the channel cannot take yet stays owed; one for an
  * update since superseded by an accepted workflow is not sent. */
+/* A refused update's report the channel could not take for want of memory is
+ * sent once it can. */
+static void a_refused_update_report_survives_out_of_memory(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_result = AZ_IOT_ERR_OUT_OF_MEMORY;
+  inject_patch(fx, REFUSED_PATCH);
+  pump(fx, 3);
+  assert_true(fx->chan.report_count > 0);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_OWED);
+
+  fx->chan.report_result = AZ_IOT_OK;
+  pump(fx, 3);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_ACCEPTED);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-refused");
+}
+
 static void an_accepted_workflow_drops_an_owed_refused_report(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -12824,6 +12842,8 @@ int main(void)
         a_refused_update_is_reported_whatever_its_property_order, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_update_report_is_resent_with_agent_info, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_update_report_survives_out_of_memory, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_conflicting_refused_update_report_queues_a_check, setup, teardown),
     cmocka_unit_test_setup_teardown(

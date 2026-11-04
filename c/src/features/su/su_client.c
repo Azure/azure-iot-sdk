@@ -2199,7 +2199,7 @@ static void refuse_update(az_iot_su_client* client, az_iot_result reason, az_spa
  * @brief Hand the channel the owed FAILED report of a refused update.
  *
  * Waits out the backoff of a retryable verdict. Kept owed when the channel is
- * busy or has no session; dropped on any other refusal.
+ * busy, has no session or is out of memory; dropped on any other refusal.
  *
  * @param client The client.
  */
@@ -2218,7 +2218,8 @@ static void send_refused_update_report(az_iot_su_client* client)
   {
     return;
   }
-  bool keep = r == AZ_IOT_ERR_BUSY || r == AZ_IOT_ERR_NOT_CONNECTED;
+  bool keep
+      = r == AZ_IOT_ERR_BUSY || r == AZ_IOT_ERR_NOT_CONNECTED || r == AZ_IOT_ERR_OUT_OF_MEMORY;
   *state = keep ? AZ_IOT_SU_REFUSED_REPORT_OWED : AZ_IOT_SU_REFUSED_REPORT_NONE;
   if (keep)
   {
