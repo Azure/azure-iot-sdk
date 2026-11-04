@@ -1969,6 +1969,7 @@ static void process_update_metadata(
 
   /* The service's offer is now this workflow: a refused one is no longer reported. */
   SU_I(client).refused_report_owed = false;
+  SU_I(client).refused_report_superseded = SU_I(client).refused_report_in_flight;
 
   /* Stage the patch into client-owned storage and re-parse so current_request
    * / current_manifest reference stable memory. */
@@ -2198,6 +2199,7 @@ static void send_refused_update_report(az_iot_su_client* client)
   }
   /* Set before the call: a synchronous channel may deliver the verdict from inside it. */
   SU_I(client).refused_report_owed = false;
+  SU_I(client).refused_report_superseded = false;
   SU_I(client).refused_report_in_flight = true;
   az_iot_result r = az_iot_su__report_refused_update(client);
   if (r == AZ_IOT_OK)
@@ -2484,7 +2486,8 @@ static void queue_conflict_recheck(az_iot_su_client* client)
  * Raises REPORT_ACCEPTED or OPERATION_ABANDONED as for any terminal report, but
  * no WORKFLOW_COMPLETED: the update never started. A retryable verdict, or one
  * asking for the agent information again, sends it again (after the backoff for
- * the former); a conflict queues an update check; any other failure drops it.
+ * the former), unless a workflow was accepted meanwhile; a conflict queues an
+ * update check; any other failure drops it.
  *
  * @param client        The client.
  * @param result        The verdict.
@@ -2498,6 +2501,8 @@ static void settle_refused_update_report(
     const az_iot_su_service_error* service_error)
 {
   SU_I(client).refused_report_in_flight = false;
+  bool superseded = SU_I(client).refused_report_superseded;
+  SU_I(client).refused_report_superseded = false;
   if (result == AZ_IOT_OK)
   {
     az_iot_retry_state__reset(&SU_I(client).retry);
@@ -2512,6 +2517,12 @@ static void settle_refused_update_report(
   if (action == AZ_IOT_SU_ERROR_ACTION_RETRY || action == AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER
       || action == AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO)
   {
+    if (superseded)
+    {
+      AZ_IOT_LOG_INFO(
+          AZ_IOT_LOG_COMPONENT_SU, "refused update's report superseded by a workflow; dropped");
+      return;
+    }
     (void)arm_retry_backoff(client, result, action, service_error);
     SU_I(client).refused_report_owed = true;
     return;

@@ -1434,6 +1434,8 @@ extern "C"
       bool refused_report_owed;
       /** The refused update's FAILED report awaits its verdict. */
       bool refused_report_in_flight;
+      /** A workflow was accepted while the refused update's report awaited its verdict. */
+      bool refused_report_superseded;
       /** The service accepted the FAILED report of `refused_workflow_id`. */
       bool refused_report_accepted;
       /** The refused update's report as sent carried an installed update id. */

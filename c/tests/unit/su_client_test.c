@@ -10987,6 +10987,35 @@ static void an_accepted_workflow_drops_an_owed_refused_report(void** state)
   }
 }
 
+/* A retryable verdict on a refused update's report that a workflow accepted
+ * since has superseded neither re-owes it nor arms a backoff. */
+static void an_accepted_workflow_drops_an_in_flight_refused_report(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_verdict_deferred = true;
+  inject_patch(fx, REFUSED_PATCH);
+  pump(fx, 3);
+  assert_true(fx->su._internal.refused_report_in_flight);
+
+  int sent = fx->chan.report_count;
+  inject_patch(fx, signed_patch());
+  assert_true(fx->su._internal.refused_report_superseded);
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_false(fx->su._internal.refused_report_owed);
+  assert_false(fx->su._internal.refused_report_in_flight);
+  assert_false(fx->su._internal.refused_report_superseded);
+
+  fx->chan.report_verdict_deferred = false;
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_true(fx->chan.report_count > sent);
+  for (int i = sent; i < fx->chan.report_count; ++i)
+  {
+    assert_string_equal(fx->chan.workflow_ids[i], "51552a54-765e-419f-892a-c822549b6f38");
+  }
+}
+
 /* A late verdict for an older report does not pace a report the application
  * queued since. */
 static void a_late_report_verdict_does_not_pace_a_newer_report(void** state)
@@ -12808,6 +12837,8 @@ int main(void)
         a_refused_update_report_is_retried_then_dropped, setup, teardown),
     cmocka_unit_test_setup_teardown(
         an_accepted_workflow_drops_an_owed_refused_report, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_accepted_workflow_drops_an_in_flight_refused_report, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_late_report_verdict_does_not_pace_a_newer_report, setup, teardown),
     cmocka_unit_test_setup_teardown(the_fallback_backs_off_and_resets_on_success, setup, teardown),
