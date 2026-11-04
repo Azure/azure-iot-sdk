@@ -3762,15 +3762,20 @@ static const char k_patch_two_steps_fmt[]
       "\"updateManifestSignature\":\"%s\","
       "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}";
 
-static const char* two_step_patch(void)
+/** @brief A two-step update offered as workflow @p workflow_id. */
+static const char* two_step_patch_for_workflow(const char* workflow_id)
 {
   static char patch[4096];
   char jws[2048];
   build_jws(jws, (int32_t)sizeof(jws));
-  int n
-      = snprintf(patch, sizeof(patch), k_patch_two_steps_fmt, "multi-step-deployment", "1.1", jws);
+  int n = snprintf(patch, sizeof(patch), k_patch_two_steps_fmt, workflow_id, "1.1", jws);
   assert_true(n > 0 && (size_t)n < sizeof(patch));
   return patch;
+}
+
+static const char* two_step_patch(void)
+{
+  return two_step_patch_for_workflow("multi-step-deployment");
 }
 
 /* Two steps, each with its own file. The `files` map lists "fa00000000000001"
@@ -7327,18 +7332,9 @@ typedef struct
   az_iot_result parse_result; /* of az_iot_su_parse_update_request() */
 } unsupported_manifest;
 
-/* A mini manifest (the public Device Update documentation example), a manifest without steps,
- * and one whose second step is a reference step, after a step that would install. */
+/* A manifest without steps, and one whose second step is a reference step, after a step that
+ * would install. */
 static const unsupported_manifest k_unsupported_manifests[] = {
-  { "mini-manifest",
-    "{\"manifestVersion\":\"4\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Toaster\","
-    "\"version\":\"1.0\"},\"detachedManifestFileId\":\"fileId1\",\"files\":{\"fileId1\":{"
-    "\"filename\":\"contoso.toaster.1.0.updatemanifest.json\",\"sizeInBytes\":2048,"
-    "\"hashes\":{\"sha256\":\"789s9PDfX4uA9wFUubyC30BWkLFbgmpkpmz1fEdqo2U=\"}}}}",
-    "\"fileId1\":\"http://example.com/manifest.json\"",
-    AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST,
-    AZ_IOT_ERR_NOT_SUPPORTED,
-    AZ_IOT_ERR_NOT_SUPPORTED },
   { "no-steps",
     "{\"manifestVersion\":\"5\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Foobar\","
     "\"version\":\"1.1\"},\"instructions\":{\"steps\":[]},\"files\":{\"f00\":{"
@@ -7374,10 +7370,6 @@ static void unsupported_manifest_fails_before_any_hook(void** state)
   for (size_t i = 0; i < sizeof(k_unsupported_manifests) / sizeof(k_unsupported_manifests[0]); ++i)
   {
     const unsupported_manifest* c = &k_unsupported_manifests[i];
-    if (c->manifest_error == AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST)
-    {
-      continue; /* a managed client fetches its full manifest */
-    }
     int failed_before = fx->failed_count;
     inject_patch(fx, signed_patch_for_manifest(c->workflow_id, c->manifest, c->file_urls));
     pump(fx, 60);
@@ -11639,6 +11631,246 @@ static void library_mode_does_not_hand_over_an_unsupported_manifest(void** state
   }
 }
 
+/* Library mode hands over a mini manifest as it is. The application gets the full manifest with
+ * az_iot_su_parse_detached_manifest() in its own storage, and reports one result per full
+ * manifest step; the client keeps the mini manifest. */
+static void library_mode_hands_over_a_mini_manifest(void** state)
+{
+  static char file[sizeof(g_detached_file)];
+  fixture* fx = (fixture*)*state;
+  const detached_manifest_case c = { 0 };
+  delegate(fx, detached_manifest_patch(fx, "lib-mini", &c));
+  const az_iot_su_client_update_manifest* mini = fx->last_manifest;
+  assert_true(az_iot_su_manifest_is_detached(mini));
+  assert_true(az_span_is_content_equal(
+      mini->detached_manifest_file_id, AZ_SPAN_FROM_STR(SU_TEST_DETACHED_FILE_ID)));
+  assert_int_equal(mini->instructions.steps_count, 0);
+
+  copy_str(file, sizeof(file), g_detached_file);
+  az_iot_su_client_update_manifest full;
+  az_iot_su_client_update_manifest_file related_files[AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES];
+  uint32_t error = 1;
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          mini,
+          fx->last_request,
+          az_span_create_from_str(file),
+          &fx->crypto.base,
+          related_files,
+          AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES,
+          &full,
+          &error),
+      AZ_IOT_OK);
+  assert_int_equal(error, 0);
+  assert_false(az_iot_su_manifest_is_detached(&full));
+  assert_int_equal(full.instructions.steps_count, 2);
+
+  const az_iot_su_client_update_request* request = NULL;
+  const az_iot_su_client_update_manifest* manifest = NULL;
+  assert_int_equal(az_iot_su_client_get_current_update(&fx->su, &request, &manifest), AZ_IOT_OK);
+  assert_ptr_equal(manifest, mini);
+  assert_true(az_iot_su_manifest_is_detached(manifest));
+
+  az_iot_su_step_result success = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  az_iot_su_step_result steps[2]
+      = { lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED), lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED) };
+  assert_int_equal(
+      az_iot_su_client_report_status(
+          &fx->su, &success, steps, (int32_t)full.instructions.steps_count),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_string_equal(fx->chan.last_workflow_id, "lib-mini");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.last_report.step_results_count, 2);
+}
+
+/**
+ * @brief Parse the mini manifest of @p c with az_iot_su_parse_update_request(), then its detached
+ * manifest file (a copy of the one built, or @p file) with az_iot_su_parse_detached_manifest().
+ */
+static az_iot_result parse_detached_manifest_case(
+    fixture* fx,
+    const detached_manifest_case* c,
+    const char* file,
+    az_iot_su_client_update_manifest* out_manifest,
+    uint32_t* out_error)
+{
+  static char file_copy[sizeof(g_detached_file)];
+  static az_iot_su_client_update_manifest_file related_files[AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES];
+  az_iot_su_client_update_request request;
+  az_iot_su_client_update_manifest mini;
+  assert_int_equal(
+      parse_with_roots(
+          &fx->log, detached_manifest_patch(fx, "stateless", c), k_root_keys, 1, &request, &mini),
+      AZ_IOT_OK);
+  assert_true(az_iot_su_manifest_is_detached(&mini));
+  assert_int_equal(mini.instructions.steps_count, 0);
+  copy_str(file_copy, sizeof(file_copy), (file != NULL) ? file : g_detached_file);
+
+  az_iot_su_platform_hooks hooks;
+  mock_crypto crypto;
+  wire_hooks(&fx->log, &hooks, &crypto);
+  return az_iot_su_parse_detached_manifest(
+      &mini,
+      &request,
+      az_span_create_from_str(file_copy),
+      &crypto.base,
+      related_files,
+      AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES,
+      out_manifest,
+      out_error);
+}
+
+/* az_iot_su_parse_update_request() hands over a mini manifest, and
+ * az_iot_su_parse_detached_manifest() turns it and its file into the full manifest, or fails
+ * closed with the sub-code of each check. */
+static void a_mini_manifest_parses_into_its_full_manifest(void** state)
+{
+  static const char nested_full[]
+      = "{\"manifestVersion\":\"5\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Foobar\","
+        "\"version\":\"1.1\"},\"detachedManifestFileId\":\"f00\",\"files\":{\"f00\":{"
+        "\"fileName\":\"m.json\",\"sizeInBytes\":64,\"hashes\":{\"sha256\":\"" SU_TEST_FILE_HASH_B64
+        "\"}}}}";
+  static const char two_entries[]
+      = "\"" SU_TEST_DETACHED_FILE_ID "\":{\"fileName\":\"m.json\",\"sizeInBytes\":10,\"hashes\":{"
+        "\"sha256\":\"" SU_TEST_DETACHED_FILE_HASH_B64 "\"}},\"fOther\":{\"fileName\":\"o.json\","
+        "\"sizeInBytes\":10,\"hashes\":{\"sha256\":\"" SU_TEST_DETACHED_FILE_HASH_B64 "\"}}";
+  static const struct
+  {
+    detached_manifest_case shape;
+    const char* file; /* NULL: the one built */
+    az_iot_result result;
+    uint32_t error;
+  } cases[] = {
+    { { 0 }, NULL, AZ_IOT_OK, 0 },
+    { { .mini_files = two_entries },
+      NULL,
+      AZ_IOT_ERR_INVALID_ARG,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_ENTRY },
+    { { .sha256 = SU_TEST_FILE_HASH_B64 },
+      NULL,
+      AZ_IOT_ERR_AUTH,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_HASH },
+    { { .size_delta = 1 }, NULL, AZ_IOT_ERR_AUTH, AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_HASH },
+    { { .detached_file = "{\"manifest\":\"{}\"}" },
+      NULL,
+      AZ_IOT_ERR_INVALID_ARG,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_INVALID },
+    { { .version = "1.2" },
+      NULL,
+      AZ_IOT_ERR_INVALID_ARG,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_UPDATE_ID },
+    { { .full_manifest = nested_full },
+      NULL,
+      AZ_IOT_ERR_INVALID_ARG,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_NESTED },
+  };
+  fixture* fx = (fixture*)*state;
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    az_iot_su_client_update_manifest manifest;
+    memset(&manifest, 0xA5, sizeof(manifest));
+    uint32_t error = 0xFFu;
+    assert_int_equal(
+        parse_detached_manifest_case(fx, &cases[i].shape, cases[i].file, &manifest, &error),
+        cases[i].result);
+    assert_int_equal(error, cases[i].error);
+    if (cases[i].result == AZ_IOT_OK)
+    {
+      assert_int_equal(manifest.instructions.steps_count, 2);
+      assert_int_equal(az_span_size(manifest.detached_manifest_file_id), 0);
+      assert_true(az_span_is_content_equal(manifest.update_id.version, AZ_SPAN_FROM_STR("1.1")));
+    }
+    else
+    {
+      assert_true(all_zero(&manifest, sizeof(manifest)));
+    }
+  }
+
+  /* The full manifest may replace the mini manifest it comes from. */
+  az_iot_su_client_update_request request;
+  az_iot_su_client_update_manifest manifest;
+  az_iot_su_client_update_manifest_file related_files[AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES];
+  const detached_manifest_case valid = { 0 };
+  assert_int_equal(
+      parse_with_roots(
+          &fx->log,
+          detached_manifest_patch(fx, "stateless", &valid),
+          k_root_keys,
+          1,
+          &request,
+          &manifest),
+      AZ_IOT_OK);
+  az_iot_su_platform_hooks hooks;
+  mock_crypto crypto;
+  wire_hooks(&fx->log, &hooks, &crypto);
+  az_span file = az_span_create_from_str(g_detached_file);
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          &manifest,
+          &request,
+          file,
+          &crypto.base,
+          related_files,
+          AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES,
+          &manifest,
+          NULL),
+      AZ_IOT_OK);
+  assert_int_equal(manifest.instructions.steps_count, 2);
+
+  /* Bad arguments, each against a fresh mini manifest and intact detached file. */
+  az_iot_su_client_update_manifest mini;
+  assert_int_equal(
+      parse_with_roots(
+          &fx->log,
+          detached_manifest_patch(fx, "stateless", &valid),
+          k_root_keys,
+          1,
+          &request,
+          &mini),
+      AZ_IOT_OK);
+  assert_true(az_iot_su_manifest_is_detached(&mini));
+  file = az_span_create_from_str(g_detached_file);
+  uint32_t error = 0xFFu;
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          NULL, &request, file, &crypto.base, related_files, 1, &manifest, &error),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(error, 0);
+  assert_true(all_zero(&manifest, sizeof(manifest)));
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          &mini, NULL, file, &crypto.base, related_files, 1, &manifest, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          &mini, &request, AZ_SPAN_EMPTY, &crypto.base, related_files, 1, &manifest, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          &mini, &request, file, NULL, related_files, 1, &manifest, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          &mini, &request, file, &crypto.base, NULL, 1, &manifest, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          &mini,
+          &request,
+          file,
+          &crypto.base,
+          related_files,
+          AZ_IOT_SU_MAX_LIMIT_COUNT + 1u,
+          &manifest,
+          NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          &mini, &request, file, &crypto.base, related_files, 1, NULL, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+}
+
 /** @brief What an observer read with az_iot_su_client_get_current_update() on entering a state. */
 typedef struct
 {
@@ -11940,10 +12172,16 @@ static void report_status_rejects_what_it_cannot_send(void** state)
   assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 2), AZ_IOT_ERR_INVALID_ARG);
   steps[1] = ok;
 
-  /* One result per manifest step, validated like the overall one. */
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 1), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 3), AZ_IOT_ERR_INVALID_ARG);
+  /* At most AZ_IOT_SU_MAX_STEP_COUNT step results, none IN_PROGRESS. */
+  static az_iot_su_step_result too_many[AZ_IOT_SU_MAX_STEP_COUNT + 1];
+  for (int32_t i = 0; i < AZ_IOT_SU_MAX_STEP_COUNT + 1; ++i)
+  {
+    too_many[i] = ok;
+  }
+  assert_int_equal(
+      az_iot_su_client_report_status(&fx->su, &ok, too_many, AZ_IOT_SU_MAX_STEP_COUNT + 1),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(fx->su._internal.step_results_count, 2);
   steps[0].outcome = AZ_IOT_SU_OUTCOME_IN_PROGRESS;
   assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 2), AZ_IOT_ERR_INVALID_ARG);
   steps[0] = ok;
@@ -11975,6 +12213,77 @@ static void report_status_rejects_what_it_cannot_send(void** state)
   assert_int_equal(
       az_span_size(fx->chan.last_step_results[1].result_details),
       AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE);
+}
+
+/**
+ * @brief Assert the last report's wire form has keys `step_0` to `step_<count - 1>` in
+ *        `stepResults`, @p count being its step result count, and no `stepResults` when 0.
+ */
+static void assert_last_report_step_result_keys(const fake_channel* channel, int32_t count)
+{
+  assert_int_equal(channel->last_report.step_results_count, count);
+  az_iot_su_report report = { .workflow_id = channel->last_workflow_id,
+                              .outcome = channel->last_report.outcome,
+                              .result_code = AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS,
+                              .extended_result_codes = "0",
+                              .step_results = channel->last_report.step_results,
+                              .step_results_count = count };
+  static uint8_t json[SU_TEST_PATCH_SIZE];
+  size_t written = 0;
+  assert_int_equal(az_iot_su_build_report(&report, json, sizeof(json) - 1, &written), AZ_IOT_OK);
+  json[written] = '\0';
+  assert_true((count == 0) == (strstr((const char*)json, "\"stepResults\"") == NULL));
+  char key[32];
+  for (int32_t i = 0; i <= count; ++i)
+  {
+    (void)snprintf(key, sizeof(key), "\"step_%d\"", (int)i);
+    assert_true((i < count) == (strstr((const char*)json, key) != NULL));
+  }
+}
+
+static void report_status_takes_any_number_of_step_results_up_to_the_limit(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static az_iot_su_step_result steps[AZ_IOT_SU_MAX_STEP_COUNT];
+  for (int32_t i = 0; i < AZ_IOT_SU_MAX_STEP_COUNT; ++i)
+  {
+    steps[i] = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  }
+  az_iot_su_step_result done = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
+
+  /* Against the two-step manifest: none, fewer, as many, more (when the limit allows). */
+  int32_t counts[] = { 0, 1, 2, AZ_IOT_SU_MAX_STEP_COUNT };
+  for (size_t c = 0; c < sizeof(counts) / sizeof(counts[0]); ++c)
+  {
+    char workflow_id[32];
+    (void)snprintf(workflow_id, sizeof(workflow_id), "wf-steps-%d", (int)c);
+    delegate(fx, two_step_patch_for_workflow(workflow_id));
+    assert_int_equal(fx->su._internal.step_results_count, 2);
+    int32_t count = counts[c];
+    char details[] = "last step";
+    if (count > 0)
+    {
+      steps[count - 1].result_details = az_span_create((uint8_t*)details, (int32_t)strlen(details));
+    }
+    assert_int_equal(az_iot_su_client_report_status(&fx->su, &done, steps, count), AZ_IOT_OK);
+
+    assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+    assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+    assert_last_report_step_result_keys(&fx->chan, count);
+    if (count > 0)
+    {
+      assert_true(az_span_is_content_equal(
+          fx->chan.last_step_results[count - 1].result_details, AZ_SPAN_FROM_STR("last step")));
+      steps[count - 1].result_details = AZ_SPAN_EMPTY;
+    }
+  }
+
+  /* More step results than a one-step manifest has. */
+  delegate(fx, build_patch("wf-more-steps"));
+  assert_int_equal(fx->su._internal.step_results_count, 1);
+  assert_int_equal(
+      az_iot_su_client_report_status(&fx->su, &done, steps, AZ_IOT_SU_MAX_STEP_COUNT), AZ_IOT_OK);
+  assert_last_report_step_result_keys(&fx->chan, AZ_IOT_SU_MAX_STEP_COUNT);
 }
 
 static void report_status_is_not_for_the_managed_client(void** state)
@@ -12579,6 +12888,9 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         library_mode_does_not_hand_over_an_unsupported_manifest, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
+        library_mode_hands_over_a_mini_manifest, setup_library, teardown),
+    cmocka_unit_test_setup_teardown(a_mini_manifest_parses_into_its_full_manifest, setup, teardown),
+    cmocka_unit_test_setup_teardown(
         library_mode_hands_over_an_update_with_escaped_file_ids, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
         parsing_an_update_request_rejects_an_unresolved_step_file, setup, teardown),
@@ -12598,6 +12910,8 @@ int main(void)
         report_status_carries_the_application_failure, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
         report_status_rejects_what_it_cannot_send, setup_library, teardown),
+    cmocka_unit_test_setup_teardown(
+        report_status_takes_any_number_of_step_results_up_to_the_limit, setup_library, teardown),
     cmocka_unit_test_setup_teardown(report_status_is_not_for_the_managed_client, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_status_report_is_resent, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
