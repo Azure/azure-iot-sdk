@@ -490,7 +490,9 @@ extern "C"
      * chose: @p file is then that related file, and @p file_index that of the
      * file it belongs to, so store it apart (e.g. by id). For a mini manifest it
      * is first called for the detached manifest file (@p file_index 0,
-     * @p file_count 1), before any step runs.
+     * @p file_count 1), before any step runs. Only that file is downloaded in
+     * AZ_IOT_SU_STATE_VERIFYING_MANIFEST, so a hook tells it from a step file by
+     * the state of the last AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED.
      */
     int32_t (*download_fn)(
         const az_iot_su_client_update_manifest_file* file,
@@ -510,7 +512,7 @@ extern "C"
      * end-of-file). MUST return AZ_IOT_SU_RESULT_SUCCESS on a successful read.
      * Also reads related files and built files, as download_fn names them.
      * Required for a mini manifest: it reads the detached manifest file into
-     * the request buffer.
+     * the request buffer, also in AZ_IOT_SU_STATE_VERIFYING_MANIFEST.
      */
     int32_t (*read_file_fn)(
         const az_iot_su_client_update_manifest_file* file,
