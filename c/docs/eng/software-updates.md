@@ -247,7 +247,8 @@ status alone -- 429 throttled,
 | Unknown workflow | 400 `UNKNOWN_WORKFLOW_ID` | Stop reporting the same workflow; report abandonment. |
 | Agent info stale or unknown | 400 `OUTDATED_AGENT_INFO` / `UNKNOWN_AGENT_INFO_VERSION` | Resend the full `agentInfo` and retry. |
 | Throttled | 429 + `Retry-After` | Wait, then retry. |
-| Transient upstream failure | 503 `UPSTREAM_UNAVAILABLE` / 500 `INTERNAL_SERVER_ERROR` | Honor a valid delay, otherwise use backoff; keep the fetch deadline and owed report. |
+| Transient upstream failure | 503 `UPSTREAM_UNAVAILABLE` | Report: honor a valid delay, otherwise use backoff; keep the owed report. Check: honor a valid delay; without one, end the check (abandonment event, DPS hold released) and leave the retry to the next scheduled check. |
+| Internal server error | 500 `INTERNAL_SERVER_ERROR` | Honor a valid delay, otherwise use backoff; keep the fetch deadline and owed report. |
 | Bad request, auth, disabled | 400 / 401 / 403 `FORBIDDEN` | Fix the request or credentials; do not retry unchanged. |
 
 **The device is the only retrier**: DPS makes one attempt per hop. A retryable failure with no
