@@ -71,6 +71,9 @@
  *                             reference handler (AZ_IOT_WITH_SU_DELTA), it also registers that
  *                             handler, with a simulated delta processor (see README).
  *   SU_SIM_DELTA_CACHE_DIR=<dir>  the handler's source cache (default ./su_sim_source_cache)
+ *   SU_SIM_DETACHED_MANIFEST_FILE=<path>  copy of a mini manifest's detached manifest file,
+ *                             served as its download (the sample prints the URL). Unset: an
+ *                             update with a mini manifest fails.
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -167,6 +170,7 @@ static void sample_state_destroy(sample_state* s)
 
   free(s->simulation_control.state_file);
   free(s->simulation_control.file_directory);
+  free(s->simulation_control.detached_manifest_file);
   free(s->su_device_properties.manufacturer);
   free(s->su_device_properties.model);
 }
@@ -410,9 +414,12 @@ int main(void)
   state.simulation_control.state_file
       = sample_env_copy("SU_SIM_STATE_FILE", "./su_sim_regular_state.blob");
   state.simulation_control.file_directory = sample_env_copy("SU_SIM_FILE_DIR", NULL);
+  state.simulation_control.detached_manifest_file
+      = sample_env_copy("SU_SIM_DETACHED_MANIFEST_FILE", NULL);
   if (state.simulation_control.state_file == NULL)
   {
     free(state.simulation_control.file_directory);
+    free(state.simulation_control.detached_manifest_file);
     return 1;
   }
 
@@ -437,6 +444,7 @@ int main(void)
   {
     free(state.simulation_control.state_file);
     free(state.simulation_control.file_directory);
+    free(state.simulation_control.detached_manifest_file);
     return 1;
   }
 
@@ -563,8 +571,12 @@ int main(void)
   }
 
   /* Registered before resume(), which replays a persisted workflow state
-   * through this same observer. */
-  if (az_iot_su_client_add_observer(&state.su_client, on_su_event, &state) != AZ_IOT_OK)
+   * through these observers. su_sim_track_workflow_state() tells the hooks when
+   * the file asked for is a mini manifest's detached manifest file. */
+  if (az_iot_su_client_add_observer(&state.su_client, on_su_event, &state) != AZ_IOT_OK
+      || az_iot_su_client_add_observer(
+             &state.su_client, su_sim_track_workflow_state, &state.simulation_control)
+          != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
     return 1;
