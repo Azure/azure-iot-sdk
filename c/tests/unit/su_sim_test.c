@@ -26,7 +26,8 @@
 /** A file_directory that does not exist: writing a synthesized file there fails. */
 #define MISSING_DIRECTORY "su_sim_test_missing_directory.tmp"
 
-static const char k_detached_manifest[] = "{\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\"}\"}";
+static const char k_detached_manifest[]
+    = "{\"updateManifest\":\"{\\\"manifestVersion\\\":\\\"5\\\"}\"}";
 
 /* su_simulation_control holds mutable strings. */
 static char g_detached_manifest_path[] = DETACHED_MANIFEST_FILE;
