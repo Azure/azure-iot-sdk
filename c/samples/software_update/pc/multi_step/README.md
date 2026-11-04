@@ -43,6 +43,7 @@ accepts what Device Update allows: 10 steps and 10 files per update (`AZ_IOT_SU_
 | `SAMPLE_FAIL_STEP=<n>` | no | 1-based step that fails; `0` (default) none |
 | `SAMPLE_FAIL_PHASE=<p>` | no | `backup`, `install` (default) or `apply` |
 | `SAMPLE_RESTORE_FAILS=1` | no | `restore_fn` fails as well |
+| `SU_SIM_DETACHED_MANIFEST_FILE` | no | Copy of a mini manifest's detached manifest file, served as its download; without it an update with a mini manifest fails (see [simulated_regular § Mini manifests](../simulated_regular/README.md#mini-manifests)) |
 | `AZ_IOT_SU_EXIT_AFTER_WORKFLOW=1` | no | Exit once the final report is accepted: 0 when it succeeded, 2 otherwise |
 | `AZ_IOT_SU_POLL_INTERVAL_S` | no | Seconds between checks; default 14400 |
 | `AZ_IOT_SU_LOG_LEVEL` | no | `trace`, `debug`, `info` (default), `warn`, `error`, `off` |

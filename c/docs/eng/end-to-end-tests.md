@@ -450,12 +450,14 @@ Offered-update scenarios:
 | delta update with the reference `microsoft/delta:1` handler and the real delta processor (POSIX only): built from the cached source, SUCCEEDED with no delta code; the file replaces the source in the cache | `AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA` |
 | detached manifest: full manifest metadata over 4,096 bytes, so the service sends a mini manifest (`detachedManifestFileId`, with a URL in `fileUrls`); expected `Succeeded`: `download_fn` gets the detached manifest file and then the full manifest's files, each by its `fileUrls` URL; install and apply run; the report has the full manifest's steps | `AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED` |
 | same, in library mode: expected `Succeeded`; the mini manifest is handed over, the test downloads the detached manifest file by its `fileUrls` URL and parses it with `az_iot_su_parse_detached_manifest()`, then downloads and hashes the full manifest's files and reports SUCCEEDED with one result per full manifest step | `AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_LIBRARY_MODE` |
+| detached manifest whose full manifest is a delta update (managed client, test handler, device holds the source): expected `Succeeded`; `download_fn` gets the detached manifest file and then only the related file, each by its `fileUrls` URL; the file is built from it; SUCCEEDED with no delta code | `AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_DELTA` |
 
 The detached offers pad their step's `handlerProperties` (kept by the service, unlike unknown import
 fields) to a full manifest of about 7 KB. Each scenario's `Expected` in `SuE2E.psm1` is the job result
 `Test-SuE2EOffers` checks. `Expected` is not part of the fixture tag: changing it restages nothing.
 
-The two delta offers are alike but for the model, since a device sees each offer once. Their file names
+The `DELTA`, `DELTA_NO_SOURCE` and `DETACHED_DELTA` offers are alike but for the model (a device sees
+each offer once) and the `DETACHED_DELTA` padding. Their file names
 the download handler `sdke2e/xor-delta:1`, which the suite registers, and has one related file: the
 file XOR a 4096-byte source that `SuE2E.psm1` (`Get-SuE2EDeltaSource`) and the suite
 (`delta_source_byte()`) both generate, with the base64 SHA-256 of that source as its

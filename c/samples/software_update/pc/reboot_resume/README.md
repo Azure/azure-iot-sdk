@@ -79,6 +79,7 @@ flowchart TD
 | `AZ_IOT_SU_INSTALLED_PROVIDER` / `_NAME` / `_VERSION` | no | Installed update id at startup; default `Contoso/SU-Reboot/1.0.0`. A real device reads it from its image |
 | `SAMPLE_REBOOT_AT` | no | `install:<n>` (default `install:1`) or `apply:<n>` |
 | `SAMPLE_STATE_FILE` | no | Saved workflow; default `./su_reboot_state.bin` |
+| `SU_SIM_DETACHED_MANIFEST_FILE` | no | Copy of a mini manifest's detached manifest file, served as its download; without it an update with a mini manifest fails (see [simulated_regular § Mini manifests](../simulated_regular/README.md#mini-manifests)) |
 | `AZ_IOT_SU_EXIT_AFTER_WORKFLOW=1` | no | Exit once the workflow completes and storage is current (reboot state not `PENDING`): 0 when it succeeded and its report was accepted, 2 otherwise |
 | `AZ_IOT_SU_POLL_INTERVAL_S` | no | Seconds between checks; default 14400 |
 | `AZ_IOT_SU_LOG_LEVEL` | no | `trace`, `debug`, `info` (default), `warn`, `error`, `off` |

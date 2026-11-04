@@ -350,8 +350,10 @@ manifest then goes through the same checks as one sent in full (e.g. `NO_STEPS`,
 
 Samples: [http_download](../samples/software_update/pc/http_download/README.md) (managed, real
 download) and [library_mode](../samples/software_update/pc/library_mode/README.md) (reads the file
-from `SU_SIM_DETACHED_MANIFEST_FILE`). The other PC samples serve zero-filled bytes for every
-download, so a mini manifest fails there with `DETACHED_FILE_HASH`.
+from `SU_SIM_DETACHED_MANIFEST_FILE`). The other PC samples simulate downloads, so they serve a
+copy of the file from `SU_SIM_DETACHED_MANIFEST_FILE` and, without it, fail the update and print
+the file's URL
+([simulated_regular § Mini manifests](../samples/software_update/pc/simulated_regular/README.md#mini-manifests)).
 
 ## Library mode
 
@@ -495,6 +497,8 @@ Steps and files per update are build options (10 and 10). Every limit:
 | [esp32](../samples/software_update/esp32/README.md) | Over-the-air firmware update on ESP32 | All real (see [Limitations](#limitations)) |
 
 PC samples run on Linux and Windows.
+
+Mini manifests: see [Mini (detached) update manifests](#mini-detached-update-manifests).
 
 ## Limitations
 
