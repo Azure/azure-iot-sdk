@@ -10,10 +10,10 @@
  * - download: streams the update file over HTTPS into the inactive OTA partition, at most
  *   16 KiB and about 11 s per call (IN_PROGRESS in between), so the application's do_work()
  *   loop keeps the MQTT connection serviced.
- * - read_file: reads the written image back for the SHA-256 check against the manifest.
- * - A mini manifest's detached manifest file (#AZ_IOT_SU_DETACHED_MANIFEST_FILE_INDEX) is
- *   downloaded to a heap buffer of its `sizeInBytes` instead, and read back from it; the buffer is
- *   freed when the next download starts or the download is released.
+ *   A mini manifest's detached manifest file, fetched in AZ_IOT_SU_STATE_VERIFYING_MANIFEST, goes
+ *   to az_iot_su_esp32_ota_context::detached_manifest_buffer instead.
+ * - read_file: reads the written image, or the detached manifest file, back for the SHA-256 check
+ *   against the manifest.
  * - install: validates the image, makes it the next boot partition and asks for a reboot.
  * - persist/load workflow state: NVS, so the workflow resumes after the reboot.
  *
@@ -37,20 +37,29 @@ extern "C"
 #endif
 
   /**
-   * @brief State of the OTA platform hooks. Zero-initialize, set #installed_version, and keep
-   * it alive as long as the software updates client.
+   * @brief State of the OTA platform hooks. Zero-initialize, set #installed_version and
+   * #detached_manifest_buffer, and keep it alive as long as the software updates client.
    */
   typedef struct az_iot_su_esp32_ota_context
   {
     /** @brief Version of the running firmware; an update with this version is installed. */
     const char* installed_version;
+    /** @brief Holds a mini manifest's detached manifest file, which is at most
+     * az_iot_su_limits::max_update_size bytes. Empty fails mini manifests. */
+    az_span detached_manifest_buffer;
+    /** @brief Bytes of the detached manifest file in #detached_manifest_buffer. Set by the
+     * hooks. */
+    size_t detached_manifest_size;
+    /** @brief Workflow state of the last event az_iot_su_esp32_ota_handle_event() got. Set by
+     * the hooks. */
+    az_iot_su_state workflow_state;
     /** @brief Inactive partition being written. Set by the hooks. */
     const esp_partition_t* update_partition;
     /** @brief Open OTA write session. Set by the hooks. */
     esp_ota_handle_t ota_handle;
     /** @brief Whether #ota_handle is open. Set by the hooks. */
     bool ota_in_progress;
-    /** @brief Bytes the open or last download wrote. Set by the hooks. */
+    /** @brief Bytes written to #update_partition. Set by the hooks. */
     size_t bytes_written;
     /** @brief Open download; NULL between downloads. Set by the hooks. */
     esp_http_client_handle_t http_client;
@@ -58,11 +67,6 @@ extern "C"
     uint32_t download_url_hash;
     /** @brief Set when an installed image waits for a reboot; the application reboots. */
     bool reboot_pending;
-    /** @brief Heap buffer of a mini manifest's detached manifest file; NULL when none. Set by
-     * the hooks. */
-    uint8_t* detached_manifest_file;
-    /** @brief Size of #detached_manifest_file, the file's `sizeInBytes`. Set by the hooks. */
-    size_t detached_manifest_file_size;
   } az_iot_su_esp32_ota_context;
 
   /**
@@ -75,10 +79,12 @@ extern "C"
       az_iot_su_esp32_ota_context* context);
 
   /**
-   * @brief Software updates observer: releases a download, an OTA write not yet installed, or
-   * a detached manifest file, that the software updates client abandoned without calling
-   * restore_fn (a workflow replaced or ended). Register it with az_iot_su_client_add_observer(),
-   * with the same context as az_iot_su_esp32_ota_get_platform_hooks().
+   * @brief Software updates observer, required: records the workflow state, which tells the
+   * hooks a mini manifest's detached manifest file from an app image, and releases a download,
+   * or an OTA write not yet installed, that the software updates client abandoned without
+   * calling restore_fn (a workflow replaced mid-download). Register it with
+   * az_iot_su_client_add_observer() before az_iot_su_client_resume(), with the same context as
+   * az_iot_su_esp32_ota_get_platform_hooks().
    *
    * @param[in] event   The event.
    * @param[in] context An #az_iot_su_esp32_ota_context.
@@ -86,8 +92,7 @@ extern "C"
   void az_iot_su_esp32_ota_handle_event(const az_iot_su_event* event, void* context);
 
   /**
-   * @brief Close an unfinished download, abort an OTA write not yet installed and free a
-   * detached manifest file.
+   * @brief Close an unfinished download and abort an OTA write not yet installed.
    *
    * Call after az_iot_su_client_deinit(), which raises no events and calls no hooks.
    *

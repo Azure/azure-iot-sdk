@@ -35,9 +35,8 @@ The `su_client` is a **feature client** in the azure-iot-sdk SDK that implements
 - Component-level targeting (component enumerators).
 - Proxy/nested updates (IoT Edge parent proxying updates to leaf devices).
 - Reference steps with detached manifests (`"type": "reference"` + `detachedManifestFileId`):
-  refused with `AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP`. Mini (detached) update manifests in
-  library mode: refused with `AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST` (the managed client
-  fetches their full manifest: Detached Manifests, §4).
+  refused with `AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP`. Mini (detached) update manifests are
+  supported (Detached Manifests, §4).
 
 ---
 
@@ -178,8 +177,10 @@ application that must not lose the hub during a check schedules checks when that
   only.
 - `extendedResultCodes`: comma-separated hex.
 - `stepResults`: `{ step_0, step_1, … }`, each with `outcome`, `failureOrigin`, `resultCode`,
-  `extendedResultCodes` and optional `resultDetails`. Omitted from in-progress reports; complete in
-  terminal reports when the manifest has steps.
+  `extendedResultCodes` and optional `resultDetails`. Omitted from in-progress reports. The service
+  makes it optional (any subset of steps; keys naming no step are dropped). The managed client
+  sends one per manifest step in terminal reports; library mode sends what the application gives
+  (§5.3).
 
 Reporting is **idempotent on `workflowId`**. A different terminal outcome for the same workflow is
 rejected with `409 REPORT_CONFLICT`; an accepted duplicate is **200 with no body**, not 409.
@@ -407,7 +408,16 @@ The full manifest then replaces the mini manifest: `is_installed_fn`, the steps 
 use it. Any failure fails the workflow with its `AZ_IOT_SU_MANIFEST_ERROR_DETACHED_*` sub-code
 (a `download_fn` failure with `AZ_IOT_SU_FACILITY_DOWNLOAD`) before any step runs. The file stays
 in the request buffer, so a persisted record carries it and resume does not download it again.
-The service does not see a separate state. Library mode refuses mini manifests.
+The service does not see a separate state.
+
+Library mode hands the mini manifest over as it is (`UPDATE_AVAILABLE`,
+`az_iot_su_manifest_is_detached()`, no steps) and keeps it: the client holds no detached
+manifest state. The application downloads the detached manifest file from `fileUrls` into its
+own memory and gets the full manifest with `az_iot_su_parse_detached_manifest()`, which runs
+checks 1, 7 and 8; the full manifest's spans point into that memory. It runs and reports the
+full manifest's steps. `az_iot_su_parse_update_request()` returns mini manifests too, for the
+same call. The managed client and `az_iot_su_parse_detached_manifest()` share one
+implementation of these checks.
 
 ### Delta Downloads (Download Handlers)
 
@@ -587,7 +597,7 @@ Facility `0x1` sub-codes (`AZ_IOT_SU_MANIFEST_ERROR_*`) say why verification or 
 | `0x6` | `ROOT_SIGNATURE` | `sjwk` rejected by the root key (`verify_rs256`: `AZ_IOT_ERR_AUTH` or `AZ_IOT_ERR_INVALID_ARG`) |
 | `0x7` | `SIGNATURE` | manifest rejected by the `sjwk` signing key (as for `0x6`) |
 | `0x8` | `HASH` | manifest SHA-256 ≠ signed hash |
-| `0x9` | `DETACHED_MANIFEST` | verified mini manifest (`detachedManifestFileId`) in library mode, not supported |
+| `0x9` | | not used |
 | `0xA` | `NO_STEPS` | verified manifest has no step |
 | `0xB` | `REFERENCE_STEP` | verified manifest has a `"type": "reference"` step, not supported |
 | `0xC` | `DETACHED_FILE_ENTRY` | mini manifest `files` is not exactly its detached manifest file |
@@ -603,7 +613,7 @@ Facility `0x1` sub-codes (`AZ_IOT_SU_MANIFEST_ERROR_*`) say why verification or 
 Entering Failed raises `AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED` with
 `extended_result_code` (the first failed step's code, else the overall one) and
 `reason`: `AZ_IOT_ERR_AUTH` for facility `0x1`/`0x3` (`0x1` sub-code `CRYPTO`:
-`AZ_IOT_ERR_INTERNAL`; `DETACHED_MANIFEST`, `REFERENCE_STEP`, `DETACHED_FILE_NO_READER`:
+`AZ_IOT_ERR_INTERNAL`; `REFERENCE_STEP`, `DETACHED_FILE_NO_READER`:
 `AZ_IOT_ERR_NOT_SUPPORTED`; `NO_STEPS`, `DETACHED_FILE_ENTRY`, `DETACHED_FILE_URL`,
 `DETACHED_FILE_INVALID`, `DETACHED_UPDATE_ID`, `DETACHED_NESTED`: `AZ_IOT_ERR_PROTOCOL`;
 `DETACHED_FILE_TOO_LARGE`: `AZ_IOT_ERR_NOT_ENOUGH_SPACE`; `DETACHED_FILE_READ`:
@@ -647,7 +657,7 @@ indexed by step number. As the machine progresses:
 - The **overall** `result_code`/`extended_result_code` MUST mirror the *first*
   failing step (the root cause), not a later rollback outcome.
 - `step_results_count` MUST equal the number of manifest steps for terminal
-  reports.
+  reports (managed client; library mode reports the application's count, §5.3).
 - `resultDetails` per step: only what the application set (see Result-Code Mapping).
 - The terminal report, step results included, is handed to observers on
   `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` (`event->report`, terminal acceptance only).
@@ -1276,7 +1286,8 @@ az_iot_result az_iot_su_client_get_current_update(
 
 /**
  * Library mode: report the delegated update's progress or end. Terminal
- * outcomes carry one step result per manifest step. Validated, then copied;
+ * outcomes carry 0 to AZ_IOT_SU_MAX_STEP_COUNT step results, step_<i> being
+ * step_results[i]. Validated, then copied;
  * sent like any report and retried when refused. See §5.3.
  */
 az_iot_result az_iot_su_client_report_status(
@@ -1452,12 +1463,17 @@ sequenceDiagram
     Ch-->>SU: updateMetadata
     Note over SU: parse + JWS/RS256 verification
     SU-->>App: WORKFLOW_STATE_CHANGED (DELEGATED), UPDATE_AVAILABLE {request, manifest}
+    opt az_iot_su_manifest_is_detached(manifest)
+        Note over App: download the detached manifest file
+        App->>App: az_iot_su_parse_detached_manifest(mini, request, file)
+        Note over App: size, SHA-256, unwrap, parse, updateId, in app memory
+    end
     loop application-owned download / install / apply
         App->>SU: report_status(IN_PROGRESS)
         SU->>Ch: reportUpdateStatus
     end
-    App->>SU: report_status(SUCCEEDED | FAILED | SKIPPED, steps)
-    SU->>Ch: reportUpdateStatus
+    App->>SU: report_status(SUCCEEDED | FAILED | SKIPPED, 0..AZ_IOT_SU_MAX_STEP_COUNT step results)
+    SU->>Ch: reportUpdateStatus (stepResults step_0 .. step_n-1, as given)
     Note over SU: back to Idle
 ```
 
@@ -1470,16 +1486,24 @@ sequenceDiagram
   delegated, a different workflow id raises `UPDATE_DEFERRED`; the same id is a duplicate. A
   workflow id longer than `AZ_IOT_SU_WORKFLOW_ID_SIZE` is refused, as in the managed client.
 - `az_iot_su_client_report_status()` validates before it changes anything, copies the result, and
-  returns to Idle on a terminal outcome. A terminal report carries exactly one step result per
-  manifest step; a FAILED result code is never positive (a positive code reads as success to the
-  service); `CANCELED` is the service's and is refused; details are bounded by
-  `result_details_size`. On SUCCEEDED the manifest's update id
+  returns to Idle on a terminal outcome. A terminal report carries the step results the
+  application gives, 0 to `AZ_IOT_SU_MAX_STEP_COUNT` and none `IN_PROGRESS`, reported as given:
+  `step_<i>` is entry i, the index of the step in the manifest the application runs. The Device
+  Update device API makes `stepResults` optional (any subset; recommended on failure) and the
+  service drops keys naming no step, so the count is not checked against the manifest's steps.
+  The managed client still reports one per manifest step. A FAILED result code is never positive
+  (a positive code reads as success to the service); `CANCELED` is the service's and is refused;
+  details are bounded by `result_details_size`. On SUCCEEDED the manifest's update id
   becomes the installed one. Step details go through the same path as
   `az_iot_su_client_set_step_result_details()`.
 - Overall `result_details` are sent with the report they come with; the engine's terminal record
   keeps no overall details, so a resent terminal report and `WORKFLOW_COMPLETED` do not carry them.
 - No `is_installed_fn`: the application checks whether an offered update is already installed
   and reports it `SKIPPED`.
+- Mini manifests: `UPDATE_AVAILABLE` carries the mini manifest (no steps,
+  `az_iot_su_manifest_is_detached()`); the application downloads the file named by
+  `detached_manifest_file_id` and calls `az_iot_su_parse_detached_manifest()` into its own
+  storage. The client keeps the mini manifest (Detached Manifests, §4).
 - No persistence: a restart forgets a delegated update and the service offers it again; an
   application that reboots mid-update owns its resume. The service's own limits still apply: an
   update that outlives the DPS session hold (§2) is reported after the session renews. The
@@ -1499,8 +1523,11 @@ opts.root_keys = az_iot_su_microsoft_root_keys(&opts.root_key_count);
 az_iot_su_client_init(&su, &connection, &opts);
 az_iot_su_client_add_observer(&su, on_su_event, app);
 
-/* on AZ_IOT_SU_EVENT_UPDATE_AVAILABLE: download event->request->file_urls,
- * check each with az_iot_su_verify_file_hash(), install, then: */
+/* on AZ_IOT_SU_EVENT_UPDATE_AVAILABLE: if az_iot_su_manifest_is_detached(manifest),
+ * download that file and get the full manifest with az_iot_su_parse_detached_manifest()
+ * into application storage; then download event->request->file_urls, check each with
+ * az_iot_su_verify_file_hash(), install, then report the outcome with 0 to
+ * AZ_IOT_SU_MAX_STEP_COUNT step results (steps[i] is step_<i>): */
 az_iot_su_step_result done = { .outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED };
 az_iot_su_client_report_status(&su, &done, steps, steps_count);
 ```
@@ -1554,6 +1581,27 @@ az_iot_result az_iot_su_verify_manifest(
     const az_iot_crypto* crypto,
     const az_iot_su_root_key* root_keys,
     size_t root_key_count,
+    uint32_t* out_error);
+
+/** Whether a parsed manifest is a mini manifest (non-empty detached_manifest_file_id). */
+bool az_iot_su_manifest_is_detached(const az_iot_su_client_update_manifest* manifest);
+
+/**
+ * The full manifest of a mini manifest (from az_iot_su_parse_update_request()
+ * or library mode's UPDATE_AVAILABLE), from its detached manifest file: size,
+ * SHA-256, `{"updateManifest":"..."}`, updateId and no nesting are checked; the
+ * file is decoded in place, and the outputs reference it. Fail-closed;
+ * *out_error is the AZ_IOT_SU_MANIFEST_ERROR_* reason. out_manifest may be
+ * mini_manifest when that is the caller's.
+ */
+az_iot_result az_iot_su_parse_detached_manifest(
+    const az_iot_su_client_update_manifest* mini_manifest,
+    const az_iot_su_client_update_request* request, /* its fileUrls */
+    az_span detached_manifest_file,
+    const az_iot_crypto* crypto,
+    az_iot_su_client_update_manifest_file* related_files,
+    size_t max_related_files,
+    az_iot_su_client_update_manifest* out_manifest,
     uint32_t* out_error);
 
 /**
