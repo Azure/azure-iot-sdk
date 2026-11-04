@@ -7985,7 +7985,7 @@ static void a_mini_manifest_carries_a_delta_update(void** state)
 
 /* A mini manifest whose delta full manifest has AZ_IOT_SU_MAX_FILE_COUNT files and the default
  * max_related_files related files has exactly AZ_IOT_SU_FILE_URL_CAPACITY() URLs with the
- * detached manifest file's, and installs; one URL more is refused. */
+ * detached manifest file's, and installs; one URL more is refused and reported FAILED. */
 static void a_mini_manifest_delta_update_may_fill_the_file_url_capacity(void** state)
 {
   static char file_urls[8192];
@@ -8031,7 +8031,9 @@ static void a_mini_manifest_delta_update_may_fill_the_file_url_capacity(void** s
   assert_int_equal(fx->last_refused_reason, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_int_equal(fx->log.download_calls, 0);
-  assert_string_equal(fx->chan.last_workflow_id, "mini-delta-full");
+  assert_string_equal(fx->chan.last_workflow_id, "mini-delta-over");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_string_equal(fx->chan.last_extended, "b0000001");
 }
 
 /* A FAILED mini manifest workflow offered again with a retryTimestamp, once its retry wait is
