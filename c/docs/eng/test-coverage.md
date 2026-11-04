@@ -1244,7 +1244,7 @@ The common inventory keeps parser, channel and engine rows identical without add
 | `UNKNOWN_WORKFLOW_ID` | — | — | 5 | Fatal; stop reporting this workflow, expose rejection, never claim delivery. |
 | `REPORT_CONFLICT` | — | — | 6 | Stop conflicting replay, expose rejection, then the client checks for updates once. |
 | `INTERNAL_SERVER_ERROR` | 5 | 5 | 5 | Jittered exponential backoff, then unchanged retry. |
-| `UPSTREAM_UNAVAILABLE` | 10 | 10 | 10 | Five body variants each without and with a 2-second topic delay; fallback backoff or honor supplied delay. |
+| `UPSTREAM_UNAVAILABLE` | 10 | 10 | 10 | Five body variants each without and with a 2-second topic delay. Check: honor the delay; without one, end the check and release the DPS hold. Report: fallback backoff or honor the delay. |
 | 429 | 12 | 12 | 12 | Typed and bodyless × supplied, missing, zero, malformed (`3s`), negative, HTTP-date topic values. Valid seconds gate retry; all unusable hints fall back to backoff. |
 | Related numeric/open-code fallback (not additional named codes) | 9 | 9 | 8 | SDK-documented numeric buckets, captured `500001`, unknown string fallback, bodyless 503. |
 | **Total per suite** | **91** | **86** | **81** | **258** |

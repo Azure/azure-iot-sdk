@@ -10515,11 +10515,11 @@ static void a_synchronous_retryable_verdict_is_not_lost(void** state)
   assert_int_equal(fx->chan.last_request_operation, AZ_IOT_SU_OP_GET_UPDATE);
 }
 
-/** @brief A retryable verdict with no service delay, as for a 503 with no retry-after. */
+/** @brief A retryable verdict with no service delay, as for a 500 with no Retry-After. */
 static void deliver_no_hint_retry(fixture* fx, az_iot_su_operation operation)
 {
   az_iot_su_service_error se = {
-    .code = 503000, .message = "UPSTREAM_UNAVAILABLE", .tracking_id = "", .retry_after_ms = 0
+    .code = 500000, .message = "INTERNAL_SERVER_ERROR", .tracking_id = "", .retry_after_ms = 0
   };
   fx->chan.result_cb(
       operation, AZ_IOT_ERR_DPS, AZ_IOT_SU_ERROR_ACTION_RETRY, &se, fx->chan.engine_ctx);
@@ -11080,8 +11080,10 @@ static void catalog_engine_error(void** state)
   assert_int_equal(count_ops(&fx->log, OP_APPLY), applies);
 
   bool recheck = row->action == AZ_IOT_SU_ERROR_ACTION_RECHECK;
+  /* Deferred to the next scheduled check: ends now, no backoff. */
+  bool deferred = row->action == AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK && row->delay_ms == 0;
   bool terminal = row->action == AZ_IOT_SU_ERROR_ACTION_FATAL
-      || row->action == AZ_IOT_SU_ERROR_ACTION_PROCEED || recheck;
+      || row->action == AZ_IOT_SU_ERROR_ACTION_PROCEED || recheck || deferred;
   if (terminal)
   {
     assert_int_equal(fx->abandoned_count, 1);
@@ -11153,6 +11155,18 @@ static void catalog_engine_error(void** state)
     else
     {
       assert_wire_pumps_do_not_publish(fx, sent);
+      if (deferred)
+      {
+        /* No backoff: the next scheduled check is not paced. */
+        assert_int_equal(fx->su._internal.retry._internal.due_ms, 0);
+        assert_int_equal(
+            row->operation == AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE
+                ? az_iot_su_client_request_onboarding_update(&fx->su, UT_TIMEOUT_MS)
+                : az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS),
+            AZ_IOT_OK);
+        assert_int_not_equal(fx->su._internal.pending_fetch, 0);
+        assert_false(fx->su._internal.pending_fetch_paced);
+      }
     }
     return;
   }
