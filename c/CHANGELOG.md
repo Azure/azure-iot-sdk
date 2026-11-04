@@ -188,9 +188,10 @@ software updates. APIs may change before a stable release.
   [docs/dependencies.md](docs/dependencies.md).
 - Preview additions: the `mqttv5` and `su_delta` package components; the ESP-IDF software updates
   OTA platform hooks (`az_iot_su_esp32_ota.h`), which keep a mini manifest's detached manifest
-  file in the application's `detached_manifest_buffer` rather than the OTA partition; libcurl
-  7.55.0+ for the software update download sample. The installed package accepts the same minor
-  version only (`SameMinorVersion`) while in preview.
+  file in the application's `detached_manifest_buffer` rather than the OTA partition and log
+  through the SDK logging facade (component `su`); libcurl 7.55.0+ for the software update
+  download sample. The installed package accepts the same minor version only (`SameMinorVersion`)
+  while in preview.
 
 #### Samples
 
