@@ -11,6 +11,11 @@
  * Download, install, apply, backup and restore are simulated; the SHA-256 check
  * the SDK runs over read_back_simulated_update_file()'s bytes is real. Every hook takes an
  * su_simulation_control as user_ctx.
+ *
+ * A mini manifest's detached manifest file holds the full manifest, so it cannot be synthesized:
+ * the hooks serve su_simulation_control::detached_manifest_file, a copy of it, while
+ * su_sim_track_workflow_state() last saw AZ_IOT_SU_STATE_VERIFYING_MANIFEST, the only state the
+ * client downloads that file in.
  */
 #ifndef SU_SIM_H
 #define SU_SIM_H
@@ -39,6 +44,11 @@ typedef struct su_simulation_control
    * synthesized bytes, at su_sim_get_update_file_path(), for a download handler. NULL: no file is
    * written. Owned. */
   char* file_directory;
+  /** SU_SIM_DETACHED_MANIFEST_FILE: copy of a mini manifest's detached manifest file, served
+   * verbatim. NULL: an update with a mini manifest fails. Owned. */
+  char* detached_manifest_file;
+  /** Workflow state of the last event su_sim_track_workflow_state() saw. */
+  az_iot_su_state workflow_state;
 
   int reboot_signalled; /**< Set when install returned REBOOT_REQUIRED; cleared by a rollback. */
   int reboot_pending; /**< The requested reboot is still wanted; cleared by a rollback. */
@@ -57,7 +67,8 @@ typedef struct su_simulation_control
 
 /** @brief download_fn: logs the file; bytes are synthesized by read_back_simulated_update_file().
  * Also writes them to su_sim_get_update_file_path() when su_simulation_control::file_directory is
- * set. */
+ * set. For a mini manifest's detached manifest file, prints its URL and fails unless
+ * su_simulation_control::detached_manifest_file can be read. */
 int32_t simulate_update_file_download(
     const az_iot_su_client_update_manifest_file* file,
     az_span url,
@@ -112,7 +123,8 @@ int32_t simulate_delta_apply(
     void* user_ctx);
 
 /** @brief read_file_fn: zero-filled bytes of the declared size (first byte
- * corrupted when hash_mismatch is set). */
+ * corrupted when hash_mismatch is set); for a mini manifest's detached manifest file, the bytes of
+ * su_simulation_control::detached_manifest_file. */
 int32_t read_back_simulated_update_file(
     const az_iot_su_client_update_manifest_file* file,
     uint32_t file_index,
@@ -121,6 +133,34 @@ int32_t read_back_simulated_update_file(
     size_t buffer_size,
     size_t* out_read,
     void* user_ctx);
+
+/**
+ * @brief Observer (az_iot_su_observer_callback) that keeps su_simulation_control::workflow_state,
+ * so the hooks can tell the detached manifest file from a step's file. Register it with
+ * az_iot_su_client_add_observer() before az_iot_su_client_resume().
+ *
+ * @param[in] event The client's event.
+ * @param[in,out] user_ctx The su_simulation_control the hooks get.
+ */
+void su_sim_track_workflow_state(const az_iot_su_event* event, void* user_ctx);
+
+/**
+ * @brief Read su_simulation_control::detached_manifest_file from @p offset.
+ *
+ * @param[in] control The simulation; its detached_manifest_file may be NULL.
+ * @param[in] offset Byte offset in the file.
+ * @param[out] buffer Destination.
+ * @param[in] buffer_size Capacity of @p buffer.
+ * @param[out] out_read Bytes read; 0 at or past the end.
+ * @return AZ_IOT_SU_RESULT_SUCCESS; AZ_IOT_SU_RESULT_FAILURE when the file is not set or cannot be
+ * read.
+ */
+int32_t su_sim_read_detached_manifest_file(
+    const su_simulation_control* control,
+    size_t offset,
+    uint8_t* buffer,
+    size_t buffer_size,
+    size_t* out_read);
 
 /** @brief is_installed_fn: ALREADY_INSTALLED when the manifest id equals
  * su_simulation_control::installed. */
