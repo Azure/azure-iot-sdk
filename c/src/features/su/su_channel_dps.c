@@ -490,6 +490,7 @@ static az_iot_su_error_action handle_failure(
     case AZ_IOT_SU_ERROR_ACTION_PROCEED:
     case AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER:
     case AZ_IOT_SU_ERROR_ACTION_RETRY:
+    case AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK:
     case AZ_IOT_SU_ERROR_ACTION_FATAL:
     case AZ_IOT_SU_ERROR_ACTION_RECHECK:
     default:
@@ -525,11 +526,13 @@ static void emit_result(
 {
   /* The pre-registration exchange is over once an update check reaches a
    * verdict it will not immediately repeat: either it succeeded, or it failed
-   * in a way retrying cannot fix. A retryable failure keeps the hold, and the
-   * connection client's deadline is what bounds that. */
+   * in a way retrying cannot fix, or the service deferred it to the next
+   * scheduled check. A retryable failure keeps the hold, and the connection
+   * client's deadline is what bounds that. */
   if (operation != AZ_IOT_SU_OP_REPORT_STATUS
       && (result == AZ_IOT_OK || action == AZ_IOT_SU_ERROR_ACTION_FATAL
-          || action == AZ_IOT_SU_ERROR_ACTION_PROCEED))
+          || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
+          || az_iot_su__check_deferred_to_next(action, service_error)))
   {
     channel_release_hold(c);
   }
