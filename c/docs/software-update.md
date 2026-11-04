@@ -202,9 +202,7 @@ Your code does the device-side work. Every hook gets `hooks.user_ctx`, returns a
 
 Ready-made hooks: the ESP32 OTA adapter
 ([platforms/esp32](../platforms/esp32/README.md)); for mini manifests, give it a
-`detached_manifest_buffer` and register its observer, `az_iot_su_esp32_ota_handle_event()`. The
-[ESP32 sample](../samples/software_update/esp32/README.md#mini-manifests) sizes both for a full
-manifest of about 16 KiB.
+`detached_manifest_buffer` and register its observer, `az_iot_su_esp32_ota_handle_event()`.
 Real downloads with libcurl: [http_download](../samples/software_update/pc/http_download/README.md).
 
 ## Workflow, steps and results
@@ -354,6 +352,9 @@ Samples: [http_download](../samples/software_update/pc/http_download/README.md) 
 download) and [library_mode](../samples/software_update/pc/library_mode/README.md) (reads the file
 from `SU_SIM_DETACHED_MANIFEST_FILE`). The other PC samples serve zero-filled bytes for every
 download, so a mini manifest fails there with `DETACHED_FILE_HASH`.
+
+The [ESP32 sample](../samples/software_update/esp32/README.md#mini-manifests) accepts a detached
+manifest file of up to 20 KiB, a full manifest of about 16 KiB; its README says how to raise that.
 
 ## Library mode
 
