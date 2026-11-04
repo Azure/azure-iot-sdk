@@ -17,6 +17,7 @@ option and event in full.
 - [Workflow, steps and results](#workflow-steps-and-results)
 - [Reboot and resume](#reboot-and-resume)
 - [Delta updates](#delta-updates)
+- [Mini (detached) update manifests](#mini-detached-update-manifests)
 - [Library mode](#library-mode)
 - [Trust and root keys](#trust-and-root-keys)
 - [Device properties](#device-properties)
@@ -294,6 +295,64 @@ Samples: [http_download § Delta updates](../samples/software_update/pc/http_dow
 API: `az_iot_su_download_handler` and `AZ_IOT_SU_DELTA_ERROR_*` in [`az_iot_su.h`](../inc/azure/iot/az_iot_su.h);
 the reference handler's options in [`az_iot_su_delta.h`](../adapters/su/delta/az_iot_su_delta.h).
 
+## Mini (detached) update manifests
+
+When an update manifest is over 4,096 bytes, Device Update sends a signed **mini manifest** in its
+place ([Full vs mini update manifest](https://learn.microsoft.com/azure/iot-hub-device-update/update-manifest#full-vs-mini-update-manifest)).
+The mini manifest has no steps. Its `detachedManifestFileId` names its only `files` entry, the
+**detached manifest file**: `{"updateManifest":"<full manifest>"}`. That file is not signed itself;
+the signed mini manifest gives its exact size and SHA-256.
+
+```mermaid
+flowchart LR
+    M[mini manifest: signature ok] --> D[download the detached manifest file]
+    D --> C{size and SHA-256 as signed?}
+    C -- yes --> F[full manifest: same updateId, not a mini] --> S[download, install, report its steps]
+    C -- no --> X[FAILED, AZ_IOT_SU_MANIFEST_ERROR_DETACHED_*]
+```
+
+**Managed client:** handled for you, with `download_fn` and `read_file_fn` (both required).
+- In `AZ_IOT_SU_STATE_VERIFYING_MANIFEST` the client downloads the detached manifest file
+  (`file_index` 0, `file_count` 1; no other file is downloaded in that state), reads it back,
+  checks it and replaces the mini manifest with the full manifest. The steps and step results are
+  then the full manifest's.
+- The file is stored after the update metadata, in `max_update_size`: both must fit
+  ([Memory and limits](#memory-and-limits)). It is persisted with the workflow, so a resumed
+  workflow does not download it again.
+- `az_iot_su_client_get_current_update()` returns the full manifest once it is checked;
+  `request->update_manifest` stays the mini manifest.
+- Hooks that store files in a special place (e.g. a firmware partition) tell the detached manifest
+  file apart by the state of the last `AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED`. The ESP32 OTA
+  adapter does this: give it a `detached_manifest_buffer` and register its observer
+  ([Platform hooks](#platform-hooks)).
+
+**Library mode:** your code downloads the file and calls `az_iot_su_parse_detached_manifest()`
+([Library mode](#library-mode)).
+
+**API:** `az_iot_su_manifest_is_detached()`, `detached_manifest_file_id` in
+`az_iot_su_client_update_manifest`, `az_iot_su_parse_detached_manifest()`, and these
+`AZ_IOT_SU_FACILITY_MANIFEST` sub-codes in [`az_iot_su.h`](../inc/azure/iot/az_iot_su.h):
+
+| Sub-code | `AZ_IOT_SU_MANIFEST_ERROR_` | Meaning |
+|---|---|---|
+| `0xC` | `DETACHED_FILE_ENTRY` | The mini manifest's `files` is not exactly its detached manifest file |
+| `0xD` | `DETACHED_FILE_URL` | No `fileUrls` entry for that file |
+| `0xE` | `DETACHED_FILE_NO_READER` | No `read_file_fn` |
+| `0xF` | `DETACHED_FILE_TOO_LARGE` | The file does not fit in `max_update_size` after the metadata (both sizes are logged) |
+| `0x10` | `DETACHED_FILE_READ` | `read_file_fn` failed |
+| `0x11` | `DETACHED_FILE_HASH` | The file's size or SHA-256 differs from the mini manifest's |
+| `0x12` | `DETACHED_FILE_INVALID` | Not `{"updateManifest":"..."}` with a valid manifest |
+| `0x13` | `DETACHED_UPDATE_ID` | The full manifest's `updateId` differs from the mini manifest's |
+| `0x14` | `DETACHED_NESTED` | The full manifest is itself a mini manifest |
+
+A failing `download_fn` is reported with `AZ_IOT_SU_FACILITY_DOWNLOAD`, as for any file. The full
+manifest then goes through the same checks as one sent in full (e.g. `NO_STEPS`, `REFERENCE_STEP`).
+
+Samples: [http_download](../samples/software_update/pc/http_download/README.md) (managed, real
+download) and [library_mode](../samples/software_update/pc/library_mode/README.md) (reads the file
+from `SU_SIM_DETACHED_MANIFEST_FILE`). The other PC samples serve zero-filled bytes for every
+download, so a mini manifest fails there with `DETACHED_FILE_HASH`.
+
 ## Library mode
 
 For an existing update agent: the client keeps the service side (checks, signature verification,
@@ -391,6 +450,7 @@ Turn on the `su` and `dps` log components at `DEBUG` ([logging.md](logging.md)).
 | `OPERATION_ABANDONED`, `UPDATE_ACCOUNT_NOT_LINKED` or `..._ACCESS_DENIED` | ADR namespace not linked to Device Update | Fix the link; provisioning is not blocked |
 | `FAILED`, facility `0x1` (`AZ_IOT_SU_FACILITY_MANIFEST`) | Signature not trusted: unknown or disabled root key | Pass the right root keys; the sub-code says which check failed |
 | `FAILED`, facility `0x3` (`HASH`) | A downloaded file differs from the signed one | Check `download_fn` and `read_file_fn` |
+| `FAILED`, facility `0x1`, sub-code `0xC` to `0x14` | A mini manifest's detached manifest file could not be used | [Mini (detached) update manifests](#mini-detached-update-manifests); for `0xF`, raise `max_update_size` |
 | `UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` | The update's metadata exceeds `max_update_size`, or it has too many files | Raise the limit ([Memory and limits](#memory-and-limits)) |
 | `init()` returns `AZ_IOT_ERR_INVALID_ARG` | Missing hooks, root keys, properties or workspace; or a build mismatch | The `ERROR` log names the cause |
 
@@ -401,7 +461,7 @@ For support, include the event's `service_error.tracking_id`.
 The client lives in memory you provide: `AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE` bytes for the default
 `az_iot_su_limits`, or `az_iot_su_workspace_size()` / `AZ_IOT_SU_WORKSPACE_SIZE()` for your own. The
 update metadata (manifest, signature and file URLs) may be up to 64 KiB by default
-(`max_update_size`); the files themselves are downloaded by your hooks and are not limited by it.
+(`max_update_size`), which must also hold a mini manifest's detached manifest file; the files themselves are downloaded by your hooks and are not limited by it.
 Steps and files per update are build options (10 and 10). Every limit:
 [client-configuration.md § Software updates](client-configuration.md#software-updates-az_iot_suh).
 
