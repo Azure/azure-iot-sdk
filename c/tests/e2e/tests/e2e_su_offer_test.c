@@ -33,11 +33,13 @@
  *   AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA    built by the reference microsoft/delta:1 handler
  *   AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED           offered as a mini manifest (managed client)
  *   AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_LIBRARY_MODE  alike, library mode
+ *   AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_DELTA     alike DETACHED, its full manifest a delta update
  *
  * The DETACHED offers' update manifest is over 4,096 bytes, so the service sends a signed mini
  * manifest naming it as a detached file (`detachedManifestFileId`). The managed client fetches that
  * file itself; in library mode the test downloads it and calls
- * az_iot_su_parse_detached_manifest(). Both install the full manifest.
+ * az_iot_su_parse_detached_manifest(). Both install the full manifest. The DETACHED_DELTA full
+ * manifest is a DELTA offer's.
  *
  * The DELTA offers name the test download handler E2E_SU_TEST_DELTA_HANDLER_ID: their file's
  * related file is the file XOR a source both sides generate (delta_source_byte()). The
@@ -1996,6 +1998,16 @@ static void assert_offer_was_mini_manifest(const fixture* fx)
   assert_true(fx->detached_manifest_file_has_url);
 }
 
+/** @brief Whether download @p d is of the offered mini manifest's detached manifest file. */
+static bool download_is_detached_manifest_file(fixture* fx, download_record* d)
+{
+  return fx->offered_manifest_is_mini
+      && az_iot_json_string_equals(
+             az_span_create_from_str(d->file_id),
+             az_span_create_from_str(fx->detached_manifest_file_id),
+             true);
+}
+
 /**
  * @brief Asserts the managed client fetched the mini manifest's full manifest and installed it:
  * download_fn got the detached manifest file before the manifest was parsed, then each file of
@@ -2010,12 +2022,8 @@ static void assert_full_manifest_fetched_and_installed(fixture* fx, const spy_re
   for (size_t i = 0; i < p->download_count; ++i)
   {
     download_record* d = &p->downloads[i];
-    bool is_detached_manifest_file = az_iot_json_string_equals(
-        az_span_create_from_str(d->file_id),
-        az_span_create_from_str(fx->detached_manifest_file_id),
-        true);
     assert_true(d->url_is_from_file_urls);
-    assert_int_equal(is_detached_manifest_file, i == 0);
+    assert_int_equal(download_is_detached_manifest_file(fx, d), i == 0);
     assert_int_equal(d->file_is_in_manifest, i > 0);
   }
   assert_int_equal(r->step_count, (int32_t)fx->parsed_manifest_steps_count);
@@ -2064,7 +2072,8 @@ static void detached_manifest_offer_is_a_mini_manifest_handled_in_library_mode(v
 
 /**
  * @brief Runs a delta offer with download handler @p handler registered: asserts what ran and the
- * terminal report, a succeeded one-step update with @p step0_extended_result_code.
+ * terminal report, a succeeded one-step update with @p step0_extended_result_code. A mini
+ * manifest's detached manifest file is one more full download.
  */
 static void run_delta_offer(
     const char* model_variable,
@@ -2083,7 +2092,9 @@ static void run_delta_offer(
   assert_int_equal(fx->plat.related_file_choices, 1);
   assert_int_equal(fx->plat.related_file_downloads, has_delta_source ? 1 : 0);
   assert_int_equal(fx->plat.builds_from_related_file, has_delta_source ? 1 : 0);
-  assert_int_equal(fx->plat.full_downloads, has_delta_source ? 0 : 1);
+  assert_int_equal(
+      fx->plat.full_downloads,
+      (has_delta_source ? 0u : 1u) + (fx->offered_manifest_is_mini ? 1u : 0u));
   assert_int_equal(fx->plat.workflow_ends, 1);
   assert_int_equal(fx->plat.workflow_successes, 1);
   assert_true(fx->plat.downloaded_size[0] > 0);
@@ -2125,6 +2136,34 @@ static void delta_update_without_source_falls_back_to_full_download(void** state
       DELTA_HANDLER_TEST,
       false,
       E2E_SU_DELTA_NO_SOURCE_CODE);
+}
+
+/**
+ * @brief A delta update over 4,096 bytes is offered as a mini manifest. The managed client
+ * downloads the detached manifest file first, then only the chosen related file, builds the file
+ * from it, and reports SUCCEEDED with no delta code.
+ */
+static void detached_delta_update_is_fetched_then_built_from_the_related_file(void** state)
+{
+  (void)state;
+  run_delta_offer("AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_DELTA", DELTA_HANDLER_TEST, true, 0);
+
+  fixture* fx = &g_fx;
+  platform* p = &fx->plat;
+  assert_offer_was_mini_manifest(fx);
+  assert_int_equal(fx->parsed_manifest_steps_count, 1);
+  assert_int_equal(p->download_count, 2);
+  assert_true(download_is_detached_manifest_file(fx, &p->downloads[0]));
+  assert_false(p->downloads[0].file_is_in_manifest);
+  assert_string_equal(p->downloads[1].file_id, p->chosen_related_file_id);
+  for (size_t i = 0; i < p->download_count; ++i)
+  {
+    assert_true(p->downloads[i].url_is_from_file_urls);
+  }
+  printf(
+      "  downloads: detached manifest file \"%s\", then related file \"%s\"\n",
+      p->downloads[0].file_id,
+      p->downloads[1].file_id);
 }
 
 #ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
@@ -2265,6 +2304,8 @@ int main(void)
         scenario_teardown),
     cmocka_unit_test_teardown(
         detached_manifest_offer_is_a_mini_manifest_handled_in_library_mode, scenario_teardown),
+    cmocka_unit_test_teardown(
+        detached_delta_update_is_fetched_then_built_from_the_related_file, scenario_teardown),
 #ifdef AZ_IOT_E2E_SU_WITH_REFERENCE_DELTA
     cmocka_unit_test_teardown(
         reference_delta_update_is_built_by_the_delta_processor_and_cached, scenario_teardown),
