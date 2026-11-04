@@ -9,6 +9,7 @@
 #                              (Cert). No trailing dash, so the one entry matches
 #                              all three C flavors.
 #   DotnetE2ETestPipeline-  -> ci-dotnet.
+#   DotnetLonghaul-         -> longhaul-dotnet.
 #
 # Every pipeline already deletes its own resource group in an always() step/job,
 # and derives the group name from the run id so cleanup never depends on a job
@@ -23,7 +24,8 @@
 # Deletion is age-gated: only groups whose 'CreatedOn' tag (stamped by the
 # iot-sdks-e2e-fx framework at group creation) is older than `minimum-age-hours`
 # are removed, so an in-flight run is never disturbed -- the longest run in this
-# repo is ci-c-e2e-csr, at setup (60 min) + test (30 min). Groups with no
+# repo is longhaul-dotnet, at setup (30 min) + longhaul (360 min) + teardown,
+# so the default age is 8 hours. Groups with no
 # parseable 'CreatedOn' tag are reported as SKIP and left alone.
 
 name: cleanup-e2e-resources
@@ -36,11 +38,11 @@ on:
       prefixes:
         description: Comma-separated resource group name prefixes to reap.
         required: false
-        default: 'CSDKE2E,DotnetE2ETestPipeline-'
+        default: 'CSDKE2E,DotnetE2ETestPipeline-,DotnetLonghaul-'
       minimum-age-hours:
         description: Minimum age, in hours, a resource group must have to be deleted.
         required: false
-        default: '6'
+        default: '8'
 
 permissions:
   contents: read
@@ -76,8 +78,8 @@ jobs:
           # Passed via env (not string-interpolated into the script) so the
           # workflow_dispatch inputs are data, never code. The `||` fallbacks
           # supply the defaults on the `schedule` trigger, where `inputs` is empty.
-          RG_PREFIXES: ${{ inputs.prefixes || 'CSDKE2E,DotnetE2ETestPipeline-' }}
-          MINIMUM_AGE_HOURS: ${{ inputs.minimum-age-hours || '6' }}
+          RG_PREFIXES: ${{ inputs.prefixes || 'CSDKE2E,DotnetE2ETestPipeline-,DotnetLonghaul-' }}
+          MINIMUM_AGE_HOURS: ${{ inputs.minimum-age-hours || '8' }}
           AZ_IOT_MODULE: ${{ github.workspace }}/iot-sdks-e2e-fx/scripts/AzIotSdkTest/AzIotSdkTest.psd1
         with:
           azPSVersion: "latest"
