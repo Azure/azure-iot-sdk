@@ -71,6 +71,7 @@ static void arm_pending_fetch_deadline(az_iot_su_client* client, uint32_t timeou
 static bool fetch_in_flight_overdue(const az_iot_su_client* client);
 static bool expire_fetch_in_flight(az_iot_su_client* client);
 static void refuse_update(az_iot_su_client* client, az_iot_result reason, az_span raw_workflow_id);
+static bool refused_report_in_flight(const az_iot_su_client* client);
 static void raise_deferred(az_iot_su_client* client);
 static void raise_retry_wait(az_iot_su_client* client, uint32_t retry_after_ms);
 static void notify_download_handlers_of_end(az_iot_su_client* client, az_iot_su_outcome outcome);
@@ -1968,8 +1969,15 @@ static void process_update_metadata(
   notify_download_handlers_of_end(client, AZ_IOT_SU_OUTCOME_CANCELED);
 
   /* The service's offer is now this workflow: a refused one is no longer reported. */
-  SU_I(client).refused_report_owed = false;
-  SU_I(client).refused_report_superseded = SU_I(client).refused_report_in_flight;
+  az_iot_su_refused_report_state_internal* refused = &SU_I(client).refused_report.state;
+  if (*refused == AZ_IOT_SU_REFUSED_REPORT_OWED)
+  {
+    *refused = AZ_IOT_SU_REFUSED_REPORT_NONE;
+  }
+  else if (*refused == AZ_IOT_SU_REFUSED_REPORT_IN_FLIGHT)
+  {
+    *refused = AZ_IOT_SU_REFUSED_REPORT_SUPERSEDED;
+  }
 
   /* Stage the patch into client-owned storage and re-parse so current_request
    * / current_manifest reference stable memory. */
@@ -2131,6 +2139,13 @@ static void raise_completed(
   dispatch_event(client, &event);
 }
 
+/** @brief Whether a refused update's FAILED report awaits its verdict. */
+static bool refused_report_in_flight(const az_iot_su_client* client)
+{
+  return SU_I(client).refused_report.state == AZ_IOT_SU_REFUSED_REPORT_IN_FLIGHT
+      || SU_I(client).refused_report.state == AZ_IOT_SU_REFUSED_REPORT_SUPERSEDED;
+}
+
 /**
  * @brief Refuse a delivered update the client cannot process.
  *
@@ -2149,27 +2164,25 @@ static void raise_completed(
  */
 static void refuse_update(az_iot_su_client* client, az_iot_result reason, az_span raw_workflow_id)
 {
+  az_iot_su_refused_report_internal* refused = &SU_I(client).refused_report;
   uint8_t id_scratch[AZ_IOT_SU_WORKFLOW_ID_SIZE];
   az_span id = AZ_SPAN_EMPTY;
   if (az_span_size(raw_workflow_id) > 0
       && az_iot_json_string_decode(raw_workflow_id, AZ_SPAN_FROM_BUFFER(id_scratch), &id)
           == AZ_IOT_OK
       && az_span_size(id) > 0 && memchr(az_span_ptr(id), '\0', (size_t)az_span_size(id)) == NULL
-      && !same_workflow_id(client, id) && !SU_I(client).refused_report_in_flight
+      && !same_workflow_id(client, id) && !refused_report_in_flight(client)
       && !(
-          SU_I(client).refused_report_accepted
-          && strlen(SU_I(client).refused_workflow_id) == (size_t)az_span_size(id)
-          && memcmp(SU_I(client).refused_workflow_id, az_span_ptr(id), (size_t)az_span_size(id))
-              == 0))
+          refused->state == AZ_IOT_SU_REFUSED_REPORT_ACCEPTED
+          && az_span_is_content_equal(id, az_span_create_from_str(refused->workflow_id))))
   {
-    SU_I(client).refused_report_accepted = false;
-    memcpy(SU_I(client).refused_workflow_id, az_span_ptr(id), (size_t)az_span_size(id));
-    SU_I(client).refused_workflow_id[az_span_size(id)] = '\0';
-    SU_I(client).refused_extended_result_code = AZ_IOT_SU_EXTENDED_RESULT(
+    memcpy(refused->workflow_id, az_span_ptr(id), (size_t)az_span_size(id));
+    refused->workflow_id[az_span_size(id)] = '\0';
+    refused->extended_result_code = AZ_IOT_SU_EXTENDED_RESULT(
         AZ_IOT_SU_FACILITY_REFUSED,
         reason == AZ_IOT_ERR_NOT_ENOUGH_SPACE ? AZ_IOT_SU_REFUSED_ERROR_TOO_LARGE
                                               : AZ_IOT_SU_REFUSED_ERROR_MALFORMED);
-    SU_I(client).refused_report_owed = true;
+    refused->state = AZ_IOT_SU_REFUSED_REPORT_OWED;
     AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_SU, "refused update will be reported FAILED");
   }
   az_iot_su_event event = {
@@ -2192,24 +2205,23 @@ static void refuse_update(az_iot_su_client* client, az_iot_result reason, az_spa
  */
 static void send_refused_update_report(az_iot_su_client* client)
 {
-  if (!SU_I(client).refused_report_owed || SU_I(client).refused_report_in_flight
-      || SU_I(client).terminal_report_in_flight || az_iot_retry_state__pending(&SU_I(client).retry))
+  az_iot_su_refused_report_state_internal* state = &SU_I(client).refused_report.state;
+  if (*state != AZ_IOT_SU_REFUSED_REPORT_OWED || SU_I(client).terminal_report_in_flight
+      || az_iot_retry_state__pending(&SU_I(client).retry))
   {
     return;
   }
   /* Set before the call: a synchronous channel may deliver the verdict from inside it. */
-  SU_I(client).refused_report_owed = false;
-  SU_I(client).refused_report_superseded = false;
-  SU_I(client).refused_report_in_flight = true;
+  *state = AZ_IOT_SU_REFUSED_REPORT_IN_FLIGHT;
   az_iot_result r = az_iot_su__report_refused_update(client);
   if (r == AZ_IOT_OK)
   {
     return;
   }
-  SU_I(client).refused_report_in_flight = false;
-  if (r == AZ_IOT_ERR_BUSY || r == AZ_IOT_ERR_NOT_CONNECTED)
+  bool keep = r == AZ_IOT_ERR_BUSY || r == AZ_IOT_ERR_NOT_CONNECTED;
+  *state = keep ? AZ_IOT_SU_REFUSED_REPORT_OWED : AZ_IOT_SU_REFUSED_REPORT_NONE;
+  if (keep)
   {
-    SU_I(client).refused_report_owed = true;
     return;
   }
   AZ_IOT_LOG_ERRORF(
@@ -2500,16 +2512,16 @@ static void settle_refused_update_report(
     az_iot_su_error_action action,
     const az_iot_su_service_error* service_error)
 {
-  SU_I(client).refused_report_in_flight = false;
-  bool superseded = SU_I(client).refused_report_superseded;
-  SU_I(client).refused_report_superseded = false;
+  az_iot_su_refused_report_state_internal* state = &SU_I(client).refused_report.state;
+  bool superseded = *state == AZ_IOT_SU_REFUSED_REPORT_SUPERSEDED;
+  *state = AZ_IOT_SU_REFUSED_REPORT_NONE;
   if (result == AZ_IOT_OK)
   {
     az_iot_retry_state__reset(&SU_I(client).retry);
-    SU_I(client).refused_report_accepted = true;
+    *state = AZ_IOT_SU_REFUSED_REPORT_ACCEPTED;
     AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_SU, "refused update reported FAILED");
     az_iot_su__report_view sent;
-    az_iot_su__sent_refused_report_view(client, &sent);
+    az_iot_su__refused_report_view(client, &sent);
     raise_simple(
         client, AZ_IOT_SU_EVENT_REPORT_ACCEPTED, AZ_IOT_SU_OP_REPORT_STATUS, true, &sent.report);
     return;
@@ -2524,7 +2536,7 @@ static void settle_refused_update_report(
       return;
     }
     (void)arm_retry_backoff(client, result, action, service_error);
-    SU_I(client).refused_report_owed = true;
+    *state = AZ_IOT_SU_REFUSED_REPORT_OWED;
     return;
   }
   AZ_IOT_LOG_ERRORF(
@@ -2555,7 +2567,7 @@ static void on_channel_result(
     return;
   }
   /* Verdicts carry no request identity: the channel takes one operation at a time. */
-  if (operation == AZ_IOT_SU_OP_REPORT_STATUS && SU_I(client).refused_report_in_flight)
+  if (operation == AZ_IOT_SU_OP_REPORT_STATUS && refused_report_in_flight(client))
   {
     settle_refused_update_report(client, result, action, service_error);
     return;
@@ -2941,7 +2953,8 @@ static void drive_pending_fetch(az_iot_su_client* client)
    * check advertises the previous state and may be offered the same update
    * again. Queued here if nothing will send it (e.g. its session was lost).
    * A refused update's report goes first for the same reason. */
-  if (SU_I(client).refused_report_owed || SU_I(client).refused_report_in_flight)
+  if (SU_I(client).refused_report.state == AZ_IOT_SU_REFUSED_REPORT_OWED
+      || refused_report_in_flight(client))
   {
     return;
   }

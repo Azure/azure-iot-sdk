@@ -1187,6 +1187,26 @@ extern "C"
     int32_t step_results_count;
   } az_iot_su_sent_report_internal;
 
+  /** @brief Internal: where the FAILED report of a refused update stands. */
+  typedef enum az_iot_su_refused_report_state_internal
+  {
+    AZ_IOT_SU_REFUSED_REPORT_NONE = 0, /**< Nothing to report. */
+    AZ_IOT_SU_REFUSED_REPORT_OWED, /**< Due to be handed to the channel. */
+    AZ_IOT_SU_REFUSED_REPORT_IN_FLIGHT, /**< Awaits its verdict. */
+    AZ_IOT_SU_REFUSED_REPORT_SUPERSEDED, /**< Awaits its verdict; a workflow was accepted since. */
+    AZ_IOT_SU_REFUSED_REPORT_ACCEPTED, /**< The service accepted it. */
+  } az_iot_su_refused_report_state_internal;
+
+  /** @brief Internal: the FAILED report of the last refused update. */
+  typedef struct az_iot_su_refused_report_internal
+  {
+    char workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1]; /**< Decoded, NUL-terminated. */
+    int32_t extended_result_code;
+    az_iot_su_refused_report_state_internal state;
+    bool has_installed; /**< The report as sent carried an installed update id. */
+    char installed[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE]; /**< provider, name, version; NUL each */
+  } az_iot_su_refused_report_internal;
+
   typedef struct az_iot_su_client
   {
     struct
@@ -1426,22 +1446,7 @@ extern "C"
       /** Of a mini manifest: the full manifest text within request_buffer, after the request;
        * else empty. */
       az_span full_manifest_text;
-      /** Decoded workflow id of the last refused update, NUL-terminated. */
-      char refused_workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1];
-      /** Extended result code of the refused update's FAILED report. */
-      int32_t refused_extended_result_code;
-      /** The refused update's FAILED report is due to be handed to the channel. */
-      bool refused_report_owed;
-      /** The refused update's FAILED report awaits its verdict. */
-      bool refused_report_in_flight;
-      /** A workflow was accepted while the refused update's report awaited its verdict. */
-      bool refused_report_superseded;
-      /** The service accepted the FAILED report of `refused_workflow_id`. */
-      bool refused_report_accepted;
-      /** The refused update's report as sent carried an installed update id. */
-      bool refused_sent_has_installed;
-      /** That installed update id: provider, name, version; NUL each. */
-      char refused_sent_installed[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE];
+      az_iot_su_refused_report_internal refused_report; /**< The last refused update's report. */
     } _internal;
   } az_iot_su_client;
 

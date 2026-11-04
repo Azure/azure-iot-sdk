@@ -10783,8 +10783,7 @@ static void a_refused_update_is_reported_failed(void** state)
   assert_int_equal(fx->accepted_report_count, 1);
   assert_string_equal(fx->accepted_workflow_id, "wf-refused");
   assert_int_equal(fx->accepted_report_outcome, AZ_IOT_SU_OUTCOME_FAILED);
-  assert_false(fx->su._internal.refused_report_owed);
-  assert_false(fx->su._internal.refused_report_in_flight);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_ACCEPTED);
 
   /* The service re-offers a FAILED workflow: refused again, not reported again. */
   inject_patch(fx, REFUSED_PATCH);
@@ -10811,7 +10810,7 @@ static void a_refused_update_report_is_accepted_as_sent(void** state)
   fx->chan.report_verdict_deferred = true;
   inject_patch(fx, REFUSED_PATCH);
   pump(fx, 3);
-  assert_true(fx->su._internal.refused_report_in_flight);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_IN_FLIGHT);
   assert_string_equal(fx->chan.last_installed_version, "1.0");
 
   device_properties.installed_update_id.version = "1.1";
@@ -10864,7 +10863,7 @@ static void a_refused_update_report_is_resent_with_agent_info(void** state)
       AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO,
       &(az_iot_su_service_error){ .code = 409001, .message = "", .tracking_id = "" },
       fx->chan.engine_ctx);
-  assert_true(fx->su._internal.refused_report_owed);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_OWED);
   pump(fx, 3);
   assert_int_equal(fx->chan.report_count, 2);
   assert_string_equal(fx->chan.last_workflow_id, "wf-refused");
@@ -10891,7 +10890,7 @@ static void a_conflicting_refused_update_report_queues_a_check(void** state)
   assert_int_equal(fx->abandoned_count, 1);
   assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_REPORT_STATUS);
   assert_int_equal(fx->completed_count, 0);
-  assert_false(fx->su._internal.refused_report_owed);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_NONE);
   pump(fx, 3);
   assert_int_equal(fx->chan.request_update_count, checks + 1);
   assert_int_equal(fx->chan.report_count, 1);
@@ -10912,7 +10911,7 @@ static void a_refused_redelivery_of_the_active_workflow_is_not_reported(void** s
       "{\"workflowId\":\"51552a54-765e-419f-892a-c822549b6f38\",\"updateManifest\":\"{}\","
       "\"fileUrls\":{\"f\":1}}");
   assert_int_equal(fx->refused_count, 1);
-  assert_false(fx->su._internal.refused_report_owed);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_NONE);
 
   pump(fx, 40);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
@@ -10933,12 +10932,12 @@ static void a_refused_update_report_is_retried_then_dropped(void** state)
   inject_patch(fx, REFUSED_PATCH);
   pump(fx, 3);
   assert_int_equal(fx->chan.report_count, 1);
-  assert_true(fx->su._internal.refused_report_in_flight);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_IN_FLIGHT);
 
   assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
   int checks = fx->chan.request_update_count;
   deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
-  assert_true(fx->su._internal.refused_report_owed);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_OWED);
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.report_count, 1);
   assert_int_equal(fx->chan.request_update_count, checks);
@@ -10955,8 +10954,7 @@ static void a_refused_update_report_is_retried_then_dropped(void** state)
       AZ_IOT_SU_ERROR_ACTION_FATAL,
       &(az_iot_su_service_error){ .code = 400000, .message = "", .tracking_id = "" },
       fx->chan.engine_ctx);
-  assert_false(fx->su._internal.refused_report_owed);
-  assert_false(fx->su._internal.refused_report_in_flight);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_NONE);
   pump(fx, 3);
   assert_int_equal(fx->chan.report_count, 2);
   assert_int_equal(fx->chan.request_update_count, checks + 1);
@@ -10971,13 +10969,12 @@ static void an_accepted_workflow_drops_an_owed_refused_report(void** state)
   fx->chan.report_result = AZ_IOT_ERR_BUSY;
   inject_patch(fx, REFUSED_PATCH);
   pump(fx, 3);
-  assert_true(fx->su._internal.refused_report_owed);
-  assert_false(fx->su._internal.refused_report_in_flight);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_OWED);
 
   fx->chan.report_result = AZ_IOT_OK;
   int sent = fx->chan.report_count;
   inject_patch(fx, signed_patch());
-  assert_false(fx->su._internal.refused_report_owed);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_NONE);
   pump(fx, 40);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_true(fx->chan.report_count > sent);
@@ -10996,15 +10993,13 @@ static void an_accepted_workflow_drops_an_in_flight_refused_report(void** state)
   fx->chan.report_verdict_deferred = true;
   inject_patch(fx, REFUSED_PATCH);
   pump(fx, 3);
-  assert_true(fx->su._internal.refused_report_in_flight);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_IN_FLIGHT);
 
   int sent = fx->chan.report_count;
   inject_patch(fx, signed_patch());
-  assert_true(fx->su._internal.refused_report_superseded);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_SUPERSEDED);
   deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
-  assert_false(fx->su._internal.refused_report_owed);
-  assert_false(fx->su._internal.refused_report_in_flight);
-  assert_false(fx->su._internal.refused_report_superseded);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_NONE);
 
   fx->chan.report_verdict_deferred = false;
   pump(fx, 40);

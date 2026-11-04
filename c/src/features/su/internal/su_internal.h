@@ -64,19 +64,16 @@ extern "C"
   az_iot_result az_iot_su__report_state(az_iot_su_client* client);
 
   /**
-   * @brief The refused update's FAILED report as last handed to the channel,
-   * for the REPORT_ACCEPTED event.
+   * @brief The FAILED report of the refused update, as last handed to the channel.
    *
    * @param[in] client The client.
    * @param[out] v     The report; it points into @p v.
    */
-  void az_iot_su__sent_refused_report_view(
-      const az_iot_su_client* client,
-      az_iot_su__report_view* v);
+  void az_iot_su__refused_report_view(const az_iot_su_client* client, az_iot_su__report_view* v);
 
   /**
-   * @brief Hand the channel the FAILED report of the refused update named by
-   * `refused_workflow_id`, with `refused_extended_result_code`.
+   * @brief Hand the channel the FAILED report of the refused update, with the
+   * installed update id cached now.
    *
    * @param[in] client The client; its channel is bound.
    * @return The channel's result.

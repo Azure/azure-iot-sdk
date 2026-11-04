@@ -23,13 +23,13 @@
 #define AZ_IOT_SU_RESULT_CODE_FAILURE (-1)
 
 /**
- * @brief The installed update id from the cached device properties, copied into @p v.
+ * @brief The installed update id from the cached device properties, copied into @p out.
  *
- * @return &v->installed; NULL when no complete id is cached.
+ * @return @p out; NULL when no complete id is cached.
  */
 static const az_iot_su_report_update_id* cached_installed_update_id(
     const az_iot_su_client* client,
-    az_iot_su__report_view* v)
+    az_iot_su_report_update_id* out)
 {
   if (SU_I(client).device_properties_buffer == NULL)
   {
@@ -41,10 +41,10 @@ static const az_iot_su_report_update_id* cached_installed_update_id(
   {
     return NULL;
   }
-  v->installed.provider = cached->installed_update_id.provider;
-  v->installed.name = cached->installed_update_id.name;
-  v->installed.version = cached->installed_update_id.version;
-  return &v->installed;
+  out->provider = cached->installed_update_id.provider;
+  out->name = cached->installed_update_id.name;
+  out->version = cached->installed_update_id.version;
+  return out;
 }
 
 bool az_iot_su__build_report_view(const az_iot_su_client* client, az_iot_su__report_view* v)
@@ -113,7 +113,7 @@ bool az_iot_su__build_report_view(const az_iot_su_client* client, az_iot_su__rep
   }
   else
   {
-    installed_ptr = cached_installed_update_id(client, v);
+    installed_ptr = cached_installed_update_id(client, &v->installed);
   }
 
   az_iot_su_report* report = &v->report;
@@ -155,12 +155,6 @@ static bool copy_cstr(char* dst, size_t cap, const char* src)
 }
 
 /**
- * @brief Keep @p report in sent_terminal slot @p slot, copying what it points at.
- *
- * The engine sets no overall result details, so none are kept. An installed
- * update id longer than AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE is not kept.
- */
-/**
  * @brief Copy an installed update id as provider, name and version, each NUL-terminated.
  *
  * @param[out] packed AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE bytes.
@@ -198,6 +192,12 @@ static void unpack_installed_update_id(const char* packed, az_iot_su_report_upda
   id->version = id->name + strlen(id->name) + 1;
 }
 
+/**
+ * @brief Keep @p report in sent_terminal slot @p slot, copying what it points at.
+ *
+ * The engine sets no overall result details, so none are kept. An installed
+ * update id longer than AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE is not kept.
+ */
 static void keep_sent_terminal(
     az_iot_su_client* client,
     uint8_t slot,
@@ -358,22 +358,19 @@ az_iot_result az_iot_su__report_state(az_iot_su_client* client)
   return sent;
 }
 
-/**
- * @brief Build the FAILED report of the refused update named by
- * `refused_workflow_id`, with `refused_extended_result_code` and the current
- * installed update id.
- *
- * @param[in]  client The client.
- * @param[out] v      The report; it points into @p v.
- */
-static void build_refused_report_view(const az_iot_su_client* client, az_iot_su__report_view* v)
+void az_iot_su__refused_report_view(const az_iot_su_client* client, az_iot_su__report_view* v)
 {
+  const az_iot_su_refused_report_internal* refused = &SU_I(client).refused_report;
   memset(&v->report, 0, sizeof(v->report));
-  memcpy(v->workflow_id, SU_I(client).refused_workflow_id, sizeof(v->workflow_id));
+  memcpy(v->workflow_id, refused->workflow_id, sizeof(v->workflow_id));
   az_iot_su__format_extended_result_code(
-      v->extended, sizeof(v->extended), SU_I(client).refused_extended_result_code);
+      v->extended, sizeof(v->extended), refused->extended_result_code);
   v->report.workflow_id = v->workflow_id;
-  v->report.installed_update_id = cached_installed_update_id(client, v);
+  if (refused->has_installed)
+  {
+    unpack_installed_update_id(refused->installed, &v->installed);
+    v->report.installed_update_id = &v->installed;
+  }
   v->report.outcome = AZ_IOT_SU_OUTCOME_FAILED;
   v->report.failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE;
   /* Non-positive and naming the facility, as for a failed step. */
@@ -383,23 +380,15 @@ static void build_refused_report_view(const az_iot_su_client* client, az_iot_su_
 
 az_iot_result az_iot_su__report_refused_update(az_iot_su_client* client)
 {
+  /* Kept with the report: the REPORT_ACCEPTED event names the id sent. */
+  az_iot_su_report_update_id cached;
+  const az_iot_su_report_update_id* installed = cached_installed_update_id(client, &cached);
+  SU_I(client).refused_report.has_installed
+      = pack_installed_update_id(SU_I(client).refused_report.installed, installed);
   az_iot_su__report_view v;
-  build_refused_report_view(client, &v);
-  /* The installed id may change before the verdict; the event names the one sent. */
-  SU_I(client).refused_sent_has_installed
-      = pack_installed_update_id(SU_I(client).refused_sent_installed, v.report.installed_update_id);
+  az_iot_su__refused_report_view(client, &v);
+  v.report.installed_update_id = installed;
   return SU_I(client).channel.vtable->report(SU_I(client).channel.ctx, &v.report);
-}
-
-void az_iot_su__sent_refused_report_view(const az_iot_su_client* client, az_iot_su__report_view* v)
-{
-  build_refused_report_view(client, v);
-  v->report.installed_update_id = NULL;
-  if (SU_I(client).refused_sent_has_installed)
-  {
-    unpack_installed_update_id(SU_I(client).refused_sent_installed, &v->installed);
-    v->report.installed_update_id = &v->installed;
-  }
 }
 
 /* ------------------------------------------------------------------------- */
