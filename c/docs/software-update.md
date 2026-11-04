@@ -200,8 +200,9 @@ Your code does the device-side work. Every hook gets `hooks.user_ctx`, returns a
   `nvs_commit()`). A length of 0 means erase.
 
 Ready-made hooks: the ESP32 OTA adapter
-([platforms/esp32](../platforms/esp32/README.md)). Real downloads with libcurl:
-[http_download](../samples/software_update/pc/http_download/README.md).
+([platforms/esp32](../platforms/esp32/README.md)); for mini manifests, give it a
+`detached_manifest_buffer` and register its observer, `az_iot_su_esp32_ota_handle_event()`.
+Real downloads with libcurl: [http_download](../samples/software_update/pc/http_download/README.md).
 
 ## Workflow, steps and results
 
@@ -302,7 +303,16 @@ report delivery and retries) and hands each verified update to your code.
 2. On `AZ_IOT_SU_EVENT_UPDATE_AVAILABLE`, take `event->request` (workflow id, file URLs) and
    `event->manifest`. They stay valid until your final report.
 3. Download, check each file with `az_iot_su_verify_file_hash()`, install.
-4. Report progress and the outcome with `az_iot_su_client_report_status()`, one result per step.
+4. Report progress and the outcome with `az_iot_su_client_report_status()`. A final report takes 0
+   to `AZ_IOT_SU_MAX_STEP_COUNT` step results, entry i reported as step i of the manifest: include
+   them on failure; on success they may be omitted.
+
+A mini manifest (`az_iot_su_manifest_is_detached(event->manifest)`, no steps) needs one more step
+before 3: download the file named by `detached_manifest_file_id` from `event->request->file_urls`
+into your memory and call `az_iot_su_parse_detached_manifest()`. It checks the file against the
+signed mini manifest and gives you the full manifest, whose steps you install and report.
+`event->manifest` stays the mini manifest. It works the same for a mini manifest from
+`az_iot_su_parse_update_request()`.
 
 `az_iot_su_client_get_current_update()` returns the current update in either mode.
 
@@ -360,7 +370,10 @@ is valid only during the callback. Names below omit the `AZ_IOT_SU_EVENT_` prefi
 ## Retries, duplicates and cancellation
 
 - **Transient service errors** are retried by the client (1 s doubling to 60 s, or the service's
-  `Retry-After`), within the request timeout.
+  `Retry-After`), within the request timeout. The exception is a check answered
+  `UPSTREAM_UNAVAILABLE` without `Retry-After`: it ends at once with `OPERATION_ABANDONED`
+  (`reason` `AZ_IOT_ERR_DPS`), as the service asks, and the next scheduled check tries again. A
+  check held before registration releases it.
 - **A failed update** offered again is retried after 1 h, doubling up to 24 h, with jitter. The wait
   survives a restart when persistence is set.
 - **A new update while one runs** replaces it until its first `install_fn` call: an update still
@@ -379,6 +392,7 @@ Turn on the `su` and `dps` log components at `DEBUG` ([logging.md](logging.md)).
 | Always `NO_UPDATE` | Compatibility properties do not match the update, or it is already installed | Compare the properties the device sends with the update's `compatibility` |
 | Regular check `OPERATION_ABANDONED`, `INVALID_REQUEST` | The device has no device record yet | Use the onboarding route until it registers |
 | `OPERATION_ABANDONED`, `UPDATE_ACCOUNT_NOT_LINKED` or `..._ACCESS_DENIED` | ADR namespace not linked to Device Update | Fix the link; provisioning is not blocked |
+| Check `OPERATION_ABANDONED`, `UPSTREAM_UNAVAILABLE` | Device Update or its registry is temporarily unavailable | None; the next scheduled check tries again |
 | `FAILED`, facility `0x1` (`AZ_IOT_SU_FACILITY_MANIFEST`) | Signature not trusted: unknown or disabled root key | Pass the right root keys; the sub-code says which check failed |
 | `FAILED`, facility `0x3` (`HASH`) | A downloaded file differs from the signed one | Check `download_fn` and `read_file_fn` |
 | `UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` | The update's metadata exceeds `max_update_size`, or it has too many files | Raise the limit ([Memory and limits](#memory-and-limits)) |
@@ -414,10 +428,9 @@ PC samples run on Linux and Windows.
 - Updates go over DPS only; there is no IoT Hub route.
 - Only X.509 device authentication is supported for Software Update.
 - No root key package download or rotation, and no signing-key revocation.
-- Not supported: component targeting, proxy (gateway-to-leaf) updates, reference steps, mini
-  (detached) update manifests in library mode, step handlers (apt, script, swupdate), Delivery
-  Optimization, log upload. A manifest with a reference step or no step, or a mini manifest in
-  library mode, fails before anything is downloaded (`AZ_IOT_SU_MANIFEST_ERROR_*`).
+- Not supported: component targeting, proxy (gateway-to-leaf) updates, reference steps, step
+  handlers (apt, script, swupdate), Delivery Optimization, log upload. A manifest with a
+  reference step or no step fails before anything is downloaded (`AZ_IOT_SU_MANIFEST_ERROR_*`).
 - No built-in health check or automatic rollback after a reboot.
 - `AZ_IOT_SU_REPLACEMENT_ROLLBACK` is not supported yet.
 - An update refused by the device (`UPDATE_REFUSED`) is reported `FAILED` once (facility `0xB`),

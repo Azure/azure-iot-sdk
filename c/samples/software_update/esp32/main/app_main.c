@@ -342,6 +342,9 @@ void app_main(void)
    * (AZ_IOT_SU_STATE_BLOB_MAX_SIZE(), about 11 KiB) while one
    * replaces the other. */
 #define SU_MAX_UPDATE_SIZE 8192
+  /* A mini manifest's detached manifest file, which the client bounds to SU_MAX_UPDATE_SIZE. */
+  static uint8_t detached_manifest_buffer[SU_MAX_UPDATE_SIZE];
+  ota.detached_manifest_buffer = AZ_SPAN_FROM_BUFFER(detached_manifest_buffer);
   /* The client's memory, about 35 KB: too large for the 12 KB main task stack. */
   static uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_SIZE(
       SU_MAX_UPDATE_SIZE,
@@ -372,7 +375,8 @@ void app_main(void)
   }
 
   /* Registered before resume(), which replays a persisted state to observers.
-   * The OTA hooks' observer releases a download the client abandons. */
+   * The OTA hooks' observer tells them the workflow state and releases a download the client
+   * abandons. */
   if (az_iot_su_client_add_observer(&su, on_su_event, NULL) != AZ_IOT_OK
       || az_iot_su_client_add_observer(&su, az_iot_su_esp32_ota_handle_event, &ota) != AZ_IOT_OK)
   {
