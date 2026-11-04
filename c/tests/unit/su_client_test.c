@@ -11818,9 +11818,20 @@ static void a_mini_manifest_parses_into_its_full_manifest(void** state)
       AZ_IOT_OK);
   assert_int_equal(manifest.instructions.steps_count, 2);
 
-  /* Bad arguments. */
+  /* Bad arguments, each against a fresh mini manifest and intact detached file. */
+  az_iot_su_client_update_manifest mini;
+  assert_int_equal(
+      parse_with_roots(
+          &fx->log,
+          detached_manifest_patch(fx, "stateless", &valid),
+          k_root_keys,
+          1,
+          &request,
+          &mini),
+      AZ_IOT_OK);
+  assert_true(az_iot_su_manifest_is_detached(&mini));
+  file = az_span_create_from_str(g_detached_file);
   uint32_t error = 0xFFu;
-  const az_iot_su_client_update_manifest mini = manifest;
   assert_int_equal(
       az_iot_su_parse_detached_manifest(
           NULL, &request, file, &crypto.base, related_files, 1, &manifest, &error),
