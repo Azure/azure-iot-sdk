@@ -6211,11 +6211,18 @@ static void wait_without_session(az_iot_connection_client* c, uint32_t timeout_m
   {
     wait_ms = (uint32_t)INT32_MAX;
   }
-  if (wait_ms > 0)
+  /* Sleep until the monotonic clock reaches the target: a coarse clock (Windows
+   * ticks are ~16 ms) can lag the sleep, leaving the deadline not yet due. */
+  uint64_t const target_ms = az_iot_time_mono_ms() + wait_ms;
+  uint64_t now_ms = target_ms - wait_ms;
+  while (now_ms < target_ms)
   {
     /* Without a platform sleep (az_noplatform) do_work() returns at once, as before. */
-    az_result const sleep_result = az_platform_sleep_msec((int32_t)wait_ms);
-    (void)sleep_result;
+    if (az_result_failed(az_platform_sleep_msec((int32_t)(target_ms - now_ms))))
+    {
+      return;
+    }
+    now_ms = az_iot_time_mono_ms();
   }
 }
 
