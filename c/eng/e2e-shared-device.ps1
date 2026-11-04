@@ -11,18 +11,21 @@ group's CA, and writes the test-config script the workflow sources (the variable
 provisioning action emits), including the shared symmetric-key group's key for the SAS
 suites. Devices register through the groups on first connect, so no Azure call is made here.
 
-Default (ci-c-e2e), inputs from the environment (repository secrets/variables):
-  E2E_SHARED_GROUP_CA        base64 of a PEM holding the group CA certificate and its private key
-  E2E_SHARED_IOTHUB_CS       IoT Hub 'service' policy connection string
-  E2E_SHARED_EVENTHUB_CS     Event Hub-compatible endpoint connection string, 'service' policy
-  E2E_SHARED_ID_SCOPE        DPS ID scope
-  E2E_SHARED_SAS_GROUP_KEY   primary key of the DPS symmetric-key enrollment group
-  E2E_SHARED_DPS_CS          DPS service connection string (EnrollmentWrite, RegistrationStatusWrite),
-                             written as IOT_DPS_CONNECTION_STRING for the TPM suite's enrollments
-  E2E_SHARED_IOTHUB_REGISTRY_CS  IoT Hub connection string with RegistryWrite, written as
-                             IOTHUB_REGISTRY_CONNECTION_STRING for the TPM suite's device cleanup
+Default (ci-c-e2e), inputs from the environment (repository secrets/variables) of the mqttv3
+environment, a hub and DPS with no ADR link or certificate policy:
+  E2E_MQTTV3_SHARED_GROUP_CA       base64 of a PEM holding the group CA certificate and its private key
+  E2E_MQTTV3_SHARED_IOTHUB_CS      IoT Hub 'service' policy connection string
+  E2E_MQTTV3_SHARED_EVENTHUB_CS    Event Hub-compatible endpoint connection string, 'service' policy
+  E2E_MQTTV3_SHARED_ID_SCOPE       DPS ID scope
+  E2E_MQTTV3_SHARED_DPS_HOST       DPS device endpoint (optional)
+  E2E_MQTTV3_SHARED_SAS_GROUP_KEY  primary key of the DPS symmetric-key enrollment group
+  E2E_MQTTV3_SHARED_DPS_CS         DPS service connection string (EnrollmentWrite, RegistrationStatusWrite),
+                                   written as IOT_DPS_CONNECTION_STRING for the TPM suite's enrollments
+  E2E_MQTTV3_SHARED_IOTHUB_REGISTRY_CS  IoT Hub connection string with RegistryWrite, written as
+                                   IOTHUB_REGISTRY_CONNECTION_STRING for the TPM suite's device cleanup
 
--Csr (ci-c-e2e-csr), writes the IOT_DPS_GROUP_X509_* bootstrap identity instead:
+-Csr (ci-c-e2e-csr), inputs of the certificate-management environment (a hub and DPS linked to
+ADR with a certificate policy); writes the IOT_DPS_GROUP_X509_* bootstrap identity instead:
   E2E_CSR_SHARED_GROUP_CA    base64 of a PEM holding the group's issuing CA certificate and its
                              private key, then any CA certificates above it (issuer first)
   E2E_CSR_SHARED_ID_SCOPE    DPS ID scope
@@ -41,7 +44,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$Vars = if ($Csr) { 'E2E_CSR_SHARED' } else { 'E2E_SHARED' }
+$Vars = if ($Csr) { 'E2E_CSR_SHARED' } else { 'E2E_MQTTV3_SHARED' }
 function Get-Shared([string]$Name) { [Environment]::GetEnvironmentVariable("${Vars}_$Name") }
 $Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE', 'SAS_GROUP_KEY') }
             else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE', 'SAS_GROUP_KEY', 'DPS_CS', 'IOTHUB_REGISTRY_CS') }
@@ -114,6 +117,7 @@ $Lines = if ($Csr) {
         Format-Assignment 'IOTHUB_EVENTHUB_CONNECTION_STRING' (Get-Shared 'EVENTHUB_CS')
         Format-Assignment 'IOTHUB_EVENTHUB_CONSUMER_GROUP' $ConsumerGroup
         Format-Assignment 'IOT_DPS_ID_SCOPE' (Get-Shared 'ID_SCOPE')
+        if (Get-Shared 'DPS_HOST') { Format-Assignment 'IOT_DPS_GLOBAL_ENDPOINT' (Get-Shared 'DPS_HOST') }
         Format-Assignment "IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$DeviceIndex" $RegistrationId
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$DeviceIndex" (ConvertTo-B64 $Chain)
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_KEY_$DeviceIndex" $KeyB64
