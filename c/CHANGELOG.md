@@ -190,9 +190,11 @@ software updates. APIs may change before a stable release.
   Paho must be 1.3.14 or later); OpenSSL 3.0 to 4.1; mbedTLS 3.6 LTS or 4.1+. See
   [docs/dependencies.md](docs/dependencies.md).
 - Preview additions: the `mqttv5` and `su_delta` package components; the ESP-IDF software updates
-  OTA platform hooks (`az_iot_su_esp32_ota.h`); libcurl 7.55.0+ for the software update download
-  sample. The installed package accepts the same minor version only (`SameMinorVersion`) while in
-  preview.
+  OTA platform hooks (`az_iot_su_esp32_ota.h`), which keep a mini manifest's detached manifest
+  file in the application's `detached_manifest_buffer` rather than the OTA partition and log
+  through the SDK logging facade (component `su`); libcurl 7.55.0+ for the software update
+  download sample. The installed package accepts the same minor version only (`SameMinorVersion`)
+  while in preview.
 
 #### Samples
 
