@@ -25,8 +25,9 @@ zero-filled payloads of the declared size; install and apply only log. The hash 
 - Each downloaded file is checked with `az_iot_su_verify_file_hash()`.
 - One `IN_PROGRESS` report after the downloads, then the final report with one result per
   manifest step: `SUCCEEDED`, or `FAILED` with the failing step and later steps `SKIPPED`.
-  `az_iot_su_client_report_status()` sends and retries it. An update with no steps is reported
-  `FAILED` before any download.
+  The client takes 0 to `AZ_IOT_SU_MAX_STEP_COUNT` step results (entry i is step i); the sample
+  sends one per step. `az_iot_su_client_report_status()` sends and retries it. An update with no
+  steps is reported `FAILED` before any download.
 - After a success the client sends the new update id as installed on later checks. Library
   mode persists nothing, so the sample keeps the id in a file (`AZ_IOT_SU_INSTALLED_FILE`),
   written before the success report, and passes it to `az_iot_su_client_init()` on the next run.

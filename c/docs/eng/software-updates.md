@@ -178,8 +178,10 @@ application that must not lose the hub during a check schedules checks when that
   only.
 - `extendedResultCodes`: comma-separated hex.
 - `stepResults`: `{ step_0, step_1, … }`, each with `outcome`, `failureOrigin`, `resultCode`,
-  `extendedResultCodes` and optional `resultDetails`. Omitted from in-progress reports; complete in
-  terminal reports when the manifest has steps.
+  `extendedResultCodes` and optional `resultDetails`. Omitted from in-progress reports. The service
+  makes it optional (any subset of steps; keys naming no step are dropped). The managed client
+  sends one per manifest step in terminal reports; library mode sends what the application gives
+  (§5.3).
 
 Reporting is **idempotent on `workflowId`**. A different terminal outcome for the same workflow is
 rejected with `409 REPORT_CONFLICT`; an accepted duplicate is **200 with no body**, not 409.
@@ -645,7 +647,7 @@ indexed by step number. As the machine progresses:
 - The **overall** `result_code`/`extended_result_code` MUST mirror the *first*
   failing step (the root cause), not a later rollback outcome.
 - `step_results_count` MUST equal the number of manifest steps for terminal
-  reports.
+  reports (managed client; library mode reports the application's count, §5.3).
 - `resultDetails` per step: only what the application set (see Result-Code Mapping).
 - The terminal report, step results included, is handed to observers on
   `AZ_IOT_SU_EVENT_REPORT_ACCEPTED` (`event->report`, terminal acceptance only).
@@ -1274,7 +1276,8 @@ az_iot_result az_iot_su_client_get_current_update(
 
 /**
  * Library mode: report the delegated update's progress or end. Terminal
- * outcomes carry one step result per manifest step. Validated, then copied;
+ * outcomes carry 0 to AZ_IOT_SU_MAX_STEP_COUNT step results, step_<i> being
+ * step_results[i]. Validated, then copied;
  * sent like any report and retried when refused. See §5.3.
  */
 az_iot_result az_iot_su_client_report_status(
@@ -1454,8 +1457,8 @@ sequenceDiagram
         App->>SU: report_status(IN_PROGRESS)
         SU->>Ch: reportUpdateStatus
     end
-    App->>SU: report_status(SUCCEEDED | FAILED | SKIPPED, steps)
-    SU->>Ch: reportUpdateStatus
+    App->>SU: report_status(SUCCEEDED | FAILED | SKIPPED, 0..AZ_IOT_SU_MAX_STEP_COUNT step results)
+    SU->>Ch: reportUpdateStatus (stepResults step_0 .. step_n-1, as given)
     Note over SU: back to Idle
 ```
 
@@ -1468,10 +1471,14 @@ sequenceDiagram
   delegated, a different workflow id raises `UPDATE_DEFERRED`; the same id is a duplicate. A
   workflow id longer than `AZ_IOT_SU_WORKFLOW_ID_SIZE` is refused, as in the managed client.
 - `az_iot_su_client_report_status()` validates before it changes anything, copies the result, and
-  returns to Idle on a terminal outcome. A terminal report carries exactly one step result per
-  manifest step; a FAILED result code is never positive (a positive code reads as success to the
-  service); `CANCELED` is the service's and is refused; details are bounded by
-  `result_details_size`. On SUCCEEDED the manifest's update id
+  returns to Idle on a terminal outcome. A terminal report carries the step results the
+  application gives, 0 to `AZ_IOT_SU_MAX_STEP_COUNT` and none `IN_PROGRESS`, reported as given:
+  `step_<i>` is entry i, the index of the step in the manifest the application runs. The Device
+  Update device API makes `stepResults` optional (any subset; recommended on failure) and the
+  service drops keys naming no step, so the count is not checked against the manifest's steps.
+  The managed client still reports one per manifest step. A FAILED result code is never positive
+  (a positive code reads as success to the service); `CANCELED` is the service's and is refused;
+  details are bounded by `result_details_size`. On SUCCEEDED the manifest's update id
   becomes the installed one. Step details go through the same path as
   `az_iot_su_client_set_step_result_details()`.
 - Overall `result_details` are sent with the report they come with; the engine's terminal record
@@ -1498,7 +1505,8 @@ az_iot_su_client_init(&su, &connection, &opts);
 az_iot_su_client_add_observer(&su, on_su_event, app);
 
 /* on AZ_IOT_SU_EVENT_UPDATE_AVAILABLE: download event->request->file_urls,
- * check each with az_iot_su_verify_file_hash(), install, then: */
+ * check each with az_iot_su_verify_file_hash(), install, then report the
+ * outcome with 0 to AZ_IOT_SU_MAX_STEP_COUNT step results (steps[i] is step_<i>): */
 az_iot_su_step_result done = { .outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED };
 az_iot_su_client_report_status(&su, &done, steps, steps_count);
 ```

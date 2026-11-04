@@ -1735,10 +1735,12 @@ extern "C"
    * `result->result_code`, or -1 when it is 0. `failure_origin` MUST be
    * NOT_APPLICABLE unless the outcome is FAILED, and then it MUST NOT be. A FAILED
    * result code must not be positive, and CANCELED (the service's) is refused.
-   * Step results are ignored for IN_PROGRESS;
-   * otherwise there is exactly one per manifest step, none IN_PROGRESS. On
-   * SUCCEEDED the manifest's update ID is reported as installed; otherwise the
-   * cached installed update ID.
+   * Step results are ignored for IN_PROGRESS; otherwise 0 to
+   * AZ_IOT_SU_MAX_STEP_COUNT are reported as given, none IN_PROGRESS: `step_<i>`
+   * is `step_results[i]`, the index of the step in the manifest the application
+   * runs. The service makes them optional (include them on failure) and drops
+   * keys naming no step. On SUCCEEDED the manifest's update ID is reported as
+   * installed; otherwise the cached installed update ID.
    *
    * Overall `result_details` are sent with this report only; the workflow's
    * step details can be set earlier with az_iot_su_client_set_step_result_details().
@@ -1752,13 +1754,13 @@ extern "C"
    * @param[in,out] client Library-mode client.
    * @param[in] result Overall result. `result_details` is copied and must not
    *   contain a NUL byte.
-   * @param[in] step_results Per-step results, in manifest step order; copied.
+   * @param[in] step_results Per-step results, indexed by step; copied.
    *   May be NULL when @p step_results_count is 0.
    * @param[in] step_results_count Entries in @p step_results.
    * @return AZ_IOT_OK when recorded; the report is sent on this call or a later
    *   do_work(). On failure nothing changes.
    * @retval AZ_IOT_ERR_INVALID_ARG Bad arguments, an invalid result, or a
-   *   terminal step count other than the manifest's.
+   *   terminal step count above AZ_IOT_SU_MAX_STEP_COUNT.
    * @retval AZ_IOT_ERR_NOT_SUPPORTED The client is not in library mode.
    * @retval AZ_IOT_ERR_NOT_FOUND No update is delegated to the application.
    * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE Any details longer than
