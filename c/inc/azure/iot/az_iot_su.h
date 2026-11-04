@@ -268,6 +268,9 @@ extern "C"
 /* A download handler could not produce a file, which was downloaded in full; see
  * AZ_IOT_SU_DELTA_ERROR_*. Reported on a SUCCEEDED step and the overall result. */
 #define AZ_IOT_SU_FACILITY_DELTA 0xAu
+/* A delivered update the client refused before processing it (AZ_IOT_SU_EVENT_UPDATE_REFUSED);
+ * see AZ_IOT_SU_REFUSED_ERROR_*. */
+#define AZ_IOT_SU_FACILITY_REFUSED 0xBu
 #define AZ_IOT_SU_FACILITY_INTERNAL 0xFu /* parser/state/buffer error in the client */
 
 /* Compose a 32-bit extended_result_code from a facility nibble + sub-code. */
@@ -309,6 +312,10 @@ extern "C"
 #define AZ_IOT_SU_DELTA_ERROR_RELATED_HASH 0x4u /* related file SHA-256 != manifest hash */
 #define AZ_IOT_SU_DELTA_ERROR_BUILD 0x5u /* build_file_from_related_fn failed */
 #define AZ_IOT_SU_DELTA_ERROR_BUILT_HASH 0x6u /* built file SHA-256 != manifest hash */
+
+/* Sub-codes of AZ_IOT_SU_FACILITY_REFUSED: why a delivered update was refused. */
+#define AZ_IOT_SU_REFUSED_ERROR_TOO_LARGE 0x1u /* over a limit (AZ_IOT_ERR_NOT_ENOUGH_SPACE) */
+#define AZ_IOT_SU_REFUSED_ERROR_MALFORMED 0x2u /* cannot be decoded (AZ_IOT_ERR_PROTOCOL) */
 
   /* --- Compile-time capacities --------------------------------------------- */
 
@@ -970,13 +977,18 @@ extern "C"
     AZ_IOT_SU_EVENT_PERSIST_RECOVERED,
 
     /* A delivered update was refused before processing, so nothing was
-     * installed or reported for it. Carries `state` (unchanged) and `reason`:
+     * installed for it. Carries `state` (unchanged) and `reason`:
      * AZ_IOT_ERR_NOT_ENOUGH_SPACE when its workflow id exceeds
      * AZ_IOT_SU_WORKFLOW_ID_SIZE, it has more `fileUrls` than
      * AZ_IOT_SU_MAX_FILE_COUNT or the payload exceeds
      * az_iot_su_limits::max_update_size; AZ_IOT_ERR_PROTOCOL when the payload
      * cannot be decoded (not JSON, a required field missing or of the wrong
-     * type, or an invalid string escape). Raised again on each redelivery. */
+     * type, or an invalid string escape). Raised again on each redelivery.
+     * The update is reported FAILED (AZ_IOT_SU_FACILITY_REFUSED) once, so the
+     * service records the failure, unless its workflow id is missing, cannot
+     * be decoded, exceeds AZ_IOT_SU_WORKFLOW_ID_SIZE or is the active
+     * workflow's. The service re-offers a FAILED workflow; a re-offer of one
+     * already reported is not reported again. */
     AZ_IOT_SU_EVENT_UPDATE_REFUSED,
 
     /* A delivered update with a new workflow id was not started because the
@@ -1176,6 +1188,26 @@ extern "C"
     az_iot_su_step_result step_results[AZ_IOT_SU_MAX_STEP_COUNT];
     int32_t step_results_count;
   } az_iot_su_sent_report_internal;
+
+  /** @brief Internal: where the FAILED report of a refused update stands. */
+  typedef enum az_iot_su_refused_report_state_internal
+  {
+    AZ_IOT_SU_REFUSED_REPORT_NONE = 0, /**< Nothing to report. */
+    AZ_IOT_SU_REFUSED_REPORT_OWED, /**< Due to be handed to the channel. */
+    AZ_IOT_SU_REFUSED_REPORT_IN_FLIGHT, /**< Awaits its verdict. */
+    AZ_IOT_SU_REFUSED_REPORT_SUPERSEDED, /**< Awaits its verdict; a workflow was accepted since. */
+    AZ_IOT_SU_REFUSED_REPORT_ACCEPTED, /**< The service accepted it. */
+  } az_iot_su_refused_report_state_internal;
+
+  /** @brief Internal: the FAILED report of the last refused update. */
+  typedef struct az_iot_su_refused_report_internal
+  {
+    char workflow_id[AZ_IOT_SU_WORKFLOW_ID_SIZE + 1]; /**< Decoded, NUL-terminated. */
+    int32_t extended_result_code;
+    az_iot_su_refused_report_state_internal state;
+    bool has_installed; /**< The report as sent carried an installed update id. */
+    char installed[AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE]; /**< provider, name, version; NUL each */
+  } az_iot_su_refused_report_internal;
 
   typedef struct az_iot_su_client
   {
@@ -1416,6 +1448,7 @@ extern "C"
       /** Of a mini manifest: the full manifest text within request_buffer, after the request;
        * else empty. */
       az_span full_manifest_text;
+      az_iot_su_refused_report_internal refused_report; /**< The last refused update's report. */
     } _internal;
   } az_iot_su_client;
 
