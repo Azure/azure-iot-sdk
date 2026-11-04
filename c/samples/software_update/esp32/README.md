@@ -45,13 +45,16 @@ sequenceDiagram
 
 | Platform hook | ESP32 implementation |
 |---|---|
-| `download` | `esp_http_client` GET → `esp_ota_write` into the next OTA partition |
-| `read_file` | `esp_partition_read`, so core can run the SHA-256 check on the written image |
+| `download` | `esp_http_client` GET → `esp_ota_write` into the next OTA partition. A mini manifest's detached manifest file, fetched while the workflow is in `VERIFYING_MANIFEST`, goes to `detached_manifest_buffer` (`SU_MAX_UPDATE_SIZE` bytes) instead |
+| `read_file` | `esp_partition_read`, so core can run the SHA-256 check on the written image; the detached manifest file is read from `detached_manifest_buffer` |
 | `is_installed` | Compares the manifest version with `SU_UPDATE_VERSION` |
 | `install` | `esp_ota_end` + `esp_ota_set_boot_partition`; returns `REBOOT_REQUIRED` |
 | `apply` | No-op; the new image is already running |
 | `restore` | Rollback to the running partition |
 | `persist` / `load` state | NVS namespace `su_sample`, key `wf_state` (resume across the reboot). The 36 KB `nvs` partition holds two generations of the largest checkpoint; [main/app_main.c](main/app_main.c) sets `limits.max_update_size` to 8192 (`SU_MAX_UPDATE_SIZE`) to bound it. Erase the flash when moving from the earlier 24 KB layout. |
+
+The hooks learn the workflow state from `az_iot_su_esp32_ota_handle_event()`, which must be
+registered as an observer before `az_iot_su_client_resume()`.
 
 Once connected to its hub, the new image calls `az_iot_su_esp32_ota_mark_running_image_valid()`
 (`esp_ota_mark_app_valid_cancel_rollback`). If it crashes or never connects, the

@@ -200,8 +200,9 @@ Your code does the device-side work. Every hook gets `hooks.user_ctx`, returns a
   `nvs_commit()`). A length of 0 means erase.
 
 Ready-made hooks: the ESP32 OTA adapter
-([platforms/esp32](../platforms/esp32/README.md)). Real downloads with libcurl:
-[http_download](../samples/software_update/pc/http_download/README.md).
+([platforms/esp32](../platforms/esp32/README.md)); for mini manifests, give it a
+`detached_manifest_buffer` and register its observer, `az_iot_su_esp32_ota_handle_event()`.
+Real downloads with libcurl: [http_download](../samples/software_update/pc/http_download/README.md).
 
 ## Workflow, steps and results
 
