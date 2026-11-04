@@ -326,8 +326,8 @@ flowchart LR
   adapter does this: give it a `detached_manifest_buffer` and register its observer
   ([Platform hooks](#platform-hooks)).
 
-**Library mode:** your code downloads the file and calls `az_iot_su_parse_detached_manifest()`
-([Library mode](#library-mode)).
+**Library mode:** your code downloads the file and calls `az_iot_su_parse_detached_manifest()`;
+see the flow in [Library mode](#library-mode).
 
 **API:** `az_iot_su_manifest_is_detached()`, `detached_manifest_file_id` in
 `az_iot_su_client_update_manifest`, `az_iot_su_parse_detached_manifest()`, and these
@@ -372,6 +372,19 @@ into your memory and call `az_iot_su_parse_detached_manifest()`. It checks the f
 signed mini manifest and gives you the full manifest, whose steps you install and report.
 `event->manifest` stays the mini manifest. It works the same for a mini manifest from
 `az_iot_su_parse_update_request()`.
+
+```mermaid
+flowchart TB
+    E[AZ_IOT_SU_EVENT_UPDATE_AVAILABLE: request, manifest] --> Q{az_iot_su_manifest_is_detached?}
+    Q -- no --> U[manifest to run = event manifest]
+    Q -- yes --> D[download the file named by detached_manifest_file_id, URL from request file_urls]
+    D --> P[az_iot_su_parse_detached_manifest]
+    P -- AZ_IOT_OK --> U2[manifest to run = full manifest, in your storage]
+    P -- error --> R[report FAILED: FACILITY_MANIFEST + out_error sub-code]
+    U --> I[per file: download, az_iot_su_verify_file_hash, install]
+    U2 --> I
+    I --> S[az_iot_su_client_report_status: results of the manifest run]
+```
 
 `az_iot_su_client_get_current_update()` returns the current update in either mode.
 
