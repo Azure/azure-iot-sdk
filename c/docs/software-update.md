@@ -306,6 +306,13 @@ report delivery and retries) and hands each verified update to your code.
    to `AZ_IOT_SU_MAX_STEP_COUNT` step results, entry i reported as step i of the manifest: include
    them on failure; on success they may be omitted.
 
+A mini manifest (`az_iot_su_manifest_is_detached(event->manifest)`, no steps) needs one more step
+before 3: download the file named by `detached_manifest_file_id` from `event->request->file_urls`
+into your memory and call `az_iot_su_parse_detached_manifest()`. It checks the file against the
+signed mini manifest and gives you the full manifest, whose steps you install and report.
+`event->manifest` stays the mini manifest. It works the same for a mini manifest from
+`az_iot_su_parse_update_request()`.
+
 `az_iot_su_client_get_current_update()` returns the current update in either mode.
 
 > **Note** Library mode is not persisted: after a restart the service offers the update again.
@@ -416,10 +423,9 @@ PC samples run on Linux and Windows.
 - Updates go over DPS only; there is no IoT Hub route.
 - Only X.509 device authentication is supported for Software Update.
 - No root key package download or rotation, and no signing-key revocation.
-- Not supported: component targeting, proxy (gateway-to-leaf) updates, reference steps, mini
-  (detached) update manifests in library mode, step handlers (apt, script, swupdate), Delivery
-  Optimization, log upload. A manifest with a reference step or no step, or a mini manifest in
-  library mode, fails before anything is downloaded (`AZ_IOT_SU_MANIFEST_ERROR_*`).
+- Not supported: component targeting, proxy (gateway-to-leaf) updates, reference steps, step
+  handlers (apt, script, swupdate), Delivery Optimization, log upload. A manifest with a
+  reference step or no step fails before anything is downloaded (`AZ_IOT_SU_MANIFEST_ERROR_*`).
 - No built-in health check or automatic rollback after a reboot.
 - `AZ_IOT_SU_REPLACEMENT_ROLLBACK` is not supported yet.
 - An update refused by the device (`UPDATE_REFUSED`) is not reported to the service, which keeps

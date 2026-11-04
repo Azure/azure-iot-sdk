@@ -139,17 +139,19 @@ software updates. APIs may change before a stable release.
   their SHA-256. Updates with up to 10 steps and 10 files (`AZ_IOT_SU_MAX_STEP_COUNT`,
   `AZ_IOT_SU_MAX_FILE_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP`); a manifest over a limit, or
   whose steps name a missing file, is refused before any step runs.
-- Supported manifests: inline steps, and in managed mode detached (mini) manifests
+- Supported manifests: inline steps, and detached (mini) manifests
   (`detachedManifestFileId`, sent when a manifest exceeds 4,096 bytes): the client downloads the
   detached manifest file with `download_fn`, reads it into the update copy with `read_file_fn`,
   checks its size and SHA-256 against the signed mini manifest and installs the full manifest it
   carries; it is persisted, so resume does not download it again
   (`AZ_IOT_SU_MANIFEST_ERROR_DETACHED_*` on failure; `AZ_IOT_SU_FILE_URL_CAPACITY()` counts its
-  URL). `reference` steps, and mini manifests in library mode, are not supported in this preview.
-  A verified manifest with no step, a `reference` step, or a mini manifest in library mode is
-  refused before any hook runs: the workflow fails with `AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS`,
-  `AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP` or `AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST`,
-  library mode does not offer it, and
+  URL). In library mode `AZ_IOT_SU_EVENT_UPDATE_AVAILABLE` carries the mini manifest
+  (`az_iot_su_manifest_is_detached()`), and `az_iot_su_parse_update_request()` returns it; the
+  application downloads the detached manifest file and gets the full manifest with
+  `az_iot_su_parse_detached_manifest()`, in its own memory. `reference` steps are not supported in this preview.
+  A verified manifest with no step or a `reference` step is refused before any hook runs: the
+  workflow fails with `AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS` or
+  `AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP`, library mode does not offer it, and
   `az_iot_su_parse_update_request()` returns `AZ_IOT_ERR_INVALID_ARG` or
   `AZ_IOT_ERR_NOT_SUPPORTED`. The parsed manifest exposes `detached_manifest_file_id`, and each
   step its `type` (`az_iot_su_client_update_manifest_step_type`) and `detached_manifest_file_id`.

@@ -58,6 +58,7 @@ Deploy an update as for [simulated_regular](../simulated_regular/README.md), wit
 | `SU_SIM_FAIL_STEP=<n>` | no | 1-based step whose install fails; `0` (default) none |
 | `SU_SIM_HASH_MISMATCH=1` | no | Corrupt the payload, so the hash check fails |
 | `SU_SIM_DELAY_MS` | no | Per-download delay |
+| `SU_SIM_DETACHED_MANIFEST_FILE` | no | A copy of a mini manifest's detached manifest file (the sample prints its URL). Downloads are simulated, so without it an update with a mini manifest fails |
 | `AZ_IOT_SU_POLL_INTERVAL_S` | no | Seconds between checks; default 14400 |
 | `AZ_IOT_SU_LOG_LEVEL` | no | `trace`, `debug`, `info` (default), `warn`, `error`, `off` |
 
@@ -97,5 +98,6 @@ retried after a wait, as in the managed client.
 | Taking the update | `AZ_IOT_SU_EVENT_UPDATE_AVAILABLE` in `on_su_event()` |
 | The application's state machine | `advance_delegated_update()` |
 | Hash check | `az_iot_su_verify_file_hash()`, `read_downloaded_file()` |
+| Mini manifest | `use_full_manifest_of_mini_manifest()`, `az_iot_su_parse_detached_manifest()` |
 | Reports | `finish_delegated_update()`, the `IN_PROGRESS` report in `advance_delegated_update()` |
 | Installed update id across runs | `load_installed_update_id()`, `save_applied_update_id_as_installed()` |

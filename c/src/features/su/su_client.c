@@ -1368,43 +1368,19 @@ static az_iot_result decode_manifest(az_iot_su_client* client)
 }
 
 /**
- * @brief Refuse a mini manifest where its detached manifest file is not fetched: in library mode
- * and in az_iot_su_parse_update_request().
- *
- * @param manifest           A parsed manifest.
- * @param out_manifest_error Set to AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST when refused.
- * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_SUPPORTED (logged) for a mini manifest.
- */
-static az_iot_result refuse_mini_manifest(
-    const az_iot_su_client_update_manifest* manifest,
-    uint32_t* out_manifest_error)
-{
-  if (az_span_size(manifest->detached_manifest_file_id) <= 0)
-  {
-    return AZ_IOT_OK;
-  }
-  AZ_IOT_LOG_ERRORF(
-      AZ_IOT_LOG_COMPONENT_SU,
-      "mini manifest (detachedManifestFileId '%.*s') is not supported here",
-      (int)az_span_size(manifest->detached_manifest_file_id),
-      (const char*)az_span_ptr(manifest->detached_manifest_file_id));
-  *out_manifest_error = AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST;
-  return AZ_IOT_ERR_NOT_SUPPORTED;
-}
-
-/**
  * @brief Parse the verified manifest_text into current_manifest, check that the client can install
  * it, and that every step file is described by it and has a download URL.
  *
  * current_manifest holds spans into manifest_text (client-owned request_buffer). A mini manifest
- * has no steps yet: fetch_detached_manifest() replaces it.
+ * has no steps: the managed client replaces it in fetch_detached_manifest(); in library mode the
+ * application gets the full manifest with az_iot_su_parse_detached_manifest().
  *
  * @param client             The client; decode_manifest() and verify_manifest() succeeded.
  * @param out_manifest_error Set to the AZ_IOT_SU_MANIFEST_ERROR_* sub-code when the manifest is
  *                           not supported; else 0.
  * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE when over a limit; AZ_IOT_ERR_INVALID_ARG when
- * malformed, without steps or a step file is unresolved; AZ_IOT_ERR_NOT_SUPPORTED for a mini
- * manifest in library mode or a reference step.
+ * malformed, without steps or a step file is unresolved; AZ_IOT_ERR_NOT_SUPPORTED for a
+ * reference step.
  */
 static az_iot_result parse_manifest(az_iot_su_client* client, uint32_t* out_manifest_error)
 {
@@ -1417,10 +1393,6 @@ static az_iot_result parse_manifest(az_iot_su_client* client, uint32_t* out_mani
   if (r == AZ_IOT_OK)
   {
     r = az_iot_su__check_manifest_supported(&SU_I(client).current_manifest, out_manifest_error);
-  }
-  if (r == AZ_IOT_OK && SU_I(client).library_mode)
-  {
-    r = refuse_mini_manifest(&SU_I(client).current_manifest, out_manifest_error);
   }
   if (r == AZ_IOT_OK)
   {
@@ -2221,7 +2193,6 @@ static az_iot_result failure_reason(int32_t extended_result_code)
         case AZ_IOT_SU_MANIFEST_ERROR_CRYPTO:
         case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_READ:
           return AZ_IOT_ERR_INTERNAL;
-        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST:
         case AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP:
         case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_NO_READER:
           return AZ_IOT_ERR_NOT_SUPPORTED;
@@ -4020,9 +3991,8 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   bool verified = state != (uint32_t)AZ_IOT_SU_STATE_MANIFEST_RECEIVED
       && state != (uint32_t)AZ_IOT_SU_STATE_VERIFYING_MANIFEST;
   /* Past verification a mini manifest has its full manifest stored; before it, none. */
-  bool full_manifest_consistent = verified
-      ? az_span_size(SU_I(client).current_manifest.detached_manifest_file_id) <= 0
-      : full_len == 0;
+  bool full_manifest_consistent
+      = verified ? !az_iot_su_manifest_is_detached(&SU_I(client).current_manifest) : full_len == 0;
   uint32_t manifest_error = 0;
   if (!full_manifest_consistent
       || az_iot_su__check_manifest_supported(&SU_I(client).current_manifest, &manifest_error)
@@ -4694,7 +4664,9 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
           (void)az_iot_su__report_state(client);
           break;
         }
-        if (az_span_size(SU_I(client).current_manifest.detached_manifest_file_id) > 0)
+        /* In library mode the application fetches it (az_iot_su_parse_detached_manifest()). */
+        if (az_iot_su_manifest_is_detached(&SU_I(client).current_manifest)
+            && !SU_I(client).library_mode)
         {
           SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_DETACHED_MANIFEST;
         }
@@ -5468,10 +5440,6 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
   {
     uint32_t manifest_error = 0;
     r = az_iot_su__check_manifest_supported(&manifest, &manifest_error);
-    if (r == AZ_IOT_OK)
-    {
-      r = refuse_mini_manifest(&manifest, &manifest_error);
-    }
   }
   if (r == AZ_IOT_OK)
   {
@@ -5485,6 +5453,44 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
   *out_request = req;
   *out_manifest = manifest;
   return AZ_IOT_OK;
+}
+
+AZ_NODISCARD az_iot_result az_iot_su_parse_detached_manifest(
+    const az_iot_su_client_update_manifest* mini_manifest,
+    const az_iot_su_client_update_request* request,
+    az_span detached_manifest_file,
+    const az_iot_crypto* crypto,
+    az_iot_su_client_update_manifest_file* related_files,
+    size_t max_related_files,
+    az_iot_su_client_update_manifest* out_manifest,
+    uint32_t* out_error)
+{
+  uint32_t ignored_error = 0;
+  uint32_t* manifest_error = (out_error != NULL) ? out_error : &ignored_error;
+  *manifest_error = 0;
+  if (mini_manifest == NULL || request == NULL || out_manifest == NULL
+      || az_iot_crypto__validate(crypto) != AZ_IOT_OK || az_span_size(detached_manifest_file) <= 0
+      || (request->file_urls == NULL && request->file_urls_count > 0)
+      || max_related_files > AZ_IOT_SU_MAX_LIMIT_COUNT
+      || (related_files == NULL && max_related_files > 0))
+  {
+    if (out_manifest != NULL)
+    {
+      memset(out_manifest, 0, sizeof(*out_manifest));
+    }
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  return az_iot_su__parse_detached_manifest(
+      crypto,
+      mini_manifest,
+      detached_manifest_file,
+      request->file_urls,
+      request->file_urls_count,
+      related_files,
+      max_related_files,
+      out_manifest,
+      NULL,
+      manifest_error);
 }
 
 AZ_NODISCARD az_iot_result az_iot_su_verify_file_hash(
