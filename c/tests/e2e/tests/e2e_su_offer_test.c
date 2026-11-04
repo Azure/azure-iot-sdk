@@ -37,7 +37,7 @@
  * The DETACHED offers' update manifest is over 4,096 bytes, so the service sends a signed mini
  * manifest naming it as a detached file (`detachedManifestFileId`). The managed client fetches that
  * file itself; in library mode the test downloads it and calls
- * az_iot_su_client_set_detached_manifest(). Both install the full manifest.
+ * az_iot_su_parse_detached_manifest(). Both install the full manifest.
  *
  * The DELTA offers name the test download handler E2E_SU_TEST_DELTA_HANDLER_ID: their file's
  * related file is the file XOR a source both sides generate (delta_source_byte()). The
@@ -1139,8 +1139,8 @@ typedef struct
   bool detached_manifest_file_has_url;
   /* A mini manifest's `detachedManifestFileId` (JSON escapes kept). */
   char detached_manifest_file_id[E2E_SU_FILE_ID_SIZE];
-  /* Library mode: az_iot_su_client_set_detached_manifest() took the detached manifest file. */
-  bool detached_manifest_set;
+  /* Library mode: az_iot_su_parse_detached_manifest() parsed the detached manifest file. */
+  bool detached_manifest_parsed;
   /* Steps and files of the manifest the client parsed (a mini manifest's full manifest). */
   uint32_t parsed_manifest_steps_count;
   uint32_t parsed_manifest_files_count;
@@ -1821,16 +1821,19 @@ static az_span find_file_url(
 
 /**
  * @brief Library mode, mini manifest: downloads its detached manifest file the way the payload
- * files are downloaded and gives it to az_iot_su_client_set_detached_manifest(), which replaces
- * the delegated mini manifest with the full manifest.
+ * files are downloaded and gets the full manifest with az_iot_su_parse_detached_manifest(), in the
+ * test's storage; the client keeps the mini manifest.
+ *
+ * @return The full manifest; its spans point into static storage valid until the next call.
  */
-static void set_detached_manifest_from_download(
+static const az_iot_su_client_update_manifest* parse_full_manifest_from_download(
     fixture* fx,
     const az_iot_su_client_update_request* request,
     const az_iot_su_client_update_manifest* mini_manifest)
 {
-  /* Large enough for any detached manifest file the client accepts. */
   static uint8_t content[AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE];
+  static az_iot_su_client_update_manifest full_manifest;
+  static az_iot_su_client_update_manifest_file related_files[AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES];
   assert_int_equal(mini_manifest->files_count, 1);
   const az_iot_su_client_update_manifest_file* file = &mini_manifest->files[0];
   assert_true(az_iot_json_string_equals(file->id, mini_manifest->detached_manifest_file_id, true));
@@ -1844,10 +1847,17 @@ static void set_detached_manifest_from_download(
   assert_true(size == (size_t)file->size_in_bytes);
 
   uint32_t error = 0;
-  az_iot_result result = az_iot_su_client_set_detached_manifest(
-      &fx->su, az_span_create(content, (int32_t)size), &error);
+  az_iot_result result = az_iot_su_parse_detached_manifest(
+      mini_manifest,
+      request,
+      az_span_create(content, (int32_t)size),
+      az_iot_crypto_openssl(),
+      related_files,
+      AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES,
+      &full_manifest,
+      &error);
   printf(
-      "  detached manifest file \"%.*s\" (%u bytes) set: %s (sub-code 0x%X)\n",
+      "  detached manifest file \"%.*s\" (%u bytes) parsed: %s (sub-code 0x%X)\n",
       (int)az_span_size(file->id),
       (const char*)az_span_ptr(file->id),
       (unsigned)size,
@@ -1855,7 +1865,9 @@ static void set_detached_manifest_from_download(
       (unsigned)error);
   assert_int_equal(result, AZ_IOT_OK);
   assert_int_equal(error, 0);
-  fx->detached_manifest_set = true;
+  assert_false(az_iot_su_manifest_is_detached(&full_manifest));
+  fx->detached_manifest_parsed = true;
+  return &full_manifest;
 }
 
 /**
@@ -1882,12 +1894,9 @@ static void run_library_mode_offer_to_success(fixture* fx)
   const az_iot_su_client_update_manifest* manifest = fx->delegated_manifest;
   assert_non_null(request);
   assert_non_null(manifest);
-  if (az_span_size(manifest->detached_manifest_file_id) > 0)
+  if (az_iot_su_manifest_is_detached(manifest))
   {
-    set_detached_manifest_from_download(fx, request, manifest);
-    assert_int_equal(az_iot_su_client_get_current_update(&fx->su, &request, &manifest), AZ_IOT_OK);
-    assert_non_null(manifest);
-    assert_int_equal(az_span_size(manifest->detached_manifest_file_id), 0);
+    manifest = parse_full_manifest_from_download(fx, request, manifest);
   }
   assert_true(manifest->files_count >= 1 && manifest->files_count <= E2E_SU_MAX_FILES);
   for (uint32_t i = 0; i < manifest->files_count; ++i)
@@ -2036,7 +2045,7 @@ static void detached_manifest_offer_is_a_mini_manifest_handled_by_the_managed_cl
 }
 
 /** @brief As detached_manifest_offer_is_a_mini_manifest_handled_by_the_managed_client(), in
- * library mode: the test downloads the detached manifest file, gives it to the client, then
+ * library mode: the test downloads the detached manifest file, parses its full manifest, then
  * downloads the full manifest's files and reports SUCCEEDED for each of its steps. */
 static void detached_manifest_offer_is_a_mini_manifest_handled_in_library_mode(void** state)
 {
@@ -2050,7 +2059,7 @@ static void detached_manifest_offer_is_a_mini_manifest_handled_in_library_mode(v
   run_library_mode_offer_to_success(fx);
 
   assert_offer_was_mini_manifest(fx);
-  assert_true(fx->detached_manifest_set);
+  assert_true(fx->detached_manifest_parsed);
 }
 
 /**

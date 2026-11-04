@@ -144,11 +144,10 @@ software updates. APIs may change before a stable release.
   checks its size and SHA-256 against the signed mini manifest and installs the full manifest it
   carries; it is persisted, so resume does not download it again
   (`AZ_IOT_SU_MANIFEST_ERROR_DETACHED_*` on failure; `AZ_IOT_SU_FILE_URL_CAPACITY()` counts its
-  URL). In library mode `AZ_IOT_SU_EVENT_UPDATE_AVAILABLE` carries the mini manifest; the
-  application downloads the detached manifest file and passes it to
-  `az_iot_su_client_set_detached_manifest()`, which replaces the delegated manifest with the full
-  one. `az_iot_su_parse_detached_manifest()` does the same without a client, for a mini manifest
-  from `az_iot_su_parse_update_request()`. `reference` steps are not supported in this preview.
+  URL). In library mode `AZ_IOT_SU_EVENT_UPDATE_AVAILABLE` carries the mini manifest
+  (`az_iot_su_manifest_is_detached()`), and `az_iot_su_parse_update_request()` returns it; the
+  application downloads the detached manifest file and gets the full manifest with
+  `az_iot_su_parse_detached_manifest()`, in its own memory. `reference` steps are not supported in this preview.
   A verified manifest with no step or a `reference` step is refused before any hook runs: the
   workflow fails with `AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS` or
   `AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP`, library mode does not offer it, and

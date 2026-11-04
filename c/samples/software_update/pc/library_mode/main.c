@@ -15,8 +15,8 @@
  * The application:
  *   - takes the update on AZ_IOT_SU_EVENT_UPDATE_AVAILABLE and drives it from
  *     its main loop, one file or step per pass, so do_work() keeps running;
- *   - for a mini manifest, gives the client its detached manifest file with
- *     az_iot_su_client_set_detached_manifest(), then runs the full manifest;
+ *   - for a mini manifest, gets the full manifest from its detached manifest
+ *     file with az_iot_su_parse_detached_manifest(), then runs it;
  *   - checks each downloaded file with az_iot_su_verify_file_hash();
  *   - reports progress, then the outcome with one result per manifest step,
  *     through az_iot_su_client_report_status();
@@ -98,7 +98,8 @@ typedef struct
   delegated_update_phase phase;
   /** Owned by the client; valid until the workflow ends. */
   const az_iot_su_client_update_request* request;
-  /** Owned by the client; valid until the workflow ends. */
+  /** The manifest run: the client's, valid until the workflow ends, or for a mini manifest the
+   * application's full manifest (use_full_manifest_of_mini_manifest()). */
   const az_iot_su_client_update_manifest* manifest;
   uint32_t next_index; /**< Next file or step. */
   az_iot_su_step_result step_results[AZ_IOT_SU_MAX_STEP_COUNT]; /**< Reported at the end. */
@@ -370,21 +371,24 @@ static void finish_delegated_update(sample_state* s, az_iot_su_step_result resul
 }
 
 /**
- * @brief Give the client the detached manifest file of the delegated mini manifest, so the
- * delegated manifest becomes the full one.
+ * @brief Get the full manifest of the delegated mini manifest from its detached manifest file,
+ * and make it the manifest the application runs.
  *
  * Downloads are simulated, so the file is read from SU_SIM_DETACHED_MANIFEST_FILE, a copy of the
- * file at the URL printed; an agent downloads it from that URL.
+ * file at the URL printed; an agent downloads it from that URL. The file and the full manifest are
+ * the application's: the client keeps the mini manifest.
  *
- * @return 0 when the delegated manifest is the full one; else the AZ_IOT_SU_MANIFEST_ERROR_*
- * sub-code to report.
+ * @return 0 when u->manifest is the full manifest; else the AZ_IOT_SU_MANIFEST_ERROR_* sub-code
+ * to report.
  */
-static uint32_t set_full_manifest_of_mini_manifest(sample_state* s)
+static uint32_t use_full_manifest_of_mini_manifest(sample_state* s)
 {
+  /* The full manifest's spans point into file_bytes: both live until the next update. */
   static uint8_t file_bytes[AZ_IOT_SU_DEFAULT_MAX_UPDATE_SIZE];
+  static az_iot_su_client_update_manifest full_manifest;
+  static az_iot_su_client_update_manifest_file related_files[AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES];
   delegated_update* u = &s->update;
-  const az_iot_su_client_update_manifest* manifest = u->manifest;
-  az_span url = find_file_url(u->request, manifest->detached_manifest_file_id);
+  az_span url = find_file_url(u->request, u->manifest->detached_manifest_file_id);
   printf(
       "Mini manifest: its full manifest is in the detached manifest file at %.*s\n",
       az_span_size(url),
@@ -410,26 +414,34 @@ static uint32_t set_full_manifest_of_mini_manifest(sample_state* s)
   }
 
   uint32_t error = 0;
-  az_iot_result set = az_iot_su_client_set_detached_manifest(
-      &s->su_client, az_span_create(file_bytes, (int32_t)size), &error);
-  if (set != AZ_IOT_OK)
+  az_iot_result parsed = az_iot_su_parse_detached_manifest(
+      u->manifest,
+      u->request,
+      az_span_create(file_bytes, (int32_t)size),
+      s->crypto,
+      related_files,
+      AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES,
+      &full_manifest,
+      &error);
+  if (parsed != AZ_IOT_OK)
   {
     fprintf(
         stderr,
         "Detached manifest file refused: %s (sub-code 0x%X).\n",
-        az_iot_result_to_string(set),
+        az_iot_result_to_string(parsed),
         (unsigned)error);
     /* No sub-code: refused before the content was checked, e.g. an empty file. */
     return (error != 0) ? error : AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_INVALID;
   }
-  for (uint32_t i = 0; i < manifest->instructions.steps_count; ++i)
+  u->manifest = &full_manifest;
+  for (uint32_t i = 0; i < full_manifest.instructions.steps_count; ++i)
   {
     u->step_results[i].outcome = AZ_IOT_SU_OUTCOME_SKIPPED;
   }
   printf(
       "Full manifest: %u file(s), %u step(s).\n",
-      (unsigned)manifest->files_count,
-      (unsigned)manifest->instructions.steps_count);
+      (unsigned)full_manifest.files_count,
+      (unsigned)full_manifest.instructions.steps_count);
   return 0;
 }
 
@@ -478,20 +490,20 @@ static void advance_delegated_update(sample_state* s)
               az_iot_result_to_string(updated));
         }
       }
-      uint32_t manifest_error = (az_span_size(manifest->detached_manifest_file_id) > 0)
-          ? set_full_manifest_of_mini_manifest(s)
-          : 0;
+      uint32_t manifest_error
+          = az_iot_su_manifest_is_detached(manifest) ? use_full_manifest_of_mini_manifest(s) : 0;
       if (manifest_error != 0)
       {
         az_iot_su_step_result failed = make_failed_result(
             AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE,
             AZ_IOT_SU_FACILITY_MANIFEST,
-            AZ_SPAN_FROM_STR("detached manifest file not set"));
+            AZ_SPAN_FROM_STR("detached manifest file refused"));
         failed.extended_result_code
             = AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_MANIFEST, manifest_error);
         finish_delegated_update(s, failed);
         return;
       }
+      manifest = u->manifest;
       /* Library mode calls no is_installed_fn: the application checks. */
       if (is_offered_update_already_installed(manifest, &s->simulation_control)
           == AZ_IOT_SU_RESULT_ALREADY_INSTALLED)

@@ -11626,167 +11626,57 @@ static void library_mode_does_not_hand_over_an_unsupported_manifest(void** state
   }
 }
 
-/* Library mode hands over a mini manifest without steps; once the application sets its detached
- * manifest file, the client holds the full manifest and takes one result per full step. */
-static void library_mode_takes_the_full_manifest_of_a_mini_manifest(void** state)
+/* Library mode hands over a mini manifest as it is. The application gets the full manifest with
+ * az_iot_su_parse_detached_manifest() in its own storage, and reports one result per full
+ * manifest step; the client keeps the mini manifest. */
+static void library_mode_hands_over_a_mini_manifest(void** state)
 {
+  static char file[sizeof(g_detached_file)];
   fixture* fx = (fixture*)*state;
   const detached_manifest_case c = { 0 };
   delegate(fx, detached_manifest_patch(fx, "lib-mini", &c));
+  const az_iot_su_client_update_manifest* mini = fx->last_manifest;
+  assert_true(az_iot_su_manifest_is_detached(mini));
   assert_true(az_span_is_content_equal(
-      fx->last_manifest->detached_manifest_file_id, AZ_SPAN_FROM_STR(SU_TEST_DETACHED_FILE_ID)));
-  assert_int_equal(fx->last_manifest->instructions.steps_count, 0);
+      mini->detached_manifest_file_id, AZ_SPAN_FROM_STR(SU_TEST_DETACHED_FILE_ID)));
+  assert_int_equal(mini->instructions.steps_count, 0);
 
-  /* Progress needs no step results; a terminal result before the set takes none. */
-  az_iot_su_step_result progress = lib_result(AZ_IOT_SU_OUTCOME_IN_PROGRESS);
-  progress.result_code = 7;
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &progress, NULL, 0), AZ_IOT_OK);
-  az_iot_su_step_result success = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
-  az_iot_su_step_result steps[2]
-      = { lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED), lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED) };
-  assert_int_equal(
-      az_iot_su_client_report_status(&fx->su, &success, steps, 2), AZ_IOT_ERR_INVALID_ARG);
-
+  copy_str(file, sizeof(file), g_detached_file);
+  az_iot_su_client_update_manifest full;
+  az_iot_su_client_update_manifest_file related_files[AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES];
   uint32_t error = 1;
   assert_int_equal(
-      az_iot_su_client_set_detached_manifest(
-          &fx->su, az_span_create_from_str(g_detached_file), &error),
+      az_iot_su_parse_detached_manifest(
+          mini,
+          fx->last_request,
+          az_span_create_from_str(file),
+          &fx->crypto.base,
+          related_files,
+          AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES,
+          &full,
+          &error),
       AZ_IOT_OK);
   assert_int_equal(error, 0);
-  assert_int_equal(fx->su._internal.install_result.result_code, 7);
+  assert_false(az_iot_su_manifest_is_detached(&full));
+  assert_int_equal(full.instructions.steps_count, 2);
 
   const az_iot_su_client_update_request* request = NULL;
   const az_iot_su_client_update_manifest* manifest = NULL;
   assert_int_equal(az_iot_su_client_get_current_update(&fx->su, &request, &manifest), AZ_IOT_OK);
-  assert_ptr_equal(manifest, fx->last_manifest);
-  assert_int_equal(manifest->instructions.steps_count, 2);
-  assert_int_equal(manifest->files_count, 2);
-  assert_int_equal(az_span_size(manifest->detached_manifest_file_id), 0);
-  assert_true(
-      az_span_is_content_equal(manifest->files[0].file_name, AZ_SPAN_FROM_STR("payload-00.bin")));
-  assert_true(
-      az_span_find(request->update_manifest, AZ_SPAN_FROM_STR("detachedManifestFileId")) >= 0);
+  assert_ptr_equal(manifest, mini);
+  assert_true(az_iot_su_manifest_is_detached(manifest));
 
-  /* Set once per update. */
-  error = 1;
+  az_iot_su_step_result success = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  az_iot_su_step_result steps[2]
+      = { lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED), lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED) };
   assert_int_equal(
-      az_iot_su_client_set_detached_manifest(
-          &fx->su, az_span_create_from_str(g_detached_file), &error),
-      AZ_IOT_ERR_ALREADY_INITIALIZED);
-  assert_int_equal(error, 0);
-  assert_int_equal(manifest->instructions.steps_count, 2);
-
-  assert_int_equal(
-      az_iot_su_client_report_status(&fx->su, &success, steps, 1), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &success, steps, 2), AZ_IOT_OK);
+      az_iot_su_client_report_status(
+          &fx->su, &success, steps, (int32_t)full.instructions.steps_count),
+      AZ_IOT_OK);
   assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
   assert_string_equal(fx->chan.last_workflow_id, "lib-mini");
   assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
   assert_int_equal(fx->chan.last_report.step_results_count, 2);
-}
-
-/* A detached manifest file is set only for a delegated mini manifest of a library-mode client. */
-static void setting_a_detached_manifest_needs_a_delegated_mini_manifest(void** state)
-{
-  fixture* fx = (fixture*)*state;
-  const detached_manifest_case c = { 0 };
-  (void)detached_manifest_patch(fx, "lib-state", &c);
-  az_span file = az_span_create_from_str(g_detached_file);
-  uint32_t error = 1;
-
-  assert_int_equal(
-      az_iot_su_client_set_detached_manifest(NULL, file, &error), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(error, 0);
-  assert_int_equal(
-      az_iot_su_client_set_detached_manifest(&fx->su, AZ_SPAN_EMPTY, NULL), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(
-      az_iot_su_client_set_detached_manifest(&fx->su, file, NULL), AZ_IOT_ERR_NOT_FOUND);
-
-  /* A full manifest is delegated. */
-  delegate(fx, build_patch("lib-full"));
-  assert_int_equal(
-      az_iot_su_client_set_detached_manifest(&fx->su, file, NULL), AZ_IOT_ERR_NOT_FOUND);
-  assert_int_equal(fx->last_manifest->instructions.steps_count, 1);
-  az_iot_su_step_result success = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
-  az_iot_su_step_result step = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &success, &step, 1), AZ_IOT_OK);
-
-  /* A managed client fetches it itself. */
-  delegate(fx, detached_manifest_patch(fx, "lib-state", &c));
-  fx->su._internal.library_mode = false;
-  assert_int_equal(
-      az_iot_su_client_set_detached_manifest(&fx->su, file, NULL), AZ_IOT_ERR_NOT_SUPPORTED);
-  fx->su._internal.library_mode = true;
-  assert_int_equal(az_iot_su_client_set_detached_manifest(&fx->su, file, NULL), AZ_IOT_OK);
-}
-
-/* A detached manifest file that does not verify is refused with its sub-code; the mini manifest
- * stays delegated, so the right file is then taken. A file larger than the space left after the
- * request is refused before it is copied. */
-static void library_mode_refuses_a_bad_detached_manifest_file(void** state)
-{
-  static const char bad_wrapper[] = "{\"manifest\":\"{}\"}";
-  fixture* fx = (fixture*)*state;
-  const detached_manifest_case c = { 0 };
-  delegate(fx, detached_manifest_patch(fx, "lib-bad", &c));
-  char file[sizeof(g_detached_file)];
-  copy_str(file, sizeof(file), g_detached_file);
-  size_t size = strlen(file);
-  uint32_t error = 0;
-
-  file[0] = 0x55; /* the mock SHA-256 of a payload, not of the detached manifest file */
-  assert_int_equal(
-      az_iot_su_client_set_detached_manifest(&fx->su, az_span_create_from_str(file), &error),
-      AZ_IOT_ERR_AUTH);
-  assert_int_equal(error, AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_HASH);
-  assert_int_equal(
-      az_iot_su_client_set_detached_manifest(
-          &fx->su, az_span_create((uint8_t*)g_detached_file, (int32_t)size - 1), &error),
-      AZ_IOT_ERR_AUTH);
-  assert_int_equal(error, AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_HASH);
-  assert_int_equal(fx->last_manifest->instructions.steps_count, 0);
-  assert_int_equal(fx->su._internal.step_results_count, 0);
-  assert_true(az_span_is_content_equal(
-      fx->last_manifest->detached_manifest_file_id, AZ_SPAN_FROM_STR(SU_TEST_DETACHED_FILE_ID)));
-
-  assert_int_equal(
-      az_iot_su_client_set_detached_manifest(
-          &fx->su, az_span_create_from_str(g_detached_file), &error),
-      AZ_IOT_OK);
-  assert_int_equal(fx->last_manifest->instructions.steps_count, 2);
-  az_iot_su_step_result failure = lib_result(AZ_IOT_SU_OUTCOME_FAILED);
-  az_iot_su_step_result steps[2]
-      = { lib_result(AZ_IOT_SU_OUTCOME_FAILED), lib_result(AZ_IOT_SU_OUTCOME_SKIPPED) };
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &failure, steps, 2), AZ_IOT_OK);
-  assert_int_equal(fx->chan.last_report.step_results_count, 2);
-
-  /* A bad wrapper of the size and hash the mini manifest names. */
-  const detached_manifest_case wrapper = { .detached_file = bad_wrapper };
-  delegate(fx, detached_manifest_patch(fx, "lib-wrapper", &wrapper));
-  assert_int_equal(
-      az_iot_su_client_set_detached_manifest(
-          &fx->su, az_span_create_from_str((char*)(uintptr_t)bad_wrapper), &error),
-      AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(error, AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_INVALID);
-  assert_int_equal(fx->last_manifest->instructions.steps_count, 0);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &failure, NULL, 0), AZ_IOT_OK);
-
-  /* One byte over the space left after the request. */
-  const char* patch = detached_manifest_patch(fx, "lib-big", &c);
-  size_t needed = strlen(patch) + strlen(g_detached_file);
-  az_iot_su_client_deinit(&fx->su);
-  az_iot_su_limits limits = az_iot_su_limits_default();
-  limits.max_update_size = needed - 1u;
-  init_fixture_client_with_limits(fx, NULL, &limits);
-  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
-  fx->update_available_count = 0;
-  delegate(fx, detached_manifest_patch(fx, "lib-big", &c));
-  assert_int_equal(
-      az_iot_su_client_set_detached_manifest(
-          &fx->su, az_span_create_from_str(g_detached_file), &error),
-      AZ_IOT_ERR_NOT_ENOUGH_SPACE);
-  assert_int_equal(error, AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE);
-  assert_int_equal(fx->last_manifest->instructions.steps_count, 0);
 }
 
 /**
@@ -11808,7 +11698,7 @@ static az_iot_result parse_detached_manifest_case(
       parse_with_roots(
           &fx->log, detached_manifest_patch(fx, "stateless", c), k_root_keys, 1, &request, &mini),
       AZ_IOT_OK);
-  assert_true(az_span_size(mini.detached_manifest_file_id) > 0);
+  assert_true(az_iot_su_manifest_is_detached(&mini));
   assert_int_equal(mini.instructions.steps_count, 0);
   copy_str(file_copy, sizeof(file_copy), (file != NULL) ? file : g_detached_file);
 
@@ -12905,11 +12795,7 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         library_mode_does_not_hand_over_an_unsupported_manifest, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
-        library_mode_takes_the_full_manifest_of_a_mini_manifest, setup_library, teardown),
-    cmocka_unit_test_setup_teardown(
-        setting_a_detached_manifest_needs_a_delegated_mini_manifest, setup_library, teardown),
-    cmocka_unit_test_setup_teardown(
-        library_mode_refuses_a_bad_detached_manifest_file, setup_library, teardown),
+        library_mode_hands_over_a_mini_manifest, setup_library, teardown),
     cmocka_unit_test_setup_teardown(a_mini_manifest_parses_into_its_full_manifest, setup, teardown),
     cmocka_unit_test_setup_teardown(
         library_mode_hands_over_an_update_with_escaped_file_ids, setup_library, teardown),

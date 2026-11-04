@@ -166,6 +166,20 @@ extern "C"
     az_span detached_manifest_file_id;
   } az_iot_su_client_update_manifest;
 
+  /**
+   * @brief Whether @p manifest is a mini manifest: it has no steps, and its full manifest is in
+   * its detached manifest file (`detached_manifest_file_id`); see
+   * az_iot_su_parse_detached_manifest().
+   *
+   * @param manifest A parsed manifest.
+   * @return true for a mini manifest; false for a full manifest.
+   */
+  AZ_NODISCARD AZ_INLINE bool az_iot_su_manifest_is_detached(
+      const az_iot_su_client_update_manifest* manifest)
+  {
+    return az_span_size(manifest->detached_manifest_file_id) > 0;
+  }
+
   /* --- Update request ------------------------------------------------------ */
 
 /** @brief Default agent version reported to the service (`agentVersion`). */
@@ -1005,10 +1019,9 @@ extern "C"
     /** Library mode only: an update passed verification and is now the
      * application's to drive. Carries `state` (DELEGATED), `request` and
      * `manifest`. The SDK runs none of its platform hooks for it; report
-     * progress and the outcome with az_iot_su_client_report_status(). A
-     * `manifest` with a non-empty `detached_manifest_file_id` is a mini manifest,
-     * without steps: download that file, then call
-     * az_iot_su_client_set_detached_manifest(). */
+     * progress and the outcome with az_iot_su_client_report_status(). When
+     * az_iot_su_manifest_is_detached(manifest), download its detached manifest
+     * file and get the full manifest with az_iot_su_parse_detached_manifest(). */
     AZ_IOT_SU_EVENT_UPDATE_AVAILABLE
   } az_iot_su_event_kind;
 
@@ -1703,9 +1716,9 @@ extern "C"
    * signature and retry timestamp are empty.
    *
    * The parsed manifest is available once verified, until the workflow ends;
-   * not in AZ_IOT_SU_STATE_FAILED. For a mini manifest it is the full manifest once the client
-   * has it; `request->update_manifest` stays the mini manifest. In library mode both are the
-   * ones AZ_IOT_SU_EVENT_UPDATE_AVAILABLE carries.
+   * not in AZ_IOT_SU_STATE_FAILED. For a mini manifest the managed client returns the full
+   * manifest once it has it; `request->update_manifest` stays the mini manifest. In library mode
+   * both are the ones AZ_IOT_SU_EVENT_UPDATE_AVAILABLE carries.
    *
    * Both are owned by the client and valid until it returns to Idle, a new
    * workflow replaces this one (managed client only; see
@@ -1739,9 +1752,7 @@ extern "C"
    * NOT_APPLICABLE unless the outcome is FAILED, and then it MUST NOT be. A FAILED
    * result code must not be positive, and CANCELED (the service's) is refused.
    * Step results are ignored for IN_PROGRESS;
-   * otherwise there is exactly one per manifest step, none IN_PROGRESS: none for a
-   * mini manifest, one per full manifest step after
-   * az_iot_su_client_set_detached_manifest(). On
+   * otherwise there is exactly one per manifest step, none IN_PROGRESS. On
    * SUCCEEDED the manifest's update ID is reported as installed; otherwise the
    * cached installed update ID.
    *
@@ -1775,42 +1786,6 @@ extern "C"
       const az_iot_su_step_result* result,
       const az_iot_su_step_result* step_results,
       int32_t step_results_count);
-
-  /**
-   * @brief Library mode: give the client the detached manifest file of the delegated mini
-   *        manifest, so that it holds the full manifest.
-   *
-   * Call it when AZ_IOT_SU_EVENT_UPDATE_AVAILABLE carries a manifest with a non-empty
-   * `detached_manifest_file_id`, after downloading that file (its URL is in
-   * `request->file_urls`). The file is copied into the client after the request, so it must fit
-   * in what az_iot_su_limits::max_update_size leaves (both sizes are logged otherwise). It is
-   * checked as az_iot_su_parse_detached_manifest() checks it. The full manifest then replaces
-   * the mini manifest: the event's `manifest` and az_iot_su_client_get_current_update() point to
-   * it, and a terminal az_iot_su_client_report_status() takes one result per full manifest step.
-   * On failure the mini manifest is kept, the call may be repeated, and the application reports
-   * the failure with az_iot_su_client_report_status().
-   *
-   * Call on the do_work() thread, or serialize with it. Legal from an observer.
-   *
-   * @param[in,out] client Library-mode client.
-   * @param[in] detached_manifest_file The whole file; copied.
-   * @param[out] out_error Why it failed: an AZ_IOT_SU_MANIFEST_ERROR_* sub-code, reported as
-   *   AZ_IOT_SU_EXTENDED_RESULT(AZ_IOT_SU_FACILITY_MANIFEST, code); 0 otherwise. May be NULL.
-   * @return AZ_IOT_OK when the client holds the full manifest.
-   * @retval AZ_IOT_ERR_INVALID_ARG Bad arguments, or an invalid file or full manifest.
-   * @retval AZ_IOT_ERR_AUTH The file size or SHA-256 differs from the mini manifest's.
-   * @retval AZ_IOT_ERR_NOT_SUPPORTED The client is not in library mode, or the full manifest has
-   *   a `reference` step.
-   * @retval AZ_IOT_ERR_NOT_FOUND No update is delegated, or it is not a mini manifest.
-   * @retval AZ_IOT_ERR_ALREADY_INITIALIZED The client already holds the full manifest.
-   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE The file does not fit, or the full manifest exceeds an
-   *   AZ_IOT_SU_MAX_* limit.
-   * @retval AZ_IOT_ERR_DETACHED The client is detached.
-   */
-  AZ_NODISCARD az_iot_result az_iot_su_client_set_detached_manifest(
-      az_iot_su_client* client,
-      az_span detached_manifest_file,
-      uint32_t* out_error);
 
   /** @brief Whether the device may reboot (or the process restart) now. */
   typedef enum
@@ -2098,9 +2073,9 @@ extern "C"
    *
    * Verifies the manifest with az_iot_su_verify_manifest(), then parses it and
    * checks that it has steps, all inline, and that every file of every step is described by the
-   * manifest `files` and has a `fileUrls` entry. A mini manifest (non-empty
-   * `detached_manifest_file_id`) has no steps: download that file, then get the full manifest
-   * with az_iot_su_parse_detached_manifest().
+   * manifest `files` and has a `fileUrls` entry. A mini manifest
+   * (az_iot_su_manifest_is_detached()) has no steps: download its detached manifest file, then
+   * get the full manifest with az_iot_su_parse_detached_manifest().
    * Fail-closed: non-NULL outputs are zeroed on every error.
    *
    * @param request_json   `{ workflowId, updateManifest, updateManifestSignature,
@@ -2140,15 +2115,19 @@ extern "C"
    * @brief Get the full manifest of a mini manifest from its detached manifest file, without a
    *        client.
    *
-   * For a mini manifest from az_iot_su_parse_update_request(), once its detached manifest file
-   * (`detached_manifest_file_id`) is downloaded. Checks that the mini manifest `files` is exactly
-   * that file, the file size and SHA-256 against it, that the file is
+   * For a mini manifest (az_iot_su_manifest_is_detached()) from az_iot_su_parse_update_request()
+   * or AZ_IOT_SU_EVENT_UPDATE_AVAILABLE, once its detached manifest file
+   * (`detached_manifest_file_id`; decode it with az_iot_su_decode_manifest_string() to find its
+   * URL in `request->file_urls`) is downloaded into application memory. Checks that the mini
+   * manifest `files` is exactly that file, the file size and SHA-256 against it, that the file is
    * `{"updateManifest":"<full manifest>"}`, and that the full manifest has the mini manifest's
    * `updateId`, is not itself a mini manifest, has steps, all inline, and that every file of every
    * step is described by its `files` and has a URL in @p request.
    * Fail-closed: @p out_manifest is zeroed on every error.
    *
-   * @param mini_manifest          The verified mini manifest. May be @p out_manifest.
+   * @param mini_manifest          The verified mini manifest. May be @p out_manifest, unless it
+   *                               is the client's (library mode): then @p out_manifest and
+   *                               @p related_files must be application storage.
    * @param request                Its request, for the file URLs.
    * @param detached_manifest_file The whole file, writable: `updateManifest` is decoded in place
    *                               (also on failure), so it must outlive @p out_manifest, whose

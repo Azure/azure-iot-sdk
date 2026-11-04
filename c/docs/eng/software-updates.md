@@ -406,14 +406,14 @@ use it. Any failure fails the workflow with its `AZ_IOT_SU_MANIFEST_ERROR_DETACH
 in the request buffer, so a persisted record carries it and resume does not download it again.
 The service does not see a separate state.
 
-Library mode hands the mini manifest over (`UPDATE_AVAILABLE`, non-empty
-`detached_manifest_file_id`, no steps). The application downloads the detached manifest file
-from `fileUrls` and passes it to `az_iot_su_client_set_detached_manifest()`, which runs checks
-1, 4, 7 and 8 over a copy after the request and replaces the delegated manifest; a refused file
-leaves the mini manifest delegated. `az_iot_su_client_get_current_update()` and the step count
-`az_iot_su_client_report_status()` takes then follow the full manifest. Without a client,
-`az_iot_su_parse_detached_manifest()` runs checks 1, 7 and 8 over a mini manifest from
-`az_iot_su_parse_update_request()`. All three paths share one implementation of these checks.
+Library mode hands the mini manifest over as it is (`UPDATE_AVAILABLE`,
+`az_iot_su_manifest_is_detached()`, no steps) and keeps it: the client holds no detached
+manifest state. The application downloads the detached manifest file from `fileUrls` into its
+own memory and gets the full manifest with `az_iot_su_parse_detached_manifest()`, which runs
+checks 1, 7 and 8; the full manifest's spans point into that memory. It runs and reports the
+full manifest's steps. `az_iot_su_parse_update_request()` returns mini manifests too, for the
+same call. The managed client and `az_iot_su_parse_detached_manifest()` share one
+implementation of these checks.
 
 ### Delta Downloads (Download Handlers)
 
@@ -1292,15 +1292,6 @@ az_iot_result az_iot_su_client_report_status(
     int32_t step_results_count);
 
 /**
- * Library mode: replace the delegated mini manifest with the full manifest of
- * its detached manifest file, copied after the request. Once per update.
- */
-az_iot_result az_iot_su_client_set_detached_manifest(
-    az_iot_su_client* client,
-    az_span detached_manifest_file,
-    uint32_t* out_error);
-
-/**
  * PENDING while storage is behind what resume() needs (a write failing or
  * retried), whether or not a reboot was asked for; else READY if a hook asked
  * for a reboot, NONE if not. Checked after each do_work() and before a
@@ -1467,9 +1458,10 @@ sequenceDiagram
     Ch-->>SU: updateMetadata
     Note over SU: parse + JWS/RS256 verification
     SU-->>App: WORKFLOW_STATE_CHANGED (DELEGATED), UPDATE_AVAILABLE {request, manifest}
-    opt mini manifest (detached_manifest_file_id)
-        App->>SU: set_detached_manifest(file bytes)
-        Note over SU: size, SHA-256, unwrap, parse, updateId
+    opt az_iot_su_manifest_is_detached(manifest)
+        Note over App: download the detached manifest file
+        App->>App: az_iot_su_parse_detached_manifest(mini, request, file)
+        Note over App: size, SHA-256, unwrap, parse, updateId, in app memory
     end
     loop application-owned download / install / apply
         App->>SU: report_status(IN_PROGRESS)
@@ -1499,10 +1491,10 @@ sequenceDiagram
   keeps no overall details, so a resent terminal report and `WORKFLOW_COMPLETED` do not carry them.
 - No `is_installed_fn`: the application checks whether an offered update is already installed
   and reports it `SKIPPED`.
-- Mini manifests: `UPDATE_AVAILABLE` carries the mini manifest (no steps); the application
-  downloads the file named by `detached_manifest_file_id` and calls
-  `az_iot_su_client_set_detached_manifest()`, once, while `DELEGATED`. The delegated manifest
-  then becomes the full one (Detached Manifests, §4).
+- Mini manifests: `UPDATE_AVAILABLE` carries the mini manifest (no steps,
+  `az_iot_su_manifest_is_detached()`); the application downloads the file named by
+  `detached_manifest_file_id` and calls `az_iot_su_parse_detached_manifest()` into its own
+  storage. The client keeps the mini manifest (Detached Manifests, §4).
 - No persistence: a restart forgets a delegated update and the service offers it again; an
   application that reboots mid-update owns its resume. The service's own limits still apply: an
   update that outlives the DPS session hold (§2) is reported after the session renews. The
@@ -1522,10 +1514,10 @@ opts.root_keys = az_iot_su_microsoft_root_keys(&opts.root_key_count);
 az_iot_su_client_init(&su, &connection, &opts);
 az_iot_su_client_add_observer(&su, on_su_event, app);
 
-/* on AZ_IOT_SU_EVENT_UPDATE_AVAILABLE: for a mini manifest (non-empty
- * manifest->detached_manifest_file_id), download that file and pass it to
- * az_iot_su_client_set_detached_manifest(); then download event->request->file_urls,
- * check each with az_iot_su_verify_file_hash(), install, then: */
+/* on AZ_IOT_SU_EVENT_UPDATE_AVAILABLE: if az_iot_su_manifest_is_detached(manifest),
+ * download that file and get the full manifest with az_iot_su_parse_detached_manifest()
+ * into application storage; then download event->request->file_urls, check each with
+ * az_iot_su_verify_file_hash(), install, then: */
 az_iot_su_step_result done = { .outcome = AZ_IOT_SU_OUTCOME_SUCCEEDED };
 az_iot_su_client_report_status(&su, &done, steps, steps_count);
 ```
@@ -1581,12 +1573,16 @@ az_iot_result az_iot_su_verify_manifest(
     size_t root_key_count,
     uint32_t* out_error);
 
+/** Whether a parsed manifest is a mini manifest (non-empty detached_manifest_file_id). */
+bool az_iot_su_manifest_is_detached(const az_iot_su_client_update_manifest* manifest);
+
 /**
- * The full manifest of a mini manifest from az_iot_su_parse_update_request(),
- * from its detached manifest file: size, SHA-256, `{"updateManifest":"..."}`,
- * updateId and no nesting are checked; the file is decoded in place, and the
- * outputs reference it. Fail-closed; *out_error is the AZ_IOT_SU_MANIFEST_ERROR_*
- * reason. out_manifest may be mini_manifest.
+ * The full manifest of a mini manifest (from az_iot_su_parse_update_request()
+ * or library mode's UPDATE_AVAILABLE), from its detached manifest file: size,
+ * SHA-256, `{"updateManifest":"..."}`, updateId and no nesting are checked; the
+ * file is decoded in place, and the outputs reference it. Fail-closed;
+ * *out_error is the AZ_IOT_SU_MANIFEST_ERROR_* reason. out_manifest may be
+ * mini_manifest when that is the caller's.
  */
 az_iot_result az_iot_su_parse_detached_manifest(
     const az_iot_su_client_update_manifest* mini_manifest,

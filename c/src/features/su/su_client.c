@@ -209,9 +209,12 @@ static void adopt_applied_update_id(az_iot_su_client* client)
 /* result-code accumulation                                                  */
 /* ------------------------------------------------------------------------- */
 
-/** @brief Set the step result count, each new result SKIPPED; earlier results are kept. */
-static void result_set_step_count(az_iot_su_client* client, int32_t step_count)
+static void result_init_steps(az_iot_su_client* client, int32_t step_count)
 {
+  az_iot_su_client_install_result* r = &SU_I(client).install_result;
+  memset(r, 0, sizeof(*r));
+  memset(SU_I(client).step_results, 0, sizeof(SU_I(client).step_results));
+  SU_I(client).pending_failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
   if (step_count < 0)
   {
     step_count = 0;
@@ -220,27 +223,12 @@ static void result_set_step_count(az_iot_su_client* client, int32_t step_count)
   {
     step_count = AZ_IOT_SU_MAX_STEP_COUNT;
   }
-  int32_t first_new_step = SU_I(client).step_results_count;
-  if (first_new_step < 0)
-  {
-    first_new_step = 0;
-  }
-  for (int32_t i = first_new_step; i < step_count; ++i)
+  SU_I(client).step_results_count = step_count;
+  for (int32_t i = 0; i < step_count; ++i)
   {
     SU_I(client).step_results[i].outcome = AZ_IOT_SU_OUTCOME_SKIPPED;
     SU_I(client).step_results[i].failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
   }
-  SU_I(client).step_results_count = step_count;
-}
-
-static void result_init_steps(az_iot_su_client* client, int32_t step_count)
-{
-  az_iot_su_client_install_result* r = &SU_I(client).install_result;
-  memset(r, 0, sizeof(*r));
-  memset(SU_I(client).step_results, 0, sizeof(SU_I(client).step_results));
-  SU_I(client).pending_failure_origin = AZ_IOT_SU_FAILURE_ORIGIN_NOT_APPLICABLE;
-  SU_I(client).step_results_count = 0;
-  result_set_step_count(client, step_count);
 }
 
 static void result_step_success(az_iot_su_client* client, uint32_t step)
@@ -1384,8 +1372,8 @@ static az_iot_result decode_manifest(az_iot_su_client* client)
  * it, and that every step file is described by it and has a download URL.
  *
  * current_manifest holds spans into manifest_text (client-owned request_buffer). A mini manifest
- * has no steps: fetch_detached_manifest() or az_iot_su_client_set_detached_manifest() replaces
- * it.
+ * has no steps: the managed client replaces it in fetch_detached_manifest(); in library mode the
+ * application gets the full manifest with az_iot_su_parse_detached_manifest().
  *
  * @param client             The client; decode_manifest() and verify_manifest() succeeded.
  * @param out_manifest_error Set to the AZ_IOT_SU_MANIFEST_ERROR_* sub-code when the manifest is
@@ -4003,9 +3991,8 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   bool verified = state != (uint32_t)AZ_IOT_SU_STATE_MANIFEST_RECEIVED
       && state != (uint32_t)AZ_IOT_SU_STATE_VERIFYING_MANIFEST;
   /* Past verification a mini manifest has its full manifest stored; before it, none. */
-  bool full_manifest_consistent = verified
-      ? az_span_size(SU_I(client).current_manifest.detached_manifest_file_id) <= 0
-      : full_len == 0;
+  bool full_manifest_consistent
+      = verified ? !az_iot_su_manifest_is_detached(&SU_I(client).current_manifest) : full_len == 0;
   uint32_t manifest_error = 0;
   if (!full_manifest_consistent
       || az_iot_su__check_manifest_supported(&SU_I(client).current_manifest, &manifest_error)
@@ -4100,62 +4087,6 @@ static az_span file_download_url(const az_iot_su_client* client, az_span json_id
 }
 
 /**
- * @brief Whether a detached manifest file of @p size bytes fits in request_buffer after the
- * request; logs both sizes when not.
- */
-static bool detached_manifest_file_fits(const az_iot_su_client* client, int64_t size)
-{
-  size_t free_space = SU_I(client).request_buffer_size - SU_I(client).request_len;
-  if (size >= 0 && (uint64_t)size <= (uint64_t)free_space)
-  {
-    return true;
-  }
-  AZ_IOT_LOG_ERRORF(
-      AZ_IOT_LOG_COMPONENT_SU,
-      "detached manifest file is %lld bytes; az_iot_su_limits::max_update_size leaves %lu "
-      "after the request",
-      (long long)size,
-      (unsigned long)free_space);
-  return false;
-}
-
-/**
- * @brief Replace the verified mini manifest in current_manifest with the full manifest of its
- * detached manifest file, stored in request_buffer right after the request.
- *
- * On success request_len grows over the file, so it is kept (and persisted) with the request.
- *
- * @param client             The client.
- * @param size               Bytes of the file after the request.
- * @param out_manifest_error The AZ_IOT_SU_MANIFEST_ERROR_* sub-code on failure; else 0.
- * @return As az_iot_su__parse_detached_manifest(); on failure current_manifest is zeroed.
- */
-static az_iot_result replace_mini_manifest_with_full_manifest(
-    az_iot_su_client* client,
-    size_t size,
-    uint32_t* out_manifest_error)
-{
-  az_span full_manifest_text = AZ_SPAN_EMPTY;
-  az_iot_result r = az_iot_su__parse_detached_manifest(
-      SU_I(client).crypto,
-      &SU_I(client).current_manifest,
-      az_span_create(SU_I(client).request_buffer + SU_I(client).request_len, (int32_t)size),
-      SU_I(client).current_request.file_urls,
-      SU_I(client).current_request.file_urls_count,
-      SU_I(client).related_file_storage,
-      SU_I(client).max_related_files,
-      &SU_I(client).current_manifest,
-      &full_manifest_text,
-      out_manifest_error);
-  if (r == AZ_IOT_OK)
-  {
-    SU_I(client).request_len += size;
-    SU_I(client).full_manifest_text = full_manifest_text;
-  }
-  return r;
-}
-
-/**
  * @brief Fetch the detached manifest file of the verified mini manifest in current_manifest, and
  * replace current_manifest with the full manifest it carries.
  *
@@ -4200,8 +4131,15 @@ static int32_t fetch_detached_manifest(
     *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_NO_READER;
     return AZ_IOT_SU_RESULT_FAILURE;
   }
-  if (!detached_manifest_file_fits(client, file->size_in_bytes))
+  size_t free_space = SU_I(client).request_buffer_size - SU_I(client).request_len;
+  if (file->size_in_bytes < 0 || (uint64_t)file->size_in_bytes > (uint64_t)free_space)
   {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "detached manifest file is %lld bytes; az_iot_su_limits::max_update_size leaves %lu "
+        "after the request",
+        (long long)file->size_in_bytes,
+        (unsigned long)free_space);
     *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE;
     return AZ_IOT_SU_RESULT_FAILURE;
   }
@@ -4249,12 +4187,26 @@ static int32_t fetch_detached_manifest(
     return AZ_IOT_SU_RESULT_FAILURE;
   }
 
+  az_span full_manifest_text = AZ_SPAN_EMPTY;
   uint32_t manifest_error = 0;
-  if (replace_mini_manifest_with_full_manifest(client, total, &manifest_error) != AZ_IOT_OK)
+  az_iot_result r = az_iot_su__parse_detached_manifest(
+      SU_I(client).crypto,
+      &SU_I(client).current_manifest,
+      az_span_create(content, (int32_t)total),
+      SU_I(client).current_request.file_urls,
+      SU_I(client).current_request.file_urls_count,
+      SU_I(client).related_file_storage,
+      SU_I(client).max_related_files,
+      &SU_I(client).current_manifest,
+      &full_manifest_text,
+      &manifest_error);
+  if (r != AZ_IOT_OK)
   {
     *out_code = (int32_t)manifest_error;
     return AZ_IOT_SU_RESULT_FAILURE;
   }
+  SU_I(client).request_len += total;
+  SU_I(client).full_manifest_text = full_manifest_text;
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
@@ -4712,8 +4664,8 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
           (void)az_iot_su__report_state(client);
           break;
         }
-        /* In library mode the application fetches it (az_iot_su_client_set_detached_manifest). */
-        if (az_span_size(SU_I(client).current_manifest.detached_manifest_file_id) > 0
+        /* In library mode the application fetches it (az_iot_su_parse_detached_manifest()). */
+        if (az_iot_su_manifest_is_detached(&SU_I(client).current_manifest)
             && !SU_I(client).library_mode)
         {
           SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_DETACHED_MANIFEST;
@@ -5145,64 +5097,6 @@ AZ_NODISCARD az_iot_result az_iot_su_client_report_status(
     reset_to_idle(client);
   }
   (void)az_iot_su__report_state(client);
-  return AZ_IOT_OK;
-}
-
-AZ_NODISCARD az_iot_result az_iot_su_client_set_detached_manifest(
-    az_iot_su_client* client,
-    az_span detached_manifest_file,
-    uint32_t* out_error)
-{
-  uint32_t ignored_error = 0;
-  uint32_t* manifest_error = (out_error != NULL) ? out_error : &ignored_error;
-  *manifest_error = 0;
-  if (client == NULL || az_span_size(detached_manifest_file) <= 0)
-  {
-    return AZ_IOT_ERR_INVALID_ARG;
-  }
-  if (SU_I(client).detached)
-  {
-    return AZ_IOT_ERR_DETACHED;
-  }
-  if (!SU_I(client).library_mode)
-  {
-    return AZ_IOT_ERR_NOT_SUPPORTED;
-  }
-  if (SU_I(client).state != AZ_IOT_SU_STATE_DELEGATED || SU_I(client).delegated_end_pending)
-  {
-    return AZ_IOT_ERR_NOT_FOUND;
-  }
-  if (az_span_size(SU_I(client).full_manifest_text) > 0)
-  {
-    return AZ_IOT_ERR_ALREADY_INITIALIZED;
-  }
-  if (az_span_size(SU_I(client).current_manifest.detached_manifest_file_id) <= 0)
-  {
-    return AZ_IOT_ERR_NOT_FOUND;
-  }
-  if (!detached_manifest_file_fits(client, (int64_t)az_span_size(detached_manifest_file)))
-  {
-    *manifest_error = AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE;
-    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
-  }
-
-  size_t size = (size_t)az_span_size(detached_manifest_file);
-  memmove(
-      SU_I(client).request_buffer + SU_I(client).request_len,
-      az_span_ptr(detached_manifest_file),
-      size);
-  az_iot_result r = replace_mini_manifest_with_full_manifest(client, size, manifest_error);
-  if (r != AZ_IOT_OK)
-  {
-    /* Parsed before, so it parses again: the mini manifest stays delegated. */
-    (void)az_iot_su__parse_update_manifest(
-        SU_I(client).manifest_text,
-        SU_I(client).related_file_storage,
-        SU_I(client).max_related_files,
-        &SU_I(client).current_manifest);
-    return r;
-  }
-  result_set_step_count(client, (int32_t)SU_I(client).current_manifest.instructions.steps_count);
   return AZ_IOT_OK;
 }
 

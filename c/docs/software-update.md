@@ -304,11 +304,11 @@ report delivery and retries) and hands each verified update to your code.
 3. Download, check each file with `az_iot_su_verify_file_hash()`, install.
 4. Report progress and the outcome with `az_iot_su_client_report_status()`, one result per step.
 
-A mini manifest (non-empty `event->manifest->detached_manifest_file_id`, no steps) needs one more
-step before 3: download that file from `event->request->file_urls` and pass its bytes to
-`az_iot_su_client_set_detached_manifest()`. It checks them against the signed mini manifest and
-replaces `event->manifest` with the full manifest, whose steps you install and report. Without a
-client, `az_iot_su_parse_detached_manifest()` does the same for a mini manifest from
+A mini manifest (`az_iot_su_manifest_is_detached(event->manifest)`, no steps) needs one more step
+before 3: download the file named by `detached_manifest_file_id` from `event->request->file_urls`
+into your memory and call `az_iot_su_parse_detached_manifest()`. It checks the file against the
+signed mini manifest and gives you the full manifest, whose steps you install and report.
+`event->manifest` stays the mini manifest. It works the same for a mini manifest from
 `az_iot_su_parse_update_request()`.
 
 `az_iot_su_client_get_current_update()` returns the current update in either mode.

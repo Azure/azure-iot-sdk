@@ -97,6 +97,6 @@ retried after a wait, as in the managed client.
 | Taking the update | `AZ_IOT_SU_EVENT_UPDATE_AVAILABLE` in `on_su_event()` |
 | The application's state machine | `advance_delegated_update()` |
 | Hash check | `az_iot_su_verify_file_hash()`, `read_downloaded_file()` |
-| Mini manifest | `set_full_manifest_of_mini_manifest()`, `az_iot_su_client_set_detached_manifest()` |
+| Mini manifest | `use_full_manifest_of_mini_manifest()`, `az_iot_su_parse_detached_manifest()` |
 | Reports | `finish_delegated_update()`, the `IN_PROGRESS` report in `advance_delegated_update()` |
 | Installed update id across runs | `load_installed_update_id()`, `save_applied_update_id_as_installed()` |
