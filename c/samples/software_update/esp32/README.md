@@ -64,10 +64,14 @@ full manifest as a detached manifest file. The client stores that file after the
 shipped, [main/app_main.c](main/app_main.c) accepts a detached manifest file of up to
 `SU_MAX_DETACHED_MANIFEST_FILE_SIZE` (20 KiB): a full manifest of about 16 KiB, once
 JSON-escaped. `SU_MAX_UPDATE_SIZE` adds 4 KiB for the request (the signature, about 2.4 KB, the
-mini manifest and about 160 bytes per file URL). A larger file fails verification with
-`AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE` (logged as `detached manifest file is <n> bytes;
-az_iot_su_limits::max_update_size leaves <m> after the request` or `ota: detached manifest file of
-<n> bytes exceeds detached_manifest_buffer`).
+mini manifest and about 160 bytes per file URL). A larger file fails one of two checks:
+
+- The client's, when it does not fit in `limits.max_update_size` after the request: sub-code
+  `AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE`, logged as `detached manifest file is <n>
+  bytes; az_iot_su_limits::max_update_size leaves <m> after the request`.
+- The hooks', when it fits there but not in `detached_manifest_buffer`: the download fails, so it
+  is reported with `AZ_IOT_SU_FACILITY_DOWNLOAD` and code `AZ_IOT_SU_RESULT_FAILURE`, logged as
+  `ota: detached manifest file of <n> bytes exceeds detached_manifest_buffer`.
 
 [main/app_main.c](main/app_main.c) allocates the client's workspace (about 55 KB) and
 `detached_manifest_buffer` from the heap at boot, since the ESP32's static DRAM is too small for
@@ -434,7 +438,7 @@ I (...) su_esp32: resumed persisted workflow at state: <state>
 | `ota: http status ...` or `ota: http open failed` | Download URL unreachable, or TLS to the storage host failed. |
 | `ota: esp_ota_write failed` | Image larger than the 1856 KB OTA slot. |
 | `NVS write failing; update reboot deferred` | NVS full or failing; the reboot waits until the workflow state is stored. |
-| `detached manifest file is <n> bytes; ...` or `ota: detached manifest file of <n> bytes exceeds detached_manifest_buffer` | The update's full manifest is too large for this build. See [Mini manifests](#mini-manifests). |
+| `detached manifest file is <n> bytes; ...` (`DETACHED_FILE_TOO_LARGE`) or `ota: detached manifest file of <n> bytes exceeds detached_manifest_buffer` (download failure) | The update's full manifest is too large for this build. See [Mini manifests](#mini-manifests). |
 | New image boots, then the old version comes back | The new image crashed or never connected, so the bootloader rolled back. |
 
 The SDK logs at `INFO`; change the level in `app_main()` for more detail.
