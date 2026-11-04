@@ -720,6 +720,15 @@ if(UNIX AND NOT APPLE)
     target_compile_definitions(az_iot_tests_sample_utils PRIVATE AZ_IOT_TEST_WRAP_FSYNC=1)
 endif()
 
+# The PC Software Update samples' simulated hooks (samples/software_update/pc/common/su_sim.c).
+az_iot_add_cmocka_test(az_iot_tests_su_sim
+    unit/su_sim_test.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../samples/software_update/pc/common/su_sim.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common/sample_utils.c)
+target_include_directories(az_iot_tests_su_sim PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../samples/software_update/pc/common
+    ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common)
+
 # The hand-off queue of samples/unified/multithreaded_telemetry: application
 # code that must itself be race-free. RACE: also run under helgrind and DRD.
 set(_mt_sample ${CMAKE_CURRENT_SOURCE_DIR}/../samples/unified/multithreaded_telemetry)

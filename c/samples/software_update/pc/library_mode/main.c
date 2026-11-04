@@ -118,7 +118,6 @@ typedef struct
   char* manufacturer;
   char* model;
   char* installed_file;
-  char* detached_manifest_file; /* SU_SIM_DETACHED_MANIFEST_FILE; NULL when unset */
   /* What is installed now: sent at init and read by is_offered_update_already_installed(). */
   char installed_provider[SU_SIM_ID_PART_SIZE];
   char installed_name[SU_SIM_ID_PART_SIZE];
@@ -157,7 +156,7 @@ static void sample_state_destroy(sample_state* s)
   sample_config_release(&s->config);
 
   free(s->installed_file);
-  free(s->detached_manifest_file);
+  free(s->simulation_control.detached_manifest_file);
   free(s->manufacturer);
   free(s->model);
 }
@@ -395,23 +394,22 @@ static uint32_t use_full_manifest_of_mini_manifest(sample_state* s)
       az_span_size(url),
       (const char*)az_span_ptr(url));
 
-  FILE* file = (s->detached_manifest_file != NULL)
-      ? sample_file_open_read_no_follow(s->detached_manifest_file)
-      : NULL;
-  if (file == NULL)
+  const su_simulation_control* simulation = &s->simulation_control;
+  size_t size = 0;
+  uint8_t extra = 0;
+  size_t extra_read = 0;
+  if (su_sim_read_detached_manifest_file(simulation, 0, file_bytes, sizeof(file_bytes), &size)
+          != AZ_IOT_SU_RESULT_SUCCESS
+      || su_sim_read_detached_manifest_file(simulation, size, &extra, 1, &extra_read)
+          != AZ_IOT_SU_RESULT_SUCCESS)
   {
     fprintf(stderr, "Set SU_SIM_DETACHED_MANIFEST_FILE to a readable copy of that file.\n");
     return AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_READ;
   }
-  size_t size = fread(file_bytes, 1, sizeof(file_bytes), file);
-  bool read_failed = ferror(file) != 0;
-  bool too_large = !read_failed && fgetc(file) != EOF;
-  (void)fclose(file);
-  if (read_failed || too_large)
+  if (extra_read != 0)
   {
-    fprintf(stderr, "%s cannot be read, or is too large.\n", s->detached_manifest_file);
-    return read_failed ? AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_READ
-                       : AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE;
+    fprintf(stderr, "%s is too large.\n", simulation->detached_manifest_file);
+    return AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE;
   }
 
   uint32_t error = 0;
@@ -936,7 +934,8 @@ static int load_device_identity(sample_state* s)
   s->manufacturer = sample_env_copy("AZ_IOT_SU_MANUFACTURER", "Contoso");
   s->model = sample_env_copy("AZ_IOT_SU_MODEL", "SU-Sim");
   s->installed_file = sample_env_copy("AZ_IOT_SU_INSTALLED_FILE", "./su_library_installed.txt");
-  s->detached_manifest_file = sample_env_copy("SU_SIM_DETACHED_MANIFEST_FILE", NULL);
+  s->simulation_control.detached_manifest_file
+      = sample_env_copy("SU_SIM_DETACHED_MANIFEST_FILE", NULL);
   if (s->manufacturer == NULL || s->model == NULL || s->installed_file == NULL)
   {
     return 1;

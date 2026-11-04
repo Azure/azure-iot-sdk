@@ -9,6 +9,7 @@
  * samples. See su_sim.h.
  */
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -142,6 +143,80 @@ static int32_t write_zero_filled_file(const char* path, int64_t size)
   return ok ? AZ_IOT_SU_RESULT_SUCCESS : AZ_IOT_SU_RESULT_FAILURE;
 }
 
+/** @brief True while the client fetches a mini manifest's detached manifest file. */
+static bool is_detached_manifest_download(const su_simulation_control* s)
+{
+  return s->workflow_state == AZ_IOT_SU_STATE_VERIFYING_MANIFEST;
+}
+
+void su_sim_track_workflow_state(const az_iot_su_event* event, void* user_ctx)
+{
+  ((su_simulation_control*)user_ctx)->workflow_state = event->state;
+}
+
+int32_t su_sim_read_detached_manifest_file(
+    const su_simulation_control* control,
+    size_t offset,
+    uint8_t* buffer,
+    size_t buffer_size,
+    size_t* out_read)
+{
+  *out_read = 0;
+  FILE* f = (control->detached_manifest_file != NULL)
+      ? sample_file_open_read_no_follow(control->detached_manifest_file)
+      : NULL;
+  if (f == NULL)
+  {
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  int ok = offset <= (size_t)LONG_MAX && fseek(f, (long)offset, SEEK_SET) == 0;
+  if (ok)
+  {
+    *out_read = fread(buffer, 1, buffer_size, f);
+    ok = !ferror(f);
+  }
+  (void)fclose(f);
+  return ok ? AZ_IOT_SU_RESULT_SUCCESS : AZ_IOT_SU_RESULT_FAILURE;
+}
+
+/** @brief download_fn for the detached manifest file: logs its URL and checks the copy is readable.
+ */
+static int32_t serve_detached_manifest_file(
+    const su_simulation_control* s,
+    const az_iot_su_client_update_manifest_file* file,
+    az_span url)
+{
+  printf(
+      "  [download] detached manifest file %.*s (%lld bytes) from %.*s\n",
+      (int)az_span_size(file->file_name),
+      (const char*)az_span_ptr(file->file_name),
+      (long long)file->size_in_bytes,
+      (int)az_span_size(url),
+      (const char*)az_span_ptr(url));
+  uint8_t first_byte = 0;
+  size_t first_byte_read = 0;
+  if (su_sim_read_detached_manifest_file(s, 0, &first_byte, sizeof(first_byte), &first_byte_read)
+      != AZ_IOT_SU_RESULT_SUCCESS)
+  {
+    if (s->detached_manifest_file != NULL)
+    {
+      fprintf(
+          stderr,
+          "  [download] cannot read SU_SIM_DETACHED_MANIFEST_FILE=%s\n",
+          s->detached_manifest_file);
+    }
+    fprintf(
+        stderr,
+        "  [download] downloads are simulated: save the file at that URL (curl -o <file> "
+        "'<url>'),\n"
+        "  set SU_SIM_DETACHED_MANIFEST_FILE=<file>, restart and retry the deployment;\n"
+        "  or use the http_download sample, which downloads it\n");
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  printf("  [download] served from %s\n", s->detached_manifest_file);
+  return AZ_IOT_SU_RESULT_SUCCESS;
+}
+
 int32_t simulate_update_file_download(
     const az_iot_su_client_update_manifest_file* file,
     az_span url,
@@ -149,8 +224,11 @@ int32_t simulate_update_file_download(
     uint32_t file_count,
     void* user_ctx)
 {
-  (void)url;
   su_simulation_control* s = (su_simulation_control*)user_ctx;
+  if (is_detached_manifest_download(s))
+  {
+    return serve_detached_manifest_file(s, file, url);
+  }
   printf(
       "  [download] %.*s for file %u/%u (%lld bytes) [simulated]\n",
       (int)az_span_size(file->file_name),
@@ -222,6 +300,10 @@ int32_t read_back_simulated_update_file(
 {
   (void)file_index;
   su_simulation_control* s = (su_simulation_control*)user_ctx;
+  if (is_detached_manifest_download(s))
+  {
+    return su_sim_read_detached_manifest_file(s, offset, buffer, buffer_size, out_read);
+  }
   size_t size = (file->size_in_bytes > 0) ? (size_t)file->size_in_bytes : 0;
   if (offset >= size)
   {
