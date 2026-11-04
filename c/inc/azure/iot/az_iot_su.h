@@ -915,6 +915,12 @@ extern "C"
      * takes. This ends that loop. It does NOT mean the application may not ask
      * again -- asking again is the intended response, at a time it chooses.
      *
+     * An update check answered UPSTREAM_UNAVAILABLE with no Retry-After is
+     * abandoned at once (`reason` AZ_IOT_ERR_DPS, `service_error` naming the
+     * code), not retried: the service asks that it wait for the next
+     * scheduled check. On the onboarding route registration then proceeds.
+     * With a Retry-After, or for a report, it is retried as before.
+     *
      * Ask again on the SAME route, which is why `operation` is carried:
      * az_iot_su_client_request_onboarding_update() for
      * AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, az_iot_su_client_request_update()

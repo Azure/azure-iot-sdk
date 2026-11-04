@@ -442,7 +442,10 @@ is valid only during the callback. Names below omit the `AZ_IOT_SU_EVENT_` prefi
 ## Retries, duplicates and cancellation
 
 - **Transient service errors** are retried by the client (1 s doubling to 60 s, or the service's
-  `Retry-After`), within the request timeout.
+  `Retry-After`), within the request timeout. The exception is a check answered
+  `UPSTREAM_UNAVAILABLE` without `Retry-After`: it ends at once with `OPERATION_ABANDONED`
+  (`reason` `AZ_IOT_ERR_DPS`), as the service asks, and the next scheduled check tries again. A
+  check held before registration releases it.
 - **A failed update** offered again is retried after 1 h, doubling up to 24 h, with jitter. The wait
   survives a restart when persistence is set.
 - **A new update while one runs** replaces it until its first `install_fn` call: an update still
@@ -461,6 +464,7 @@ Turn on the `su` and `dps` log components at `DEBUG` ([logging.md](logging.md)).
 | Always `NO_UPDATE` | Compatibility properties do not match the update, or it is already installed | Compare the properties the device sends with the update's `compatibility` |
 | Regular check `OPERATION_ABANDONED`, `INVALID_REQUEST` | The device has no device record yet | Use the onboarding route until it registers |
 | `OPERATION_ABANDONED`, `UPDATE_ACCOUNT_NOT_LINKED` or `..._ACCESS_DENIED` | ADR namespace not linked to Device Update | Fix the link; provisioning is not blocked |
+| Check `OPERATION_ABANDONED`, `UPSTREAM_UNAVAILABLE` | Device Update or its registry is temporarily unavailable | None; the next scheduled check tries again |
 | `FAILED`, facility `0x1` (`AZ_IOT_SU_FACILITY_MANIFEST`) | Signature not trusted: unknown or disabled root key | Pass the right root keys; the sub-code says which check failed |
 | `FAILED`, facility `0x3` (`HASH`) | A downloaded file differs from the signed one | Check `download_fn` and `read_file_fn` |
 | `FAILED`, facility `0x1`, sub-code `0xC` to `0x14` | A mini manifest's detached manifest file could not be used | [Mini (detached) update manifests](#mini-detached-update-manifests); for `0xF`, raise `max_update_size` |
