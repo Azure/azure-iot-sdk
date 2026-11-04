@@ -419,6 +419,11 @@ Steps and files per update are build options (10 and 10). Every limit:
 
 PC samples run on Linux and Windows.
 
+Mini manifests: [http_download](../samples/software_update/pc/http_download/README.md) downloads
+the detached manifest file. The other PC samples simulate downloads, so they serve a copy of it
+from `SU_SIM_DETACHED_MANIFEST_FILE` and, without it, fail the update and print the file's URL
+([simulated_regular § Mini manifests](../samples/software_update/pc/simulated_regular/README.md#mini-manifests)).
+
 ## Limitations
 
 - Updates go over DPS only; there is no IoT Hub route.

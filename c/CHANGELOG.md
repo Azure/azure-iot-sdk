@@ -211,7 +211,9 @@ software updates. APIs may change before a stable release.
   and custom topics on an mqttv5 hub.
 - [`software_update/`](docs/software-update.md#samples): onboarding and regular checks, HTTPS
   download through a proxy, multi-step updates, reboot and resume, and library mode with simulated
-  installs on a PC; a real over-the-air install on an ESP32, also run in QEMU.
+  installs on a PC; a real over-the-air install on an ESP32, also run in QEMU. Mini manifests:
+  `http_download` downloads the detached manifest file; the simulated samples serve a copy of it
+  from `SU_SIM_DETACHED_MANIFEST_FILE`.
 
 #### Tests
 
