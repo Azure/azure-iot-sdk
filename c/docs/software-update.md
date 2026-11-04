@@ -302,7 +302,9 @@ report delivery and retries) and hands each verified update to your code.
 2. On `AZ_IOT_SU_EVENT_UPDATE_AVAILABLE`, take `event->request` (workflow id, file URLs) and
    `event->manifest`. They stay valid until your final report.
 3. Download, check each file with `az_iot_su_verify_file_hash()`, install.
-4. Report progress and the outcome with `az_iot_su_client_report_status()`, one result per step.
+4. Report progress and the outcome with `az_iot_su_client_report_status()`. A final report takes 0
+   to `AZ_IOT_SU_MAX_STEP_COUNT` step results, entry i reported as step i of the manifest: include
+   them on failure; on success they may be omitted.
 
 A mini manifest (`az_iot_su_manifest_is_detached(event->manifest)`, no steps) needs one more step
 before 3: download the file named by `detached_manifest_file_id` from `event->request->file_urls`

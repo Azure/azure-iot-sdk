@@ -130,7 +130,8 @@ software updates. APIs may change before a stable release.
   [docs/software-update.md](docs/software-update.md).
 - Three integrations: managed, with platform hooks for download, install, apply and persistence;
   library mode, where the application installs each verified update and reports it
-  (`az_iot_su_client_report_status()`); and transport-free primitives
+  (`az_iot_su_client_report_status()`, with 0 to `AZ_IOT_SU_MAX_STEP_COUNT` step results, as the
+  Device Update device API allows); and transport-free primitives
   (`az_iot_su_verify_manifest()`, `az_iot_su_parse_update_request()`,
   `az_iot_su_verify_file_hash()`, `az_iot_su_build_report()`,
   `az_iot_su_decode_manifest_string()`).

@@ -18,7 +18,8 @@
  *   - for a mini manifest, gets the full manifest from its detached manifest
  *     file with az_iot_su_parse_detached_manifest(), then runs it;
  *   - checks each downloaded file with az_iot_su_verify_file_hash();
- *   - reports progress, then the outcome with one result per manifest step,
+ *   - reports progress, then the outcome with one result per manifest step
+ *     (the client takes 0 to AZ_IOT_SU_MAX_STEP_COUNT, step_<i> being entry i),
  *     through az_iot_su_client_report_status();
  *   - keeps the installed update id in a file: library mode persists nothing,
  *     so after a restart the application tells the client what is installed.

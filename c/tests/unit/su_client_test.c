@@ -3762,15 +3762,20 @@ static const char k_patch_two_steps_fmt[]
       "\"updateManifestSignature\":\"%s\","
       "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}";
 
-static const char* two_step_patch(void)
+/** @brief A two-step update offered as workflow @p workflow_id. */
+static const char* two_step_patch_for_workflow(const char* workflow_id)
 {
   static char patch[4096];
   char jws[2048];
   build_jws(jws, (int32_t)sizeof(jws));
-  int n
-      = snprintf(patch, sizeof(patch), k_patch_two_steps_fmt, "multi-step-deployment", "1.1", jws);
+  int n = snprintf(patch, sizeof(patch), k_patch_two_steps_fmt, workflow_id, "1.1", jws);
   assert_true(n > 0 && (size_t)n < sizeof(patch));
   return patch;
+}
+
+static const char* two_step_patch(void)
+{
+  return two_step_patch_for_workflow("multi-step-deployment");
 }
 
 /* Two steps, each with its own file. The `files` map lists "fa00000000000001"
@@ -12156,10 +12161,16 @@ static void report_status_rejects_what_it_cannot_send(void** state)
   assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 2), AZ_IOT_ERR_INVALID_ARG);
   steps[1] = ok;
 
-  /* One result per manifest step, validated like the overall one. */
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 1), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 3), AZ_IOT_ERR_INVALID_ARG);
+  /* At most AZ_IOT_SU_MAX_STEP_COUNT step results, none IN_PROGRESS. */
+  static az_iot_su_step_result too_many[AZ_IOT_SU_MAX_STEP_COUNT + 1];
+  for (int32_t i = 0; i < AZ_IOT_SU_MAX_STEP_COUNT + 1; ++i)
+  {
+    too_many[i] = ok;
+  }
+  assert_int_equal(
+      az_iot_su_client_report_status(&fx->su, &ok, too_many, AZ_IOT_SU_MAX_STEP_COUNT + 1),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(fx->su._internal.step_results_count, 2);
   steps[0].outcome = AZ_IOT_SU_OUTCOME_IN_PROGRESS;
   assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 2), AZ_IOT_ERR_INVALID_ARG);
   steps[0] = ok;
@@ -12191,6 +12202,77 @@ static void report_status_rejects_what_it_cannot_send(void** state)
   assert_int_equal(
       az_span_size(fx->chan.last_step_results[1].result_details),
       AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE);
+}
+
+/**
+ * @brief Assert the last report's wire form has keys `step_0` to `step_<count - 1>` in
+ *        `stepResults`, @p count being its step result count, and no `stepResults` when 0.
+ */
+static void assert_last_report_step_result_keys(const fake_channel* channel, int32_t count)
+{
+  assert_int_equal(channel->last_report.step_results_count, count);
+  az_iot_su_report report = { .workflow_id = channel->last_workflow_id,
+                              .outcome = channel->last_report.outcome,
+                              .result_code = AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS,
+                              .extended_result_codes = "0",
+                              .step_results = channel->last_report.step_results,
+                              .step_results_count = count };
+  static uint8_t json[SU_TEST_PATCH_SIZE];
+  size_t written = 0;
+  assert_int_equal(az_iot_su_build_report(&report, json, sizeof(json) - 1, &written), AZ_IOT_OK);
+  json[written] = '\0';
+  assert_true((count == 0) == (strstr((const char*)json, "\"stepResults\"") == NULL));
+  char key[32];
+  for (int32_t i = 0; i <= count; ++i)
+  {
+    (void)snprintf(key, sizeof(key), "\"step_%d\"", (int)i);
+    assert_true((i < count) == (strstr((const char*)json, key) != NULL));
+  }
+}
+
+static void report_status_takes_any_number_of_step_results_up_to_the_limit(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static az_iot_su_step_result steps[AZ_IOT_SU_MAX_STEP_COUNT];
+  for (int32_t i = 0; i < AZ_IOT_SU_MAX_STEP_COUNT; ++i)
+  {
+    steps[i] = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  }
+  az_iot_su_step_result done = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
+
+  /* Against the two-step manifest: none, fewer, as many, more (when the limit allows). */
+  int32_t counts[] = { 0, 1, 2, AZ_IOT_SU_MAX_STEP_COUNT };
+  for (size_t c = 0; c < sizeof(counts) / sizeof(counts[0]); ++c)
+  {
+    char workflow_id[32];
+    (void)snprintf(workflow_id, sizeof(workflow_id), "wf-steps-%d", (int)c);
+    delegate(fx, two_step_patch_for_workflow(workflow_id));
+    assert_int_equal(fx->su._internal.step_results_count, 2);
+    int32_t count = counts[c];
+    char details[] = "last step";
+    if (count > 0)
+    {
+      steps[count - 1].result_details = az_span_create((uint8_t*)details, (int32_t)strlen(details));
+    }
+    assert_int_equal(az_iot_su_client_report_status(&fx->su, &done, steps, count), AZ_IOT_OK);
+
+    assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+    assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+    assert_last_report_step_result_keys(&fx->chan, count);
+    if (count > 0)
+    {
+      assert_true(az_span_is_content_equal(
+          fx->chan.last_step_results[count - 1].result_details, AZ_SPAN_FROM_STR("last step")));
+      steps[count - 1].result_details = AZ_SPAN_EMPTY;
+    }
+  }
+
+  /* More step results than a one-step manifest has. */
+  delegate(fx, build_patch("wf-more-steps"));
+  assert_int_equal(fx->su._internal.step_results_count, 1);
+  assert_int_equal(
+      az_iot_su_client_report_status(&fx->su, &done, steps, AZ_IOT_SU_MAX_STEP_COUNT), AZ_IOT_OK);
+  assert_last_report_step_result_keys(&fx->chan, AZ_IOT_SU_MAX_STEP_COUNT);
 }
 
 static void report_status_is_not_for_the_managed_client(void** state)
@@ -12817,6 +12899,8 @@ int main(void)
         report_status_carries_the_application_failure, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
         report_status_rejects_what_it_cannot_send, setup_library, teardown),
+    cmocka_unit_test_setup_teardown(
+        report_status_takes_any_number_of_step_results_up_to_the_limit, setup_library, teardown),
     cmocka_unit_test_setup_teardown(report_status_is_not_for_the_managed_client, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_status_report_is_resent, setup_library, teardown),
     cmocka_unit_test_setup_teardown(

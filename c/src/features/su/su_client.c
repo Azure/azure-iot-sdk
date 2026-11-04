@@ -5043,7 +5043,8 @@ AZ_NODISCARD az_iot_result az_iot_su_client_report_status(
   }
   if (terminal)
   {
-    if (step_results_count != SU_I(client).step_results_count)
+    /* The device API makes step results optional: step_<i> is step_results[i]. */
+    if (step_results_count > AZ_IOT_SU_MAX_STEP_COUNT)
     {
       return AZ_IOT_ERR_INVALID_ARG;
     }
@@ -5073,6 +5074,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_report_status(
 
   if (terminal)
   {
+    SU_I(client).step_results_count = step_results_count;
     for (int32_t i = 0; i < step_results_count; ++i)
     {
       az_iot_su_step_result* kept = &SU_I(client).step_results[i];
