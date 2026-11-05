@@ -5,12 +5,13 @@
 # next boot target, and reboot into it — the basis of a real (A/B) software update.
 # esp_secure_cert holds the device certificate and key (or DS parameters), at the
 # offset configure_esp_secure_cert.py writes by default.
-# Sized for a 4 MB flash (the original ESP32-WROOM-32 module).
+# Sized for a 4 MB flash (the original ESP32-WROOM-32 module). The 80 KB nvs holds two
+# generations of the largest software updates checkpoint (main/app_main.c, SU_MAX_UPDATE_SIZE).
 #
 # Name,          Type, SubType, Offset,   Size,     Flags
 esp_secure_cert, 0x3F, ,        0xD000,   0x2000,   encrypted
-nvs,             data, nvs,     0xF000,   0x9000,
-otadata,         data, ota,     0x18000,  0x2000,
-phy_init,        data, phy,     0x1A000,  0x1000,
-ota_0,           app,  ota_0,   0x20000,  0x1D0000,
-ota_1,           app,  ota_1,   0x1F0000, 0x1D0000,
+nvs,             data, nvs,     0xF000,   0x14000,
+otadata,         data, ota,     0x23000,  0x2000,
+phy_init,        data, phy,     0x25000,  0x1000,
+ota_0,           app,  ota_0,   0x30000,  0x1D0000,
+ota_1,           app,  ota_1,   0x200000, 0x1D0000,

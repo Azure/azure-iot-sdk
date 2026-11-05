@@ -517,20 +517,32 @@ namespace Microsoft.Azure.Iot.Device
         }
 
         /// <inheritdoc cref="Unified.Connection.IConnectionClient.PublishAsync(MqttPublish, CancellationToken)"/>
-        public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
+        public Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
+        {
+            return PublishAsync(publish, validateTopic: null, cancellationToken);
+        }
+
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.PublishAsync(MqttPublish, Action{string}, CancellationToken)"/>
+        internal async Task<MqttPublishAck> PublishAsync(MqttPublish publish, Action<string>? validateTopic, CancellationToken cancellationToken)
         {
             // The device ID is resolved on every attempt rather than once up front, because this operation may wait out a
             // re-provisioning that assigns this device a different ID. The caller's publish is left untouched so that
             // its topic template is still available to later attempts. The ID is only read once the attempt has been
             // admitted for IoT hub, because switching away from IoT hub (and so re-provisioning) waits for admitted
             // operations to finish; reading it any earlier could pair this device's old ID with a newer connection.
+            // For the same reason, the resolved topic is validated here, on every attempt, rather than once up front.
             Func<CancellationToken, Task<MqttPublishAck>> funcToRetry = async (args) =>
             {
                 return await ManagedMqttConnection.BuildAndPublishAsync(
                     ConnectionEndpoint.IotHub,
-                    () => ContainsDeviceIdPlaceholder(publish.Topic)
-                        ? publish.WithTopic(ResolveDeviceIdPlaceholder(publish.Topic, GetDeviceIdForTopics()))
-                        : publish,
+                    () =>
+                    {
+                        MqttPublish resolvedPublish = ContainsDeviceIdPlaceholder(publish.Topic)
+                            ? publish.WithTopic(ResolveDeviceIdPlaceholder(publish.Topic, GetDeviceIdForTopics()))
+                            : publish;
+                        validateTopic?.Invoke(resolvedPublish.Topic);
+                        return resolvedPublish;
+                    },
                     throwOnPubackErrorCode: false,
                     cancellationToken);
             };

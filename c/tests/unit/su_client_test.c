@@ -1763,6 +1763,14 @@ static void oversized_update_metadata_is_ignored(void** state)
   assert_int_equal((int)fx->log.op_count, 0);
   assert_int_equal(fx->refused_count, 1);
   assert_int_equal(fx->last_refused_reason, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+
+  /* Its workflow id is known, so it is reported FAILED as too large. */
+  pump(fx, 5);
+  assert_int_equal((int)fx->log.op_count, 0);
+  assert_int_equal(fx->chan.report_count, 1);
+  assert_string_equal(fx->chan.last_workflow_id, "51552a54-765e-419f-892a-c822549b6f38");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_string_equal(fx->chan.last_extended, "b0000001");
 }
 
 static void verify_failure_blocks_download_and_fails(void** state)
@@ -3762,15 +3770,20 @@ static const char k_patch_two_steps_fmt[]
       "\"updateManifestSignature\":\"%s\","
       "\"fileUrls\":{\"f2f4a804ca17afbae\":\"http://example.com/payload.bin\"}}";
 
-static const char* two_step_patch(void)
+/** @brief A two-step update offered as workflow @p workflow_id. */
+static const char* two_step_patch_for_workflow(const char* workflow_id)
 {
   static char patch[4096];
   char jws[2048];
   build_jws(jws, (int32_t)sizeof(jws));
-  int n
-      = snprintf(patch, sizeof(patch), k_patch_two_steps_fmt, "multi-step-deployment", "1.1", jws);
+  int n = snprintf(patch, sizeof(patch), k_patch_two_steps_fmt, workflow_id, "1.1", jws);
   assert_true(n > 0 && (size_t)n < sizeof(patch));
   return patch;
+}
+
+static const char* two_step_patch(void)
+{
+  return two_step_patch_for_workflow("multi-step-deployment");
 }
 
 /* Two steps, each with its own file. The `files` map lists "fa00000000000001"
@@ -3962,23 +3975,29 @@ static void assert_workflow_ended_once(const fixture* fx, az_iot_su_outcome outc
     (used) += (size_t)written_;                                                       \
   } while (0)
 
-/* Escaped quote inside the updateManifest string. */
-#define Q "\\\""
+/* A quote, in the manifest formats below. */
+#define Q "\""
 
-/* An update of @p step_count steps of @p files_per_step files. File "s<S>f<F>" names download
- * handler @p handler_id (none when NULL) and has @p related_count related files
- * "s<S>f<F>r<R>"; every file has a URL "http://example.com/<id>". Returns a static buffer,
- * valid until the next call. */
-static const char* delta_steps_patch(
+static const char* signed_patch_for_manifest(
     const char* workflow_id,
+    const char* manifest,
+    const char* file_urls);
+
+/* The manifest of an update of @p step_count steps of @p files_per_step files. File "s<S>f<F>"
+ * names download handler @p handler_id (none when NULL) and has @p related_count related files
+ * "s<S>f<F>r<R>". Its quotes are not escaped; @p handler_id is copied as is. @p out_file_urls
+ * gets the fileUrls members: "http://example.com/<id>" for every file. Returns static buffers,
+ * valid until the next call. */
+static const char* delta_steps_manifest(
     int step_count,
     int files_per_step,
     const char* handler_id,
-    int related_count)
+    int related_count,
+    const char** out_file_urls)
 {
   static char steps[1024];
-  static char files[4096];
-  static char urls[2048];
+  static char files[16384];
+  static char urls[4096];
   size_t s_used = 0;
   size_t f_used = 0;
   size_t u_used = 0;
@@ -4040,25 +4059,34 @@ static const char* delta_steps_patch(
         s);
   }
 
-  static char patch[SU_TEST_PATCH_SIZE];
-  char jws[2048];
-  build_jws(jws, (int32_t)sizeof(jws));
+  static char manifest[sizeof(steps) + sizeof(files) + 256];
   size_t used = 0;
   SU_TEST_APPEND(
-      patch,
+      manifest,
       used,
-      "{\"workflowId\":\"%s\","
-      "\"updateManifest\":\"{" Q "manifestVersion" Q ":" Q "5" Q "," Q "updateId" Q ":{" Q
-      "provider" Q ":" Q "Contoso" Q "," Q "name" Q ":" Q "Foobar" Q "," Q "version" Q ":" Q "1.1" Q
-      "}," Q "instructions" Q ":{" Q "steps" Q ":[%s]}," Q "files" Q ":{%s}," Q "createdDateTime" Q
-      ":" Q "2022-07-07T03:02:48.8449038Z" Q "}\","
-      "\"updateManifestSignature\":\"%s\",\"fileUrls\":{%s}}",
-      workflow_id,
+      "{" Q "manifestVersion" Q ":" Q "5" Q "," Q "updateId" Q ":{" Q "provider" Q ":" Q "Contoso" Q
+      "," Q "name" Q ":" Q "Foobar" Q "," Q "version" Q ":" Q "1.1" Q "}," Q "instructions" Q ":{" Q
+      "steps" Q ":[%s]}," Q "files" Q ":{%s}," Q "createdDateTime" Q ":" Q
+      "2022-07-07T03:02:48.8449038Z" Q "}",
       steps,
-      files,
-      jws,
-      urls + 1);
-  return patch;
+      files);
+  *out_file_urls = urls + 1;
+  return manifest;
+}
+
+/* A signed payload of delta_steps_manifest() and its URLs. Returns a static buffer, valid until
+ * the next call. */
+static const char* delta_steps_patch(
+    const char* workflow_id,
+    int step_count,
+    int files_per_step,
+    const char* handler_id,
+    int related_count)
+{
+  const char* file_urls = NULL;
+  const char* manifest
+      = delta_steps_manifest(step_count, files_per_step, handler_id, related_count, &file_urls);
+  return signed_patch_for_manifest(workflow_id, manifest, file_urls);
 }
 
 #undef Q
@@ -7316,6 +7344,17 @@ static void manifest_with_delta_file_members_installs(void** state)
   assert_int_equal(fx->log.download_calls, 1);
 }
 
+/** @brief A manifest whose second step is a `reference` step (to file f01). */
+#define SU_TEST_REFERENCE_STEP_MANIFEST                                                    \
+  "{\"manifestVersion\":\"5\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Foobar\"," \
+  "\"version\":\"1.1\"},\"instructions\":{\"steps\":["                                     \
+  "{\"handler\":\"microsoft/swupdate:1\",\"files\":[\"f00\"]},"                            \
+  "{\"type\":\"reference\",\"detachedManifestFileId\":\"f01\"}]},\"files\":{"              \
+  "\"f00\":{\"fileName\":\"payload-00.bin\",\"sizeInBytes\":64,"                           \
+  "\"hashes\":{\"sha256\":\"" SU_TEST_FILE_HASH_B64 "\"}},"                                \
+  "\"f01\":{\"fileName\":\"leaf.importmanifest.json\",\"sizeInBytes\":64,"                 \
+  "\"hashes\":{\"sha256\":\"" SU_TEST_FILE_HASH_B64 "\"}}}}"
+
 /** @brief A manifest the client does not support, and how it is refused. */
 typedef struct
 {
@@ -7327,18 +7366,9 @@ typedef struct
   az_iot_result parse_result; /* of az_iot_su_parse_update_request() */
 } unsupported_manifest;
 
-/* A mini manifest (the public Device Update documentation example), a manifest without steps,
- * and one whose second step is a reference step, after a step that would install. */
+/* A manifest without steps, and one whose second step is a reference step, after a step that
+ * would install. */
 static const unsupported_manifest k_unsupported_manifests[] = {
-  { "mini-manifest",
-    "{\"manifestVersion\":\"4\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Toaster\","
-    "\"version\":\"1.0\"},\"detachedManifestFileId\":\"fileId1\",\"files\":{\"fileId1\":{"
-    "\"filename\":\"contoso.toaster.1.0.updatemanifest.json\",\"sizeInBytes\":2048,"
-    "\"hashes\":{\"sha256\":\"789s9PDfX4uA9wFUubyC30BWkLFbgmpkpmz1fEdqo2U=\"}}}}",
-    "\"fileId1\":\"http://example.com/manifest.json\"",
-    AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST,
-    AZ_IOT_ERR_NOT_SUPPORTED,
-    AZ_IOT_ERR_NOT_SUPPORTED },
   { "no-steps",
     "{\"manifestVersion\":\"5\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Foobar\","
     "\"version\":\"1.1\"},\"instructions\":{\"steps\":[]},\"files\":{\"f00\":{"
@@ -7349,14 +7379,7 @@ static const unsupported_manifest k_unsupported_manifests[] = {
     AZ_IOT_ERR_PROTOCOL,
     AZ_IOT_ERR_INVALID_ARG },
   { "reference-step",
-    "{\"manifestVersion\":\"5\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Foobar\","
-    "\"version\":\"1.1\"},\"instructions\":{\"steps\":["
-    "{\"handler\":\"microsoft/swupdate:1\",\"files\":[\"f00\"]},"
-    "{\"type\":\"reference\",\"detachedManifestFileId\":\"f01\"}]},\"files\":{"
-    "\"f00\":{\"fileName\":\"payload-00.bin\",\"sizeInBytes\":64,"
-    "\"hashes\":{\"sha256\":\"" SU_TEST_FILE_HASH_B64 "\"}},"
-    "\"f01\":{\"fileName\":\"leaf.importmanifest.json\",\"sizeInBytes\":64,"
-    "\"hashes\":{\"sha256\":\"" SU_TEST_FILE_HASH_B64 "\"}}}}",
+    SU_TEST_REFERENCE_STEP_MANIFEST,
     "\"f00\":\"http://example.com/payload-00.bin\",\"f01\":\"http://example.com/leaf.json\"",
     AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP,
     AZ_IOT_ERR_NOT_SUPPORTED,
@@ -7374,10 +7397,6 @@ static void unsupported_manifest_fails_before_any_hook(void** state)
   for (size_t i = 0; i < sizeof(k_unsupported_manifests) / sizeof(k_unsupported_manifests[0]); ++i)
   {
     const unsupported_manifest* c = &k_unsupported_manifests[i];
-    if (c->manifest_error == AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST)
-    {
-      continue; /* a managed client fetches its full manifest */
-    }
     int failed_before = fx->failed_count;
     inject_patch(fx, signed_patch_for_manifest(c->workflow_id, c->manifest, c->file_urls));
     pump(fx, 60);
@@ -7408,6 +7427,9 @@ static void unsupported_manifest_fails_before_any_hook(void** state)
 #define SU_TEST_DETACHED_FILE_ID "fMini"
 /* What the mock SHA-256 hashes a detached manifest file to (it starts with '{'). */
 #define SU_TEST_DETACHED_FILE_HASH_B64 "q6urq6urq6urq6urq6urq6urq6urq6urq6urq6urq6s="
+/* fileUrls member of the detached manifest file. */
+#define SU_TEST_DETACHED_FILE_URL \
+  "\"" SU_TEST_DETACHED_FILE_ID "\":\"http://example.com/manifest.json\""
 /* Download URL of each file of k_detached_full_manifest, after the detached file's. */
 #define SU_TEST_DETACHED_STEP_URLS \
   "\"f01\":\"http://example.com/payload-01.bin\",\"f00\":\"http://example.com/payload-00.bin\""
@@ -7436,10 +7458,11 @@ typedef struct
   const char* version; /* updateId version of the mini; NULL: "1.1" */
   const char* sha256; /* hash of the detached file; NULL: SU_TEST_DETACHED_FILE_HASH_B64 */
   int size_delta; /* added to the detached file's size in the mini */
+  const char* retry_timestamp; /* the payload's retryTimestamp; NULL: none */
 } detached_manifest_case;
 
 /** @brief The detached manifest file read_file_fn serves; valid until the next build. */
-static char g_detached_file[4096];
+static char g_detached_file[16384];
 
 /**
  * @brief Build a signed payload with a mini manifest per @p c, and have fx's read_file_fn serve
@@ -7492,13 +7515,20 @@ static const char* detached_manifest_patch(
       "\"files\":{%s},\"createdDateTime\":\"2026-11-01T00:00:00Z\"}",
       (c->version != NULL) ? c->version : "1.1",
       (c->mini_files != NULL) ? c->mini_files : entry);
-  return signed_patch_for_manifest(
+  const char* patch = signed_patch_for_manifest(
       workflow_id,
       mini,
-      (c->file_urls != NULL)
-          ? c->file_urls
-          : "\"" SU_TEST_DETACHED_FILE_ID
-            "\":\"http://example.com/manifest.json\"," SU_TEST_DETACHED_STEP_URLS);
+      (c->file_urls != NULL) ? c->file_urls
+                             : SU_TEST_DETACHED_FILE_URL "," SU_TEST_DETACHED_STEP_URLS);
+  if (c->retry_timestamp == NULL)
+  {
+    return patch;
+  }
+  static char retried[SU_TEST_PATCH_SIZE];
+  int written = snprintf(
+      retried, sizeof(retried), "{\"retryTimestamp\":\"%s\",%s", c->retry_timestamp, patch + 1);
+  assert_true(written > 0 && (size_t)written < sizeof(retried));
+  return retried;
 }
 
 /** @brief Count the downloads of @p file_id. */
@@ -7739,6 +7769,25 @@ static void a_bad_mini_manifest_fails_before_any_step(void** state)
       AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS,
       AZ_IOT_ERR_PROTOCOL,
       1 },
+    { "reference-step",
+      { .full_manifest = SU_TEST_REFERENCE_STEP_MANIFEST },
+      false,
+      false,
+      false,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP,
+      AZ_IOT_ERR_NOT_SUPPORTED,
+      1 },
+    /* A full manifest step file with no URL is an unusable full manifest. */
+    { "no-step-file-url",
+      { .file_urls = SU_TEST_DETACHED_FILE_URL ",\"f00\":\"http://example.com/payload-00.bin\"" },
+      false,
+      false,
+      false,
+      AZ_IOT_SU_FACILITY_MANIFEST,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_INVALID,
+      AZ_IOT_ERR_PROTOCOL,
+      1 },
   };
   fixture* fx = (fixture*)*state;
   open_to_connected(fx);
@@ -7858,6 +7907,265 @@ static void a_new_workflow_replaces_one_fetching_its_full_manifest(void** state)
   assert_true(fx->log.download_calls > 0);
   assert_int_equal(count_downloads_of(fx, SU_TEST_DETACHED_FILE_ID), 0);
   assert_int_equal(fx->su._internal.current_manifest.instructions.steps_count, 0);
+}
+
+/** @brief Run the workflow until its full manifest is fetched and verified. */
+static void pump_past_full_manifest_fetch(fixture* fx)
+{
+  for (int i = 0; i < 40; ++i)
+  {
+    az_iot_su_state state = az_iot_su_client_get_state(&fx->su);
+    if (state != AZ_IOT_SU_STATE_MANIFEST_RECEIVED && state != AZ_IOT_SU_STATE_VERIFYING_MANIFEST)
+    {
+      break;
+    }
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_true(az_span_size(fx->su._internal.full_manifest_text) > 0);
+}
+
+/** @brief k_detached_full_manifest is stored right after the request of @p request_len bytes. */
+static void assert_full_manifest_stored_after_request(const fixture* fx, size_t request_len)
+{
+  static const char wrapper[] = "{\"updateManifest\":\"";
+  az_span full = fx->su._internal.full_manifest_text;
+  assert_int_equal(fx->su._internal.request_len, request_len + strlen(g_detached_file));
+  assert_ptr_equal(
+      az_span_ptr(full), fx->su._internal.request_buffer + request_len + sizeof(wrapper) - 1u);
+  assert_int_equal(az_span_size(full), strlen(k_detached_full_manifest));
+  assert_memory_equal(
+      az_span_ptr(full), k_detached_full_manifest, strlen(k_detached_full_manifest));
+}
+
+/* A mini manifest whose full manifest is a delta update: the detached manifest file is fetched
+ * first, then the related file the download handler chose, found by id in a fileUrls ordered
+ * unlike `files`; the file is built from it and the full manifest's step is reported. */
+static void a_mini_manifest_carries_a_delta_update(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->delta.chosen_index = 1;
+  const char* step_urls = NULL;
+  detached_manifest_case c = { 0 };
+  c.full_manifest = delta_steps_manifest(1, 1, SU_TEST_DELTA_HANDLER_ID, 2, &step_urls);
+  c.file_urls = "\"s0f0r1\":\"http://example.com/s0f0r1\"," SU_TEST_DETACHED_FILE_URL
+                ",\"s0f0r0\":\"http://example.com/s0f0r0\",\"s0f0\":\"http://example.com/s0f0\"";
+  fx->log.download_in_progress = 1;
+
+  inject_patch(fx, detached_manifest_patch(fx, "mini-delta", &c));
+  pump(fx, 80);
+
+  assert_succeeded_with_delta_code(fx, 0, 0, "");
+  assert_string_equal(fx->chan.last_workflow_id, "mini-delta");
+  assert_int_equal(fx->chan.last_report.step_results_count, 1);
+  assert_downloads(fx, SU_TEST_DETACHED_FILE_ID " " SU_TEST_DETACHED_FILE_ID " s0f0r1");
+  assert_string_equal(fx->log.download_urls[1], "http://example.com/manifest.json");
+  assert_string_equal(fx->log.download_urls[2], "http://example.com/s0f0r1");
+  assert_int_equal(fx->delta.choose_calls, 1);
+  assert_int_equal(fx->delta.build_calls, 1);
+  assert_string_equal(fx->delta.built_file_id, "s0f0");
+  assert_string_equal(fx->delta.built_from_id, "s0f0r1");
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  static const op_kind expect[] = {
+    OP_DOWNLOAD,
+    OP_IS_INSTALLED,
+    OP_CHOOSE_RELATED_FILE,
+    OP_DOWNLOAD,
+    OP_BUILD_FILE_FROM_RELATED,
+    OP_BACKUP,
+    OP_INSTALL,
+    OP_APPLY,
+    OP_WORKFLOW_ENDED,
+  };
+  assert_true(ops_contain_sequence(&fx->log, expect, sizeof(expect) / sizeof(expect[0])));
+  assert_int_equal(fx->failed_count, 0);
+}
+
+/* A mini manifest whose delta full manifest has AZ_IOT_SU_MAX_FILE_COUNT files and the default
+ * max_related_files related files has exactly AZ_IOT_SU_FILE_URL_CAPACITY() URLs with the
+ * detached manifest file's, and installs; one URL more is refused and reported FAILED. */
+static void a_mini_manifest_delta_update_may_fill_the_file_url_capacity(void** state)
+{
+  static char file_urls[8192];
+  const int related_per_file = AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES / AZ_IOT_SU_MAX_FILE_COUNT;
+  assert_int_equal(
+      1 + AZ_IOT_SU_MAX_FILE_COUNT * (1 + related_per_file),
+      AZ_IOT_SU_FILE_URL_CAPACITY(AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES));
+  fixture* fx = (fixture*)*state;
+  use_test_download_handler(fx, SU_TEST_DELTA_HANDLER_ID);
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->delta.chosen_index = 1;
+  const char* step_urls = NULL;
+  detached_manifest_case c = { 0 };
+  c.full_manifest = delta_steps_manifest(
+      1, AZ_IOT_SU_MAX_FILE_COUNT, SU_TEST_DELTA_HANDLER_ID, related_per_file, &step_urls);
+  size_t used = 0;
+  SU_TEST_APPEND(file_urls, used, "%s,%s", SU_TEST_DETACHED_FILE_URL, step_urls);
+  c.file_urls = file_urls;
+
+  inject_patch(fx, detached_manifest_patch(fx, "mini-delta-full", &c));
+  pump(fx, 200);
+
+  assert_succeeded_with_delta_code(fx, 0, 0, "");
+  assert_int_equal(fx->chan.last_report.step_results_count, 1);
+  char expected[512];
+  size_t expected_used = 0;
+  SU_TEST_APPEND(expected, expected_used, "%s", SU_TEST_DETACHED_FILE_ID);
+  for (int f = 0; f < AZ_IOT_SU_MAX_FILE_COUNT; ++f)
+  {
+    SU_TEST_APPEND(expected, expected_used, " s0f%dr1", f);
+  }
+  assert_downloads(fx, expected);
+  assert_int_equal(fx->delta.build_calls, AZ_IOT_SU_MAX_FILE_COUNT);
+  assert_workflow_ended_once(fx, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+
+  int refused_before = fx->refused_count;
+  fx->log.download_calls = 0;
+  SU_TEST_APPEND(file_urls, used, ",\"extra\":\"http://example.com/extra\"");
+  inject_patch(fx, detached_manifest_patch(fx, "mini-delta-over", &c));
+  pump(fx, 20);
+  assert_int_equal(fx->refused_count, refused_before + 1);
+  assert_int_equal(fx->last_refused_reason, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->log.download_calls, 0);
+  assert_string_equal(fx->chan.last_workflow_id, "mini-delta-over");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_string_equal(fx->chan.last_extended, "b0000001");
+}
+
+/* A FAILED mini manifest workflow offered again with a retryTimestamp, once its retry wait is
+ * over, fetches and verifies its detached manifest file again and stores its full manifest after
+ * the new request, not where the failed attempt left it. */
+static void a_failed_mini_manifest_workflow_is_retried(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  detached_manifest_case c = { 0 };
+  copy_str(fx->log.download_fail_id, sizeof(fx->log.download_fail_id), "f01");
+  inject_patch(fx, detached_manifest_patch(fx, "mini-retry", &c));
+  pump(fx, 80);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(count_downloads_of(fx, SU_TEST_DETACHED_FILE_ID), 1);
+
+  fx->log.download_fail_id[0] = '\0';
+  fx->log.download_calls = 0;
+  fx->log.op_count = 0;
+  c.retry_timestamp = "2026-11-02T00:00:00Z";
+  const char* retry = detached_manifest_patch(fx, "mini-retry", &c);
+  size_t retry_len = strlen(retry);
+  inject_patch(fx, retry);
+  assert_int_equal(fx->retry_wait_count, 1);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+
+  elapse_retry_wait(fx);
+  fx->log.download_in_progress = 1;
+  inject_patch(fx, retry);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+  assert_int_equal(fx->su._internal.request_len, retry_len);
+  assert_int_equal(az_span_size(fx->su._internal.full_manifest_text), 0);
+  pump_past_full_manifest_fetch(fx);
+  assert_full_manifest_stored_after_request(fx, retry_len);
+  pump(fx, 80);
+
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_string_equal(fx->chan.last_workflow_id, "mini-retry");
+  assert_int_equal(fx->chan.last_report.step_results_count, 2);
+  assert_downloads(fx, SU_TEST_DETACHED_FILE_ID " " SU_TEST_DETACHED_FILE_ID " f00 f01");
+  assert_int_equal(fx->retry_wait_count, 1);
+  assert_int_equal(fx->duplicate_count, 0);
+}
+
+/* A mini manifest workflow redelivered while it fetches its detached manifest file, and again
+ * once it downloads the full manifest's files, is a duplicate: the run goes on, and the full
+ * manifest stored after the request is not overwritten. */
+static void a_redelivered_mini_manifest_workflow_is_a_duplicate(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  const detached_manifest_case c = { 0 };
+  const char* patch = detached_manifest_patch(fx, "mini-duplicate", &c);
+  size_t patch_len = strlen(patch);
+  fx->log.download_in_progress = 3;
+  inject_patch(fx, patch);
+  for (int i = 0; i < 10 && fx->log.download_calls == 0; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_VERIFYING_MANIFEST);
+
+  inject_patch(fx, patch);
+  assert_int_equal(fx->duplicate_count, 1);
+  assert_int_equal(fx->last_duplicate_state, AZ_IOT_SU_STATE_VERIFYING_MANIFEST);
+  assert_int_equal(fx->su._internal.request_len, patch_len);
+  assert_int_equal(az_span_size(fx->su._internal.full_manifest_text), 0);
+
+  pump_past_full_manifest_fetch(fx);
+  fx->log.download_in_progress = 2;
+  for (int i = 0; i < 10 && count_downloads_of(fx, "f00") == 0; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
+  assert_full_manifest_stored_after_request(fx, patch_len);
+
+  inject_patch(fx, patch);
+  assert_int_equal(fx->duplicate_count, 2);
+  assert_int_equal(fx->last_duplicate_state, AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
+  assert_full_manifest_stored_after_request(fx, patch_len);
+  pump(fx, 80);
+
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_string_equal(fx->chan.last_workflow_id, "mini-duplicate");
+  assert_int_equal(fx->chan.last_report.step_results_count, 2);
+  assert_int_equal(count_downloads_of(fx, SU_TEST_DETACHED_FILE_ID), 4);
+  assert_int_equal(count_downloads_of(fx, "f00"), 3);
+  assert_int_equal(count_downloads_of(fx, "f01"), 1);
+}
+
+/* A reboot while the detached manifest file downloads: no record was stored, so resume has
+ * nothing to restore, and the service's redelivery starts the workflow again, which fetches the
+ * file anew and succeeds. */
+static void a_reboot_while_fetching_the_full_manifest_restarts_the_workflow(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  const detached_manifest_case c = { 0 };
+  const char* patch = detached_manifest_patch(fx, "mini-fetch-reboot", &c);
+  fx->log.download_in_progress = 1000;
+  inject_patch(fx, patch);
+  for (int i = 0; i < 6; ++i)
+  {
+    assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  }
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_VERIFYING_MANIFEST);
+  assert_true(fx->log.download_calls > 0);
+  assert_false(fx->log.have_persist);
+
+  reboot_client(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->log.download_in_progress = 0;
+  fx->log.download_calls = 0;
+  fx->log.op_count = 0;
+  assert_int_equal(az_iot_su_client_resume(&fx->su), AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal((int)fx->log.op_count, 0);
+
+  inject_patch(fx, patch);
+  assert_int_equal(fx->duplicate_count, 0);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+  pump(fx, 80);
+
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_string_equal(fx->chan.last_workflow_id, "mini-fetch-reboot");
+  assert_int_equal(fx->chan.last_report.step_results_count, 2);
+  assert_downloads(fx, SU_TEST_DETACHED_FILE_ID " f00 f01");
+  assert_false(fx->log.have_persist);
 }
 
 /* The update body carries service-issued download URLs; DEBUG logs only its
@@ -10523,11 +10831,11 @@ static void a_synchronous_retryable_verdict_is_not_lost(void** state)
   assert_int_equal(fx->chan.last_request_operation, AZ_IOT_SU_OP_GET_UPDATE);
 }
 
-/** @brief A retryable verdict with no service delay, as for a 503 with no retry-after. */
+/** @brief A retryable verdict with no service delay, as for a 500 with no Retry-After. */
 static void deliver_no_hint_retry(fixture* fx, az_iot_su_operation operation)
 {
   az_iot_su_service_error se = {
-    .code = 503000, .message = "UPSTREAM_UNAVAILABLE", .tracking_id = "", .retry_after_ms = 0
+    .code = 500000, .message = "INTERNAL_SERVER_ERROR", .tracking_id = "", .retry_after_ms = 0
   };
   fx->chan.result_cb(
       operation, AZ_IOT_ERR_DPS, AZ_IOT_SU_ERROR_ACTION_RETRY, &se, fx->chan.engine_ctx);
@@ -10740,6 +11048,293 @@ static void a_synchronous_retryable_report_verdict_is_not_lost(void** state)
   fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
   assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
   assert_int_equal(fx->chan.report_count, sent + 2);
+}
+
+/** @brief A payload the client refuses as malformed, whose workflow id is "wf-refused". */
+#define REFUSED_PATCH \
+  "{\"workflowId\":\"wf\\u002drefused\",\"updateManifest\":\"{}\",\"fileUrls\":{\"f\":1}}"
+
+/* A refused update with a known workflow id is reported FAILED once, from the
+ * tick, so the service stops offering it; nothing runs. */
+static void a_refused_update_is_reported_failed(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar2";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "1.0";
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
+
+  inject_patch(fx, REFUSED_PATCH);
+  assert_int_equal(fx->refused_count, 1);
+  assert_int_equal(fx->last_refused_reason, AZ_IOT_ERR_PROTOCOL);
+  assert_int_equal(fx->chan.report_count, 0);
+
+  pump(fx, 5);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal((int)fx->log.op_count, 0);
+  assert_int_equal(fx->chan.report_count, 1);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-refused");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->chan.last_report.failure_origin, AZ_IOT_SU_FAILURE_ORIGIN_AGENT_CORE);
+  assert_int_equal(fx->chan.last_report.result_code, -(int32_t)AZ_IOT_SU_FACILITY_REFUSED);
+  assert_string_equal(fx->chan.last_extended, "b0000002");
+  assert_int_equal(fx->chan.last_report.step_results_count, 0);
+  assert_true(fx->chan.last_had_installed_update_id);
+  assert_string_equal(fx->chan.last_installed_version, "1.0");
+  assert_int_equal(fx->completed_count, 0);
+  assert_int_equal(fx->accepted_report_count, 1);
+  assert_string_equal(fx->accepted_workflow_id, "wf-refused");
+  assert_int_equal(fx->accepted_report_outcome, AZ_IOT_SU_OUTCOME_FAILED);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_ACCEPTED);
+
+  /* The service re-offers a FAILED workflow: refused again, not reported again. */
+  inject_patch(fx, REFUSED_PATCH);
+  assert_int_equal(fx->refused_count, 2);
+  pump(fx, 5);
+  assert_int_equal(fx->chan.report_count, 1);
+}
+
+/* REPORT_ACCEPTED carries the refused update's report as sent, though the
+ * installed update id changed before the verdict. */
+static void a_refused_update_report_is_accepted_as_sent(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  az_iot_su_device_properties device_properties = { 0 };
+  device_properties.manufacturer = "Contoso";
+  device_properties.model = "Foobar2";
+  device_properties.installed_update_id.provider = "Contoso";
+  device_properties.installed_update_id.name = "Foobar";
+  device_properties.installed_update_id.version = "1.0";
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
+  fx->chan.report_verdict_deferred = true;
+  inject_patch(fx, REFUSED_PATCH);
+  pump(fx, 3);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_IN_FLIGHT);
+  assert_string_equal(fx->chan.last_installed_version, "1.0");
+
+  device_properties.installed_update_id.version = "1.1";
+  assert_int_equal(
+      az_iot_su_client_update_device_properties(&fx->su, &device_properties), AZ_IOT_OK);
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_OK,
+      AZ_IOT_SU_ERROR_ACTION_NONE,
+      NULL,
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->accepted_report_count, 1);
+  assert_string_equal(fx->accepted_workflow_id, "wf-refused");
+  assert_true(fx->accepted_has_installed);
+  assert_string_equal(fx->accepted_installed[2], "1.0");
+}
+
+/* The workflow id is found wherever it sits: a property refused before it is
+ * read does not hide it. */
+static void a_refused_update_is_reported_whatever_its_property_order(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  inject_patch(
+      fx,
+      "{\"fileUrls\":{\"f\":1,\"g\":{\"x\":[1]}},\"workflowId\":\"wf-refused\","
+      "\"updateManifest\":\"{}\"}");
+  assert_int_equal(fx->refused_count, 1);
+  pump(fx, 5);
+  assert_int_equal(fx->chan.report_count, 1);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-refused");
+  assert_string_equal(fx->chan.last_extended, "b0000002");
+}
+
+/* A refused update's report the service asks to resend with the agent
+ * information stays owed and is sent again. */
+static void a_refused_update_report_is_resent_with_agent_info(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_verdict_deferred = true;
+  inject_patch(fx, REFUSED_PATCH);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, 1);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO,
+      &(az_iot_su_service_error){ .code = 409001, .message = "", .tracking_id = "" },
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_OWED);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, 2);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-refused");
+}
+
+/* A conflict on a refused update's report is abandoned and, as for any report,
+ * queues one update check. */
+static void a_conflicting_refused_update_report_queues_a_check(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  fx->chan.report_verdict_deferred = true;
+  inject_patch(fx, REFUSED_PATCH);
+  pump(fx, 3);
+  int checks = fx->chan.request_update_count;
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_RECHECK,
+      &(az_iot_su_service_error){ .code = 409000, .message = "", .tracking_id = "" },
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->abandoned_count, 1);
+  assert_int_equal(fx->last_abandoned_operation, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_int_equal(fx->completed_count, 0);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_NONE);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.request_update_count, checks + 1);
+  assert_int_equal(fx->chan.report_count, 1);
+}
+
+/* The active workflow's id, refused on redelivery, is not reported FAILED: its
+ * own reports speak for it. */
+static void a_refused_redelivery_of_the_active_workflow_is_not_reported(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  assert_int_equal(az_iot_su_client_add_observer(&fx->su, on_event, fx), AZ_IOT_OK);
+  inject_patch(fx, signed_patch());
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_MANIFEST_RECEIVED);
+
+  inject_patch(
+      fx,
+      "{\"workflowId\":\"51552a54-765e-419f-892a-c822549b6f38\",\"updateManifest\":\"{}\","
+      "\"fileUrls\":{\"f\":1}}");
+  assert_int_equal(fx->refused_count, 1);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_NONE);
+
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  for (int i = 0; i < fx->chan.report_count; ++i)
+  {
+    assert_true(fx->chan.outcomes[i] != AZ_IOT_SU_OUTCOME_FAILED);
+  }
+}
+
+/* A refused update's report holds update checks until it settles: a retryable
+ * verdict sends it again after the backoff, a fatal one drops it. */
+static void a_refused_update_report_is_retried_then_dropped(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_verdict_deferred = true;
+  inject_patch(fx, REFUSED_PATCH);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, 1);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_IN_FLIGHT);
+
+  assert_int_equal(az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS), AZ_IOT_OK);
+  int checks = fx->chan.request_update_count;
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_OWED);
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, 1);
+  assert_int_equal(fx->chan.request_update_count, checks);
+
+  fx->su._internal.retry._internal.due_ms = az_iot_time_mono_ms();
+  assert_int_equal(az_iot_su_client_do_work(&fx->su), AZ_IOT_OK);
+  assert_int_equal(fx->chan.report_count, 2);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-refused");
+  assert_int_equal(fx->chan.request_update_count, checks);
+
+  fx->chan.result_cb(
+      AZ_IOT_SU_OP_REPORT_STATUS,
+      AZ_IOT_ERR_DPS,
+      AZ_IOT_SU_ERROR_ACTION_FATAL,
+      &(az_iot_su_service_error){ .code = 400000, .message = "", .tracking_id = "" },
+      fx->chan.engine_ctx);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_NONE);
+  pump(fx, 3);
+  assert_int_equal(fx->chan.report_count, 2);
+  assert_int_equal(fx->chan.request_update_count, checks + 1);
+}
+
+/* A refused update's report the channel cannot take yet stays owed; one for an
+ * update since superseded by an accepted workflow is not sent. */
+/* A refused update's report the channel could not take for want of memory is
+ * sent once it can. */
+static void a_refused_update_report_survives_out_of_memory(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_result = AZ_IOT_ERR_OUT_OF_MEMORY;
+  inject_patch(fx, REFUSED_PATCH);
+  pump(fx, 3);
+  assert_true(fx->chan.report_count > 0);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_OWED);
+
+  fx->chan.report_result = AZ_IOT_OK;
+  pump(fx, 3);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_ACCEPTED);
+  assert_string_equal(fx->chan.last_workflow_id, "wf-refused");
+}
+
+static void an_accepted_workflow_drops_an_owed_refused_report(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_result = AZ_IOT_ERR_BUSY;
+  inject_patch(fx, REFUSED_PATCH);
+  pump(fx, 3);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_OWED);
+
+  fx->chan.report_result = AZ_IOT_OK;
+  int sent = fx->chan.report_count;
+  inject_patch(fx, signed_patch());
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_NONE);
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_true(fx->chan.report_count > sent);
+  for (int i = sent; i < fx->chan.report_count; ++i)
+  {
+    assert_string_equal(fx->chan.workflow_ids[i], "51552a54-765e-419f-892a-c822549b6f38");
+  }
+}
+
+/* A retryable verdict on a refused update's report that a workflow accepted
+ * since has superseded neither re-owes it nor arms a backoff. */
+static void an_accepted_workflow_drops_an_in_flight_refused_report(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+  fx->chan.report_verdict_deferred = true;
+  inject_patch(fx, REFUSED_PATCH);
+  pump(fx, 3);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_IN_FLIGHT);
+
+  int sent = fx->chan.report_count;
+  inject_patch(fx, signed_patch());
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_SUPERSEDED);
+  deliver_no_hint_retry(fx, AZ_IOT_SU_OP_REPORT_STATUS);
+  assert_int_equal(fx->su._internal.refused_report.state, AZ_IOT_SU_REFUSED_REPORT_NONE);
+
+  fx->chan.report_verdict_deferred = false;
+  pump(fx, 40);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_true(fx->chan.report_count > sent);
+  for (int i = sent; i < fx->chan.report_count; ++i)
+  {
+    assert_string_equal(fx->chan.workflow_ids[i], "51552a54-765e-419f-892a-c822549b6f38");
+  }
 }
 
 /* A late verdict for an older report does not pace a report the application
@@ -11088,8 +11683,10 @@ static void catalog_engine_error(void** state)
   assert_int_equal(count_ops(&fx->log, OP_APPLY), applies);
 
   bool recheck = row->action == AZ_IOT_SU_ERROR_ACTION_RECHECK;
+  /* Deferred to the next scheduled check: ends now, no backoff. */
+  bool deferred = row->action == AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK && row->delay_ms == 0;
   bool terminal = row->action == AZ_IOT_SU_ERROR_ACTION_FATAL
-      || row->action == AZ_IOT_SU_ERROR_ACTION_PROCEED || recheck;
+      || row->action == AZ_IOT_SU_ERROR_ACTION_PROCEED || recheck || deferred;
   if (terminal)
   {
     assert_int_equal(fx->abandoned_count, 1);
@@ -11161,6 +11758,18 @@ static void catalog_engine_error(void** state)
     else
     {
       assert_wire_pumps_do_not_publish(fx, sent);
+      if (deferred)
+      {
+        /* No backoff: the next scheduled check is not paced. */
+        assert_int_equal(fx->su._internal.retry._internal.due_ms, 0);
+        assert_int_equal(
+            row->operation == AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE
+                ? az_iot_su_client_request_onboarding_update(&fx->su, UT_TIMEOUT_MS)
+                : az_iot_su_client_request_update(&fx->su, UT_TIMEOUT_MS),
+            AZ_IOT_OK);
+        assert_int_not_equal(fx->su._internal.pending_fetch, 0);
+        assert_false(fx->su._internal.pending_fetch_paced);
+      }
     }
     return;
   }
@@ -11639,6 +12248,302 @@ static void library_mode_does_not_hand_over_an_unsupported_manifest(void** state
   }
 }
 
+/* Library mode hands over a mini manifest as it is. The application gets the full manifest with
+ * az_iot_su_parse_detached_manifest() in its own storage, and reports one result per full
+ * manifest step; the client keeps the mini manifest. */
+static void library_mode_hands_over_a_mini_manifest(void** state)
+{
+  static char file[sizeof(g_detached_file)];
+  fixture* fx = (fixture*)*state;
+  const detached_manifest_case c = { 0 };
+  delegate(fx, detached_manifest_patch(fx, "lib-mini", &c));
+  const az_iot_su_client_update_manifest* mini = fx->last_manifest;
+  assert_true(az_iot_su_manifest_is_detached(mini));
+  assert_true(az_span_is_content_equal(
+      mini->detached_manifest_file_id, AZ_SPAN_FROM_STR(SU_TEST_DETACHED_FILE_ID)));
+  assert_int_equal(mini->instructions.steps_count, 0);
+
+  copy_str(file, sizeof(file), g_detached_file);
+  az_iot_su_client_update_manifest full;
+  az_iot_su_client_update_manifest_file related_files[AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES];
+  uint32_t error = 1;
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          mini,
+          fx->last_request,
+          az_span_create_from_str(file),
+          &fx->crypto.base,
+          related_files,
+          AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES,
+          &full,
+          &error),
+      AZ_IOT_OK);
+  assert_int_equal(error, 0);
+  assert_false(az_iot_su_manifest_is_detached(&full));
+  assert_int_equal(full.instructions.steps_count, 2);
+
+  const az_iot_su_client_update_request* request = NULL;
+  const az_iot_su_client_update_manifest* manifest = NULL;
+  assert_int_equal(az_iot_su_client_get_current_update(&fx->su, &request, &manifest), AZ_IOT_OK);
+  assert_ptr_equal(manifest, mini);
+  assert_true(az_iot_su_manifest_is_detached(manifest));
+
+  az_iot_su_step_result success = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  az_iot_su_step_result steps[2]
+      = { lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED), lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED) };
+  assert_int_equal(
+      az_iot_su_client_report_status(
+          &fx->su, &success, steps, (int32_t)full.instructions.steps_count),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+  assert_string_equal(fx->chan.last_workflow_id, "lib-mini");
+  assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  assert_int_equal(fx->chan.last_report.step_results_count, 2);
+}
+
+/**
+ * @brief Parse the mini manifest of @p c with az_iot_su_parse_update_request(), then its detached
+ * manifest file (a copy of the one built, or @p file) with az_iot_su_parse_detached_manifest(),
+ * into @p related_files of @p max_related_files.
+ */
+static az_iot_result parse_detached_manifest_case(
+    fixture* fx,
+    const detached_manifest_case* c,
+    const char* file,
+    az_iot_su_client_update_manifest_file* related_files,
+    size_t max_related_files,
+    az_iot_su_client_update_manifest* out_manifest,
+    uint32_t* out_error)
+{
+  static char file_copy[sizeof(g_detached_file)];
+  az_iot_su_client_update_request request;
+  az_iot_su_client_update_manifest mini;
+  assert_int_equal(
+      parse_with_roots(
+          &fx->log, detached_manifest_patch(fx, "stateless", c), k_root_keys, 1, &request, &mini),
+      AZ_IOT_OK);
+  assert_true(az_iot_su_manifest_is_detached(&mini));
+  assert_int_equal(mini.instructions.steps_count, 0);
+  copy_str(file_copy, sizeof(file_copy), (file != NULL) ? file : g_detached_file);
+
+  az_iot_su_platform_hooks hooks;
+  mock_crypto crypto;
+  wire_hooks(&fx->log, &hooks, &crypto);
+  return az_iot_su_parse_detached_manifest(
+      &mini,
+      &request,
+      az_span_create_from_str(file_copy),
+      &crypto.base,
+      related_files,
+      max_related_files,
+      out_manifest,
+      out_error);
+}
+
+/* az_iot_su_parse_update_request() hands over a mini manifest, and
+ * az_iot_su_parse_detached_manifest() turns it and its file into the full manifest, or fails
+ * closed with the sub-code of each check. */
+static void a_mini_manifest_parses_into_its_full_manifest(void** state)
+{
+  static const char nested_full[]
+      = "{\"manifestVersion\":\"5\",\"updateId\":{\"provider\":\"Contoso\",\"name\":\"Foobar\","
+        "\"version\":\"1.1\"},\"detachedManifestFileId\":\"f00\",\"files\":{\"f00\":{"
+        "\"fileName\":\"m.json\",\"sizeInBytes\":64,\"hashes\":{\"sha256\":\"" SU_TEST_FILE_HASH_B64
+        "\"}}}}";
+  static const char two_entries[]
+      = "\"" SU_TEST_DETACHED_FILE_ID "\":{\"fileName\":\"m.json\",\"sizeInBytes\":10,\"hashes\":{"
+        "\"sha256\":\"" SU_TEST_DETACHED_FILE_HASH_B64 "\"}},\"fOther\":{\"fileName\":\"o.json\","
+        "\"sizeInBytes\":10,\"hashes\":{\"sha256\":\"" SU_TEST_DETACHED_FILE_HASH_B64 "\"}}";
+  static const struct
+  {
+    detached_manifest_case shape;
+    const char* file; /* NULL: the one built */
+    az_iot_result result;
+    uint32_t error;
+  } cases[] = {
+    { { 0 }, NULL, AZ_IOT_OK, 0 },
+    { { .mini_files = two_entries },
+      NULL,
+      AZ_IOT_ERR_INVALID_ARG,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_ENTRY },
+    { { .sha256 = SU_TEST_FILE_HASH_B64 },
+      NULL,
+      AZ_IOT_ERR_AUTH,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_HASH },
+    { { .size_delta = 1 }, NULL, AZ_IOT_ERR_AUTH, AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_HASH },
+    { { .detached_file = "{\"manifest\":\"{}\"}" },
+      NULL,
+      AZ_IOT_ERR_INVALID_ARG,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_INVALID },
+    { { .version = "1.2" },
+      NULL,
+      AZ_IOT_ERR_INVALID_ARG,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_UPDATE_ID },
+    { { .full_manifest = nested_full },
+      NULL,
+      AZ_IOT_ERR_INVALID_ARG,
+      AZ_IOT_SU_MANIFEST_ERROR_DETACHED_NESTED },
+  };
+  fixture* fx = (fixture*)*state;
+  static az_iot_su_client_update_manifest_file
+      case_related_files[AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES];
+  for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i)
+  {
+    az_iot_su_client_update_manifest manifest;
+    memset(&manifest, 0xA5, sizeof(manifest));
+    uint32_t error = 0xFFu;
+    assert_int_equal(
+        parse_detached_manifest_case(
+            fx,
+            &cases[i].shape,
+            cases[i].file,
+            case_related_files,
+            AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES,
+            &manifest,
+            &error),
+        cases[i].result);
+    assert_int_equal(error, cases[i].error);
+    if (cases[i].result == AZ_IOT_OK)
+    {
+      assert_int_equal(manifest.instructions.steps_count, 2);
+      assert_int_equal(az_span_size(manifest.detached_manifest_file_id), 0);
+      assert_true(az_span_is_content_equal(manifest.update_id.version, AZ_SPAN_FROM_STR("1.1")));
+    }
+    else
+    {
+      assert_true(all_zero(&manifest, sizeof(manifest)));
+    }
+  }
+
+  /* The full manifest may replace the mini manifest it comes from. */
+  az_iot_su_client_update_request request;
+  az_iot_su_client_update_manifest manifest;
+  az_iot_su_client_update_manifest_file related_files[AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES];
+  const detached_manifest_case valid = { 0 };
+  assert_int_equal(
+      parse_with_roots(
+          &fx->log,
+          detached_manifest_patch(fx, "stateless", &valid),
+          k_root_keys,
+          1,
+          &request,
+          &manifest),
+      AZ_IOT_OK);
+  az_iot_su_platform_hooks hooks;
+  mock_crypto crypto;
+  wire_hooks(&fx->log, &hooks, &crypto);
+  az_span file = az_span_create_from_str(g_detached_file);
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          &manifest,
+          &request,
+          file,
+          &crypto.base,
+          related_files,
+          AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES,
+          &manifest,
+          NULL),
+      AZ_IOT_OK);
+  assert_int_equal(manifest.instructions.steps_count, 2);
+
+  /* Bad arguments, each against a fresh mini manifest and intact detached file. */
+  az_iot_su_client_update_manifest mini;
+  assert_int_equal(
+      parse_with_roots(
+          &fx->log,
+          detached_manifest_patch(fx, "stateless", &valid),
+          k_root_keys,
+          1,
+          &request,
+          &mini),
+      AZ_IOT_OK);
+  assert_true(az_iot_su_manifest_is_detached(&mini));
+  file = az_span_create_from_str(g_detached_file);
+  uint32_t error = 0xFFu;
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          NULL, &request, file, &crypto.base, related_files, 1, &manifest, &error),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(error, 0);
+  assert_true(all_zero(&manifest, sizeof(manifest)));
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          &mini, NULL, file, &crypto.base, related_files, 1, &manifest, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          &mini, &request, AZ_SPAN_EMPTY, &crypto.base, related_files, 1, &manifest, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          &mini, &request, file, NULL, related_files, 1, &manifest, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          &mini, &request, file, &crypto.base, NULL, 1, &manifest, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          &mini,
+          &request,
+          file,
+          &crypto.base,
+          related_files,
+          AZ_IOT_SU_MAX_LIMIT_COUNT + 1u,
+          &manifest,
+          NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      az_iot_su_parse_detached_manifest(
+          &mini, &request, file, &crypto.base, related_files, 1, NULL, NULL),
+      AZ_IOT_ERR_INVALID_ARG);
+}
+
+/* az_iot_su_parse_detached_manifest() of a delta full manifest fills the caller's related files
+ * storage; storage too small keeps the first related files only and writes nothing past it. */
+static void a_mini_manifest_parses_into_its_delta_full_manifest(void** state)
+{
+  static char file_urls[1024];
+  static az_iot_su_client_update_manifest_file related_files[5];
+  static const char* const k_related_ids[] = { "s0f0r0", "s0f0r1", "s0f1r0", "s0f1r1" };
+  fixture* fx = (fixture*)*state;
+  const char* step_urls = NULL;
+  detached_manifest_case c = { 0 };
+  c.full_manifest = delta_steps_manifest(1, 2, SU_TEST_DELTA_HANDLER_ID, 2, &step_urls);
+  size_t used = 0;
+  SU_TEST_APPEND(file_urls, used, "%s,%s", SU_TEST_DETACHED_FILE_URL, step_urls);
+  c.file_urls = file_urls;
+
+  for (size_t kept = 4; kept >= 3; --kept)
+  {
+    uint8_t untouched[sizeof(related_files[0])];
+    memset(untouched, 0xA5, sizeof(untouched));
+    memset(related_files, 0xA5, sizeof(related_files));
+    az_iot_su_client_update_manifest manifest;
+    uint32_t error = 0xFFu;
+    assert_int_equal(
+        parse_detached_manifest_case(fx, &c, NULL, related_files, kept, &manifest, &error),
+        AZ_IOT_OK);
+    assert_int_equal(error, 0);
+    assert_int_equal(manifest.instructions.steps_count, 1);
+    assert_int_equal(manifest.files_count, 2);
+    assert_ptr_equal(manifest.related_files, related_files);
+    assert_int_equal(manifest.related_files_count, kept);
+    assert_true(az_span_is_content_equal(
+        manifest.files[1].download_handler_id, AZ_SPAN_FROM_STR(SU_TEST_DELTA_HANDLER_ID)));
+    assert_int_equal(manifest.files[0].related_files_index, 0);
+    assert_int_equal(manifest.files[0].related_files_count, 2);
+    assert_int_equal(manifest.files[1].related_files_index, 2);
+    assert_int_equal(manifest.files[1].related_files_count, kept - 2u);
+    for (size_t i = 0; i < kept; ++i)
+    {
+      assert_true(az_span_is_content_equal(
+          related_files[i].id, az_span_create_from_str((char*)(uintptr_t)k_related_ids[i])));
+    }
+    assert_memory_equal(&related_files[kept], untouched, sizeof(untouched));
+  }
+}
+
 /** @brief What an observer read with az_iot_su_client_get_current_update() on entering a state. */
 typedef struct
 {
@@ -11940,10 +12845,16 @@ static void report_status_rejects_what_it_cannot_send(void** state)
   assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 2), AZ_IOT_ERR_INVALID_ARG);
   steps[1] = ok;
 
-  /* One result per manifest step, validated like the overall one. */
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, NULL, 0), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 1), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 3), AZ_IOT_ERR_INVALID_ARG);
+  /* At most AZ_IOT_SU_MAX_STEP_COUNT step results, none IN_PROGRESS. */
+  static az_iot_su_step_result too_many[AZ_IOT_SU_MAX_STEP_COUNT + 1];
+  for (int32_t i = 0; i < AZ_IOT_SU_MAX_STEP_COUNT + 1; ++i)
+  {
+    too_many[i] = ok;
+  }
+  assert_int_equal(
+      az_iot_su_client_report_status(&fx->su, &ok, too_many, AZ_IOT_SU_MAX_STEP_COUNT + 1),
+      AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(fx->su._internal.step_results_count, 2);
   steps[0].outcome = AZ_IOT_SU_OUTCOME_IN_PROGRESS;
   assert_int_equal(az_iot_su_client_report_status(&fx->su, &ok, steps, 2), AZ_IOT_ERR_INVALID_ARG);
   steps[0] = ok;
@@ -11975,6 +12886,77 @@ static void report_status_rejects_what_it_cannot_send(void** state)
   assert_int_equal(
       az_span_size(fx->chan.last_step_results[1].result_details),
       AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE);
+}
+
+/**
+ * @brief Assert the last report's wire form has keys `step_0` to `step_<count - 1>` in
+ *        `stepResults`, @p count being its step result count, and no `stepResults` when 0.
+ */
+static void assert_last_report_step_result_keys(const fake_channel* channel, int32_t count)
+{
+  assert_int_equal(channel->last_report.step_results_count, count);
+  az_iot_su_report report = { .workflow_id = channel->last_workflow_id,
+                              .outcome = channel->last_report.outcome,
+                              .result_code = AZ_IOT_SU_AGENT_RESULT_CODE_SUCCESS,
+                              .extended_result_codes = "0",
+                              .step_results = channel->last_report.step_results,
+                              .step_results_count = count };
+  static uint8_t json[SU_TEST_PATCH_SIZE];
+  size_t written = 0;
+  assert_int_equal(az_iot_su_build_report(&report, json, sizeof(json) - 1, &written), AZ_IOT_OK);
+  json[written] = '\0';
+  assert_true((count == 0) == (strstr((const char*)json, "\"stepResults\"") == NULL));
+  char key[32];
+  for (int32_t i = 0; i <= count; ++i)
+  {
+    (void)snprintf(key, sizeof(key), "\"step_%d\"", (int)i);
+    assert_true((i < count) == (strstr((const char*)json, key) != NULL));
+  }
+}
+
+static void report_status_takes_any_number_of_step_results_up_to_the_limit(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  static az_iot_su_step_result steps[AZ_IOT_SU_MAX_STEP_COUNT];
+  for (int32_t i = 0; i < AZ_IOT_SU_MAX_STEP_COUNT; ++i)
+  {
+    steps[i] = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
+  }
+  az_iot_su_step_result done = lib_result(AZ_IOT_SU_OUTCOME_SUCCEEDED);
+
+  /* Against the two-step manifest: none, fewer, as many, more (when the limit allows). */
+  int32_t counts[] = { 0, 1, 2, AZ_IOT_SU_MAX_STEP_COUNT };
+  for (size_t c = 0; c < sizeof(counts) / sizeof(counts[0]); ++c)
+  {
+    char workflow_id[32];
+    (void)snprintf(workflow_id, sizeof(workflow_id), "wf-steps-%d", (int)c);
+    delegate(fx, two_step_patch_for_workflow(workflow_id));
+    assert_int_equal(fx->su._internal.step_results_count, 2);
+    int32_t count = counts[c];
+    char details[] = "last step";
+    if (count > 0)
+    {
+      steps[count - 1].result_details = az_span_create((uint8_t*)details, (int32_t)strlen(details));
+    }
+    assert_int_equal(az_iot_su_client_report_status(&fx->su, &done, steps, count), AZ_IOT_OK);
+
+    assert_int_equal(az_iot_su_client_get_state(&fx->su), AZ_IOT_SU_STATE_IDLE);
+    assert_int_equal(fx->chan.last_report.outcome, AZ_IOT_SU_OUTCOME_SUCCEEDED);
+    assert_last_report_step_result_keys(&fx->chan, count);
+    if (count > 0)
+    {
+      assert_true(az_span_is_content_equal(
+          fx->chan.last_step_results[count - 1].result_details, AZ_SPAN_FROM_STR("last step")));
+      steps[count - 1].result_details = AZ_SPAN_EMPTY;
+    }
+  }
+
+  /* More step results than a one-step manifest has. */
+  delegate(fx, build_patch("wf-more-steps"));
+  assert_int_equal(fx->su._internal.step_results_count, 1);
+  assert_int_equal(
+      az_iot_su_client_report_status(&fx->su, &done, steps, AZ_IOT_SU_MAX_STEP_COUNT), AZ_IOT_OK);
+  assert_last_report_step_result_keys(&fx->chan, AZ_IOT_SU_MAX_STEP_COUNT);
 }
 
 static void report_status_is_not_for_the_managed_client(void** state)
@@ -12218,6 +13200,24 @@ int main(void)
         a_stale_fallback_does_not_hold_an_excluded_report_retry, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_synchronous_retryable_report_verdict_is_not_lost, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_refused_update_is_reported_failed, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_refused_update_report_is_accepted_as_sent, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_update_is_reported_whatever_its_property_order, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_update_report_is_resent_with_agent_info, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_update_report_survives_out_of_memory, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_conflicting_refused_update_report_queues_a_check, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_redelivery_of_the_active_workflow_is_not_reported, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_update_report_is_retried_then_dropped, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_accepted_workflow_drops_an_owed_refused_report, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_accepted_workflow_drops_an_in_flight_refused_report, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_late_report_verdict_does_not_pace_a_newer_report, setup, teardown),
     cmocka_unit_test_setup_teardown(the_fallback_backs_off_and_resets_on_success, setup, teardown),
@@ -12246,6 +13246,14 @@ int main(void)
         a_mini_manifest_record_without_its_full_manifest_is_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_new_workflow_replaces_one_fetching_its_full_manifest, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_mini_manifest_carries_a_delta_update, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_mini_manifest_delta_update_may_fill_the_file_url_capacity, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_failed_mini_manifest_workflow_is_retried, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_redelivered_mini_manifest_workflow_is_a_duplicate, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_reboot_while_fetching_the_full_manifest_restarts_the_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(update_metadata_drives_full_workflow, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_file_url_is_decoded, setup, teardown),
     cmocka_unit_test_setup_teardown(escaped_workflow_id_is_decoded, setup, teardown),
@@ -12579,6 +13587,11 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         library_mode_does_not_hand_over_an_unsupported_manifest, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
+        library_mode_hands_over_a_mini_manifest, setup_library, teardown),
+    cmocka_unit_test_setup_teardown(a_mini_manifest_parses_into_its_full_manifest, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_mini_manifest_parses_into_its_delta_full_manifest, setup, teardown),
+    cmocka_unit_test_setup_teardown(
         library_mode_hands_over_an_update_with_escaped_file_ids, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
         parsing_an_update_request_rejects_an_unresolved_step_file, setup, teardown),
@@ -12598,6 +13611,8 @@ int main(void)
         report_status_carries_the_application_failure, setup_library, teardown),
     cmocka_unit_test_setup_teardown(
         report_status_rejects_what_it_cannot_send, setup_library, teardown),
+    cmocka_unit_test_setup_teardown(
+        report_status_takes_any_number_of_step_results_up_to_the_limit, setup_library, teardown),
     cmocka_unit_test_setup_teardown(report_status_is_not_for_the_managed_client, setup, teardown),
     cmocka_unit_test_setup_teardown(a_refused_status_report_is_resent, setup_library, teardown),
     cmocka_unit_test_setup_teardown(

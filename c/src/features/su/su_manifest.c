@@ -764,7 +764,7 @@ az_iot_result az_iot_su__check_manifest_supported(
     uint32_t* out_manifest_error)
 {
   *out_manifest_error = 0;
-  if (az_span_size(manifest->detached_manifest_file_id) > 0)
+  if (az_iot_su_manifest_is_detached(manifest))
   {
     return AZ_IOT_OK; /* steps come with the full manifest */
   }

@@ -131,7 +131,8 @@ software updates. APIs may change before a stable release.
   [docs/software-update.md](docs/software-update.md).
 - Three integrations: managed, with platform hooks for download, install, apply and persistence;
   library mode, where the application installs each verified update and reports it
-  (`az_iot_su_client_report_status()`); and transport-free primitives
+  (`az_iot_su_client_report_status()`, with 0 to `AZ_IOT_SU_MAX_STEP_COUNT` step results, as the
+  Device Update device API allows); and transport-free primitives
   (`az_iot_su_verify_manifest()`, `az_iot_su_parse_update_request()`,
   `az_iot_su_verify_file_hash()`, `az_iot_su_build_report()`,
   `az_iot_su_decode_manifest_string()`).
@@ -139,17 +140,19 @@ software updates. APIs may change before a stable release.
   their SHA-256. Updates with up to 10 steps and 10 files (`AZ_IOT_SU_MAX_STEP_COUNT`,
   `AZ_IOT_SU_MAX_FILE_COUNT`, `AZ_IOT_SU_MAX_FILE_COUNT_PER_STEP`); a manifest over a limit, or
   whose steps name a missing file, is refused before any step runs.
-- Supported manifests: inline steps, and in managed mode detached (mini) manifests
+- Supported manifests: inline steps, and detached (mini) manifests
   (`detachedManifestFileId`, sent when a manifest exceeds 4,096 bytes): the client downloads the
   detached manifest file with `download_fn`, reads it into the update copy with `read_file_fn`,
   checks its size and SHA-256 against the signed mini manifest and installs the full manifest it
   carries; it is persisted, so resume does not download it again
   (`AZ_IOT_SU_MANIFEST_ERROR_DETACHED_*` on failure; `AZ_IOT_SU_FILE_URL_CAPACITY()` counts its
-  URL). `reference` steps, and mini manifests in library mode, are not supported in this preview.
-  A verified manifest with no step, a `reference` step, or a mini manifest in library mode is
-  refused before any hook runs: the workflow fails with `AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS`,
-  `AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP` or `AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST`,
-  library mode does not offer it, and
+  URL). In library mode `AZ_IOT_SU_EVENT_UPDATE_AVAILABLE` carries the mini manifest
+  (`az_iot_su_manifest_is_detached()`), and `az_iot_su_parse_update_request()` returns it; the
+  application downloads the detached manifest file and gets the full manifest with
+  `az_iot_su_parse_detached_manifest()`, in its own memory. `reference` steps are not supported in this preview.
+  A verified manifest with no step or a `reference` step is refused before any hook runs: the
+  workflow fails with `AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS` or
+  `AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP`, library mode does not offer it, and
   `az_iot_su_parse_update_request()` returns `AZ_IOT_ERR_INVALID_ARG` or
   `AZ_IOT_ERR_NOT_SUPPORTED`. The parsed manifest exposes `detached_manifest_file_id`, and each
   step its `type` (`az_iot_su_client_update_manifest_step_type`) and `detached_manifest_file_id`.
@@ -166,10 +169,12 @@ software updates. APIs may change before a stable release.
   [docs/software-update.md](docs/software-update.md#delta-updates).
 - Device properties (`az_iot_su_client_update_device_properties()`) and, when set, the installed
   update id are sent with every check; the applied update id is adopted after a successful update.
-- Events for each stage (`AZ_IOT_SU_EVENT_*`), including no update, duplicate and refused offers,
-  accepted reports, a completed workflow and a retry wait. A failed workflow offered again is
-  retried after 1 h, doubling up to 24 h; cancellation is service-side only. Service errors and
-  report conflicts are handled as the service requires.
+- Events for each stage (`AZ_IOT_SU_EVENT_*`), including no update, duplicate and refused offers
+  (a refused offer is reported failed once), accepted reports, a completed workflow and a retry
+  wait. A failed workflow offered again is retried after 1 h, doubling up to 24 h; cancellation is
+  service-side only. Service errors and report conflicts are handled as the service requires: an
+  update check answered `UPSTREAM_UNAVAILABLE` without `Retry-After` is abandoned and left to the
+  next scheduled check.
 - Memory from one application-provided workspace, sized by run-time limits (`az_iot_su_limits`,
   `az_iot_su_workspace_size()`, `AZ_IOT_SU_WORKSPACE_SIZE()`); `az_iot_su_client_init()` refuses
   a client whose layout differs from the SDK build. See
@@ -188,9 +193,12 @@ software updates. APIs may change before a stable release.
   Paho must be 1.3.14 or later); OpenSSL 3.0 to 4.1; mbedTLS 3.6 LTS or 4.1+. See
   [docs/dependencies.md](docs/dependencies.md).
 - Preview additions: the `mqttv5` and `su_delta` package components; the ESP-IDF software updates
-  OTA platform hooks (`az_iot_su_esp32_ota.h`); libcurl 7.55.0+ for the software update download
-  sample. The installed package accepts the same minor version only (`SameMinorVersion`) while in
-  preview.
+  OTA platform hooks (`az_iot_su_esp32_ota.h`), which keep a mini manifest's detached manifest
+  file in the application's `detached_manifest_buffer` rather than the OTA partition and log
+  through the SDK logging facade (component `su`; the ESP32 sample sizes that buffer, its
+  `max_update_size` and its 80 KB NVS partition for a full manifest of about 16 KiB); libcurl
+  7.55.0+ for the software update download sample. The installed package accepts the same minor
+  version only (`SameMinorVersion`) while in preview.
 
 #### Samples
 
@@ -207,7 +215,9 @@ software updates. APIs may change before a stable release.
   and custom topics on an mqttv5 hub.
 - [`software_update/`](docs/software-update.md#samples): onboarding and regular checks, HTTPS
   download through a proxy, multi-step updates, reboot and resume, and library mode with simulated
-  installs on a PC; a real over-the-air install on an ESP32, also run in QEMU.
+  installs on a PC; a real over-the-air install on an ESP32, also run in QEMU. Mini manifests:
+  `http_download` downloads the detached manifest file; the simulated samples serve a copy of it
+  from `SU_SIM_DETACHED_MANIFEST_FILE`.
 
 #### Tests
 

@@ -1508,6 +1508,93 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         /// <summary>
+        /// A publish's topic is validated on every attempt with the device ID that attempt resolves, so a topic that only
+        /// becomes invalid once re-provisioning assigns a longer device ID is rejected rather than sent.
+        /// </summary>
+        [Fact]
+        public async Task PendingPublishWhoseTopicBecomesInvalidAfterReprovisioningIsRejectedWithoutBeingSent()
+        {
+            const string FirstDeviceId = "short";
+            const string SecondDeviceId = "aMuchLongerDeviceIdAssignedByReprovisioning";
+            const int MaxTopicLength = 64;
+            string topicTemplate = IConnectionClient.DeviceIdPlaceholder + "/" + new string('x', MaxTopicLength - FirstDeviceId.Length - 1);
+
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub)
+            {
+                AssignedDeviceIdSelector = registrationCount => registrationCount == 1 ? FirstDeviceId : SecondDeviceId,
+            };
+
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+
+            // The first attempt finds the connection gone, which makes the publish wait while this device is re-provisioned.
+            TaskCompletionSource publishAttempted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            List<string> sentTopics = new();
+            Func<MqttPublish, Task<MqttPublishAck>> handleProvisioningPublishAsync = mockMqttClient.OnPublish!;
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic.StartsWith(ProvisioningTopicPrefix))
+                {
+                    return handleProvisioningPublishAsync.Invoke(publish);
+                }
+
+                lock (sentTopics)
+                {
+                    sentTopics.Add(publish.Topic);
+                }
+
+                publishAttempted.TrySetResult();
+                throw new MqttClientNotConnectedException("mock client not connected exception");
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            List<string> validatedTopics = new();
+            void ValidateTopic(string topic)
+            {
+                lock (validatedTopics)
+                {
+                    validatedTopics.Add(topic);
+                }
+
+                if (Encoding.UTF8.GetByteCount(topic) > MaxTopicLength)
+                {
+                    throw new ArgumentException("Topic too long.", nameof(topic));
+                }
+            }
+
+            Task pendingPublish = Task.Run(
+                () => connectionClient.PublishAsync(new MqttPublish() { Topic = topicTemplate }, ValidateTopic, TestContext.Current.CancellationToken),
+                TestContext.Current.CancellationToken);
+
+            await publishAttempted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            // The hub rejects this device's identity, so this client re-provisions and is assigned a longer device ID.
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+
+            await Assert.ThrowsAsync<ArgumentException>(() => pendingPublish.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            Assert.Equal(SecondDeviceId, connectionClient.GetCurrentConnectionContext()!.DeviceId);
+            string firstTopic = $"{FirstDeviceId}/{topicTemplate[(IConnectionClient.DeviceIdPlaceholder.Length + 1)..]}";
+            string secondTopic = $"{SecondDeviceId}/{topicTemplate[(IConnectionClient.DeviceIdPlaceholder.Length + 1)..]}";
+            lock (validatedTopics)
+            {
+                Assert.Equal(new[] { firstTopic, secondTopic }, validatedTopics);
+            }
+
+            // Only the first attempt, which was valid, reached the wire.
+            lock (sentTopics)
+            {
+                Assert.Equal(firstTopic, Assert.Single(sentTopics));
+            }
+        }
+
+        /// <summary>
         /// A QoS 1 PUBLISH, SUBSCRIBE or UNSUBSCRIBE to IoT hub whose connection is lost before its acknowledgement
         /// arrives, where the connection can then only be recovered by re-provisioning, must be held until this device
         /// is connected to its newly assigned hub and then sent again there.
