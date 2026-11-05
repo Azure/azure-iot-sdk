@@ -377,6 +377,18 @@ target_link_libraries(az_iot_tests_su_client PRIVATE az_iot_test_support)
 # test that exercises it has to speak the same clock.
 target_include_directories(az_iot_tests_su_client PRIVATE ${PROJECT_SOURCE_DIR}/src/core)
 
+# The ESP32 OTA software updates hooks over desktop ESP-IDF fakes.
+az_iot_add_cmocka_test(az_iot_tests_su_esp32_ota
+    unit/su_esp32_ota_test.c
+    support/fake_esp_ota.c
+    ${PROJECT_SOURCE_DIR}/adapters/su/esp32/az_iot_su_esp32_ota.c)
+target_include_directories(az_iot_tests_su_esp32_ota PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/support/fake_esp_ota
+    ${CMAKE_CURRENT_SOURCE_DIR}/support
+    ${PROJECT_SOURCE_DIR}/adapters/su/esp32)
+# Instrumented: the hooks source is shipped; gcovr excludes tests/ (the fakes).
+az_iot_apply_coverage(az_iot_tests_su_esp32_ota)
+
 # The channel over a real connection client: what reaches the broker, how a
 # response is correlated back, and the paths that can fault provisioning.
 az_iot_add_cmocka_test(az_iot_tests_su_channel_dps unit/su_channel_dps_test.c)

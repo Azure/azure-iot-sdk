@@ -84,7 +84,7 @@ extern "C"
    * or an OTA write not yet installed, that the software updates client abandoned without
    * calling restore_fn (a workflow replaced mid-download). Register it with
    * az_iot_su_client_add_observer() before az_iot_su_client_resume(), with the same context as
-   * az_iot_su_esp32_ota_get_platform_hooks().
+   * az_iot_su_esp32_ota_get_platform_hooks(). Until it gets an event, download fails.
    *
    * @param[in] event   The event.
    * @param[in] context An #az_iot_su_esp32_ota_context.
