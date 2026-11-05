@@ -134,7 +134,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
         // Not theory data: xUnit's serialization of theory data replaces a lone surrogate.
         [Fact]
-        public async Task TopicThatIsNotValidUtf16IsRejectedLocally()
+        public async Task TopicThatCannotBeSentAsAnMqttTopicIsRejectedLocally()
         {
             MockFeatureConnectionClient connection = new()
             {
@@ -142,8 +142,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             };
             using CustomTopicsClient customTopicsClient = new(connection);
 
-            await Assert.ThrowsAsync<ArgumentException>(
-                () => customTopicsClient.PublishAsync(new MqttPublish() { Topic = "custom/\uD800" }, TestContext.Current.CancellationToken));
+            // A lone surrogate cannot be encoded as UTF-8, and MQTT forbids U+0000 in topic names.
+            foreach (string topic in new[] { "custom/\uD800", "custom/\0", "\0" })
+            {
+                await Assert.ThrowsAsync<ArgumentException>(
+                    () => customTopicsClient.PublishAsync(new MqttPublish() { Topic = topic }, TestContext.Current.CancellationToken));
+            }
+
             Assert.Empty(connection.PublishedMessages);
         }
 

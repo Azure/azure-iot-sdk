@@ -67,9 +67,11 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// </summary>
         /// <param name="publish">
         /// The publish to send. Any <see cref="IConnectionClient.DeviceIdPlaceholder"/> in its topic is replaced with this
-        /// device's current ID when it is sent. With the placeholder replaced by the device's current ID, the topic must
-        /// not be empty, must not contain the wildcards '+' or '#', must not have "ih" as its first level, and must be at
-        /// most <see cref="MaxTopicLength"/> UTF-8 bytes and <see cref="MaxTopicLevels"/> levels long.
+        /// device's current ID when it is sent. With the placeholder replaced by the device ID it is sent with, the topic must
+        /// not be empty, must not contain the wildcards '+' or '#' or the null character, must not have "ih" as its first
+        /// level, and must be at most <see cref="MaxTopicLength"/> UTF-8 bytes and <see cref="MaxTopicLevels"/> levels
+        /// long. This is checked again on every attempt to send it, so a topic that becomes invalid because re-provisioning
+        /// assigned this device a different ID is rejected rather than sent.
         /// </param>
         /// <param name="cancellationToken">
         /// The cancellation token. This also bounds how long this method waits for a lost connection to be re-established.
@@ -111,7 +113,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         /// </remarks>
         /// <exception cref="ArgumentNullException">Thrown if <paramref name="publish"/> is null.</exception>
         /// <exception cref="ArgumentException">
-        /// Thrown, without sending anything, if the topic is not one IoT hub accepts on a custom topic. See <paramref name="publish"/>.
+        /// Thrown, without sending anything, if the topic is not one IoT hub accepts on a custom topic, either when this
+        /// method is called or, with the device ID that it would be sent with, when it is about to be sent. See <paramref name="publish"/>.
         /// </exception>
         /// <exception cref="NotSupportedException">
         /// Thrown if the connection client is disconnected and is not trying to reconnect, for example because
@@ -136,34 +139,41 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             ArgumentNullException.ThrowIfNull(publish);
             cancellationToken.ThrowIfCancellationRequested();
             EnsureConnected();
-            ValidateTopic(publish.Topic, _connection.GetCurrentConnectionContext()!.DeviceId);
-
-            // Unlike other feature clients, this client hands MQTT-level results to the user as-is
-            return await _connection.PublishAsync(publish, cancellationToken);
-        }
-
-        // Catches locally what IoT hub would refuse anyway, some of it by closing the connection. The placeholder is
-        // resolved with the current device ID, which is what the topic is sent with unless the device is re-provisioned
-        // with a different ID before it is sent.
-        private static void ValidateTopic(string topic, string deviceId)
-        {
+            string topic = publish.Topic;
             if (string.IsNullOrEmpty(topic))
             {
-                throw new ArgumentException("The topic must not be empty.", nameof(topic));
+                throw new ArgumentException("The topic must not be empty.", nameof(publish));
             }
 
-            string resolvedTopic = topic.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal);
+            // Fail fast, even while disconnected, on a topic that is invalid with the current device ID. The connection
+            // client validates it again on every attempt with the device ID that the attempt is sent with, which differs
+            // if this device is re-provisioned and assigned a different ID before the topic is sent.
+            ValidateResolvedTopic(topic.Replace(IConnectionClient.DeviceIdPlaceholder, _connection.GetCurrentConnectionContext()!.DeviceId, StringComparison.Ordinal));
+
+            // Unlike other feature clients, this client hands MQTT-level results to the user as-is
+            return await _connection.PublishAsync(publish, ValidateResolvedTopic, cancellationToken);
+        }
+
+        // Catches locally what IoT hub would refuse anyway, some of it by closing the connection.
+        private static void ValidateResolvedTopic(string resolvedTopic)
+        {
+            const string ParamName = "publish";
+
+            if (string.IsNullOrEmpty(resolvedTopic))
+            {
+                throw new ArgumentException("The topic must not be empty.", ParamName);
+            }
 
             int firstLevelEnd = resolvedTopic.IndexOf('/');
             string firstLevel = firstLevelEnd < 0 ? resolvedTopic : resolvedTopic[..firstLevelEnd];
             if (firstLevel.Equals(ReservedFirstTopicLevel, StringComparison.Ordinal))
             {
-                throw new ArgumentException($"The topic '{resolvedTopic}' must not start with the reserved level '{ReservedFirstTopicLevel}'.", nameof(topic));
+                throw new ArgumentException($"The topic '{resolvedTopic}' must not start with the reserved level '{ReservedFirstTopicLevel}'.", ParamName);
             }
 
             if (resolvedTopic.AsSpan().IndexOfAny('+', '#') >= 0)
             {
-                throw new ArgumentException($"The topic '{resolvedTopic}' must not contain the wildcards '+' or '#'.", nameof(topic));
+                throw new ArgumentException($"The topic '{resolvedTopic}' must not contain the wildcards '+' or '#'.", ParamName);
             }
 
             int length = 0;
@@ -172,7 +182,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
             {
                 if (Rune.DecodeFromUtf16(remaining, out Rune rune, out int consumed) != OperationStatus.Done)
                 {
-                    throw new ArgumentException("The topic must be valid UTF-16 so that it can be encoded as UTF-8.", nameof(topic));
+                    throw new ArgumentException("The topic must be valid UTF-16 so that it can be encoded as UTF-8.", ParamName);
+                }
+
+                // MQTT forbids U+0000 in topic names.
+                if (rune.Value == 0)
+                {
+                    throw new ArgumentException("The topic must not contain the null character (U+0000).", ParamName);
                 }
 
                 length += rune.Utf8SequenceLength;
@@ -181,13 +197,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
 
             if (length > MaxTopicLength)
             {
-                throw new ArgumentException($"The topic is {length} UTF-8 bytes long; IoT hub accepts at most {MaxTopicLength}.", nameof(topic));
+                throw new ArgumentException($"The topic is {length} UTF-8 bytes long; IoT hub accepts at most {MaxTopicLength}.", ParamName);
             }
 
             int levels = resolvedTopic.AsSpan().Count('/') + 1;
             if (levels > MaxTopicLevels)
             {
-                throw new ArgumentException($"The topic has {levels} levels; IoT hub accepts at most {MaxTopicLevels}.", nameof(topic));
+                throw new ArgumentException($"The topic has {levels} levels; IoT hub accepts at most {MaxTopicLevels}.", ParamName);
             }
         }
 

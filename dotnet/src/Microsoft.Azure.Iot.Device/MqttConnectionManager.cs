@@ -1307,7 +1307,8 @@ namespace Microsoft.Azure.Iot.Device
         /// <paramref name="buildPublish"/> runs after the operation is admitted and before it is sent, while
         /// <see cref="SwitchEndpointAsync"/> waits for it, so state it reads (such as the device ID in the topic) cannot
         /// change to that of a different endpoint connection between being read and the operation being sent. It may
-        /// throw <see cref="MqttClientNotConnectedException"/> to report that the operation cannot be sent yet.
+        /// throw <see cref="MqttClientNotConnectedException"/> to report that the operation cannot be sent yet, or
+        /// <see cref="ArgumentException"/> to reject the PUBLISH it built, which is thrown to the caller unwrapped.
         /// </remarks>
         public Task<MqttPublishAck> BuildAndPublishAsync(ConnectionEndpoint endpoint, Func<MqttPublish> buildPublish, CancellationToken cancellationToken = default)
         {
@@ -1440,9 +1441,11 @@ namespace Microsoft.Azure.Iot.Device
             CancellationToken cancellationToken)
         {
             BeginOperation(endpoint);
+            bool isPacketBuilt = false;
             try
             {
                 TPacket packet = buildPacket();
+                isPacketBuilt = true;
                 long disconnectionCountBeforeSend = Interlocked.Read(ref _disconnectionCount);
 
                 TAck ack;
@@ -1461,7 +1464,9 @@ namespace Microsoft.Azure.Iot.Device
                 throwIfAckHasErrorCode?.Invoke(ack);
                 return ack;
             }
-            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException)
+            catch (Exception e) when (e is not DeviceException and not MqttClientNotConnectedException and not OperationCanceledException
+                // The builder rejecting what it was asked to build is the caller's mistake, not a failure to send.
+                && !(e is ArgumentException && !isPacketBuilt))
             {
                 throw new DeviceException($"Encountered an exception while {operationDescription}", e)
                 {

@@ -31,11 +31,19 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
         public async Task BaselineTelemetryIsAccepted()
         {
             await using CustomTopicsTestDevice device = await CustomTopicsTestDevice.CreateAsync();
-            using TelemetryClient telemetryClient = new(device.Context.ConnectionClient);
 
-            await telemetryClient.SendTelemetryAsync(
-                new DeviceToCloudTelemetry { Payload = CreatePayload("tm") },
-                TestContext.Current.CancellationToken);
+            // Not 'using': disposing it the default way would dispose the shared connection client before the device disconnects it.
+            TelemetryClient telemetryClient = new(device.Context.ConnectionClient);
+            try
+            {
+                await telemetryClient.SendTelemetryAsync(
+                    new DeviceToCloudTelemetry { Payload = CreatePayload("tm") },
+                    TestContext.Current.CancellationToken);
+            }
+            finally
+            {
+                telemetryClient.Dispose(disposing: false);
+            }
         }
 
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
