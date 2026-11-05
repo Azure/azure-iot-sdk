@@ -308,7 +308,7 @@ static bool probe_was_accepted_before(
  * @brief End ready token @p slot: it is no longer usable, its probe-ack is not sent again, and a
  *        redelivery of its probe is not answered.
  */
-static void end_ready_token(
+void az_iot_mqttv5_direct_method_client__end_ready_token(
     az_iot_mqttv5_direct_method_client* dm,
     az_iot_mqttv5_direct_method_ready_slot* slot)
 {
@@ -335,7 +335,7 @@ static void ready_expire_stale(az_iot_mqttv5_direct_method_client* dm)
     /* Committed out of the ready state before the advisory goes out, so the
      * message can never claim a token that might still run. */
     az_iot_mqttv5_direct_method_ready_slot expired = *slot;
-    end_ready_token(dm, slot);
+    az_iot_mqttv5_direct_method_client__end_ready_token(dm, slot);
     if (!RI(&expired).probe_ack_published)
     {
       /* The service never saw this ready id, so nothing is abandoned. */
@@ -641,7 +641,7 @@ static void handle_exec(
   if (too_short)
   {
     az_iot_mqttv5_direct_method_ready_slot abandoned = *slot;
-    end_ready_token(dm, slot);
+    az_iot_mqttv5_direct_method_client__end_ready_token(dm, slot);
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
         "'%s' cannot finish in time (budget %u s, admission floor %u s, max unconfirmed "
@@ -665,7 +665,7 @@ static void handle_exec(
      * for its whole response timeout; no reason code fits, and the service only
      * needs to learn that execution did not begin. */
     az_iot_mqttv5_direct_method_ready_slot abandoned = *slot;
-    end_ready_token(dm, slot);
+    az_iot_mqttv5_direct_method_client__end_ready_token(dm, slot);
     az_iot_mqttv5_direct_method_client__send_abandon(
         dm, &abandoned, AZ_IOT_DM_PROTO_ABANDON_UNSPECIFIED, exec_budget, received_at_ms);
     return;
@@ -688,7 +688,7 @@ static void handle_exec(
    * free for the next probe the moment it is released. */
   az_iot_direct_method_handler_callback handler = RI(slot).handler;
   void* handler_ctx = RI(slot).handler_ctx;
-  end_ready_token(dm, slot);
+  az_iot_mqttv5_direct_method_client__end_ready_token(dm, slot);
 
   handler(req, RI(req_slot).method_name, exec.params, exec.params_len, handler_ctx);
 }
@@ -784,7 +784,7 @@ static void discard_previous_identity_state(az_iot_mqttv5_direct_method_client* 
     {
       dropped++;
     }
-    end_ready_token(dm, &DI(dm).ready_pool[i]);
+    az_iot_mqttv5_direct_method_client__end_ready_token(dm, &DI(dm).ready_pool[i]);
     DI(dm).invocations[i].slot._internal.in_use = false;
     az_iot_mqttv5_direct_method_client__cancel_reply(
         dm, &DI(dm).invocations[i].result_tracker_entry);

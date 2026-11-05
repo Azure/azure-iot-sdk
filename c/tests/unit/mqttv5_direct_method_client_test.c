@@ -4628,6 +4628,28 @@ static void a_probe_redelivered_after_its_abandon_is_not_answered(void** state)
   assert_int_equal(count_live_tokens(fx), 0);
 }
 
+/* A probe-ack dropped unsent at its connect budget ends its token: the probe redelivered without
+ * Message Expiry once connected is not answered. */
+static void a_probe_redelivered_after_its_unsent_probe_ack_expired_is_not_answered(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xB5);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "reboot", 300);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 1);
+  sleep_past_one_second();
+  finish_birth(fx);
+  assert_null(find_phase(fx->mock, "probe-ack:1"));
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 0);
+  assert_null(find_phase(fx->mock, "probe-ack:1"));
+  assert_int_equal(count_live_tokens(fx), 0);
+}
+
 /* The last max_concurrent_invocations ended tokens are remembered; an older probe is new again. */
 static void only_the_most_recently_ended_tokens_are_remembered(void** state)
 {
@@ -5594,6 +5616,8 @@ int main(void)
         a_probe_redelivered_after_its_result_is_not_answered, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_probe_redelivered_after_its_abandon_is_not_answered, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_probe_redelivered_after_its_unsent_probe_ack_expired_is_not_answered, setup, teardown),
     cmocka_unit_test_setup_teardown(
         only_the_most_recently_ended_tokens_are_remembered, setup, teardown),
     cmocka_unit_test_setup_teardown(

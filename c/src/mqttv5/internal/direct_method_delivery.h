@@ -90,6 +90,14 @@ extern "C"
       uint32_t budget_seconds,
       uint64_t start_ms);
 
+  /**
+   * @brief End ready token @p slot: it is no longer usable, its probe-ack is not sent again, and a
+   *        redelivery of its probe is not answered.
+   */
+  void az_iot_mqttv5_direct_method_client__end_ready_token(
+      az_iot_mqttv5_direct_method_client* client,
+      az_iot_mqttv5_direct_method_ready_slot* slot);
+
   /** @brief Stop sending the reply @p tracker_entry names, if any; its late PUBACK is ignored. */
   void az_iot_mqttv5_direct_method_client__cancel_reply(
       az_iot_mqttv5_direct_method_client* client,
