@@ -620,6 +620,20 @@ if(OPENSSL_FOUND)
         target_link_libraries(az_iot_tests_sample_tpm_sim PRIVATE
             az_iot_crypto_openssl OpenSSL::Crypto)
     endif()
+
+    # The samples' tpm2-tss backend against swtpm, which the test starts.
+    find_package(Tss2 QUIET)
+    find_program(AZ_IOT_SWTPM swtpm)
+    if(Tss2_FOUND AND AZ_IOT_SWTPM AND TARGET OpenSSL::Crypto AND NOT WIN32)
+        az_iot_add_cmocka_test(az_iot_tests_sample_tpm_tss
+            unit/sample_tpm_tss_test.c ${_sample_common}/sample_tpm_tss.c)
+        target_include_directories(az_iot_tests_sample_tpm_tss PRIVATE ${_sample_common})
+        target_compile_definitions(az_iot_tests_sample_tpm_tss PRIVATE
+            SAMPLE_TPM_TSS_TEST_SWTPM="${AZ_IOT_SWTPM}")
+        target_link_libraries(az_iot_tests_sample_tpm_tss PRIVATE Tss2::Esys OpenSSL::Crypto)
+    else()
+        message(STATUS "az_iot_tests_sample_tpm_tss: tpm2-tss or swtpm not found; not built.")
+    endif()
 endif()
 
 # ---------------------------------------------------------------------------
