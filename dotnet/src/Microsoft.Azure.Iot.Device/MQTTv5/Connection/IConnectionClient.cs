@@ -136,6 +136,29 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default);
 
         /// <summary>
+        /// Like <see cref="PublishAsync(MqttPublish, CancellationToken)"/>, but before each attempt is sent, its topic, with
+        /// the <see cref="DeviceIdPlaceholder"/> replaced by the device ID for that attempt, is passed to
+        /// <paramref name="validateTopic"/>. If that throws an <see cref="ArgumentException"/>, the attempt is not sent,
+        /// the operation is not retried, and the exception is thrown to the caller.
+        /// </summary>
+        /// <remarks>
+        /// Connection clients that do not resolve the placeholder per attempt validate the topic once, with the current
+        /// device ID.
+        /// </remarks>
+        internal Task<MqttPublishAck> PublishAsync(MqttPublish publish, Action<string> validateTopic, CancellationToken cancellationToken)
+        {
+            string topic = publish.Topic;
+            string? deviceId = GetCurrentConnectionContext()?.DeviceId;
+            if (deviceId != null)
+            {
+                topic = topic.Replace(DeviceIdPlaceholder, deviceId, StringComparison.Ordinal);
+            }
+
+            validateTopic(topic);
+            return PublishAsync(publish, cancellationToken);
+        }
+
+        /// <summary>
         /// Send a SUBSCRIBE to IoT hub. Any <see cref="DeviceIdPlaceholder"/> in a topic filter is replaced with the
         /// device's current ID when it is sent.
         /// </summary>

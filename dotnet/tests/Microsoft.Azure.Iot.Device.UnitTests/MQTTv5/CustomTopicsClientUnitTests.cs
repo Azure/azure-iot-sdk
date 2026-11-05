@@ -102,6 +102,81 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(disposeConnection, connection.IsDisposed);
         }
 
+        public static TheoryData<string> InvalidTopics => new()
+        {
+            "",
+            "ih",
+            "ih/someDeviceId/telemetry",
+            "custom/+/topic",
+            "custom/#",
+            new string('x', CustomTopicsClient.MaxTopicLength + 1),
+            // Two bytes per character: one byte over the limit.
+            "custom/" + new string('\u00E9', (CustomTopicsClient.MaxTopicLength - 6) / 2),
+            string.Join('/', Enumerable.Repeat("l", CustomTopicsClient.MaxTopicLevels + 1)),
+            // Within the limit as given, but not once "{deviceId}" (10 bytes) becomes "someDeviceId" (12 bytes).
+            IConnectionClient.DeviceIdPlaceholder + "/" + new string('x', CustomTopicsClient.MaxTopicLength - 11 - 1),
+        };
+
+        [Theory]
+        [MemberData(nameof(InvalidTopics))]
+        public async Task InvalidTopicIsRejectedLocally(string topic)
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using CustomTopicsClient customTopicsClient = new(connection);
+
+            await Assert.ThrowsAsync<ArgumentException>(
+                () => customTopicsClient.PublishAsync(new MqttPublish() { Topic = topic }, TestContext.Current.CancellationToken));
+            Assert.Empty(connection.PublishedMessages);
+        }
+
+        // Not theory data: xUnit's serialization of theory data replaces a lone surrogate.
+        [Fact]
+        public async Task TopicThatCannotBeSentAsAnMqttTopicIsRejectedLocally()
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using CustomTopicsClient customTopicsClient = new(connection);
+
+            // A lone surrogate cannot be encoded as UTF-8, and MQTT forbids U+0000 in topic names.
+            foreach (string topic in new[] { "custom/\uD800", "custom/\0", "\0" })
+            {
+                await Assert.ThrowsAsync<ArgumentException>(
+                    () => customTopicsClient.PublishAsync(new MqttPublish() { Topic = topic }, TestContext.Current.CancellationToken));
+            }
+
+            Assert.Empty(connection.PublishedMessages);
+        }
+
+        public static TheoryData<string> TopicsAtTheLimits => new()
+        {
+            "ihx/topic",
+            "custom/ih",
+            new string('x', CustomTopicsClient.MaxTopicLength),
+            "custom/" + new string('\u00E9', (CustomTopicsClient.MaxTopicLength - 7) / 2) + "x",
+            string.Join('/', Enumerable.Repeat("l", CustomTopicsClient.MaxTopicLevels)),
+            IConnectionClient.DeviceIdPlaceholder + "/" + new string('x', CustomTopicsClient.MaxTopicLength - 12 - 1),
+        };
+
+        [Theory]
+        [MemberData(nameof(TopicsAtTheLimits))]
+        public async Task TopicAtTheLimitsIsSent(string topic)
+        {
+            MockFeatureConnectionClient connection = new()
+            {
+                CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId),
+            };
+            using CustomTopicsClient customTopicsClient = new(connection);
+
+            await customTopicsClient.PublishAsync(new MqttPublish() { Topic = topic }, TestContext.Current.CancellationToken);
+
+            Assert.Equal(topic, Assert.Single(connection.PublishedMessages).Topic);
+        }
+
         private static ConnectionClient CreateReconnectingConnectionClient(MockConnectionMqttClient mockMqttClient)
         {
             return new(new()
