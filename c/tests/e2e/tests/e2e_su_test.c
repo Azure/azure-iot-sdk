@@ -291,10 +291,21 @@ static void the_hold_is_released_and_registration_is_answered(void** state)
       fx.channel.vtable->request_update(fx.channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
       AZ_IOT_OK);
   wait_for_result(&fx, 1);
+  printf(
+      "  onboarding check answered: %s, action %d, service code %d\n",
+      az_iot_result_to_string(fx.last_result),
+      (int)fx.last_action,
+      (int)fx.last_error_code);
 
   /* The hold is released by the verdict and the pump publishes the
-   * registration. */
-  PUMP_UNTIL(&fx, fx.conn.dps_phase != AZ_IOT_DPS_PHASE_HOLD && fx.conn.dps_hold_count == 0, 60);
+   * registration. A retryable answer (a 5xx, a throttle) keeps the hold until
+   * AZ_IOT_DPS_HOLD_TIMEOUT_MS after it was taken, and registration then goes
+   * ahead anyway, so the budget outlasts that timeout. */
+  PUMP_UNTIL(
+      &fx,
+      !az_iot_connection_client__dps_hold_is_active(&fx.conn)
+          && fx.conn.dps_phase != AZ_IOT_DPS_PHASE_HOLD,
+      AZ_IOT_DPS_HOLD_TIMEOUT_MS / 1000 + 30);
 
   /* The hold is gone, so device update let go. */
   assert_false(az_iot_connection_client__dps_hold_is_active(&fx.conn));

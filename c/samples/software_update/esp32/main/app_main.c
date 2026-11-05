@@ -28,6 +28,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
@@ -244,6 +245,24 @@ static void on_su_event(const az_iot_su_event* event, void* ctx)
   }
 }
 
+/**
+ * @brief Reboot into the image install_fn flashed, once it asks to.
+ *
+ * Waits while the NVS write is failing: resume() needs that record. If the client gives up,
+ * the rollback clears reboot_pending.
+ *
+ * @param[in] ota The OTA hooks' context.
+ */
+static void app_reboot_if_update_installed(const az_iot_su_esp32_ota_context* ota)
+{
+  if (ota->reboot_pending && !g_persist_failing)
+  {
+    ESP_LOGI(TAG, "rebooting into the new firmware to apply the update");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+  }
+}
+
 /* ------------------------------------------------------------------------- */
 /* app entry                                                                 */
 /* ------------------------------------------------------------------------- */
@@ -337,13 +356,18 @@ void app_main(void)
   device_properties.installed_update_id.name = SU_UPDATE_NAME;
   device_properties.installed_update_id.version = SU_UPDATE_VERSION;
 
-  /* Largest update accepted. A one-file offer is about 5 KiB, and NVS
+  /* Largest detached manifest file of a mini manifest, which the service sends for a full
+   * manifest over 4 KiB. 20 KiB holds a full manifest of about 16 KiB once JSON-escaped. */
+#define SU_MAX_DETACHED_MANIFEST_FILE_SIZE 20480
+  /* Largest update accepted: a mini manifest's request (about 3 KiB, plus about 160 bytes per file
+   * URL) followed by its detached manifest file. A request with a full manifest is smaller. NVS
    * (partitions*.csv) must hold two generations of the largest checkpoint
-   * (AZ_IOT_SU_STATE_BLOB_MAX_SIZE(), about 11 KiB) while one
-   * replaces the other. */
-#define SU_MAX_UPDATE_SIZE 8192
-  /* The client's memory, about 35 KB: too large for the 12 KB main task stack. */
-  static uint8_t su_workspace[AZ_IOT_SU_WORKSPACE_SIZE(
+   * (AZ_IOT_SU_STATE_BLOB_MAX_SIZE(), about 27 KiB) while one replaces the other. */
+#define SU_MAX_UPDATE_SIZE (SU_MAX_DETACHED_MANIFEST_FILE_SIZE + 4096)
+  /* The client's memory (about 55 KB) and the detached manifest file's buffer come from the heap,
+   * once: the ESP32's static DRAM is too small for them, and the heap also uses DRAM that static
+   * data cannot. The workspace needs no alignment. */
+  const size_t su_workspace_size = AZ_IOT_SU_WORKSPACE_SIZE(
       SU_MAX_UPDATE_SIZE,
       AZ_IOT_SU_VERIFY_SCRATCH_SIZE,
       AZ_IOT_SU_DEFAULT_MAX_MESSAGE_SIZE,
@@ -351,7 +375,20 @@ void app_main(void)
       AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE,
       AZ_IOT_SU_DEFAULT_MAX_ROOT_KEYS,
       AZ_IOT_SU_DEFAULT_MAX_OBSERVERS,
-      AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES)];
+      AZ_IOT_SU_DEFAULT_MAX_RELATED_FILES);
+  uint8_t* const su_workspace = malloc(su_workspace_size);
+  uint8_t* const detached_manifest_buffer = malloc(SU_MAX_DETACHED_MANIFEST_FILE_SIZE);
+  if (su_workspace == NULL || detached_manifest_buffer == NULL)
+  {
+    ESP_LOGE(
+        TAG,
+        "out of memory for the software update client (%u + %u bytes)",
+        (unsigned)su_workspace_size,
+        (unsigned)SU_MAX_DETACHED_MANIFEST_FILE_SIZE);
+    esp_restart();
+  }
+  ota.detached_manifest_buffer
+      = az_span_create(detached_manifest_buffer, SU_MAX_DETACHED_MANIFEST_FILE_SIZE);
   static az_iot_su_client su;
   az_iot_su_client_config_options su_opts = az_iot_su_client_config_options_default();
   su_opts.hooks = &hooks;
@@ -364,7 +401,7 @@ void app_main(void)
   su_opts.limits.device_properties_size = AZ_IOT_SU_DEVICE_PROPERTIES_BUFFER_SIZE;
   su_opts.limits.result_details_size = AZ_IOT_SU_DEFAULT_RESULT_DETAILS_SIZE;
   su_opts.workspace = su_workspace;
-  su_opts.workspace_size = sizeof(su_workspace);
+  su_opts.workspace_size = su_workspace_size;
   if (az_iot_su_client_init(&su, &conn, &su_opts) != AZ_IOT_OK)
   {
     ESP_LOGE(TAG, "az_iot_su_client_init failed");
@@ -372,7 +409,8 @@ void app_main(void)
   }
 
   /* Registered before resume(), which replays a persisted state to observers.
-   * The OTA hooks' observer releases a download the client abandons. */
+   * The OTA hooks' observer tells them the workflow state and releases a download the client
+   * abandons. */
   if (az_iot_su_client_add_observer(&su, on_su_event, NULL) != AZ_IOT_OK
       || az_iot_su_client_add_observer(&su, az_iot_su_esp32_ota_handle_event, &ota) != AZ_IOT_OK)
   {
@@ -444,6 +482,8 @@ void app_main(void)
     TickType_t const tick_start = xTaskGetTickCount();
     (void)az_iot_connection_client_do_work(&conn, tick_ms);
     (void)az_iot_su_client_do_work(&su);
+    /* An update delivered before registration also installs here. */
+    app_reboot_if_update_installed(&ota);
     if (check_deferred && az_iot_su_client_get_state(&su) == AZ_IOT_SU_STATE_IDLE)
     {
       check_deferred = false;
@@ -534,15 +574,7 @@ void app_main(void)
       }
     }
 
-    /* install_fn asked for a reboot to boot the freshly flashed image. Wait
-     * while the NVS write is failing: resume() needs that record. If the client
-     * gives up, the rollback clears reboot_pending. */
-    if (ota.reboot_pending && !g_persist_failing)
-    {
-      ESP_LOGI(TAG, "rebooting into the new firmware to apply the update");
-      vTaskDelay(pdMS_TO_TICKS(500));
-      esp_restart();
-    }
+    app_reboot_if_update_installed(&ota);
 
     vTaskDelay(pdMS_TO_TICKS(10));
   }
