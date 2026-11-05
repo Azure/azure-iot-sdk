@@ -89,15 +89,27 @@ if(TARGET OpenSSL::Crypto)
 endif()
 
 # DPS TPM attestation over HTTPS (libcurl), then the hub with SAS tokens signed
-# by a TPM simulated in software (OpenSSL).
+# by a TPM simulated in software (OpenSSL) or, in the _tss variant, by a TPM 2.0
+# through tpm2-tss ESAPI.
 if(TARGET az_iot_crypto_openssl)
     find_package(CURL QUIET)
+    find_package(Tss2 QUIET)
     if(CURL_FOUND)
         az_iot_add_adapter_sample(az_iot_sample_auth_dps_tpm
             SOURCES dps_tpm/main.c
                     ${_auth_common}/sample_tpm_sim.c
                     ${_auth_common}/sample_utils.c
             LIBS az_iot_mqttv3 az_iot_crypto_openssl OpenSSL::Crypto CURL::libcurl)
+        if(Tss2_FOUND)
+            az_iot_add_adapter_sample(az_iot_sample_auth_dps_tpm_tss
+                SOURCES dps_tpm/main.c
+                        ${_auth_common}/sample_tpm_tss.c
+                        ${_auth_common}/sample_utils.c
+                DEFINES AZ_IOT_SAMPLE_TPM_TSS
+                LIBS az_iot_mqttv3 az_iot_crypto_openssl OpenSSL::Crypto CURL::libcurl Tss2::Esys)
+        else()
+            message(STATUS "az_iot_sample_auth_dps_tpm_tss: tpm2-tss not found; not built.")
+        endif()
     else()
         message(STATUS "az_iot_sample_auth_dps_tpm: libcurl not found; not built.")
     endif()
