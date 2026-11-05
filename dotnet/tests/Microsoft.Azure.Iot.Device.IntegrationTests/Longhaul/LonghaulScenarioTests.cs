@@ -8,7 +8,6 @@ using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.DirectMethods;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Models.Twin;
-using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text;
@@ -53,7 +52,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
             LonghaulSettings settings = GetSettingsOrSkip();
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
 
-            MqttNetClient mqttClient = new();
+            EndpointTrackingMqttClient mqttClient = new(Setup.CreateProvisioningSettings(testAgainstClassicHub: false).GlobalEndpointAddress);
             Device.MQTTv5.Models.ConnectionClientOptions options = new()
             {
                 MqttClient = mqttClient,
@@ -71,7 +70,15 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
             await using (device)
             {
                 HighWaterMark desiredSequence = new();
-                twinClient.DesiredPatchReceived += args => DeviceOperations.ObserveDesiredPatch(args, desiredSequence);
+                twinClient.DesiredPatchReceived += args => DeviceOperations.ObserveDesired(args.DesiredProperties, desiredSequence);
+                // After a reconnect or a missed patch, the client delivers the desired properties as a snapshot instead.
+                twinClient.TwinPushReceived += args =>
+                {
+                    if (args.Desired != null)
+                    {
+                        DeviceOperations.ObserveDesired(args.Desired.Properties, desiredSequence);
+                    }
+                };
                 directMethodClient.DirectMethodProbeReceivedAsync += _ => Task.FromResult(Device.MQTTv5.DirectMethods.DirectMethodProbeAck.Accepted());
                 directMethodClient.DirectMethodInvokedAsync += DeviceOperations.RespondToDirectMethodAsync;
 
@@ -96,7 +103,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
             LonghaulSettings settings = GetSettingsOrSkip();
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
 
-            MqttNetClient mqttClient = new();
+            EndpointTrackingMqttClient mqttClient = new(Setup.CreateProvisioningSettings(testAgainstClassicHub).GlobalEndpointAddress);
             Device.Unified.Models.ConnectionClientOptions options = new()
             {
                 MqttClient = mqttClient,
@@ -118,7 +125,15 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
             {
                 HighWaterMark desiredSequence = new();
                 ConcurrentDictionary<string, TaskCompletionSource> pendingCloudToDevice = new();
-                twinClient.DesiredPatchReceived += args => DeviceOperations.ObserveDesiredPatch(args, desiredSequence);
+                twinClient.DesiredPatchReceived += args => DeviceOperations.ObserveDesired(args.DesiredProperties, desiredSequence);
+                // After a reconnect or a missed patch, the client delivers the desired properties as a snapshot instead.
+                twinClient.TwinPushReceived += args =>
+                {
+                    if (args.Desired != null)
+                    {
+                        DeviceOperations.ObserveDesired(args.Desired.Properties, desiredSequence);
+                    }
+                };
                 directMethodClient.DirectMethodInvokedAsync += DeviceOperations.RespondToDirectMethodAsync;
                 telemetryClient.CloudToDeviceTelemetryReceivedAsync += message =>
                 {
@@ -286,9 +301,9 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
                 }
             }
 
-            public static void ObserveDesiredPatch(DesiredPatchReceivedEventArgs args, HighWaterMark desiredSequence)
+            public static void ObserveDesired(JsonObject desiredProperties, HighWaterMark desiredSequence)
             {
-                if (args.DesiredProperties[DesiredSequenceProperty] is JsonValue value && value.TryGetValue(out long sequence))
+                if (desiredProperties[DesiredSequenceProperty] is JsonValue value && value.TryGetValue(out long sequence))
                 {
                     desiredSequence.Observe(sequence);
                 }
@@ -373,8 +388,11 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
                     {
                         await ServiceClient.SendAsync(deviceId, message).WaitAsync(cancellationToken);
                     }
-                    catch (Exception) when (!cancellationToken.IsCancellationRequested)
+                    catch (Exception)
                     {
+                        // Includes this attempt timing out: WaitAsync leaves the send running on a link that may be stuck,
+                        // so replace the client (disposing the old one aborts that send) before the next attempt. At the
+                        // end of the run this just swaps in an unused client, which Dispose then releases.
                         ServiceClient broken = Interlocked.Exchange(ref _serviceClient, Create());
                         broken.Dispose();
                         throw;

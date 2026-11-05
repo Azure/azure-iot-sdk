@@ -2,7 +2,6 @@
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Models;
-using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 
@@ -55,15 +54,17 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
             => _operations.Add(new ScheduledOperation(name, interval, executeAsync));
 
         /// <summary>
-        /// Records connection drops, recoveries and faults of this device's connection while the run is in progress.
+        /// Records drops, recoveries and faults of this device's IoT hub connection while the run is in progress. The hub
+        /// is considered unreachable from a drop, or the start of re-provisioning, until the client next connects to IoT
+        /// hub; connections to Device Provisioning Service in between don't end the outage.
         /// </summary>
-        public void Observe(AbstractConnectionClient connectionClient, MqttNetClient mqttClient)
+        public void Observe(AbstractConnectionClient connectionClient, EndpointTrackingMqttClient mqttClient)
         {
             mqttClient.ConnectedAsync += _ =>
             {
                 lock (_connectionLock)
                 {
-                    if (_recordingConnection)
+                    if (_recordingConnection && mqttClient.TargetsHub)
                     {
                         _connects++;
                         EndOutageLocked();
@@ -78,15 +79,14 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
                 lock (_connectionLock)
                 {
                     // The MQTT client may report the end of one connection more than once, and also reports failed
-                    // connect attempts, so only the transition from connected to disconnected counts as a drop.
-                    if (_recordingConnection && _disconnectedSince == null)
+                    // connect attempts, so only the transition from connected to disconnected counts as a drop. A
+                    // delayed callback can also arrive after the client has already reconnected; that is not a drop.
+                    if (_recordingConnection && mqttClient.TargetsHub && _disconnectedSince == null && !mqttClient.IsConnected())
                     {
-                        _disconnects++;
-                        _disconnectedSince = DateTimeOffset.UtcNow;
                         string reason = args.Exception == null
                             ? args.Reason.ToString()
                             : $"{args.Reason} ({args.Exception.GetType().Name})";
-                        _disconnectReasons[reason] = _disconnectReasons.GetValueOrDefault(reason) + 1;
+                        StartOutageLocked(reason);
                     }
                 }
 
@@ -98,6 +98,13 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
                 lock (_connectionLock)
                 {
                     _reprovisioningStarts++;
+
+                    // Re-provisioning replaces the hub connection with one to DPS. If that hub connection's drop hasn't
+                    // been reported yet, the outage starts now.
+                    if (_recordingConnection && _disconnectedSince == null)
+                    {
+                        StartOutageLocked("Re-provisioning");
+                    }
                 }
 
                 _log($"[{_scenario}] Re-provisioning started: {args.Exception.Message}");
@@ -139,14 +146,16 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
             await Task.WhenAll(loops);
 
             TimeSpan elapsed = Stopwatch.GetElapsedTime(_runStartTimestamp);
+
+            // A final sample so that the end of the run is always represented, even if it ended between samples. Taken
+            // before the outage accounting below closes, so a run that ends disconnected is sampled as disconnected.
+            TakeSample();
+
             lock (_connectionLock)
             {
                 _recordingConnection = false;
                 EndOutageLocked();
             }
-
-            // A final sample so that the end of the run is always represented, even if it ended between samples.
-            TakeSample();
 
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -285,6 +294,13 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
             {
                 _samples.Add(sample);
             }
+        }
+
+        private void StartOutageLocked(string reason)
+        {
+            _disconnects++;
+            _disconnectedSince = DateTimeOffset.UtcNow;
+            _disconnectReasons[reason] = _disconnectReasons.GetValueOrDefault(reason) + 1;
         }
 
         private void EndOutageLocked()
