@@ -2668,6 +2668,87 @@ static void an_undelivered_user_token_times_out(void** state)
   assert_int_equal(g_fake.calls, 1);
 }
 
+/* ---- do_work() wait with no MQTT session, around a user token ---- */
+
+#define SESSIONLESS_WAIT_MS 50u
+
+/** @brief Milliseconds one do_work(@p timeout_ms) takes. */
+static uint64_t measure_do_work_ms(fixture* fx, uint32_t timeout_ms)
+{
+  uint64_t const start = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(&fx->client, timeout_ms);
+  return az_iot_time_mono_ms() - start;
+}
+
+/* A request whose ask is delayed ends the wait when it is due. */
+static void a_delayed_token_ask_ends_the_sessionless_wait(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_LATER);
+  init_and_open(fx, &opts);
+  fx->client.sas_token_ask_after_ms[AZ_IOT_CONN_SCOPE_HUB]
+      = az_iot_time_mono_ms() + SESSIONLESS_WAIT_MS;
+  uint64_t const waited_ms = measure_do_work_ms(fx, 60000u);
+  assert_true(waited_ms >= SESSIONLESS_WAIT_MS / 2u);
+  assert_true(waited_ms < 30000u);
+  assert_int_equal(g_fake.calls, 0);
+  pump(fx, 1);
+  assert_int_equal(g_fake.calls, 1);
+}
+
+/* An asked request ends the wait by its timeout, which the next do_work() acts on. */
+static void an_outstanding_token_request_ends_the_sessionless_wait(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_LATER);
+  with_policies(&opts);
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  assert_int_equal(g_fake.calls, 1);
+  fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_HUB].deadline_ms
+      = az_iot_time_mono_ms() + SESSIONLESS_WAIT_MS;
+  uint64_t const waited_ms = measure_do_work_ms(fx, 60000u);
+  assert_true(waited_ms >= SESSIONLESS_WAIT_MS / 2u);
+  assert_true(waited_ms < 30000u);
+  pump(fx, 1);
+  const recorded_event* e = last_event(fx, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_RETRY_PENDING);
+  assert_int_equal(e->reason, AZ_IOT_ERR_TIMEOUT);
+}
+
+/* A retry that needs a token to be asked for does not wait: the next do_work() asks. */
+static void a_retry_waiting_for_a_token_ask_does_not_wait(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_LATER);
+  with_policies(&opts);
+  /* The request's own timeout is longer than the wait asked for. */
+  opts.connect_timeout_seconds = 120u;
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_HUB].deadline_ms = az_iot_time_mono_ms();
+  pump(fx, 1);
+  assert_int_equal(fx->client.state[AZ_IOT_CONN_SCOPE_HUB], AZ_IOT_CONN_STATE_RETRY_PENDING);
+
+  az_iot_test_make_retry_due_now(&fx->client);
+  assert_true(measure_do_work_ms(fx, 60000u) < 30000u);
+  assert_int_not_equal(fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_HUB].request_id, 0);
+  pump(fx, 1);
+  assert_int_equal(g_fake.calls, 2);
+}
+
+/* A token held for the next attempt does not shorten the wait. */
+static void a_held_token_does_not_shorten_the_sessionless_wait(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  az_iot_connection_client_options opts = user_token_hub_options(fx, FAKE_TOKEN_LATER);
+  init_and_open(fx, &opts);
+  pump(fx, 1);
+  assert_int_equal(az_iot_connection_client_close(&fx->client), AZ_IOT_OK);
+  assert_int_equal(supply_user_token(fx, AZ_IOT_CONN_SCOPE_HUB), AZ_IOT_OK);
+  assert_true(fx->client.sas_token_request[AZ_IOT_CONN_SCOPE_HUB].held);
+  assert_true(measure_do_work_ms(fx, SESSIONLESS_WAIT_MS) >= SESSIONLESS_WAIT_MS - 1u);
+}
+
 /* close() cancels a waiting request. A token supplied while IDLE is used by
  * the next open(), which does not ask. */
 static void close_cancels_a_pending_user_token(void** state)
@@ -4334,6 +4415,12 @@ int main(void)
     cmocka_unit_test_setup_teardown(update_sas_token_checks_its_arguments, setup, teardown),
     cmocka_unit_test_setup_teardown(a_dps_token_supplied_before_open_is_used, setup, teardown),
     cmocka_unit_test_setup_teardown(an_undelivered_user_token_times_out, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_delayed_token_ask_ends_the_sessionless_wait, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_outstanding_token_request_ends_the_sessionless_wait, setup, teardown),
+    cmocka_unit_test_setup_teardown(a_retry_waiting_for_a_token_ask_does_not_wait, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_held_token_does_not_shorten_the_sessionless_wait, setup, teardown),
     cmocka_unit_test_setup_teardown(close_cancels_a_pending_user_token, setup, teardown),
     cmocka_unit_test_setup_teardown(a_rejected_key_falls_back_to_the_user_token, setup, teardown),
     cmocka_unit_test_setup_teardown(x509_rejected_then_a_key_releases_every_load, setup, teardown),

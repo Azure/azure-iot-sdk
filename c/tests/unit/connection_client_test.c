@@ -414,6 +414,127 @@ static void user_close_after_connected_does_not_reconnect(void** state)
 }
 
 /* ------------------------------------------------------------------------- */
+/* do_work() wait with no MQTT session                                       */
+/* ------------------------------------------------------------------------- */
+
+#define SESSIONLESS_WAIT_MS 50u
+
+/** @brief Milliseconds one do_work(@p timeout_ms) takes. */
+static uint64_t measure_do_work_ms(az_iot_connection_client* client, uint32_t timeout_ms)
+{
+  uint64_t const start = az_iot_time_mono_ms();
+  (void)az_iot_connection_client_do_work(client, timeout_ms);
+  return az_iot_time_mono_ms() - start;
+}
+
+/* Never opened: do_work() waits its timeout rather than returning at once. */
+static void do_work_when_idle_waits_for_the_timeout(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  /* Truncated millisecond clock: up to 1 ms short. */
+  assert_true(measure_do_work_ms(fx->client, SESSIONLESS_WAIT_MS) >= SESSIONLESS_WAIT_MS - 1u);
+  assert_true(measure_do_work_ms(fx->client, 0) < SESSIONLESS_WAIT_MS);
+  assert_int_equal(fx->rec.count, 0);
+}
+
+/* FAULTED: no session and no retry, so do_work() waits its timeout. */
+static void do_work_when_faulted_waits_for_the_timeout(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(
+      az_iot_mock_mqtt_adapter_last_client(), AZ_IOT_ERR_AUTH));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_FAULTED);
+
+  assert_true(measure_do_work_ms(fx->client, SESSIONLESS_WAIT_MS) >= SESSIONLESS_WAIT_MS - 1u);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_FAULTED);
+}
+
+/* RETRY_PENDING: do_work() waits its timeout when the retry is further away. */
+static void do_work_when_retry_pending_waits_for_the_timeout(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(
+      az_iot_mock_mqtt_adapter_last_client(), AZ_IOT_ERR_AUTH));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_RETRY_PENDING);
+
+  size_t const before = fx->rec.count;
+  assert_true(measure_do_work_ms(fx->client, SESSIONLESS_WAIT_MS) >= SESSIONLESS_WAIT_MS - 1u);
+  assert_int_equal(fx->rec.count, before);
+}
+
+/* RETRY_PENDING: the wait ends by the retry, which the next do_work() fires. */
+static void do_work_when_retry_pending_waits_until_the_retry_is_due(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(
+      az_iot_mock_mqtt_adapter_last_client(), AZ_IOT_ERR_AUTH));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_RETRY_PENDING);
+
+  fx->client->reconnect_due_ms = az_iot_time_mono_ms() + SESSIONLESS_WAIT_MS;
+  uint64_t const waited_ms = measure_do_work_ms(fx->client, 60000u);
+  assert_true(waited_ms >= SESSIONLESS_WAIT_MS / 2u);
+  /* Well under the 60 s timeout, with room for a loaded runner. */
+  assert_true(waited_ms < 30000u);
+
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTING);
+}
+
+static void lower_remaining_to_sessionless_wait(
+    const az_iot_connection_feature_event* event,
+    void* user_ctx)
+{
+  (void)user_ctx;
+  if (event->kind == AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE
+      && *event->remaining_ms > SESSIONLESS_WAIT_MS)
+  {
+    *event->remaining_ms = SESSIONLESS_WAIT_MS;
+  }
+}
+
+/* IDLE: a NEXT_DEADLINE observer ends the wait by its deadline. */
+static void do_work_when_idle_waits_until_a_feature_deadline(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(
+      az_iot_connection_client__add_feature_observer(
+          fx->client,
+          AZ_IOT_CONNECTION_FEATURE_EVENT_NEXT_DEADLINE,
+          lower_remaining_to_sessionless_wait,
+          NULL),
+      AZ_IOT_OK);
+  uint64_t const waited_ms = measure_do_work_ms(fx->client, 60000u);
+  assert_true(waited_ms >= SESSIONLESS_WAIT_MS - 1u);
+  assert_true(waited_ms < 30000u);
+  az_iot_connection_client__remove_feature_observer(
+      fx->client, lower_remaining_to_sessionless_wait, NULL);
+}
+
+/* FAULTED: a passed pacing deadline of a wanted provisioning session, which the fault keeps from
+ * being used, does not end the wait. */
+static void do_work_when_faulted_ignores_a_blocked_provisioning_session_retry(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(
+      az_iot_mock_mqtt_adapter_last_client(), AZ_IOT_ERR_AUTH));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_FAULTED);
+
+  fx->client->dps_session_wanted = true;
+  fx->client->dps_user_retry._internal.due_ms = 1u;
+  assert_true(measure_do_work_ms(fx->client, SESSIONLESS_WAIT_MS) >= SESSIONLESS_WAIT_MS - 1u);
+  fx->client->dps_session_wanted = false;
+  fx->client->dps_user_retry._internal.due_ms = 0u;
+}
+
+/* ------------------------------------------------------------------------- */
 /* dispatch + profile (Phase 2.3) integration                                */
 /* ------------------------------------------------------------------------- */
 
@@ -4853,6 +4974,16 @@ int main(void)
         close_during_reconnecting_goes_idle, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         user_close_after_connected_does_not_reconnect, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(do_work_when_idle_waits_for_the_timeout, setup, teardown),
+    cmocka_unit_test_setup_teardown(do_work_when_faulted_waits_for_the_timeout, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        do_work_when_retry_pending_waits_for_the_timeout, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        do_work_when_retry_pending_waits_until_the_retry_is_due, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        do_work_when_idle_waits_until_a_feature_deadline, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        do_work_when_faulted_ignores_a_blocked_provisioning_session_retry, setup, teardown),
     cmocka_unit_test_setup_teardown(inbound_message_routes_through_dispatch, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_births_then_connects_on_birth_ack, setup_mqtt_v5, teardown),
