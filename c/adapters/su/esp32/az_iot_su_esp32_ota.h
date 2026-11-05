@@ -15,6 +15,7 @@
  * - read_file: reads the written image, or the detached manifest file, back for the SHA-256 check
  *   against the manifest.
  * - install: validates the image, makes it the next boot partition and asks for a reboot.
+ * - apply: IN_PROGRESS until that reboot, then a no-op in the new image.
  * - persist/load workflow state: NVS, so the workflow resumes after the reboot.
  *
  * ESP-IDF component: platforms/esp32/components/azure-iot-sdk-software-update-ota.
@@ -65,7 +66,8 @@ extern "C"
     esp_http_client_handle_t http_client;
     /** @brief Hash of the URL #http_client downloads. Set by the hooks. */
     uint32_t download_url_hash;
-    /** @brief Set when an installed image waits for a reboot; the application reboots. */
+    /** @brief Set when an installed image waits for a reboot; the application reboots, even
+     * before it registers. apply_fn returns IN_PROGRESS while it is set. */
     bool reboot_pending;
   } az_iot_su_esp32_ota_context;
 

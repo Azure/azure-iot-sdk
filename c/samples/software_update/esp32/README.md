@@ -49,7 +49,7 @@ sequenceDiagram
 | `read_file` | `esp_partition_read`, so core can run the SHA-256 check on the written image; the detached manifest file is read from `detached_manifest_buffer` |
 | `is_installed` | Compares the manifest version with `SU_UPDATE_VERSION` |
 | `install` | `esp_ota_end` + `esp_ota_set_boot_partition`; returns `REBOOT_REQUIRED` |
-| `apply` | No-op; the new image is already running |
+| `apply` | `IN_PROGRESS` until the reboot; then a no-op, the new image is already running |
 | `restore` | Rollback to the running partition |
 | `persist` / `load` state | NVS namespace `su_sample`, key `wf_state` (resume across the reboot). The 80 KB `nvs` partition holds two generations of the largest checkpoint (about 27 KB); [main/app_main.c](main/app_main.c) sets `limits.max_update_size` to `SU_MAX_UPDATE_SIZE` (24 KiB) to bound it. Erase the flash when moving from an earlier layout. |
 
@@ -394,7 +394,7 @@ It runs until powered off, like the agent it stands in for. It reboots
 
 | Cause | Log line |
 |---|---|
-| An update was installed; boots the new image | `rebooting into the new firmware to apply the update` |
+| An update was installed, also before the device registers; boots the new image | `rebooting into the new firmware to apply the update` |
 | Network connect fails (Wi-Fi: after `EXAMPLE_WIFI_CONN_MAX_RETRY` retries) | `network connect failed; rebooting` |
 | No hub connection within about 120 s (twice `AZ_IOT_DPS_HOLD_TIMEOUT_MS`), or provisioning faulted | `could not connect; rebooting` |
 | The connection faults while no update is in flight | `connection faulted; rebooting` |
@@ -455,7 +455,7 @@ The SDK logs at `INFO`; change the level in `app_main()` for more detail.
 | Compatibility properties | `device_properties.manufacturer`, `device_properties.model` |
 | Resume after the OTA reboot | `az_iot_su_client_resume()` |
 | Route selection | `app_request_check()`, `app_is_registered()` |
-| Poll loop and reboot | the `for (;;)` loop at the end of `app_main()` |
+| Poll loop and reboot | the `for (;;)` loop at the end of `app_main()`, `app_reboot_if_update_installed()` |
 
 ### Layout
 

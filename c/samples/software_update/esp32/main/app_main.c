@@ -245,6 +245,24 @@ static void on_su_event(const az_iot_su_event* event, void* ctx)
   }
 }
 
+/**
+ * @brief Reboot into the image install_fn flashed, once it asks to.
+ *
+ * Waits while the NVS write is failing: resume() needs that record. If the client gives up,
+ * the rollback clears reboot_pending.
+ *
+ * @param[in] ota The OTA hooks' context.
+ */
+static void app_reboot_if_update_installed(const az_iot_su_esp32_ota_context* ota)
+{
+  if (ota->reboot_pending && !g_persist_failing)
+  {
+    ESP_LOGI(TAG, "rebooting into the new firmware to apply the update");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_restart();
+  }
+}
+
 /* ------------------------------------------------------------------------- */
 /* app entry                                                                 */
 /* ------------------------------------------------------------------------- */
@@ -464,6 +482,8 @@ void app_main(void)
     TickType_t const tick_start = xTaskGetTickCount();
     (void)az_iot_connection_client_do_work(&conn, tick_ms);
     (void)az_iot_su_client_do_work(&su);
+    /* An update delivered before registration also installs here. */
+    app_reboot_if_update_installed(&ota);
     if (check_deferred && az_iot_su_client_get_state(&su) == AZ_IOT_SU_STATE_IDLE)
     {
       check_deferred = false;
@@ -554,15 +574,7 @@ void app_main(void)
       }
     }
 
-    /* install_fn asked for a reboot to boot the freshly flashed image. Wait
-     * while the NVS write is failing: resume() needs that record. If the client
-     * gives up, the rollback clears reboot_pending. */
-    if (ota.reboot_pending && !g_persist_failing)
-    {
-      ESP_LOGI(TAG, "rebooting into the new firmware to apply the update");
-      vTaskDelay(pdMS_TO_TICKS(500));
-      esp_restart();
-    }
+    app_reboot_if_update_installed(&ota);
 
     vTaskDelay(pdMS_TO_TICKS(10));
   }

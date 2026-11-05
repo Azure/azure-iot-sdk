@@ -444,7 +444,13 @@ static int32_t ota_apply(
     void* user_ctx)
 {
   (void)manifest;
-  (void)user_ctx;
+  az_iot_su_esp32_ota_context const* c = (az_iot_su_esp32_ota_context const*)user_ctx;
+  /* The image install_fn flashed boots only after the reboot it asked for:
+   * until then the old firmware runs, so the step is not applied yet. */
+  if (c->reboot_pending)
+  {
+    return AZ_IOT_SU_RESULT_IN_PROGRESS;
+  }
   /* Reached after the reboot, when the workflow resumes inside the freshly
    * booted image: the new firmware is already running, so apply is a no-op. */
   AZ_IOT_LOG_INFOF(

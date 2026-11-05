@@ -6,8 +6,8 @@
 /* Unit tests for the ESP32 OTA software updates hooks (az_iot_su_esp32_ota.c) over desktop
  * ESP-IDF fakes (fake_esp_ota.h). Each test replays what the software updates client does:
  * WORKFLOW_STATE_CHANGED events to az_iot_su_esp32_ota_handle_event(), then download_fn until it
- * stops returning IN_PROGRESS, read_file_fn for the hash check and install_fn. The client side
- * (download only in VERIFYING_MANIFEST and DOWNLOAD_STARTED, the state re-announced on resume,
+ * stops returning IN_PROGRESS, read_file_fn for the hash check, install_fn and apply_fn. The client
+ * side (download only in VERIFYING_MANIFEST and DOWNLOAD_STARTED, the state re-announced on resume,
  * a detached manifest file longer than sizeInBytes) is covered by su_client_test.c. */
 #include <stdarg.h>
 #include <stddef.h>
@@ -202,6 +202,30 @@ static void image_after_detached_manifest_file_goes_to_partition(void** state)
   assert_int_equal(g_fake_esp_ota.ota_aborts, 0);
   assert_ptr_equal(g_fake_esp_ota.boot_partition, fake_esp_ota_update_partition());
   assert_true(ota_context.reboot_pending);
+}
+
+/* apply_fn waits for the reboot install_fn asked for: the old firmware still runs until then.
+ * After the reboot, in the new image, apply succeeds. */
+static void apply_waits_for_reboot_after_install(void** state)
+{
+  (void)state;
+  announce_workflow_state(AZ_IOT_SU_STATE_DOWNLOAD_STARTED);
+  download_image(image, IMAGE_SIZE, image_url);
+  announce_workflow_state(AZ_IOT_SU_STATE_INSTALL_STARTED);
+  assert_int_equal(
+      hooks.install_fn(&update_manifest, 0, hooks.user_ctx), AZ_IOT_SU_RESULT_REBOOT_REQUIRED);
+
+  announce_workflow_state(AZ_IOT_SU_STATE_APPLY_STARTED);
+  assert_int_equal(
+      hooks.apply_fn(&update_manifest, 0, hooks.user_ctx), AZ_IOT_SU_RESULT_IN_PROGRESS);
+  assert_int_equal(
+      hooks.apply_fn(&update_manifest, 0, hooks.user_ctx), AZ_IOT_SU_RESULT_IN_PROGRESS);
+  assert_true(ota_context.reboot_pending);
+
+  /* Rebooted into the new image, resumed at apply. */
+  memset(&ota_context, 0, sizeof(ota_context));
+  announce_workflow_state(AZ_IOT_SU_STATE_APPLY_STARTED);
+  assert_int_equal(hooks.apply_fn(&update_manifest, 0, hooks.user_ctx), AZ_IOT_SU_RESULT_SUCCESS);
 }
 
 /* (3) A detached manifest file declared larger than the buffer fails before any request. */
@@ -492,6 +516,7 @@ int main(void)
         detached_manifest_file_is_stored_in_buffer_not_partition, setup, teardown),
     cmocka_unit_test_setup_teardown(
         image_after_detached_manifest_file_goes_to_partition, setup, teardown),
+    cmocka_unit_test_setup_teardown(apply_waits_for_reboot_after_install, setup, teardown),
     cmocka_unit_test_setup_teardown(
         detached_manifest_file_larger_than_buffer_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(
