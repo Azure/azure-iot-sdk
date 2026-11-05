@@ -355,6 +355,9 @@ copy of the file from `SU_SIM_DETACHED_MANIFEST_FILE` and, without it, fail the 
 the file's URL
 ([simulated_regular § Mini manifests](../samples/software_update/pc/simulated_regular/README.md#mini-manifests)).
 
+The [ESP32 sample](../samples/software_update/esp32/README.md#mini-manifests) accepts a detached
+manifest file of up to 20 KiB, a full manifest of about 16 KiB; its README says how to raise that.
+
 ## Library mode
 
 For an existing update agent: the client keeps the service side (checks, signature verification,
