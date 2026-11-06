@@ -68,7 +68,7 @@ or install it and use `find_package(azure-iot-sdk)`. See
 ### Quickstart
 
 On Linux, with the [build tools](samples/README.md#build-tools) installed (a C compiler, CMake
-3.21+, Ninja, OpenSSL 3 development files), from this directory:
+3.25+, Ninja, OpenSSL 3 development files), from this directory:
 
 ```sh
 cmake --preset linux-gcc-debug

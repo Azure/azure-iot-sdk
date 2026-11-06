@@ -248,15 +248,29 @@ typedef struct
       0)                                                                                           \
   SU_ALL_ROUTES(                                                                                   \
       X, INTERNAL_SERVER_ERROR, 500, AZ_IOT_SU_ERROR_ACTION_RETRY, AZ_IOT_SU_ERR_ARGUMENT_INVALID) \
-  SU_ALL_ROUTES(                                                                                   \
-      X, UPSTREAM_UNAVAILABLE, 503, AZ_IOT_SU_ERROR_ACTION_RETRY, AZ_IOT_SU_ERR_ARGUMENT_INVALID)  \
+  SU_FETCH_ROUTES(                                                                                 \
+      X,                                                                                           \
+      UPSTREAM_UNAVAILABLE,                                                                        \
+      503,                                                                                         \
+      AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK,                                                     \
+      AZ_IOT_SU_ERR_ARGUMENT_INVALID)                                                              \
+  SU_NAMED_SHAPES(                                                                                 \
+      X,                                                                                           \
+      UPSTREAM_UNAVAILABLE,                                                                        \
+      report,                                                                                      \
+      AZ_IOT_SU_OP_REPORT_STATUS,                                                                  \
+      503,                                                                                         \
+      AZ_IOT_SU_ERROR_ACTION_RETRY,                                                                \
+      AZ_IOT_SU_ERR_ARGUMENT_INVALID,                                                              \
+      "",                                                                                          \
+      0)                                                                                           \
   SU_NAMED_SHAPES(                                                                                 \
       X,                                                                                           \
       UPSTREAM_UNAVAILABLE,                                                                        \
       regular_delayed,                                                                             \
       AZ_IOT_SU_OP_GET_UPDATE,                                                                     \
       503,                                                                                         \
-      AZ_IOT_SU_ERROR_ACTION_RETRY,                                                                \
+      AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK,                                                     \
       AZ_IOT_SU_ERR_ARGUMENT_INVALID,                                                              \
       "&retry-after=2",                                                                            \
       2000)                                                                                        \
@@ -266,7 +280,7 @@ typedef struct
       onboarding_delayed,                                                                          \
       AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE,                                                          \
       503,                                                                                         \
-      AZ_IOT_SU_ERROR_ACTION_RETRY,                                                                \
+      AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK,                                                     \
       AZ_IOT_SU_ERR_ARGUMENT_INVALID,                                                              \
       "&retry-after=2",                                                                            \
       2000)                                                                                        \

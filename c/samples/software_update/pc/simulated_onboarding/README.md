@@ -28,8 +28,8 @@ The simulated hooks are shared with the regular-update sample, in
 |---|---|
 | Connection, update request/response, manifest receipt, status reporting | **Real** (Paho MQTT adapter, real DPS endpoint) |
 | Manifest JWS signature verification | **Real** (OpenSSL crypto backend, real root keys) |
-| `download_fn` | **Simulated** — synthesizes deterministic (zero-filled) payload bytes of the manifest-declared size |
-| `read_file_fn` | **Simulated** — serves the same deterministic bytes back so core can run the **real** streaming SHA-256 hash check |
+| `download_fn` | **Simulated** — synthesizes deterministic (zero-filled) payload bytes of the manifest-declared size; serves `SU_SIM_DETACHED_MANIFEST_FILE` for a [mini manifest](#mini-manifests) |
+| `read_file_fn` | **Simulated** — serves the same deterministic bytes back (or the detached manifest file) so core can run the **real** streaming SHA-256 hash check |
 | `install_fn` / `apply_fn` / `backup_fn` / `restore_fn` | **Simulated** — log only; optional forced failure or reboot |
 | `is_installed_fn` | Always reports "not installed" so the deployment proceeds |
 | `persist_workflow_state_fn` / `load_workflow_state_fn` | Read/write the resume blob to a file so `resume()` can be exercised; written atomically and durably (`sample_file_write_atomically()`), so a crash leaves the previous blob, never a partial one |
@@ -49,6 +49,21 @@ offered (see [main.c](main.c)):
 
 The sample prints what it reported at startup, so a mismatch is visible rather
 than silent.
+
+### Mini manifests
+
+When an update's manifest is over 4,096 bytes, Device Update sends a mini manifest: the full
+manifest is in a detached manifest file, which the client downloads first, in
+`VerifyingManifest`. Its content cannot be synthesized, so the sample serves
+`SU_SIM_DETACHED_MANIFEST_FILE`, a copy of that file. Without it the download fails, and the
+sample prints the file's URL. Save it, restart the sample and retry the deployment:
+
+```bash
+curl -o ./detached_manifest.json '<URL printed by the sample>'
+SU_SIM_DETACHED_MANIFEST_FILE=./detached_manifest.json ./az_iot_sample_simulated_onboarding
+```
+
+[http_download](../http_download/README.md) downloads it for real.
 
 ## Service requirements
 - Azure Device Provisioning service
@@ -139,6 +154,7 @@ Set them in the shell that runs the sample. `SU_SIM_FAIL_STEP`, `SU_SIM_HASH_MIS
 | `SU_SIM_REBOOT=1` | `install_fn` returns `REBOOT_REQUIRED`; the sample **exits** once the state is persisted (while the write fails the client retries it; if it gives up, the update is rolled back and reported FAILED). Re-run it (without this knob) to `resume()` and finish the workflow; that run makes no startup update check, since a new workflow would supersede the resumed one |
 | `SU_SIM_DELAY_MS=<ms>` | Per-download delay so progress is observable |
 | `SU_SIM_STATE_FILE=<path>` | Resume blob path (default `./su_sim_state.blob`) |
+| `SU_SIM_DETACHED_MANIFEST_FILE=<path>` | Copy of a mini manifest's detached manifest file; see [Mini manifests](#mini-manifests) |
 | `AZ_IOT_SU_LOG_LEVEL=<lvl>` | SDK log level: `trace`, `debug`, `info` (default), `warn`, `error`, `off`. The SDK's `su:` and `dps:` protocol lines are emitted at `debug` |
 | `AZ_IOT_PAHO_TRACE=<level>` | Enable the Paho MQTT library's trace logging (`error`, `protocol`, `min`, `medium`, `max`; any other value means `min`). The lines are logged at `TRACE` by the `paho` component, so also set `AZ_IOT_SU_LOG_LEVEL=trace`. Use this to diagnose `connection lost: (unknown)` — the trace reveals the underlying cause (socket error, server `DISCONNECT`, keep-alive timeout, etc.) |
 
@@ -346,6 +362,7 @@ startup lines are all it prints.
 | `onboarding update check abandoned: ...`, exit 1 | The check got no usable answer within its timeout; the line includes what the service said. |
 | No update offered, no error | Nothing is deployed, the deployment is not an `OnboardingUpdate` job, it was created after the startup check, or `AZ_IOT_SU_MANUFACTURER` / `AZ_IOT_SU_MODEL` do not match the update's compatibility. |
 | `Update workflow: ... -> Failed` | A manifest signature not under the Microsoft root keys (see [Root keys](#root-keys)), a payload hash mismatch, or an install failure; `SU_SIM_FAIL_STEP` and `SU_SIM_HASH_MISMATCH` force the last two. |
+| `[download] downloads are simulated: save the file at that URL ...` | The update has a mini manifest; see [Mini manifests](#mini-manifests). |
 | Repeating `TCP/TLS connect failure` | DPS is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
 | `connection lost: (unknown)` | Set `AZ_IOT_PAHO_TRACE=protocol` and `AZ_IOT_SU_LOG_LEVEL=trace` to see the cause. |
 | `The connection faulted and will not recover on its own.`, exit 1 | A connection lifecycle settled at `Faulted`; see the SDK log lines before it. |

@@ -146,7 +146,9 @@ jobs:
         # libcurl: the samples that use it (dps_tpm, file_upload's upload path,
         # software_update/pc/http_download)
         # are expected to build.
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev
+        # libtss2-dev and swtpm: the dps_tpm tpm2-tss backend and its test, which runs
+        # against swtpm (see the step after Test).
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libtss2-dev swtpm
 
       # The real delta processor for the microsoft/delta:1 interop test (Linux x64 only).
       - name: Install the software updates delta processor (Linux)
@@ -215,6 +217,11 @@ jobs:
           # push.
           AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
         run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && format('-C {0}', matrix.build_type) || '' }} --output-on-failure
+      # The tpm2-tss backend test is skipped at configure time when tpm2-tss or swtpm is
+      # missing; this fails the leg instead of letting the test silently disappear.
+      - name: Require the tpm2-tss test (Linux)
+        if: runner.os == 'Linux'
+        run: ctest --preset ${{ matrix.preset }} -R '^az_iot_tests_sample_tpm_tss$' --no-tests=error --output-on-failure
 
   # The build legs above use OpenSSL 3.x: Linux the distribution's (3.0, the minimum supported),
   # Windows the runner's. These legs build the same tree against OpenSSL 4.x, from source via
@@ -1487,7 +1494,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '83'
+      EXPECTED_TESTS: '85'
     services:
       mosquitto:
         image: eclipse-mosquitto:2

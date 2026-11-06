@@ -32,6 +32,8 @@
  *   SAMPLE_FAIL_STEP=<n>           1-based step that fails; 0 (default) none
  *   SAMPLE_FAIL_PHASE=<p>          backup|install|apply (default install)
  *   SAMPLE_RESTORE_FAILS=1         restore_fn fails too
+ *   SU_SIM_DETACHED_MANIFEST_FILE=<path>   copy of a mini manifest's detached
+ *                                  manifest file, served as its download
  *   AZ_IOT_SU_EXIT_AFTER_WORKFLOW=1   exit once the final report is accepted
  *                                  (exit code 0 on success, 2 on failure)
  *   AZ_IOT_SU_POLL_INTERVAL_S      seconds between checks (default 14400)
@@ -415,6 +417,7 @@ int main(void)
   char* phase = sample_env_copy("SAMPLE_FAIL_PHASE", "install");
 
   steps.su = &su;
+  steps.sim.detached_manifest_file = sample_env_copy("SU_SIM_DETACHED_MANIFEST_FILE", NULL);
   steps.fail_step = su_sample_env_long("SAMPLE_FAIL_STEP", 0);
   steps.restore_fails = su_sample_env_flag("SAMPLE_RESTORE_FAILS");
   int exit_after_workflow = su_sample_env_flag("AZ_IOT_SU_EXIT_AFTER_WORKFLOW");
@@ -536,6 +539,7 @@ int main(void)
     request_timeout_ms = (uint32_t)poll_interval_s * 500u;
   }
   if (az_iot_su_client_add_observer(&su, on_su_event, &flags) != AZ_IOT_OK
+      || az_iot_su_client_add_observer(&su, su_sim_track_workflow_state, &steps.sim) != AZ_IOT_OK
       || az_iot_su_client_request_update(&su, request_timeout_ms) != AZ_IOT_OK
       || az_iot_connection_client_open(&connection) != AZ_IOT_OK)
   {
@@ -617,5 +621,6 @@ cleanup:
   free(manufacturer);
   free(model);
   free(phase);
+  free(steps.sim.detached_manifest_file);
   return rc;
 }

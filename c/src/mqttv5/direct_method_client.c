@@ -252,11 +252,70 @@ static bool has_execution_capacity(const az_iot_mqttv5_direct_method_client* dm)
   return committed < DI(dm).limits.max_concurrent_invocations;
 }
 
-/** @brief End ready token @p slot: it is no longer usable, and its probe-ack is not sent again. */
-static void end_ready_token(
+/** @brief Remember @p request_id as ended, overwriting the oldest one remembered when full. */
+static void remember_ended_request(
+    az_iot_mqttv5_direct_method_client* dm,
+    const uint8_t* request_id)
+{
+  memcpy(
+      DI(dm).ended_request_ids[DI(dm).next_ended_request],
+      request_id,
+      AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN);
+  DI(dm).next_ended_request
+      = (DI(dm).next_ended_request + 1u) % DI(dm).limits.max_concurrent_invocations;
+  if (DI(dm).ended_request_count < DI(dm).limits.max_concurrent_invocations)
+  {
+    DI(dm).ended_request_count++;
+  }
+}
+
+/**
+ * @brief True when a probe for @p request_id was accepted before: its token is live, its
+ *        invocation is in flight, or its token ended recently.
+ *
+ * A redelivered probe is then answered by the PUBACK alone. A new token would cost capacity, and
+ * end in an Abandon for a ready id the service never quotes.
+ */
+static bool probe_was_accepted_before(
+    const az_iot_mqttv5_direct_method_client* dm,
+    const uint8_t* request_id)
+{
+  for (size_t i = 0; i < DI(dm).limits.max_concurrent_invocations; ++i)
+  {
+    const az_iot_mqttv5_direct_method_ready_slot* token = &DI(dm).ready_pool[i];
+    const az_iot_direct_method_slot* invocation = &DI(dm).invocations[i].slot;
+    if ((RI(token).in_use
+         && memcmp(RI(token).request_id, request_id, AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN) == 0)
+        || (RI(invocation).in_use
+            && RI(invocation).correlation_data_len == AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN
+            && memcmp(RI(invocation).correlation_data, request_id, AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN)
+                == 0))
+    {
+      return true;
+    }
+  }
+  for (size_t i = 0; i < DI(dm).ended_request_count; ++i)
+  {
+    if (memcmp(DI(dm).ended_request_ids[i], request_id, AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN) == 0)
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * @brief End ready token @p slot: it is no longer usable, its probe-ack is not sent again, and a
+ *        redelivery of its probe is not answered.
+ */
+void az_iot_mqttv5_direct_method_client__end_ready_token(
     az_iot_mqttv5_direct_method_client* dm,
     az_iot_mqttv5_direct_method_ready_slot* slot)
 {
+  if (RI(slot).in_use)
+  {
+    remember_ended_request(dm, RI(slot).request_id);
+  }
   RI(slot).in_use = false;
   az_iot_mqttv5_direct_method_client__cancel_reply(dm, &RI(slot).probe_ack_tracker_entry);
 }
@@ -276,7 +335,7 @@ static void ready_expire_stale(az_iot_mqttv5_direct_method_client* dm)
     /* Committed out of the ready state before the advisory goes out, so the
      * message can never claim a token that might still run. */
     az_iot_mqttv5_direct_method_ready_slot expired = *slot;
-    end_ready_token(dm, slot);
+    az_iot_mqttv5_direct_method_client__end_ready_token(dm, slot);
     if (!RI(&expired).probe_ack_published)
     {
       /* The service never saw this ready id, so nothing is abandoned. */
@@ -349,9 +408,9 @@ static void handle_probe(
     const az_iot_mqtt_message* msg,
     const uint8_t* request_id)
 {
-  /* A probe redelivered while its token is still live needs no second answer:
-   * the original probe-ack has its own QoS 1 delivery lifecycle. */
-  if (ready_find(dm, request_id) != NULL)
+  /* A probe redelivered once accepted needs no second answer: the original
+   * probe-ack has its own QoS 1 delivery lifecycle. */
+  if (probe_was_accepted_before(dm, request_id))
   {
     return;
   }
@@ -582,7 +641,7 @@ static void handle_exec(
   if (too_short)
   {
     az_iot_mqttv5_direct_method_ready_slot abandoned = *slot;
-    end_ready_token(dm, slot);
+    az_iot_mqttv5_direct_method_client__end_ready_token(dm, slot);
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
         "'%s' cannot finish in time (budget %u s, admission floor %u s, max unconfirmed "
@@ -606,7 +665,7 @@ static void handle_exec(
      * for its whole response timeout; no reason code fits, and the service only
      * needs to learn that execution did not begin. */
     az_iot_mqttv5_direct_method_ready_slot abandoned = *slot;
-    end_ready_token(dm, slot);
+    az_iot_mqttv5_direct_method_client__end_ready_token(dm, slot);
     az_iot_mqttv5_direct_method_client__send_abandon(
         dm, &abandoned, AZ_IOT_DM_PROTO_ABANDON_UNSPECIFIED, exec_budget, received_at_ms);
     return;
@@ -629,7 +688,7 @@ static void handle_exec(
    * free for the next probe the moment it is released. */
   az_iot_direct_method_handler_callback handler = RI(slot).handler;
   void* handler_ctx = RI(slot).handler_ctx;
-  end_ready_token(dm, slot);
+  az_iot_mqttv5_direct_method_client__end_ready_token(dm, slot);
 
   handler(req, RI(req_slot).method_name, exec.params, exec.params_len, handler_ctx);
 }
@@ -725,7 +784,7 @@ static void discard_previous_identity_state(az_iot_mqttv5_direct_method_client* 
     {
       dropped++;
     }
-    end_ready_token(dm, &DI(dm).ready_pool[i]);
+    az_iot_mqttv5_direct_method_client__end_ready_token(dm, &DI(dm).ready_pool[i]);
     DI(dm).invocations[i].slot._internal.in_use = false;
     az_iot_mqttv5_direct_method_client__cancel_reply(
         dm, &DI(dm).invocations[i].result_tracker_entry);
@@ -915,6 +974,8 @@ static az_iot_delivery_tracker_entry* workspace_assign(
       &cursor, l->max_concurrent_invocations, sizeof(az_iot_mqttv5_direct_method_invocation));
   DI(client).ready_pool = az_iot_workspace__take(
       &cursor, l->max_concurrent_invocations, sizeof(az_iot_mqttv5_direct_method_ready_slot));
+  DI(client).ended_request_ids = az_iot_workspace__take(
+      &cursor, l->max_concurrent_invocations, AZ_IOT_MQTTV5_DM_REQUEST_ID_LEN);
   DI(client).methods = az_iot_workspace__take(
       &cursor, l->max_methods, sizeof(az_iot_mqttv5_direct_method_registration));
   DI(client).notices = az_iot_workspace__take(

@@ -11,8 +11,9 @@
  * DPS takes TPM attestation over HTTPS or AMQP, not MQTT. This sample runs
  * az_iot_dps_tpm_client over libcurl (HTTPS); the hub connection is then a direct
  * az_iot_connection_client connection. The TPM is simulated in software
- * (samples/common/sample_tpm_sim.c) so the sample runs anywhere: replace it
- * with your TSS for a real TPM.
+ * (samples/common/sample_tpm_sim.c) so the sample runs anywhere; built with
+ * AZ_IOT_SAMPLE_TPM_TSS (target az_iot_sample_auth_dps_tpm_tss) it is a real
+ * or simulated TPM 2.0 through tpm2-tss ESAPI (samples/common/sample_tpm_tss.c).
  *
  * Run with `--enrollment` first to print the registration ID and endorsement
  * key for a DPS individual enrollment with TPM attestation.
@@ -40,8 +41,26 @@
 #include "azure/iot/az_iot.h"
 #include "az_iot_crypto_openssl.h"
 
-#include "sample_tpm_sim.h"
 #include "sample_utils.h"
+
+/* The TPM backend this build of the sample uses (see samples/authentication/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_TPM_TSS)
+#include "sample_tpm_tss.h"
+typedef sample_tpm_tss sample_tpm;
+#define sample_tpm_ek_public sample_tpm_tss_ek_public
+#define sample_tpm_srk_public sample_tpm_tss_srk_public
+#define sample_tpm_ops sample_tpm_tss_ops
+#define sample_tpm_hmac sample_tpm_tss_hmac
+#define sample_tpm_destroy sample_tpm_tss_destroy
+#else
+#include "sample_tpm_sim.h"
+typedef sample_tpm_sim sample_tpm;
+#define sample_tpm_ek_public sample_tpm_sim_ek_public
+#define sample_tpm_srk_public sample_tpm_sim_srk_public
+#define sample_tpm_ops sample_tpm_sim_ops
+#define sample_tpm_hmac sample_tpm_sim_hmac
+#define sample_tpm_destroy sample_tpm_sim_destroy
+#endif
 
 /** @brief Lifetime of each hub token, in seconds. */
 #define SAMPLE_TOKEN_LIFETIME_S 3600u
@@ -74,7 +93,7 @@ typedef struct
 
 typedef struct
 {
-  sample_tpm_sim* tpm;
+  sample_tpm* tpm;
   token_request request;
   az_iot_connection_state hub_state;
   bool failed;
@@ -318,7 +337,7 @@ static az_iot_result register_with_dps(
  * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE; AZ_IOT_ERR_INTERNAL when the TPM fails.
  */
 static az_iot_result sign_token_with_tpm(
-    sample_tpm_sim* tpm,
+    sample_tpm* tpm,
     const char* resource_uri,
     const char* key_name,
     uint64_t expiry_unix_seconds,
@@ -335,7 +354,7 @@ static az_iot_result sign_token_with_tpm(
     return r;
   }
   uint8_t mac[AZ_IOT_SHA256_SIZE];
-  r = sample_tpm_sim_hmac(tpm, (const uint8_t*)to_sign, to_sign_len, mac)
+  r = sample_tpm_hmac(tpm, (const uint8_t*)to_sign, to_sign_len, mac)
       ? az_iot_sas_token_from_signature(
             resource_uri, key_name, expiry_unix_seconds, mac, out, out_size, out_len)
       : AZ_IOT_ERR_INTERNAL;
@@ -414,11 +433,11 @@ static void on_sent(az_iot_result status, void* user_ctx)
 }
 
 /** @brief Prints what a DPS individual enrollment with TPM attestation needs. */
-static int print_enrollment(sample_tpm_sim* tpm, const char* reg_id)
+static int print_enrollment(sample_tpm* tpm, const char* reg_id)
 {
   const uint8_t* ek = NULL;
   size_t ek_len = 0;
-  sample_tpm_sim_ek_public(tpm, &ek, &ek_len);
+  sample_tpm_ek_public(tpm, &ek, &ek_len);
   char ek_b64[1024];
   int32_t written = 0;
   if (az_result_failed(az_base64_encode(
@@ -439,13 +458,59 @@ static int print_enrollment(sample_tpm_sim* tpm, const char* reg_id)
   return 0;
 }
 
+/**
+ * @brief Opens the TPM. The simulator keeps its keys in AZ_IOT_TPM_SIM_STATE
+ * (default: the current directory). tpm2-tss connects through AZ_IOT_TPM_TCTI
+ * (default: the tpm2-tss default) and persists the DPS key at the hex handle
+ * AZ_IOT_TPM_HMAC_KEY_HANDLE (default SAMPLE_TPM_TSS_DEFAULT_HMAC_KEY_HANDLE).
+ */
+static sample_tpm* open_tpm(void)
+{
+#if defined(AZ_IOT_SAMPLE_TPM_TSS)
+  char* tcti = sample_env_copy("AZ_IOT_TPM_TCTI", NULL);
+  char* handle_text = sample_env_copy("AZ_IOT_TPM_HMAC_KEY_HANDLE", NULL);
+  unsigned long handle = SAMPLE_TPM_TSS_DEFAULT_HMAC_KEY_HANDLE;
+  if (handle_text != NULL)
+  {
+    char* end = NULL;
+    handle = strtoul(handle_text, &end, 16);
+    if (*end != '\0' || handle > UINT32_MAX)
+    {
+      handle = 0; /* refused by sample_tpm_tss_create() */
+    }
+  }
+  sample_tpm* tpm = sample_tpm_tss_create(tcti, (uint32_t)handle);
+  if (tpm == NULL)
+  {
+    fprintf(
+        stderr,
+        "[dps_tpm] could not open the TPM (TCTI %s, key handle %s)\n",
+        tcti != NULL ? tcti : "default",
+        handle_text != NULL ? handle_text : "default");
+  }
+  free(tcti);
+  free(handle_text);
+#else
+  char* state_dir = sample_env_copy("AZ_IOT_TPM_SIM_STATE", ".");
+  sample_tpm* tpm = state_dir != NULL ? sample_tpm_sim_create(state_dir) : NULL;
+  if (tpm == NULL)
+  {
+    fprintf(
+        stderr,
+        "[dps_tpm] could not create the simulated TPM in %s\n",
+        state_dir != NULL ? state_dir : ".");
+  }
+  free(state_dir);
+#endif
+  return tpm;
+}
+
 int main(int argc, char** argv)
 {
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   char* id_scope = sample_env_copy("AZ_IOT_DPS_ID_SCOPE", NULL);
-  char* state_dir = sample_env_copy("AZ_IOT_TPM_SIM_STATE", ".");
   char* endpoint = sample_env_copy("AZ_IOT_DPS_GLOBAL_ENDPOINT", SAMPLE_DEFAULT_ENDPOINT);
   char* reg_id_env = sample_env_copy("AZ_IOT_DPS_REGISTRATION_ID", NULL);
   char* ca = sample_env_copy("AZ_IOT_TRUSTED_CA", NULL);
@@ -456,16 +521,15 @@ int main(int argc, char** argv)
   az_iot_mqttv3_telemetry_client telemetry = { 0 };
   static https_response response;
 
-  ctx.tpm = sample_tpm_sim_create(state_dir);
+  ctx.tpm = open_tpm();
   if (ctx.tpm == NULL)
   {
-    fprintf(stderr, "[dps_tpm] could not create the simulated TPM in %s\n", state_dir);
     goto cleanup;
   }
   const uint8_t *ek, *srk;
   size_t ek_len, srk_len;
-  sample_tpm_sim_ek_public(ctx.tpm, &ek, &ek_len);
-  sample_tpm_sim_srk_public(ctx.tpm, &srk, &srk_len);
+  sample_tpm_ek_public(ctx.tpm, &ek, &ek_len);
+  sample_tpm_srk_public(ctx.tpm, &srk, &srk_len);
   char reg_id[AZ_IOT_DPS_TPM_ID_MAX + 1]; /* also fits AZ_IOT_DPS_TPM_REGISTRATION_ID_SIZE */
   if (reg_id_env != NULL)
   {
@@ -499,7 +563,7 @@ int main(int argc, char** argv)
   dps_opts.endorsement_key_len = ek_len;
   dps_opts.storage_root_key = srk;
   dps_opts.storage_root_key_len = srk_len;
-  dps_opts.tpm = sample_tpm_sim_ops(ctx.tpm);
+  dps_opts.tpm = sample_tpm_ops(ctx.tpm);
   az_iot_dps_tpm_client dps;
   curl_global_init(CURL_GLOBAL_DEFAULT);
   az_iot_result r = az_iot_dps_tpm_client_init(&dps, &dps_opts);
@@ -602,9 +666,8 @@ int main(int argc, char** argv)
 cleanup:
   az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   az_iot_connection_client_deinit(&client);
-  sample_tpm_sim_destroy(ctx.tpm);
+  sample_tpm_destroy(ctx.tpm);
   free(id_scope);
-  free(state_dir);
   free(endpoint);
   free(reg_id_env);
   free(ca);

@@ -218,7 +218,7 @@ AZ_NODISCARD az_iot_result az_iot_su__verify_and_parse_detached_manifest_file(
 const az_iot_su_client_update_manifest_file* az_iot_su__find_detached_manifest_file(
     const az_iot_su_client_update_manifest* mini_manifest)
 {
-  if (mini_manifest == NULL || az_span_size(mini_manifest->detached_manifest_file_id) <= 0
+  if (mini_manifest == NULL || !az_iot_su_manifest_is_detached(mini_manifest)
       || mini_manifest->files_count != 1u)
   {
     return NULL;
@@ -340,7 +340,7 @@ AZ_NODISCARD az_iot_result az_iot_su__parse_detached_manifest(
         out_manifest,
         out_manifest_error);
   }
-  if (az_span_size(out_manifest->detached_manifest_file_id) > 0)
+  if (az_iot_su_manifest_is_detached(out_manifest))
   {
     return reject_full_manifest(
         AZ_IOT_SU_MANIFEST_ERROR_DETACHED_NESTED,

@@ -1772,6 +1772,48 @@ static void a_retryable_failure_keeps_the_hold(void** state)
   assert_int_equal(fx->client.dps_hold_count, 0);
 }
 
+/** @brief Fail an onboarding check with UPSTREAM_UNAVAILABLE on a held session. */
+static void fail_held_check_with_unavailable_upstream(fixture* fx, const char* topic_query)
+{
+  assert_int_equal(fx->channel.vtable->open(fx->channel.ctx, on_update, on_result, fx), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = open_to_registering(fx);
+  assert_int_equal(fx->client.dps_hold_count, 1);
+  assert_int_equal(
+      fx->channel.vtable->request_update(fx->channel.ctx, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE),
+      AZ_IOT_OK);
+  char rid[64];
+  last_rid(m, rid, sizeof(rid));
+  char topic[256];
+  snprintf(topic, sizeof(topic), "$dps/registrations/res/503/?$rid=%s%s", rid, topic_query);
+  assert_true(inject(fx, m, topic, "{\"errorCode\":503000,\"message\":\"UPSTREAM_UNAVAILABLE\"}"));
+  assert_int_equal(fx->last_action, AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK);
+}
+
+/* Without a delay the check is left to the next scheduled one, so registration
+ * must not wait for a retry that will not come. */
+static void an_unavailable_upstream_without_a_delay_releases_the_hold(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fail_held_check_with_unavailable_upstream(fx, "");
+  assert_int_equal(fx->last_retry_after_ms, 0);
+  assert_int_equal(fx->client.dps_hold_count, 0);
+  assert_false(fx->channel_state.holds_registration);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_false(az_iot_connection_client__dps_hold_is_active(&fx->client));
+  assert_int_equal(fx->client.dps_phase, AZ_IOT_DPS_PHASE_REGISTERING);
+}
+
+/* With a delay the check is retried on this session, so the hold stays. */
+static void an_unavailable_upstream_with_a_delay_keeps_the_hold(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  fail_held_check_with_unavailable_upstream(fx, "&retry-after=2");
+  assert_int_equal(fx->last_retry_after_ms, 2000);
+  assert_int_equal(fx->client.dps_hold_count, 1);
+  (void)az_iot_connection_client_do_work(&fx->client, 0);
+  assert_true(az_iot_connection_client__dps_hold_is_active(&fx->client));
+}
+
 /* The holder count is a uint8_t; refuse rather than wrap. */
 static void the_hold_count_refuses_to_overflow(void** state)
 {
@@ -3741,7 +3783,8 @@ static void catalog_channel_error(void** state)
   assert_true(inject(fx, m, topic, body));
   assert_int_equal(fx->result_count, 1);
   bool terminal = row->action == AZ_IOT_SU_ERROR_ACTION_FATAL
-      || row->action == AZ_IOT_SU_ERROR_ACTION_PROCEED;
+      || row->action == AZ_IOT_SU_ERROR_ACTION_PROCEED
+      || (row->action == AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK && row->delay_ms == 0);
   if (terminal && row->operation != AZ_IOT_SU_OP_REPORT_STATUS)
   {
     assert_int_equal(fx->client.dps_hold_count, 0);
@@ -3893,6 +3936,10 @@ int main(void)
         a_request_lost_to_teardown_is_reported_on_the_next_tick, setup, teardown),
     cmocka_unit_test_setup_teardown(a_late_bind_still_holds_the_next_session, setup, teardown),
     cmocka_unit_test_setup_teardown(a_retryable_failure_keeps_the_hold, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_unavailable_upstream_without_a_delay_releases_the_hold, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_unavailable_upstream_with_a_delay_keeps_the_hold, setup, teardown),
     cmocka_unit_test_setup_teardown(the_hold_count_refuses_to_overflow, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_late_bind_defers_operations_to_the_next_session, setup, teardown),
