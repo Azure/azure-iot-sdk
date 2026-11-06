@@ -176,6 +176,8 @@ static az_iot_result send_telemetry(az_iot_connection_client* client, sample_con
 
 int main(void)
 {
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call.
   sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
@@ -199,6 +201,9 @@ int main(void)
         "one of "
         "AZ_IOT_DPS_SYMMETRIC_KEY / AZ_IOT_DPS_ENROLLMENT_GROUP_KEY\n");
     config_release(&config);
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
     return sample_pipeline_checks_end(1);
   }
 
@@ -299,5 +304,8 @@ cleanup:
   az_iot_connection_client_deinit(&client);
   az_iot_certificate_provider_managed_deinit(&operational);
   config_release(&config);
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call or return the value
+  // directly.
   return sample_pipeline_checks_end(rc);
 }

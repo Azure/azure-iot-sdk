@@ -86,6 +86,8 @@ static void on_operational_cert(
 
 int main(void)
 {
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call.
   sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
@@ -93,6 +95,9 @@ int main(void)
   sample_config config = { 0 };
   if (sample_config_load(&config) != 0)
   {
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
     return sample_pipeline_checks_end(1);
   }
 
@@ -191,5 +196,8 @@ cleanup:
   free(op_key);
   free(op_cert);
   sample_config_release(&config);
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call or return the value
+  // directly.
   return sample_pipeline_checks_end(rc);
 }

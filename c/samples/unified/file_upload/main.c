@@ -406,6 +406,8 @@ static int run_file_upload(sample_state* state)
 
 int main(void)
 {
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call.
   sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
@@ -413,6 +415,9 @@ int main(void)
   sample_state state = { 0 };
   if (sample_config_load(&state.config) != 0)
   {
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
     return sample_pipeline_checks_end(1);
   }
 
@@ -428,6 +433,9 @@ int main(void)
   if (az_iot_certificate_provider_pem_init(&state.certs, &pem) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
     return sample_pipeline_checks_end(1);
   }
 
@@ -456,6 +464,9 @@ int main(void)
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
     return sample_pipeline_checks_end(1);
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
@@ -464,6 +475,9 @@ int main(void)
   if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
     return sample_pipeline_checks_end(1);
   }
 
@@ -530,5 +544,8 @@ int main(void)
 
   sample_state_destroy(&state);
 
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call or return the value
+  // directly.
   return sample_pipeline_checks_end(rc);
 }
