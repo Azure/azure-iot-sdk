@@ -8,10 +8,10 @@
  * (samples/common/sample_tpm_sim.c): an individual enrollment for a new EK,
  * registration over HTTPS with az_iot_dps_tpm_client, then the assigned mqttv3
  * hub with SAS tokens the simulated TPM signs, and one telemetry message.
- * The device and its registration record are then deleted: the hub refuses the identity, and
- * registering again (which re-creates the device and imports a new key) lets
- * the device send again. The enrollment, registration and device are deleted
- * afterwards.
+ * The device is then deprovisioned (deleted from the hub, its enrollment from
+ * DPS): the hub refuses the identity, and once enrolled again, registering again
+ * (which re-creates the device and imports a new key) lets the device send again. The enrollment,
+ * registration and device are deleted afterwards.
  *
  * Environment: AZ_IOT_DPS_ID_SCOPE, IOT_DPS_CONNECTION_STRING,
  * IOTHUB_CONNECTION_STRING, IOTHUB_EVENTHUB_CONNECTION_STRING; optional
@@ -52,7 +52,7 @@
 /** @brief Hub retries after a refusal of the identity, and the delay between them. */
 #define E2E_TPM_REFUSAL_RETRIES 3u
 #define E2E_TPM_REFUSAL_RETRY_DELAY_MS 5000u
-/** @brief How long the hub may keep accepting a deleted device. */
+/** @brief How long the hub may keep accepting a deleted device, and DPS refusing it. */
 #define E2E_TPM_DELETE_PROPAGATION_MS 120000u
 
 static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
@@ -371,12 +371,12 @@ static void test_dps_tpm_registration_hub_sas_and_reregistration(void** state)
     first_sent = connect_and_send_telemetry(&ctx, a, ca);
   }
 
-  /* Delete the device and its registration record, as when deprovisioning it while keeping its
-   * enrollment (DPS refuses to register a device deleted from the hub while its record remains):
+  /* Deprovision the device (delete it from the hub and its enrollment from DPS: DPS refuses,
+   * errorCode 409000, to register a device deleted from the hub while its enrollment remains):
    * the hub refuses the identity once the deletion reaches it. */
   bool device_deleted_on_hub = first_sent == AZ_IOT_OK
       && az_iot_e2e_service_device_delete(svc, device_id)
-      && az_iot_e2e_dps_registration_delete(reg_id);
+      && az_iot_e2e_dps_enrollment_delete(reg_id);
   uint64_t deadline = sample_now_ms() + E2E_TPM_DELETE_PROPAGATION_MS;
   while (device_deleted_on_hub && refused != AZ_IOT_ERR_IDENTITY_REJECTED && !ctx.token_failed
          && sample_now_ms() < deadline)
@@ -388,10 +388,18 @@ static void test_dps_tpm_registration_hub_sas_and_reregistration(void** state)
     }
   }
 
-  /* Registering again re-creates the device and imports a new key. */
-  if (refused == AZ_IOT_ERR_IDENTITY_REJECTED)
+  /* Enroll the device again; registering again re-creates it and imports a new key. DPS may
+   * still refuse while the deletion propagates. */
+  bool reenrolled = refused == AZ_IOT_ERR_IDENTITY_REJECTED
+      && az_iot_e2e_dps_tpm_enrollment_create(reg_id, ek_b64);
+  deadline = sample_now_ms() + E2E_TPM_DELETE_PROPAGATION_MS;
+  while (reenrolled && reregistered != AZ_IOT_OK && sample_now_ms() < deadline)
   {
     reregistered = register_tpm_device(&dps, &dps_opts, endpoint, &a);
+    if (reregistered != AZ_IOT_OK)
+    {
+      sample_sleep_ms((long)E2E_TPM_REFUSAL_RETRY_DELAY_MS);
+    }
   }
   if (reregistered == AZ_IOT_OK)
   {
@@ -419,6 +427,7 @@ static void test_dps_tpm_registration_hub_sas_and_reregistration(void** state)
   assert_int_equal(first_sent, AZ_IOT_OK);
   assert_true(device_deleted_on_hub);
   assert_int_equal(refused, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_true(reenrolled);
   assert_int_equal(reregistered, AZ_IOT_OK);
   assert_int_equal(second_sent, AZ_IOT_OK);
   assert_true(cleaned);

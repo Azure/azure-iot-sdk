@@ -342,10 +342,6 @@ extern "C"
       const char* registration_id,
       const char* endorsement_key_base64);
 
-  /* Deletes the registration record, keeping the enrollment; a missing one counts
-   * as deleted. */
-  bool az_iot_e2e_dps_registration_delete(const char* registration_id);
-
   /* Deletes the registration record and the individual enrollment; a missing one
    * counts as deleted. */
   bool az_iot_e2e_dps_enrollment_delete(const char* registration_id);

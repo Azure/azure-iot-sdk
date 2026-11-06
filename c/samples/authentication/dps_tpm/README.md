@@ -33,10 +33,9 @@ Two TPM backends implement `az_iot_dps_tpm_ops`:
   [`user_provided_sas_token`](../user_provided_sas_token/README.md).
 - mqttv3 hubs only: mqttv5 hubs do not accept SAS.
 - Re-registration when the hub refuses the identity, which recovers a device that DPS has
-  re-assigned or that was deprovisioned (deleted from the hub with its DPS registration record)
-  while its enrollment remains. DPS refuses to register a device deleted from the hub while its
-  registration record remains (errorCode 409000), and registering does not enable a disabled
-  device. The connection client cannot re-provision a TPM device, as
+  re-assigned, or that was deprovisioned (deleted from the hub and its enrollment from DPS) and
+  then enrolled again. DPS refuses to register a device deleted from the hub while its enrollment
+  remains (errorCode 409000), and registering does not enable a disabled device. The connection client cannot re-provision a TPM device, as
   its DPS session is MQTT. The sample retries the hub briefly (`identity_recovery.policy`: a newly
   assigned hub may refuse the device for a few seconds), and on the `FAULTED` event with
   `AZ_IOT_CONN_FAILURE_IDENTITY` closes and deinitializes the client, registers again (which
