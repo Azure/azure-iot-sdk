@@ -9,9 +9,13 @@ include(FetchContent)
 # c/cgmanifest.json. Not the git repository: its GitLab home is blocked by the
 # network isolation of the official Azure Pipelines build, and its older host,
 # git.cryptomilk.org, has failed clones since 2026-08-05.
+# Debian's copy of the same tarball (same hash) is tried when cmocka.org fails;
+# CMake tries the URLs of the list in order.
 # Overridable, so a mirror or a local copy (file://) can be substituted:
-#   cmake -DCMOCKA_URL=<url> ...
-set(CMOCKA_URL "https://cmocka.org/files/1.1/cmocka-1.1.7.tar.xz" CACHE STRING "cmocka release tarball")
+#   cmake -DCMOCKA_URL=<url>[;<url>...] ...
+set(CMOCKA_URL
+    "https://cmocka.org/files/1.1/cmocka-1.1.7.tar.xz;https://deb.debian.org/debian/pool/main/c/cmocka/cmocka_1.1.7.orig.tar.xz"
+    CACHE STRING "cmocka release tarball URLs, tried in order")
 set(CMOCKA_SHA256 "810570eb0b8d64804331f82b29ff47c790ce9cd6b163e98d47a4807047ecad82" CACHE STRING "SHA-256 of CMOCKA_URL")
 # Extracted files get the extraction time, so a changed URL rebuilds cmocka.
 if(POLICY CMP0135)
@@ -619,6 +623,20 @@ if(OPENSSL_FOUND)
         target_include_directories(az_iot_tests_sample_tpm_sim PRIVATE ${_sample_common})
         target_link_libraries(az_iot_tests_sample_tpm_sim PRIVATE
             az_iot_crypto_openssl OpenSSL::Crypto)
+    endif()
+
+    # The samples' tpm2-tss backend against swtpm, which the test starts.
+    find_package(Tss2 QUIET)
+    find_program(AZ_IOT_SWTPM swtpm)
+    if(Tss2_FOUND AND AZ_IOT_SWTPM AND TARGET OpenSSL::Crypto AND NOT WIN32)
+        az_iot_add_cmocka_test(az_iot_tests_sample_tpm_tss
+            unit/sample_tpm_tss_test.c ${_sample_common}/sample_tpm_tss.c)
+        target_include_directories(az_iot_tests_sample_tpm_tss PRIVATE ${_sample_common})
+        target_compile_definitions(az_iot_tests_sample_tpm_tss PRIVATE
+            SAMPLE_TPM_TSS_TEST_SWTPM="${AZ_IOT_SWTPM}")
+        target_link_libraries(az_iot_tests_sample_tpm_tss PRIVATE Tss2::Esys OpenSSL::Crypto)
+    else()
+        message(STATUS "az_iot_tests_sample_tpm_tss: tpm2-tss or swtpm not found; not built.")
     endif()
 endif()
 

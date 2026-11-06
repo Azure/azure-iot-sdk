@@ -183,6 +183,10 @@ else()
             endif()
         endforeach()
     endif()
+    az_iot_apply_dependency_warnings(
+        paho-mqtt3a-static paho-mqtt3as-static
+        paho-mqtt3c-static paho-mqtt3cs-static
+        common_obj_static common_ssl_obj_static)
 
     # Paho < v1.3.15 is not C23-clean (MQTTPacket.h: `typedef unsigned int bool;`).
     # Pin its sources to C99 so a CMAKE_C_STANDARD override applies to first-party
