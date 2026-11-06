@@ -4,7 +4,7 @@
 
 /* support/e2e_process.h against a helper child (e2e_process_test_child.c, path in
  * AZ_IOT_E2E_PROCESS_TEST_CHILD): exit codes, captured output, the child-only environment,
- * waiting with a pump, and both stop paths. */
+ * waiting with a pump, both stop paths, and a child that outlives its shell. */
 #ifndef _WIN32
 #define _POSIX_C_SOURCE 200809L
 #endif
@@ -183,6 +183,39 @@ static void waiting_ends_when_the_child_exits_without_printing(void** state)
   assert_true(az_iot_e2e_process_stop(&s_process, 0)); // It ended by itself: nothing was forced.
 }
 
+static void stop_ends_what_an_exited_shell_left_running(void** state)
+{
+  (void)state;
+  char child[512];
+  (void)snprintf(child, sizeof(child), "%s", AZ_IOT_E2E_PROCESS_TEST_CHILD);
+  char command[1024];
+#ifdef _WIN32
+  for (char* c = child; *c != '\0'; ++c)
+  {
+    *c = *c == '/' ? '\\' : *c;
+  }
+  (void)snprintf(command, sizeof(command), "start \"\" /b \"%s\" wait", child);
+#else
+  (void)snprintf(command, sizeof(command), "'%s' wait &", child);
+#endif
+  assert_true(az_iot_e2e_process_start_shell(&s_process, command, NULL, "[child] "));
+  assert_true(
+      az_iot_e2e_process_wait_for_output(&s_process, "ready", START_TIMEOUT_MS, NULL, NULL));
+  int exit_code = -1;
+  assert_true(az_iot_e2e_process_wait_for_exit(&s_process, START_TIMEOUT_MS, &exit_code));
+  assert_int_equal(exit_code, 0); // The shell is gone; its child still holds the output.
+
+  time_t const start = time(NULL);
+#ifdef _WIN32
+  // CTRL_BREAK may not reach a child `start /b` began; the job kill ends it either way.
+  (void)az_iot_e2e_process_stop(&s_process, 300);
+#else
+  assert_true(az_iot_e2e_process_stop(&s_process, START_TIMEOUT_MS));
+  assert_true(az_iot_e2e_process_has_printed(&s_process, "stopping gracefully"));
+#endif
+  assert_true(time(NULL) - start < 30);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -196,6 +229,7 @@ int main(void)
         waiting_pumps_until_printed_or_timed_out_then_stop_asks_first, teardown),
     cmocka_unit_test_teardown(stop_kills_a_child_that_ignores_the_request, teardown),
     cmocka_unit_test_teardown(waiting_ends_when_the_child_exits_without_printing, teardown),
+    cmocka_unit_test_teardown(stop_ends_what_an_exited_shell_left_running, teardown),
   };
   return cmocka_run_group_tests_name("e2e_process", tests, NULL, NULL);
 }
