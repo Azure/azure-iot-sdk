@@ -114,9 +114,10 @@ jobs:
 
       - name: Run e2e
         shell: pwsh
+        working-directory: dotnet
         run: |
           # Service-side config (IOTHUB_*, IOT_DPS_*) is set by the generated script.
-          . ./test_config/set_test_env_vars.ps1
+          . ../test_config/set_test_env_vars.ps1
 
           # Map the config's DPS vars onto the names the test consumes.
           $env:AZ_IOT_DPS_ID_SCOPE        = $env:IOT_DPS_ID_SCOPE
@@ -125,15 +126,18 @@ jobs:
           # Tests labeled Category=CertificateManagement run in ci-dotnet-e2e-csr and
           # tests labeled Category=Longhaul run in longhaul-dotnet; all other tests,
           # including those without a category, run here.
-          dotnet test ./dotnet/Project.slnx `
+          dotnet test --solution ./Project.slnx `
             --filter "Category!=CertificateManagement&Category!=Longhaul" `
-            --collect:"XPlat Code Coverage" `
-            --logger:"trx;LogFileName=test-results.trx" `
+            --coverlet `
+            --coverlet-output-format cobertura `
+            --report-xunit-trx `
+            --report-xunit-trx-filename test-results.trx `
             --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `
             --environment IOT_DPS_CONNECTION_STRING=$env:IOT_DPS_CONNECTION_STRING `
             --environment IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE `
-            --results-directory ./coverage `
-            -- xunit.parallelizeAssembly=true
+            --results-directory ../coverage `
+            --results-directory-layout per-module `
+            --max-parallel-test-modules 2
 
       - name: Upload Test Report Artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -178,7 +182,7 @@ jobs:
     - name: Code Coverage Summary Report
       uses: irongut/CodeCoverageSummary@51cc3a756ddcd398d447c044c02cb6aa83fdae95 # v1.3.0
       with:
-        filename: ./coverage/**/coverage.cobertura.xml
+        filename: ./coverage/**/coverage.cobertura*.xml
         format: markdown
         hide_branch_rate: false
         hide_complexity: false

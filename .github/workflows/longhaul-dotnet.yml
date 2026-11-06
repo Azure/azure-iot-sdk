@@ -140,26 +140,29 @@ jobs:
 
       - name: Run longhaul
         shell: pwsh
+        working-directory: dotnet
         env:
           LONGHAUL_DURATION_MINUTES: ${{ inputs.duration-minutes }}
           LONGHAUL_MIN_SUCCESS_PERCENT: ${{ inputs.min-success-percent }}
           LONGHAUL_MAX_MANAGED_MEMORY_GROWTH_MB: ${{ inputs.max-memory-growth-mb }}
         run: |
           # Sets IOTHUB_CONNECTION_STRING, IOT_DPS_CONNECTION_STRING and IOT_DPS_ID_SCOPE.
-          . ./test_config/set_test_env_vars.ps1
+          . ../test_config/set_test_env_vars.ps1
           $required = 'IOTHUB_CONNECTION_STRING', 'IOT_DPS_CONNECTION_STRING', 'IOT_DPS_ID_SCOPE'
           $missing = $required | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
           if ($missing) { throw "MQTTv3 e2e environment not configured; missing: $($missing -join ', ')." }
 
           $env:LONGHAUL_OUTPUT_DIRECTORY = Join-Path $env:GITHUB_WORKSPACE 'longhaul-results'
 
-          dotnet test ./dotnet/Project.slnx `
+          dotnet test --project ./tests/Microsoft.Azure.Iot.Device.IntegrationTests/Microsoft.Azure.Iot.Device.IntegrationTests.csproj `
             --no-build `
             --filter "Category=Longhaul&LonghaulScenario=$env:SCENARIO" `
-            --logger:"trx;LogFileName=longhaul-$env:SCENARIO.trx" `
-            --logger:"console;verbosity=normal" `
-            --results-directory ./test-results `
-            -- xunit.diagnosticMessages=true
+            --report-xunit-trx `
+            --report-xunit-trx-filename "longhaul-$env:SCENARIO.trx" `
+            --xunit-diagnostics on `
+            --results-directory ../test-results `
+            --results-directory-layout per-module `
+            --output Normal
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           # A filter that matches nothing, or a skipped test, still exits 0.
