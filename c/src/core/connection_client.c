@@ -2471,6 +2471,29 @@ static bool dps_session_demanded(const az_iot_connection_client* c)
   return c->dps_session_wanted || c->dps_standing_ref;
 }
 
+/**
+ * @brief Whether the connection state forbids starting a provisioning session for its users.
+ *
+ * @return AZ_IOT_OK if not; AZ_IOT_ERR_NOT_SUPPORTED from FAULTED; AZ_IOT_ERR_BUSY while a retry
+ * is pending, except a hub session waiting for the provisioning session (none scheduled).
+ */
+static az_iot_result connection_state_blocks_dps_session(const az_iot_connection_client* c)
+{
+  for (size_t i = 0; i < AZ_IOT_CONN_SCOPE_COUNT; ++i)
+  {
+    if (c->state[i] == AZ_IOT_CONN_STATE_FAULTED)
+    {
+      return AZ_IOT_ERR_NOT_SUPPORTED;
+    }
+    if (c->state[i] == AZ_IOT_CONN_STATE_RETRY_PENDING
+        && !(i == AZ_IOT_CONN_SCOPE_HUB && c->hub_waits_for_provisioning_session))
+    {
+      return AZ_IOT_ERR_BUSY;
+    }
+  }
+  return AZ_IOT_OK;
+}
+
 static az_iot_result dps_session_ensure(az_iot_connection_client* client);
 
 /**
@@ -6730,6 +6753,91 @@ static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, 
   return (uint64_t)timeout_ms > remaining ? (uint32_t)remaining : timeout_ms;
 }
 
+/**
+ * @brief @p timeout_ms, capped by limit_wait_to_connection_deadlines() and the deadlines a client
+ * with no session acts on: a pending retry, a SAS token request's ask and timeout, and the pacing
+ * of a provisioning session its users want.
+ */
+static uint32_t limit_sessionless_wait_to_deadlines(
+    az_iot_connection_client* c,
+    uint32_t timeout_ms)
+{
+  uint32_t wait_ms = limit_wait_to_connection_deadlines(c, timeout_ms);
+  uint64_t const now = az_iot_time_mono_ms();
+  /* Monotonic deadlines; 0: none. */
+  uint64_t deadlines[2 + 2 * AZ_IOT_CONN_SCOPE_COUNT] = { 0 };
+  size_t count = 0;
+  /* A token request to ask or to resume. */
+  bool due_now = false;
+  if (c->state[AZ_IOT_CONN_SCOPE_HUB] == AZ_IOT_CONN_STATE_RETRY_PENDING
+      || c->state[AZ_IOT_CONN_SCOPE_DPS] == AZ_IOT_CONN_STATE_RETRY_PENDING)
+  {
+    deadlines[count++] = c->reconnect_due_ms;
+  }
+  /* Only while dps_session_ensure() could consume it: a stale one must not end every wait. */
+  if (dps_session_demanded(c) && !c->dps_user_retry_blocked
+      && connection_state_blocks_dps_session(c) == AZ_IOT_OK)
+  {
+    deadlines[count++] = c->dps_user_retry._internal.due_ms;
+  }
+  for (size_t scope = 0; scope < AZ_IOT_CONN_SCOPE_COUNT; ++scope)
+  {
+    if (c->sas_token_request[scope].request_id == 0 || c->sas_token_request[scope].held)
+    {
+      continue;
+    }
+    if (!c->sas_token_request[scope].asked)
+    {
+      due_now = due_now || c->sas_token_ask_after_ms[scope] == 0;
+      deadlines[count++] = c->sas_token_ask_after_ms[scope];
+    }
+    if (!c->sas_token_request[scope].for_renewal)
+    {
+      due_now = due_now || c->sas_token_request[scope].ready;
+      deadlines[count++] = c->sas_token_request[scope].deadline_ms;
+    }
+  }
+  for (size_t i = 0; i < count; ++i)
+  {
+    if (deadlines[i] != 0)
+    {
+      uint64_t const left = deadlines[i] > now ? deadlines[i] - now : 0;
+      wait_ms = (uint64_t)wait_ms > left ? (uint32_t)left : wait_ms;
+    }
+  }
+  return due_now ? 0 : wait_ms;
+}
+
+/**
+ * @brief Waits, with no MQTT session to wait on, for @p timeout_ms or until the next deadline
+ * (limit_sessionless_wait_to_deadlines()), so a do_work() loop does not spin.
+ */
+static void wait_without_session(az_iot_connection_client* c, uint32_t timeout_ms)
+{
+  if (timeout_ms == 0)
+  {
+    return;
+  }
+  uint32_t wait_ms = limit_sessionless_wait_to_deadlines(c, timeout_ms);
+  if (wait_ms > (uint32_t)INT32_MAX)
+  {
+    wait_ms = (uint32_t)INT32_MAX;
+  }
+  /* Sleep until the monotonic clock reaches the target: a coarse clock (Windows
+   * ticks are ~16 ms) can lag the sleep, leaving the deadline not yet due. */
+  uint64_t const target_ms = az_iot_time_mono_ms() + wait_ms;
+  uint64_t now_ms = target_ms - wait_ms;
+  while (now_ms < target_ms)
+  {
+    /* Without a platform sleep (az_noplatform) do_work() returns at once, as before. */
+    if (az_result_failed(az_platform_sleep_msec((int32_t)(target_ms - now_ms))))
+    {
+      return;
+    }
+    now_ms = az_iot_time_mono_ms();
+  }
+}
+
 static void apply_deferred(az_iot_connection_client* c)
 {
   if (c->deferred == DEFER_NONE)
@@ -8142,6 +8250,7 @@ static void settle_spent_dps_retry(az_iot_connection_client* c)
 static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t timeout_ms)
 {
   client->do_work_pass_started_ms = az_iot_time_mono_ms();
+  bool session_pumped = false;
   process_sas_token_request(client);
 
   /* --- DPS provisioning pump --- */
@@ -8279,6 +8388,7 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
       /* Bounded by the connection's deadlines, as the hub's wait is. */
       wait_ms = limit_wait_to_connection_deadlines(client, wait_ms);
       r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, wait_ms);
+      session_pumped = true;
     }
 
     /* Deferred out of the SUBACK handler, so observers do not run inside the
@@ -8323,6 +8433,7 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
   {
     r = client->active_client->iface->process_loop(
         client->active_client, limit_wait_to_connection_deadlines(client, timeout_ms));
+    session_pumped = true;
   }
 
   apply_deferred(client);
@@ -8551,6 +8662,12 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
         settle_spent_dps_retry(client);
       }
     }
+  }
+
+  /* IDLE, RETRY_PENDING or FAULTED: no adapter waited, so wait here. */
+  if (!session_pumped && client->active_client == NULL && client->dps_mqtt == NULL)
+  {
+    wait_without_session(client, timeout_ms);
   }
 
   return r;
@@ -9205,18 +9322,10 @@ static az_iot_result dps_session_ensure(az_iot_connection_client* client)
    *
    * Here rather than in each caller: the rule is a property of the connection
    * state, and every caller would otherwise need its own copy. */
-  for (size_t i = 0; i < AZ_IOT_CONN_SCOPE_COUNT; ++i)
+  az_iot_result const state_gate = connection_state_blocks_dps_session(client);
+  if (state_gate != AZ_IOT_OK)
   {
-    if (client->state[i] == AZ_IOT_CONN_STATE_FAULTED)
-    {
-      return AZ_IOT_ERR_NOT_SUPPORTED;
-    }
-    /* A hub session waiting for this session has no retry scheduled. */
-    if (client->state[i] == AZ_IOT_CONN_STATE_RETRY_PENDING
-        && !(i == AZ_IOT_CONN_SCOPE_HUB && client->hub_waits_for_provisioning_session))
-    {
-      return AZ_IOT_ERR_BUSY;
-    }
+    return state_gate;
   }
 
   /* A provisioning run is mid-flight and owns the session it is about to
