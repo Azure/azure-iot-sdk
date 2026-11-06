@@ -99,10 +99,11 @@ jobs:
           if ($missing) { throw "Shared mqttv5 e2e environment not configured; missing: $($missing -join ', ')." }
 
           # Only tests labeled Hub=MQTTv5 run here. Certificate management tests
-          # run in ci-dotnet-e2e-csr; all other tests run in ci-dotnet.
+          # run in ci-dotnet-e2e-csr, longhaul tests in longhaul-dotnet; all
+          # other tests run in ci-dotnet.
           dotnet test ./dotnet/Project.slnx `
             --no-build `
-            --filter "Hub=MQTTv5&Category!=CertificateManagement" `
+            --filter "Hub=MQTTv5&Category!=CertificateManagement&Category!=Longhaul" `
             --logger:"trx;LogFileName=test-results.trx" `
             --results-directory ./test-results `
             -- xunit.parallelizeAssembly=true
