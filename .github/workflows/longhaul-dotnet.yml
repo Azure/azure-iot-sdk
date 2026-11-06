@@ -139,8 +139,15 @@ jobs:
 
   setup:
     name: setup (provision MQTTv3 hub)
-    needs: plan
-    if: needs.plan.outputs.needs-mqttv3 == 'true'
+    # Wait for ADR repair (up to 210 minutes) before creating the resource
+    # group: otherwise that wait plus the longhaul run could outlast the
+    # cleanup-e2e-resources janitor's 8-hour cutoff, letting it delete the
+    # hub mid-run.
+    needs: [plan, adr-namespace]
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success' &&
+          needs.plan.outputs.needs-mqttv3 == 'true' &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') }}
     permissions:
       contents: read
       id-token: write   # azure/login OIDC
