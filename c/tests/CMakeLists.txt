@@ -536,6 +536,8 @@ az_iot_add_cmocka_test(az_iot_tests_sample_utils
     ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common/sample_utils.c)
 target_include_directories(az_iot_tests_sample_utils PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../samples/common)
+# With the pipeline hooks compiled in, so their cases run too.
+target_compile_definitions(az_iot_tests_sample_utils PRIVATE SAMPLE_PIPELINE_HOOKS)
 # Directory-sync cases wrap fsync(). --wrap is a GNU ld / lld feature;
 # without it those cases are not registered and every other case still runs.
 if(UNIX AND NOT APPLE)
@@ -553,6 +555,14 @@ target_include_directories(az_iot_tests_sample_reading_queue PRIVATE ${_mt_sampl
 if(UNIX)
     target_link_libraries(az_iot_tests_sample_reading_queue PRIVATE pthread)
 endif()
+
+# The samples that run offline: each must exit 0.
+foreach(_sample custom_provider_template hsm_sign_callback)
+    if(TARGET az_iot_sample_auth_${_sample})
+        add_test(NAME az_iot_tests_sample_auth_${_sample} COMMAND az_iot_sample_auth_${_sample})
+    endif()
+endforeach()
+unset(_sample)
 
 # The samples' app-owned certificate provider
 # (samples/authentication/custom_certificate_provider), OpenSSL 3.0+.

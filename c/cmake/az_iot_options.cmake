@@ -17,6 +17,10 @@ option(AZ_IOT_WITH_CRYPTO_OPENSSL "Build the OpenSSL crypto backend"            
 option(AZ_IOT_WITH_CRYPTO_MBEDTLS "Build the mbedTLS crypto backend when mbedTLS 3.6 LTS or 4.1+ is found" ON)
 option(AZ_IOT_WITH_CERT_PROVIDER_MANAGED "Build the OpenSSL managed certificate provider" ON)
 option(AZ_IOT_BUILD_SAMPLES    "Build sample apps"                              ON)
+# Compiles the samples' pipeline hooks (SAMPLE_PIPELINE_HOOKS, samples/common/sample_utils.h): begin
+# and end markers and a graceful stop, so a CI pipeline can drive them. Off: user builds compile
+# them out.
+option(AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS "Build the samples with the CI pipeline hooks" OFF)
 option(AZ_IOT_BUILD_TESTS      "Build unit tests"                               OFF)
 # End-to-end tests talk to a REAL Azure IoT Hub/DPS instance and are off by
 # default (they require provisioned cloud resources + the Paho adapter). The
