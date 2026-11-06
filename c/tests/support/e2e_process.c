@@ -593,16 +593,25 @@ static void echo_complete_lines(az_iot_e2e_process* process)
   }
 }
 
-void az_iot_e2e_process_read_output(az_iot_e2e_process* process)
+/**
+ * @brief Reads what the child printed, without blocking, and echoes its whole lines.
+ *
+ * @return Whether @p text (may be NULL) was in the log at some point of this read, including in
+ * output it dropped to stay bounded.
+ */
+static bool read_output_finding(az_iot_e2e_process* process, const char* text)
 {
+  bool found = false;
   if (!process->running)
   {
-    return;
+    return false;
   }
   while (!process->output_ended)
   {
     if (process->log_length + 1 >= sizeof(process->log)) // Full: keep the newer half.
     {
+      process->log[process->log_length] = '\0';
+      found = found || (text != NULL && strstr(process->log, text) != NULL);
       echo_complete_lines(process);
       size_t const keep = sizeof(process->log) / 2;
       size_t const dropped = process->log_length - keep;
@@ -631,6 +640,12 @@ void az_iot_e2e_process_read_output(az_iot_e2e_process* process)
   process->log[process->log_length] = '\0';
   echo_complete_lines(process);
   (void)fflush(stdout);
+  return found || (text != NULL && strstr(process->log, text) != NULL);
+}
+
+void az_iot_e2e_process_read_output(az_iot_e2e_process* process)
+{
+  (void)read_output_finding(process, NULL);
 }
 
 bool az_iot_e2e_process_has_printed(const az_iot_e2e_process* process, const char* text)
@@ -648,8 +663,7 @@ bool az_iot_e2e_process_wait_for_output(
   int64_t const end = now_ms() + timeout_ms;
   for (;;)
   {
-    az_iot_e2e_process_read_output(process);
-    if (az_iot_e2e_process_has_printed(process, text))
+    if (read_output_finding(process, text))
     {
       return true;
     }
@@ -657,13 +671,16 @@ bool az_iot_e2e_process_wait_for_output(
     {
       return false;
     }
+    // At most one read per tick, whatever the pump takes.
+    int64_t const tick_end = now_ms() + TICK_MS;
     if (pump != NULL)
     {
       pump(context);
     }
-    else
+    int64_t const left = tick_end - now_ms();
+    if (left > 0)
     {
-      sleep_ms(TICK_MS);
+      sleep_ms((int)left);
     }
   }
 }

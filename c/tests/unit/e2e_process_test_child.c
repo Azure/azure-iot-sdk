@@ -7,11 +7,14 @@
  *   exit <code>       exits with <code>
  *   print [args...]   prints two lines, one on stderr, and its arguments; exits 0
  *   environment NAME  prints NAME=<its value, or "(unset)">; exits 0
- *   flood <count>     prints <count> 100-byte lines, "line <n>" (5 digits) then padding; exits 0
+ *   flood <count>     prints, in one write, <count> 100-byte lines, "line <n>" (5 digits) then
+ *                     padding; exits 0
  *   wait              prints "ready", then on SIGTERM (CTRL_BREAK on Windows) prints "stopping
  *                     gracefully" and exits 3
  *   ignore-stop       prints "ready" and ignores SIGTERM (CTRL_BREAK) until killed */
-#ifndef _WIN32
+#ifdef __linux__
+#define _GNU_SOURCE // F_SETPIPE_SZ
+#elif !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L
 #endif
 
@@ -23,7 +26,9 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <fcntl.h>
 #include <time.h>
+#include <unistd.h>
 #endif
 
 #include "support/test_env.h"
@@ -86,10 +91,24 @@ int main(int argc, char** argv)
   }
   if (strcmp(mode, "flood") == 0 && argc > 2)
   {
-    for (int i = 0; i < atoi(argv[2]); ++i)
+    // One write, so the reader gets it as one burst; on Linux, all of it waits in the pipe.
+#ifdef F_SETPIPE_SZ
+    (void)fcntl(STDOUT_FILENO, F_SETPIPE_SZ, 1024 * 1024);
+#endif
+    int const count = atoi(argv[2]);
+    char* lines = malloc((size_t)count * 100 + 1);
+    if (lines == NULL)
     {
-      printf("line %05d %088d\n", i, 0);
+      return 2;
     }
+    for (int i = 0; i < count; ++i)
+    {
+      char line[128];
+      (void)snprintf(line, sizeof(line), "line %05d %088d\n", i % 100000, 0);
+      memcpy(lines + (size_t)i * 100, line, 100);
+    }
+    (void)fwrite(lines, 100, (size_t)count, stdout);
+    free(lines);
     return 0;
   }
   if (strcmp(mode, "wait") == 0 || strcmp(mode, "ignore-stop") == 0)
