@@ -14,11 +14,40 @@
 #include <string.h>
 #include <time.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+
 #define E2E_SAS_TTL_SECONDS 3600
 #define E2E_API_VERSION "2021-04-12"
 /* Telemetry enqueued this long before the watch starts is still delivered, so a
  * runner clock ahead of the service cannot filter out the message under test. */
 #define E2E_TELEMETRY_CLOCK_SKEW_S 300
+/* Pause before reconnecting a watcher whose receiver the service detached, so a reader of the
+ * same consumer group can leave. */
+#define E2E_TELEMETRY_RECONNECT_DELAY_S 5
+/* Limits of one HTTPS request. An idempotent one is abandoned sooner, as it is retried. */
+#define E2E_HTTPS_TIMEOUT_S 60
+#define E2E_HTTPS_IDEMPOTENT_TIMEOUT_S 20
+#define E2E_HTTPS_ATTEMPTS 3
+#define E2E_HTTPS_RETRY_PAUSE_MS 2000u
+
+/** @brief A REST call in a slot, with what it takes to send it again. */
+typedef struct
+{
+  e2e_http_request* http; /**< Non-NULL while the call is in flight. */
+  const char* method; /**< A string literal. */
+  char path[256];
+  char sas[512];
+  char* body; /**< Heap copy; NULL for none. */
+  bool idempotent;
+  int attempt;
+  time_t attempt_start;
+  time_t next_attempt_at; /**< 0 while an attempt is in flight. */
+} rest_call;
 
 struct az_iot_e2e_service
 {
@@ -29,10 +58,10 @@ struct az_iot_e2e_service
   int partition_count;
 
   e2e_amqp_telemetry* telemetry; /* non-NULL while watching */
+  time_t telemetry_reconnect_at; /* 0 unless a receiver was detached */
   e2e_amqp_filenotify* filenotify; /* non-NULL while watching file notifications */
-  /* Non-NULL while a REST call is in flight. [0] backs the single-request API;
-   * the rest are handles. */
-  e2e_http_request* http[AZ_IOT_E2E_SERVICE_MAX_REQUESTS];
+  /* [0] backs the single-request API; the rest are handles. */
+  rest_call rest[AZ_IOT_E2E_SERVICE_MAX_REQUESTS];
 
   char last_error[256];
 };
@@ -74,12 +103,14 @@ static int64_t sas_expiry(void) { return (int64_t)time(NULL) + E2E_SAS_TTL_SECON
 /** @brief Close and free REST slot @p slot, if in use. */
 static void end_slot(az_iot_e2e_service* svc, int slot)
 {
-  if (svc->http[slot] != NULL)
+  rest_call* c = &svc->rest[slot];
+  if (c->http != NULL)
   {
-    e2e_http_end(svc->http[slot]);
-    free(svc->http[slot]);
-    svc->http[slot] = NULL;
+    e2e_http_end(c->http);
+    free(c->http);
   }
+  free(c->body);
+  memset(c, 0, sizeof(*c));
 }
 
 az_iot_e2e_service* az_iot_e2e_service_create(const char** error_out)
@@ -199,11 +230,15 @@ const char* az_iot_e2e_service_last_error(const az_iot_e2e_service* svc)
   return svc->last_error;
 }
 
-bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc)
+bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc, const char* capture_filter)
 {
   if (svc->telemetry != NULL)
   {
-    return true; /* already watching */
+    if (strcmp(svc->telemetry->capture_filter, capture_filter != NULL ? capture_filter : "") == 0)
+    {
+      return true; /* already watching */
+    }
+    az_iot_e2e_service_telemetry_watch_end(svc);
   }
 
   /* Event Hubs authorizes the entity audience with a SAS whose HMAC key is the
@@ -228,6 +263,7 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc)
     return false;
   }
 
+  svc->telemetry_reconnect_at = 0;
   const char* err = NULL;
   int64_t enqueued_after_ms = ((int64_t)time(NULL) - E2E_TELEMETRY_CLOCK_SKEW_S) * 1000;
   if (!e2e_amqp_telemetry_begin(
@@ -238,11 +274,52 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc)
           enqueued_after_ms,
           sas,
           svc->partition_count,
+          capture_filter,
           &err))
   {
     set_error(svc, (err != NULL) ? err : "telemetry: begin failed");
     free(svc->telemetry);
     svc->telemetry = NULL;
+    return false;
+  }
+  return true;
+}
+
+/**
+ * @brief Reconnects the telemetry watcher, after a pause, when the service detached one of its
+ * receivers: Event Hubs refuses a sixth reader of a partition in a consumer group, and concurrent
+ * runs share the groups. The watcher reads again from the time the watch began and drops the
+ * events it already received; az_iot_e2e_service_do_work() completes the setup step by step.
+ *
+ * @return false only if the reconnect could not start; the watcher is then gone.
+ */
+static bool telemetry_reconnect_if_receiver_detached(az_iot_e2e_service* svc)
+{
+  const int partition = e2e_amqp_telemetry_find_detached_receiver(svc->telemetry);
+  if (partition < 0)
+  {
+    return true;
+  }
+  const time_t now = time(NULL);
+  if (svc->telemetry_reconnect_at == 0)
+  {
+    svc->telemetry_reconnect_at = now + E2E_TELEMETRY_RECONNECT_DELAY_S;
+    printf(
+        "[e2e] telemetry: the service detached the receiver of partition %d; reconnecting in "
+        "%ds\n",
+        partition,
+        E2E_TELEMETRY_RECONNECT_DELAY_S);
+    return true;
+  }
+  if (now < svc->telemetry_reconnect_at)
+  {
+    return true;
+  }
+  svc->telemetry_reconnect_at = 0;
+  if (!e2e_amqp_telemetry_restart(svc->telemetry))
+  {
+    set_error(svc, svc->telemetry->error);
+    az_iot_e2e_service_telemetry_watch_end(svc);
     return false;
   }
   return true;
@@ -261,7 +338,11 @@ bool az_iot_e2e_service_do_work(az_iot_e2e_service* svc, int timeout_ms)
 
   if (svc->telemetry != NULL && !e2e_amqp_telemetry_do_work(svc->telemetry, slice))
   {
-    set_error(svc, "telemetry: connection failed");
+    set_error(svc, svc->telemetry->error);
+    return false;
+  }
+  if (svc->telemetry != NULL && !telemetry_reconnect_if_receiver_detached(svc))
+  {
     return false;
   }
   if (svc->filenotify != NULL && !e2e_amqp_filenotify_do_work(svc->filenotify, slice))
@@ -432,13 +513,13 @@ void az_iot_e2e_service_file_notification_stats(
     int* out_delivered,
     int* out_captured,
     int* out_released,
-    int* out_stale,
+    int* out_unwatched,
     int* out_unparsed)
 {
   if (svc->filenotify != NULL)
   {
     e2e_amqp_filenotify_stats(
-        svc->filenotify, out_delivered, out_captured, out_released, out_stale, out_unparsed);
+        svc->filenotify, out_delivered, out_captured, out_released, out_unwatched, out_unparsed);
     return;
   }
   if (out_delivered != NULL)
@@ -453,9 +534,9 @@ void az_iot_e2e_service_file_notification_stats(
   {
     *out_released = 0;
   }
-  if (out_stale != NULL)
+  if (out_unwatched != NULL)
   {
-    *out_stale = 0;
+    *out_unwatched = 0;
   }
   if (out_unparsed != NULL)
   {
@@ -532,29 +613,64 @@ static bool build_hub_sas(az_iot_e2e_service* svc, char* out, size_t out_size)
   return true;
 }
 
-/** @brief Start a REST request in @p slot, replacing any previous one there. */
+static void log_failed_attempt(
+    const e2e_http_request* r,
+    const char* host,
+    const char* method,
+    const char* path,
+    int attempt,
+    long elapsed_s);
+
+/** @brief Start the next attempt of @p c on a new connection. */
+static bool begin_attempt(az_iot_e2e_service* svc, rest_call* c)
+{
+  c->attempt++;
+  c->attempt_start = time(NULL);
+  c->next_attempt_at = 0;
+  if (!e2e_http_begin(c->http, svc->hub_info.host, c->method, c->path, c->sas, c->body))
+  {
+    set_error(svc, e2e_http_error(c->http));
+    return false;
+  }
+  return true;
+}
+
+/**
+ * @brief Start a REST request in @p slot, replacing any previous one there.
+ * @param idempotent The request may be sent again whatever stage it reached (see poll_slot()).
+ */
 static bool begin_request_in(
     az_iot_e2e_service* svc,
     int slot,
     const char* method,
     const char* path,
     const char* sas,
-    const char* body)
+    const char* body,
+    bool idempotent)
 {
   end_slot(svc, slot);
-  e2e_http_request* r = (e2e_http_request*)calloc(1, sizeof(*r));
-  if (r == NULL)
+  rest_call* c = &svc->rest[slot];
+  c->http = (e2e_http_request*)calloc(1, sizeof(*c->http));
+  c->body = (body != NULL) ? (char*)malloc(strlen(body) + 1) : NULL;
+  if (c->http == NULL || (body != NULL && c->body == NULL))
   {
+    end_slot(svc, slot);
     set_error(svc, "rest: out of memory");
     return false;
   }
-  if (!e2e_http_begin(r, svc->hub_info.host, method, path, sas, body))
+  if (body != NULL)
   {
-    set_error(svc, e2e_http_error(r));
-    free(r);
+    memcpy(c->body, body, strlen(body) + 1);
+  }
+  c->method = method;
+  snprintf(c->path, sizeof(c->path), "%s", path);
+  snprintf(c->sas, sizeof(c->sas), "%s", sas);
+  c->idempotent = idempotent;
+  if (!begin_attempt(svc, c))
+  {
+    end_slot(svc, slot);
     return false;
   }
-  svc->http[slot] = r;
   return true;
 }
 
@@ -564,9 +680,10 @@ static bool begin_request(
     const char* method,
     const char* path,
     const char* sas,
-    const char* body)
+    const char* body,
+    bool idempotent)
 {
-  return begin_request_in(svc, 0, method, path, sas, body);
+  return begin_request_in(svc, 0, method, path, sas, body, idempotent);
 }
 
 /** @brief Start a direct-method invocation in @p slot. */
@@ -601,7 +718,7 @@ static bool begin_method_invoke(
     set_error(svc, "rest: method invocation body too large");
     return false;
   }
-  return begin_request_in(svc, slot, "POST", path, sas, body);
+  return begin_request_in(svc, slot, "POST", path, sas, body, false);
 }
 
 bool az_iot_e2e_service_method_invoke_begin(
@@ -636,7 +753,7 @@ int az_iot_e2e_service_method_invoke_start(
 {
   for (int slot = 1; slot < AZ_IOT_E2E_SERVICE_MAX_REQUESTS; slot++)
   {
-    if (svc->http[slot] == NULL)
+    if (svc->rest[slot].http == NULL)
     {
       return begin_method_invoke(
                  svc,
@@ -663,7 +780,7 @@ bool az_iot_e2e_service_twin_get_begin(az_iot_e2e_service* svc, const char* devi
   }
   char path[256];
   snprintf(path, sizeof(path), "/twins/%s?api-version=%s", device_id, E2E_API_VERSION);
-  return begin_request(svc, "GET", path, sas, NULL);
+  return begin_request(svc, "GET", path, sas, NULL, true);
 }
 
 bool az_iot_e2e_service_twin_patch_desired_begin(
@@ -678,18 +795,25 @@ bool az_iot_e2e_service_twin_patch_desired_begin(
   }
   char path[256];
   snprintf(path, sizeof(path), "/twins/%s?api-version=%s", device_id, E2E_API_VERSION);
-  /* Large enough for a software updates deployment desired PATCH (~3 KB: signed JWS +
-   * escaped v5 manifest) wrapped in the properties/desired envelope. */
+  /* Large enough for a ~3 KB desired PATCH wrapped in the properties/desired envelope. */
   char body[4096];
   snprintf(
       body,
       sizeof(body),
       "{\"properties\":{\"desired\":%s}}",
       (desired_json != NULL) ? desired_json : "{}");
-  return begin_request(svc, "PATCH", path, sas, body);
+  /* Sent again after a lost response, it sets the same values. */
+  return begin_request(svc, "PATCH", path, sas, body, true);
 }
 
-/** @brief Advance REST slot @p slot; on completion copy out and release it. */
+/**
+ * @brief Advance REST slot @p slot; on completion copy out and release it.
+ *
+ * An attempt that fails, or an idempotent one without a response after
+ * #E2E_HTTPS_IDEMPOTENT_TIMEOUT_S, is logged and sent again on a new connection when
+ * e2e_http_retry_is_safe() allows it, up to #E2E_HTTPS_ATTEMPTS times,
+ * #E2E_HTTPS_RETRY_PAUSE_MS apart.
+ */
 static int poll_slot(
     az_iot_e2e_service* svc,
     int slot,
@@ -697,25 +821,52 @@ static int poll_slot(
     char* resp_buf,
     size_t resp_buf_size)
 {
-  e2e_http_request* r = svc->http[slot];
-  if (r == NULL)
+  rest_call* c = &svc->rest[slot];
+  if (c->http == NULL)
   {
     set_error(svc, "rest: no request in flight");
     return -1;
   }
+  if (c->next_attempt_at != 0)
+  {
+    if (time(NULL) < c->next_attempt_at)
+    {
+      return 0;
+    }
+    if (!begin_attempt(svc, c))
+    {
+      end_slot(svc, slot);
+      return -1;
+    }
+  }
 
+  e2e_http_request* r = c->http;
   int rc = e2e_http_poll(r);
-  if (rc == 0)
+  const long elapsed_s = (long)(time(NULL) - c->attempt_start);
+  if (rc == 0 && !(c->idempotent && elapsed_s >= E2E_HTTPS_IDEMPOTENT_TIMEOUT_S))
   {
     return 0;
   }
+  if (rc != 1)
+  {
+    log_failed_attempt(r, svc->hub_info.host, c->method, c->path, c->attempt, elapsed_s);
+    if (c->attempt < E2E_HTTPS_ATTEMPTS && e2e_http_retry_is_safe(r, c->idempotent))
+    {
+      e2e_http_end(r);
+      memset(r, 0, sizeof(*r));
+      c->next_attempt_at = time(NULL) + (time_t)(E2E_HTTPS_RETRY_PAUSE_MS / 1000u);
+      return 0;
+    }
+    rc = -1;
+  }
 
+  /* A status line is reported even when the rest of the response did not arrive. */
+  if (out_http_status != NULL && e2e_http_status(r) != 0)
+  {
+    *out_http_status = e2e_http_status(r);
+  }
   if (rc == 1)
   {
-    if (out_http_status != NULL)
-    {
-      *out_http_status = e2e_http_status(r);
-    }
     if (resp_buf != NULL && resp_buf_size > 0)
     {
       int body_len = 0;
@@ -731,7 +882,7 @@ static int poll_slot(
   }
   else
   {
-    set_error(svc, e2e_http_error(r));
+    set_error(svc, e2e_http_error(r) != NULL ? e2e_http_error(r) : "rest: no complete response");
   }
 
   end_slot(svc, slot);
@@ -765,11 +916,11 @@ int az_iot_e2e_service_request_poll_handle(
 bool az_iot_e2e_service_request_is_sent(const az_iot_e2e_service* svc, int handle)
 {
   if (svc == NULL || handle < 1 || handle >= AZ_IOT_E2E_SERVICE_MAX_REQUESTS
-      || svc->http[handle] == NULL)
+      || svc->rest[handle].http == NULL)
   {
     return false;
   }
-  const e2e_http_request* r = svc->http[handle];
+  const e2e_http_request* r = svc->rest[handle].http;
   return r->phase == E2E_HTTP_PHASE_READING || r->phase == E2E_HTTP_PHASE_DONE;
 }
 
@@ -817,6 +968,62 @@ static char* read_file_alloc(const char* path)
   return buf;
 }
 
+/** @brief Waits @p ms milliseconds between two attempts of a request. */
+static void pause_between_attempts(unsigned ms)
+{
+#ifdef _WIN32
+  Sleep(ms);
+#else
+  struct timespec delay = { (time_t)(ms / 1000u), (long)(ms % 1000u) * 1000000L };
+  (void)nanosleep(&delay, NULL);
+#endif
+}
+
+/**
+ * @brief Logs why an attempt of @p method on @p host @p path failed, without the query
+ * string (it can hold a SAS token).
+ */
+static void log_failed_attempt(
+    const e2e_http_request* r,
+    const char* host,
+    const char* method,
+    const char* path,
+    int attempt,
+    long elapsed_s)
+{
+  const char* err = e2e_http_error(r);
+  const char* native = (const char*)r->transport_storage.last_error_message;
+  (void)fprintf(
+      stderr,
+      "[e2e] HTTPS %s %s%.*s, attempt %d of %d, after %lds: %s%s; %d of %d request bytes sent, "
+      "%d response bytes received%s%s\n",
+      method,
+      host,
+      (int)strcspn(path, "?"),
+      path,
+      attempt,
+      E2E_HTTPS_ATTEMPTS,
+      elapsed_s,
+      err != NULL ? err : "no complete response while ",
+      err != NULL ? "" : e2e_http_phase_name(r->phase),
+      r->request_sent,
+      r->request_len,
+      r->response_len,
+      native[0] != '\0' ? "; transport: " : "",
+      native);
+}
+
+/**
+ * @brief Sends one HTTPS request and waits for its response.
+ *
+ * A request with no response yet is sent again on a new connection, up to
+ * #E2E_HTTPS_ATTEMPTS times, when e2e_http_retry_is_safe() allows it. An @p idempotent
+ * request is abandoned after #E2E_HTTPS_IDEMPOTENT_TIMEOUT_S rather than
+ * #E2E_HTTPS_TIMEOUT_S, as it can be retried whatever stage it reached.
+ *
+ * @return true when a complete response arrived. @p out_status is set once a status line
+ * arrived; the other outputs once the header block did, even with an incomplete body.
+ */
 static bool https_request(
     const char* host,
     const char* method,
@@ -828,6 +1035,7 @@ static bool https_request(
     const char* extra_header,
     const void* body,
     size_t body_len,
+    bool idempotent,
     int* out_status,
     char* resp_buf,
     size_t resp_buf_size,
@@ -852,58 +1060,74 @@ static bool https_request(
     return false;
   }
 
-  bool ok = e2e_http_begin_ex(
-      r,
-      host,
-      method,
-      path,
-      authorization,
-      content_type,
-      extra_header,
-      body,
-      body_len,
-      cert_pem,
-      key_pem);
-
-  if (ok)
+  const long timeout_s = idempotent ? E2E_HTTPS_IDEMPOTENT_TIMEOUT_S : E2E_HTTPS_TIMEOUT_S;
+  bool ok = false;
+  for (int attempt = 1; attempt <= E2E_HTTPS_ATTEMPTS; attempt++)
   {
-    int rc;
-    time_t start = time(NULL);
-    do
+    if (attempt > 1)
     {
-      rc = e2e_http_poll(r);
-    } while (rc == 0 && (time(NULL) - start) < 60);
-
-    if (rc == 1)
-    {
-      if (out_status != NULL)
-      {
-        *out_status = e2e_http_status(r);
-      }
-      if (out_retry_after != NULL)
-      {
-        *out_retry_after = e2e_http_retry_after(r);
-      }
-      int b_len = 0;
-      const uint8_t* b = e2e_http_body(r, &b_len);
-      size_t copy = (size_t)b_len;
-      if (resp_buf != NULL && resp_buf_size > 0)
-      {
-        if (copy > resp_buf_size - 1)
-        {
-          copy = resp_buf_size - 1;
-        }
-        memcpy(resp_buf, b, copy);
-        resp_buf[copy] = '\0';
-      }
-      if (out_resp_len != NULL)
-      {
-        *out_resp_len = copy;
-      }
+      pause_between_attempts(E2E_HTTPS_RETRY_PAUSE_MS);
     }
-    else
+
+    time_t start = time(NULL);
+    bool begun = e2e_http_begin_ex(
+        r,
+        host,
+        method,
+        path,
+        authorization,
+        content_type,
+        extra_header,
+        body,
+        body_len,
+        cert_pem,
+        key_pem);
+    int rc = -1;
+    if (begun)
     {
-      ok = false;
+      do
+      {
+        rc = e2e_http_poll(r);
+      } while (rc == 0 && (time(NULL) - start) < timeout_s);
+    }
+    ok = rc == 1;
+    if (!ok)
+    {
+      log_failed_attempt(r, host, method, path, attempt, (long)(time(NULL) - start));
+    }
+    bool retry = !ok && begun && e2e_http_retry_is_safe(r, idempotent);
+    if (!retry)
+    {
+      break;
+    }
+    e2e_http_end(r);
+  }
+
+  if (out_status != NULL && e2e_http_status(r) != 0)
+  {
+    *out_status = e2e_http_status(r);
+  }
+  if (r->headers_done)
+  {
+    if (out_retry_after != NULL)
+    {
+      *out_retry_after = e2e_http_retry_after(r);
+    }
+    int b_len = 0;
+    const uint8_t* b = e2e_http_body(r, &b_len);
+    size_t copy = (size_t)b_len;
+    if (resp_buf != NULL && resp_buf_size > 0)
+    {
+      if (copy > resp_buf_size - 1)
+      {
+        copy = resp_buf_size - 1;
+      }
+      memcpy(resp_buf, b, copy);
+      resp_buf[copy] = '\0';
+    }
+    if (out_resp_len != NULL)
+    {
+      *out_resp_len = copy;
     }
   }
 
@@ -940,6 +1164,7 @@ bool az_iot_e2e_https_request(
       extra_header,
       body,
       body_len,
+      false,
       out_status,
       resp_buf,
       resp_buf_size,
@@ -972,6 +1197,7 @@ bool az_iot_e2e_https_request_auth(
       NULL,
       body,
       body_len,
+      false,
       out_status,
       resp_buf,
       resp_buf_size,
@@ -992,7 +1218,12 @@ static bool dps_service_auth(e2e_conn_info* info, char* sas, size_t sas_size)
              info->host, info->key_name, info->key, true, sas_expiry(), sas, sas_size);
 }
 
-/** @brief A DPS service REST call; true for a 2xx (or 404 when @p allow_404). */
+/**
+ * @brief A DPS service REST call; true for a 2xx (or 404 when @p allow_404).
+ *
+ * PUT (create or replace with the same body) and DELETE are idempotent, so a stalled attempt is
+ * sent again.
+ */
 static bool dps_service_call(const char* method, const char* path, const char* body, bool allow_404)
 {
   e2e_conn_info info;
@@ -1014,6 +1245,7 @@ static bool dps_service_call(const char* method, const char* path, const char* b
       strcmp(method, "DELETE") == 0 ? "If-Match: *" : NULL,
       body,
       body != NULL ? strlen(body) : 0,
+      strcmp(method, "PUT") == 0 || strcmp(method, "DELETE") == 0,
       &status,
       resp,
       sizeof(resp),
@@ -1098,6 +1330,7 @@ bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* devic
       "If-Match: \"*\"",
       NULL,
       0,
+      true,
       &status,
       resp,
       sizeof(resp),

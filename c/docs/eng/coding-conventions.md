@@ -64,7 +64,7 @@ every finding is an error in `src`, `adapters` and `samples`. CI pins clang-tidy
 ```pwsh
 cmake -S c -B c/build/msvc-analyze -G Ninja -DCMAKE_BUILD_TYPE=Debug `
   -DAZ_IOT_ENABLE_MSVC_ANALYZE=ON -DAZ_IOT_BUILD_TESTS=OFF `
-  -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_RUST_MQTT=ON
+  -DAZ_IOT_WITH_PAHO=ON
 cmake --build c/build/msvc-analyze -- -k 0   # what CI runs (ci-c-static-analysis.yml, msvc-analyze)
 ```
 
@@ -84,8 +84,8 @@ facade - which owns the one legitimate use - carries a waiver for it.
 Use [`az_iot_span_writer`](../../src/core/internal/span_writer.h):
 
 ```c
-char topic[AZ_IOT_MQTTV5_DM_TOPIC_MAX];
-const char* parts[] = { "ih/", device_id, "/dev/methods" };
+char topic[AZ_IOT_C2D_TOPIC_MAX];
+const char* parts[] = { "devices/", device_id, "/messages/devicebound/#" };
 if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, parts, 3) != AZ_IOT_OK)
 {
     return AZ_IOT_ERR_INTERNAL;

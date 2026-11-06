@@ -1,8 +1,12 @@
-/* Must precede every system header: glibc gates clock_gettime and
- * CLOCK_MONOTONIC on it, and the first header included fixes the choice. */
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
+
+/* Must precede every system header: glibc gates clock_gettime, CLOCK_MONOTONIC,
+ * O_NOFOLLOW and fsync on it, and the first header included fixes the choice. */
 #ifndef _WIN32
 #ifndef _POSIX_C_SOURCE
-#define _POSIX_C_SOURCE 200112L
+#define _POSIX_C_SOURCE 200809L
 #endif
 #endif
 
@@ -11,6 +15,7 @@
 #include "azure/iot/az_iot.h"
 
 #include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,7 +35,7 @@
 
 // Returns a heap copy of `s` (NUL-terminated), or NULL when `s` is NULL or on
 // allocation failure. Caller frees with free().
-static char* dup_cstr(const char* s)
+static char* copy_string(const char* s)
 {
   if (!s)
   {
@@ -142,7 +147,7 @@ az_iot_log_sink sample_log_sink(az_iot_log_level min_level)
   /* Static: the sink writes through this state for the life of the process. */
   static az_iot_log_file_sink s_file_sink;
   az_iot_log_sink sink;
-  char* enabled = sample_env_dup("AZ_IOT_SAMPLE_LOG_TO_FILE", NULL);
+  char* enabled = sample_env_copy("AZ_IOT_SAMPLE_LOG_TO_FILE", NULL);
   if (enabled == NULL)
   {
     return az_iot_log_stderr_sink(min_level);
@@ -162,7 +167,7 @@ az_iot_log_sink sample_log_sink(az_iot_log_level min_level)
   return sink;
 }
 
-char* sample_env_dup(const char* name, const char* fallback)
+char* sample_env_copy(const char* name, const char* fallback)
 {
 #ifdef _WIN32
   char* value = NULL;
@@ -172,18 +177,37 @@ char* sample_env_dup(const char* name, const char* fallback)
     return value; /* heap-owned by the CRT; caller frees */
   }
   free(value);
-  return dup_cstr(fallback);
+  return copy_string(fallback);
 #else
   const char* v = getenv(name);
   if (v && v[0])
   {
-    return dup_cstr(v);
+    return copy_string(v);
   }
-  return dup_cstr(fallback);
+  return copy_string(fallback);
 #endif
 }
 
-bool sample_copy_str(char* dst, size_t dst_size, const char* src)
+bool sample_is_plain_file_name(az_span name)
+{
+  int32_t size = az_span_size(name);
+  const uint8_t* bytes = az_span_ptr(name);
+  if (size <= 0 || (size == 1 && bytes[0] == '.')
+      || (size == 2 && bytes[0] == '.' && bytes[1] == '.'))
+  {
+    return false;
+  }
+  for (int32_t i = 0; i < size; i++)
+  {
+    if (bytes[i] == '/' || bytes[i] == '\\' || bytes[i] == ':' || bytes[i] == '\0')
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool sample_string_copy(char* dst, size_t dst_size, const char* src)
 {
   size_t n = strlen(src);
   if (n >= dst_size)
@@ -194,10 +218,10 @@ bool sample_copy_str(char* dst, size_t dst_size, const char* src)
   return true;
 }
 
-bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size)
+bool sample_env_copy_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size)
 {
-  char* v = sample_env_dup(name, fallback);
-  bool ok = (v != NULL) && sample_copy_str(dst, dst_size, v);
+  char* v = sample_env_copy(name, fallback);
+  bool ok = (v != NULL) && sample_string_copy(dst, dst_size, v);
   if (v != NULL && !ok)
   {
     fprintf(stderr, "%s is too long (max %zu characters).\n", name, dst_size - 1);
@@ -206,16 +230,15 @@ bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, siz
   return ok;
 }
 
-FILE* sample_fopen_private(const char* path, bool replace)
+/** @brief Open @p path for binary writing, owner-only (0600) on POSIX.
+ *  @p exclusive: create it, failing when the name exists (a link included);
+ *  otherwise create or truncate it. */
+static FILE* open_private(const char* path, bool exclusive)
 {
   FILE* f = NULL;
   int fd;
-  if (!path || (replace && remove(path) != 0 && errno != ENOENT))
-  {
-    return NULL;
-  }
 #ifdef _WIN32
-  int flags = _O_WRONLY | _O_CREAT | _O_BINARY | (replace ? _O_EXCL : _O_TRUNC);
+  int flags = _O_WRONLY | _O_CREAT | _O_BINARY | (exclusive ? _O_EXCL : _O_TRUNC);
   if (_sopen_s(&fd, path, flags, _SH_DENYWR, _S_IREAD | _S_IWRITE) != 0)
   {
     return NULL;
@@ -227,13 +250,13 @@ FILE* sample_fopen_private(const char* path, bool replace)
   }
 #else
   /* O_EXCL fails on any existing name, a symbolic link included. */
-  fd = open(path, O_WRONLY | O_CREAT | (replace ? O_EXCL : O_TRUNC), S_IRUSR | S_IWUSR);
+  fd = open(path, O_WRONLY | O_CREAT | (exclusive ? O_EXCL : O_TRUNC), S_IRUSR | S_IWUSR);
   if (fd < 0)
   {
     return NULL;
   }
   /* open() keeps the mode of a file that already exists. */
-  if (replace || fchmod(fd, S_IRUSR | S_IWUSR) == 0)
+  if (exclusive || fchmod(fd, S_IRUSR | S_IWUSR) == 0)
   {
     f = fdopen(fd, "wb");
   }
@@ -242,10 +265,91 @@ FILE* sample_fopen_private(const char* path, bool replace)
     (void)close(fd);
   }
 #endif
+  if (!f && exclusive)
+  {
+    /* Created by this call: an empty file would block later attempts. */
+    (void)remove(path);
+  }
   return f;
 }
 
-FILE* sample_fopen_read_nofollow(const char* path)
+FILE* sample_file_open_private(const char* path, bool replace)
+{
+  if (!path || (replace && remove(path) != 0 && errno != ENOENT))
+  {
+    return NULL;
+  }
+  return open_private(path, replace);
+}
+
+FILE* sample_file_create_private(const char* path)
+{
+  return path != NULL ? open_private(path, true) : NULL;
+}
+
+/** @brief Attempts at a name not yet taken (Windows), and room for the suffix: ".XXXXXX"
+ *  (POSIX) or ".<8 hex>.tmp" (Windows), plus NUL. */
+#define SAMPLE_UNIQUE_NAME_ATTEMPTS 16
+#define SAMPLE_UNIQUE_SUFFIX_MAX 16
+
+FILE* sample_file_create_private_unique(const char* path, char** out_unique_path)
+{
+  if (out_unique_path == NULL)
+  {
+    return NULL;
+  }
+  *out_unique_path = NULL;
+  if (path == NULL)
+  {
+    return NULL;
+  }
+  size_t size = strlen(path) + SAMPLE_UNIQUE_SUFFIX_MAX;
+  char* unique_path = (char*)malloc(size);
+  if (unique_path == NULL)
+  {
+    return NULL;
+  }
+  FILE* f = NULL;
+#ifdef _WIN32
+  unsigned long seed
+      = (unsigned long)GetTickCount64() ^ ((unsigned long)GetCurrentProcessId() << 16);
+  for (int i = 0; i < SAMPLE_UNIQUE_NAME_ATTEMPTS && f == NULL; ++i)
+  {
+    seed = seed * 1103515245UL + 12345UL;
+    (void)snprintf(unique_path, size, "%s.%08lx.tmp", path, seed & 0xFFFFFFFFUL);
+    errno = 0;
+    f = open_private(unique_path, true);
+    if (f == NULL && errno != EEXIST)
+    {
+      break;
+    }
+  }
+#else
+  (void)snprintf(unique_path, size, "%s.XXXXXX", path);
+  int fd = mkstemp(unique_path); /* O_CREAT | O_EXCL */
+  if (fd >= 0)
+  {
+    if (fchmod(fd, S_IRUSR | S_IWUSR) == 0)
+    {
+      f = fdopen(fd, "wb");
+    }
+    if (f == NULL)
+    {
+      (void)close(fd);
+      (void)unlink(unique_path);
+    }
+  }
+#endif
+  if (f == NULL)
+  {
+    free(unique_path);
+    return NULL;
+  }
+  *out_unique_path = unique_path;
+  return f;
+}
+
+FILE* sample_file_open_read_no_follow(const char* path)
 {
   if (!path)
   {
@@ -276,6 +380,222 @@ FILE* sample_fopen_read_nofollow(const char* path)
   return f;
 #endif
 }
+
+FILE* sample_file_rewrite_existing_no_follow(const char* path)
+{
+  if (!path)
+  {
+    return NULL;
+  }
+  FILE* f = NULL;
+  int fd;
+#ifdef _WIN32
+  if (_sopen_s(&fd, path, _O_WRONLY | _O_TRUNC | _O_BINARY, _SH_DENYWR, 0) != 0)
+  {
+    return NULL;
+  }
+  f = _fdopen(fd, "wb");
+  if (!f)
+  {
+    (void)_close(fd);
+  }
+#else
+#ifdef O_NOFOLLOW
+  fd = open(path, O_WRONLY | O_NOFOLLOW | O_NONBLOCK);
+#else
+  fd = open(path, O_WRONLY | O_NONBLOCK);
+#endif
+  if (fd < 0)
+  {
+    return NULL;
+  }
+  /* Emptied only once known to be a regular file; "wb" on a descriptor does not truncate. */
+  struct stat st;
+  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && ftruncate(fd, 0) == 0)
+  {
+    f = fdopen(fd, "wb");
+  }
+  if (!f)
+  {
+    (void)close(fd);
+  }
+#endif
+  return f;
+}
+
+bool sample_file_flush_to_storage(FILE* file)
+{
+  if (file == NULL || fflush(file) != 0)
+  {
+    return false;
+  }
+#ifdef _WIN32
+  return _commit(_fileno(file)) == 0;
+#else
+  return fsync(fileno(file)) == 0;
+#endif
+}
+
+#ifndef _WIN32
+/** @brief Sync the directory holding @p path, so a rename into it is durable.
+ *  @return true on success. */
+static bool sync_parent_directory(const char* path)
+{
+  const char* last_slash = strrchr(path, '/');
+  char* directory = NULL;
+  if (last_slash == NULL)
+  {
+    directory = copy_string(".");
+  }
+  else
+  {
+    size_t length = (last_slash == path) ? 1u : (size_t)(last_slash - path);
+    directory = (char*)malloc(length + 1u);
+    if (directory != NULL)
+    {
+      memcpy(directory, path, length);
+      directory[length] = '\0';
+    }
+  }
+  if (directory == NULL)
+  {
+    return false;
+  }
+  int directory_fd = open(directory, O_RDONLY);
+  free(directory);
+  if (directory_fd < 0)
+  {
+    return false;
+  }
+  bool synced = fsync(directory_fd) == 0;
+  (void)close(directory_fd);
+  return synced;
+}
+#endif
+
+bool sample_file_remove_durably(const char* path)
+{
+  if (path == NULL)
+  {
+    return false;
+  }
+  /* Synced on ENOENT too: an earlier removal may not have reached storage. */
+  if (remove(path) != 0 && errno != ENOENT)
+  {
+    return false;
+  }
+#ifndef _WIN32
+  if (!sync_parent_directory(path))
+  {
+    fprintf(stderr, "%s: gone, but its directory could not be synced to storage\n", path);
+  }
+#endif
+  return true;
+}
+
+bool sample_file_replace(const char* source_path, const char* destination_path)
+{
+  if (source_path == NULL || destination_path == NULL)
+  {
+    return false;
+  }
+#ifdef _WIN32
+  /* rename() does not replace an existing file on Windows. */
+  return MoveFileExA(
+             source_path, destination_path, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)
+      != 0;
+#else
+  if (rename(source_path, destination_path) != 0)
+  {
+    return false;
+  }
+  /* Replaced: report true whatever follows, so callers never see a failure
+   * while the new file is already the one readers get. */
+  if (!sync_parent_directory(destination_path))
+  {
+    fprintf(
+        stderr,
+        "%s: replaced, but its directory could not be synced to storage\n",
+        destination_path);
+  }
+  return true;
+#endif
+}
+
+bool sample_file_write_atomically(const char* path, const void* data, size_t size)
+{
+  if (data == NULL && size > 0)
+  {
+    return false;
+  }
+  char* temporary_path = NULL;
+  FILE* file = sample_file_create_private_unique(path, &temporary_path);
+  if (file == NULL)
+  {
+    return false;
+  }
+  bool written = size == 0 || fwrite(data, 1, size, file) == size;
+  return sample_file_complete_atomic_write(file, temporary_path, path, written);
+}
+
+bool sample_file_complete_atomic_write(
+    FILE* file,
+    char* temporary_path,
+    const char* path,
+    bool contents_written)
+{
+  bool replaced = file != NULL && contents_written && sample_file_flush_to_storage(file);
+  /* fclose() can report a delayed write failure. */
+  if (file != NULL && fclose(file) != 0)
+  {
+    replaced = false;
+  }
+  replaced = replaced && temporary_path != NULL && sample_file_replace(temporary_path, path);
+  if (!replaced && temporary_path != NULL)
+  {
+    (void)remove(temporary_path);
+  }
+  free(temporary_path);
+  return replaced;
+}
+
+bool sample_file_delete(const char* path)
+{
+  if (path == NULL)
+  {
+    errno = EINVAL;
+    return false;
+  }
+  if (remove(path) != 0)
+  {
+    return errno == ENOENT;
+  }
+#ifndef _WIN32
+  if (!sync_parent_directory(path))
+  {
+    fprintf(stderr, "%s: deleted, but its directory could not be synced to storage\n", path);
+  }
+#endif
+  return true;
+}
+
+/** @brief Set by on_stop_signal(); sig_atomic_t is the only type a handler may write. */
+static volatile sig_atomic_t s_stop_requested = 0;
+
+/** @brief SIGINT/SIGTERM handler: records the request only. */
+static void on_stop_signal(int signal_number)
+{
+  (void)signal_number;
+  s_stop_requested = 1;
+}
+
+void sample_install_stop_handler(void)
+{
+  (void)signal(SIGINT, on_stop_signal);
+  (void)signal(SIGTERM, on_stop_signal);
+}
+
+bool sample_is_stop_requested(void) { return s_stop_requested != 0; }
 
 uint64_t sample_now_ms(void)
 {
@@ -309,94 +629,11 @@ void sample_sleep_ms(long ms)
 #endif
 }
 
-const char* sample_connection_state_name(az_iot_connection_state state)
+void sample_sleep_until_tick_end(uint64_t tick_start_ms, uint32_t tick_ms)
 {
-  switch (state)
+  uint64_t spent_ms = sample_now_ms() - tick_start_ms;
+  if (spent_ms < tick_ms)
   {
-    case AZ_IOT_CONN_STATE_IDLE:
-      return "Idle";
-    case AZ_IOT_CONN_STATE_CONNECTING:
-      return "Connecting";
-    case AZ_IOT_CONN_STATE_CONNECTED:
-      return "Connected";
-    case AZ_IOT_CONN_STATE_RETRY_PENDING:
-      return "Retry pending";
-    case AZ_IOT_CONN_STATE_DISCONNECTING:
-      return "Disconnecting";
-    case AZ_IOT_CONN_STATE_FAULTED:
-      return "Faulted";
-    case AZ_IOT_CONN_STATE_SETTING_UP:
-      return "Setting up";
-    default:
-      return "?";
+    sample_sleep_ms((long)(tick_ms - spent_ms));
   }
-}
-
-const char* sample_connection_profile_name(az_iot_connection_profile profile)
-{
-  switch (profile)
-  {
-    case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
-      return "MQTTv3 (MQTT v3.1.1)";
-    case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      return "MQTTv5 (MQTT v5)";
-    case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
-    default:
-      return "not known to this SDK";
-  }
-}
-
-az_iot_result sample_get_hub_profile(
-    const az_iot_connection_client* client,
-    az_iot_connection_profile* out_profile)
-{
-  az_iot_hub_profile profile;
-
-  az_iot_result result = az_iot_connection_client_get_hub_profile(client, &profile);
-  if (result != AZ_IOT_OK)
-  {
-    printf("hub profile not available: %s\n", az_iot_result_to_string(result));
-    return result;
-  }
-
-  printf(
-      "hub profile: %s, service sent \"%s\"%s\n",
-      sample_connection_profile_name(profile.connection_profile),
-      profile.connection_profile_raw ? profile.connection_profile_raw : "(none)",
-      profile.connection_profile_raw_truncated ? " (truncated)" : "");
-
-  *out_profile = profile.connection_profile;
-  return AZ_IOT_OK;
-}
-
-bool sample_event_is_profile_mismatch(
-    const az_iot_connection_state_event* event,
-    az_iot_connection_profile* out_profile)
-{
-  if (event == NULL || event->state != AZ_IOT_CONN_STATE_FAULTED
-      || event->reason != AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH || event->profile == NULL)
-  {
-    return false;
-  }
-  *out_profile = event->profile->connection_profile;
-  return true;
-}
-
-az_iot_connection_profile sample_initial_profile(const sample_config* config)
-{
-  (void)config;
-  return AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
-}
-
-void sample_report_unsupported_profile(const az_iot_connection_state_event* event)
-{
-  if (event == NULL || event->reason != AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED
-      || event->profile == NULL)
-  {
-    return;
-  }
-  printf(
-      "Unsupported hub generation \"%s\"%s. Upgrade the SDK.\n",
-      event->profile->connection_profile_raw ? event->profile->connection_profile_raw : "(none)",
-      event->profile->connection_profile_raw_truncated ? " (truncated)" : "");
 }

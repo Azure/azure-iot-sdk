@@ -965,6 +965,16 @@ static az_result _read_packet(
   }
 
   int32_t total_packet_size = header_size + remaining_length;
+  // [MQTT-3.1.2-24]: refused before its body is read.
+  if (_S(core).client_maximum_packet_size > 0
+      && (uint32_t)total_packet_size > _S(core).client_maximum_packet_size)
+  {
+    if (_S(core).on_packet_too_large != NULL)
+    {
+      _S(core).on_packet_too_large(core);
+    }
+    return AZ_MQTT_ERROR_PACKET_TOO_LARGE;
+  }
   rc = _ensure_received(core, total_packet_size, deadline_ms);
   if (az_result_failed(rc))
     return rc;

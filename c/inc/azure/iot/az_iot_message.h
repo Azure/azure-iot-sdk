@@ -12,7 +12,7 @@
 
 #include "az_iot_result.h"
 /* For az_iot_connection_profile, which tags a method request with the
- * generation that built it. */
+ * profile that built it. */
 #include "az_iot_connection_client.h"
 
 #ifdef __cplusplus
@@ -32,9 +32,7 @@ extern "C"
  * "application/json" as "application%2Fjson", and decodes them again on the way
  * in. azure-sdk-for-c spells the same names pre-encoded
  * (AZ_IOT_MESSAGE_PROPERTIES_CONTENT_TYPE is "%24.ct"); the bytes on the wire
- * are identical. On the MQTTv5 path they travel as User Properties
- * and need no encoding at all, except "$.ct" and "$.cid", which travel as the
- * native Content Type and Correlation Data.
+ * are identical.
  *
  * See
  * https://learn.microsoft.com/azure/iot-hub/iot-hub-devguide-messages-construct
@@ -50,10 +48,8 @@ extern "C"
  * receive only. */
 #define AZ_IOT_MSG_PROP_EXPIRY_TIME "$.exp"
 
-  /* Shared by the mqttv3 and mqttv5 telemetry clients. Callers always pass plain
-   * text: mqttv3 percent-encodes properties into the topic, while mqttv5 carries
-   * them as MQTT v5 User Properties, except "$.ct" and "$.cid" (native Content
-   * Type and Correlation Data). */
+  /* Callers always pass plain text: mqttv3 percent-encodes properties into the
+   * topic. */
   typedef struct az_iot_telemetry_property
   {
     const char* key;
@@ -93,7 +89,7 @@ extern "C"
   /**
    * @brief A received cloud-to-device message.
    *
-   * MQTTv3 IoT Hub only: C2D is not carried on the MQTT v5 hub.
+   * MQTTv3 IoT Hub only.
    *
    * Every pointer is owned by the SDK and valid only for the duration of the
    * handler callback. Copy anything the application needs to keep.
@@ -216,37 +212,26 @@ extern "C"
       size_t* out_value_len);
   /** @} */
 
-/* Storage bounds for the request handle below. Compile-time footprint knobs:
- * #define before including to tune. */
-#ifndef AZ_IOT_DM_METHOD_NAME_MAX
+#if defined(AZ_IOT_DM_METHOD_NAME_MAX) || defined(AZ_IOT_DM_RID_MAX)
+#error "Direct method string sizes are fixed: see c/docs/client-configuration.md."
+#endif
+
+/** @brief Longest direct method name a request handle stores. Fixed: it sizes a public struct. */
 #define AZ_IOT_DM_METHOD_NAME_MAX 96
-#endif
-/* Longest mqttv3 request id ($rid) carried on an invocation. */
-#ifndef AZ_IOT_DM_RID_MAX
+/** @brief Longest mqttv3 request id ($rid) carried on an invocation. Fixed. */
 #define AZ_IOT_DM_RID_MAX 32
-#endif
-/* Longest mqttv5 correlation data echoed back on a response. */
-#ifndef AZ_IOT_DM_CORR_DATA_MAX
-#define AZ_IOT_DM_CORR_DATA_MAX 64
-#endif
-/* Max concurrent in-flight invocations one client can hold. Requests may
- * outlive the handler (the application can respond asynchronously), so they
- * live in a bounded pool inside the caller-allocated client struct rather than
- * on the heap. */
-#ifndef AZ_IOT_DM_MAX_INFLIGHT
-#define AZ_IOT_DM_MAX_INFLIGHT 4
+
+#ifdef AZ_IOT_DM_MAX_INFLIGHT
+#error \
+    "AZ_IOT_DM_MAX_INFLIGHT is removed: set az_iot_mqttv3_direct_method_client_limits::max_in_flight_invocations"
 #endif
 
   /**
    * @brief Storage for one in-flight invocation.
    *
-   * Lives in a bounded pool inside the caller-allocated client. Opaque to
+   * Lives in a bounded pool the client holds. Opaque to
    * applications -- they never hold one; they hold an
-   * az_iot_direct_method_request naming it.
-   *
-   * The correlation fields are generation-specific: mqttv3 answers on a `$rid`,
-   * mqttv5 echoes MQTT v5 correlation data. Both live here because the pool is
-   * the one piece of this feature the two generations share.
+   * az_iot_direct_method_request naming it. mqttv3 answers on its `$rid`.
    */
   typedef struct az_iot_direct_method_slot
   {
@@ -254,8 +239,6 @@ extern "C"
     {
       char method_name[AZ_IOT_DM_METHOD_NAME_MAX];
       char rid[AZ_IOT_DM_RID_MAX];
-      uint8_t correlation_data[AZ_IOT_DM_CORR_DATA_MAX];
-      size_t correlation_data_len;
       /* Bumped every time this slot is handed out. A request naming an older
        * value is stale, which is what makes a reused slot detectable. Never 0
        * once issued, so a zeroed request cannot match a live slot. */
@@ -267,7 +250,7 @@ extern "C"
   /**
    * @brief Identifies one method invocation awaiting a response.
    *
-   * Passed to the handler and back to the owning generation's respond call
+   * Passed to the handler and back to the owning client's respond call
    * **by value**, so it names a slot rather than pointing at one. A slot that
    * has since been reclaimed and handed to another invocation no longer
    * matches, and the stale response is refused instead of answering the wrong
@@ -285,7 +268,7 @@ extern "C"
       const void* owner;
       uint32_t slot;
       uint32_t seq;
-      /* Which generation issued it, so a respond call from the other one is
+      /* Which connection profile issued it; a respond call for another one is
        * refused rather than matching a slot index by coincidence. */
       az_iot_connection_profile profile;
     } _internal;
@@ -298,12 +281,39 @@ extern "C"
       size_t payload_len,
       void* user_ctx);
 
-/* Max concurrent in-flight twin requests (GET + reported patch) one client can
- * hold. Each awaits a service response, so the slots live in a bounded pool
- * inside the caller-allocated client struct rather than on the heap. */
-#ifndef AZ_IOT_TWIN_MAX_PENDING
-#define AZ_IOT_TWIN_MAX_PENDING 8
+#ifdef AZ_IOT_TWIN_MAX_PENDING
+#error \
+    "AZ_IOT_TWIN_MAX_PENDING is removed: set az_iot_twin_client_limits::max_pending_requests in the twin client's options"
 #endif
+
+/** @brief Default az_iot_twin_client_limits::max_pending_requests. */
+#ifndef AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS
+#define AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS 8
+#endif
+
+/** @brief Largest az_iot_twin_client_limits::max_pending_requests. */
+#define AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT 1024
+
+#if AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS < 1 \
+    || AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS  \
+        > AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT
+#error "AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS must be 1-1024"
+#endif
+
+  /**
+   * @brief How many requests a twin client holds. 0 selects the default.
+   *
+   * Run-time values: the client struct does not depend on them. The requests live in the
+   * workspace of the client's init options.
+   */
+  typedef struct az_iot_twin_client_limits
+  {
+    /** Twin requests (GET and reported patch) awaiting their answer. A request past it is
+     * refused with AZ_IOT_ERR_NOT_SUPPORTED. Default
+     * AZ_IOT_TWIN_CLIENT_DEFAULT_MAX_PENDING_REQUESTS (8), at most
+     * AZ_IOT_TWIN_CLIENT_MAX_PENDING_REQUESTS_LIMIT (1024). */
+    size_t max_pending_requests;
+  } az_iot_twin_client_limits;
 
   /**
    * @brief Delivers the result of a twin GET.
@@ -325,8 +335,8 @@ extern "C"
    * @brief Delivers the outcome of a reported-properties patch.
    *
    * Named for completion rather than acknowledgement because it reports
-   * failures too, and because on MQTT v5 an "ack" would be ambiguous with the
-   * QoS 1 PUBACK -- this fires on the service's answer, not on the transport's.
+   * failures too, and because an "ack" would be ambiguous with the QoS 1
+   * PUBACK -- this fires on the service's answer, not on the transport's.
    *
    * @param status   AZ_IOT_OK when the service accepted the patch.
    * @param version  The new version of the reported-properties section. An

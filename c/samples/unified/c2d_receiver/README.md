@@ -4,13 +4,13 @@
 # Cloud-to-device messages
 
 Receives cloud-to-device (C2D) messages for about 60 seconds and prints each one with its
-properties. C2D is an **mqttv3** IoT Hub feature; there is no mqttv5 counterpart.
+properties. C2D is an **mqttv3** IoT Hub feature.
 
 ## Sample features
 
-- Hub generation: mqttv3 (MQTT 3.1.1) only. Registers only the MQTT 3.1.1 adapter.
+- Hub: mqttv3 (MQTT 3.1.1).
 - The client subscribes to `devices/<id>/messages/devicebound/#`. Message properties travel percent-encoded in the topic. The handler reads them with `az_iot_c2d_properties_next()` and the typed accessors (`az_iot_c2d_message_get_message_id()` and others for `$.mid`, `$.cid`, `$.exp`, `$.ct`, `$.ce` and `$.uid`), which decode into buffers the application provides.
-- The client pins mqttv3 at `init()`, before `open()`. If DPS assigns an mqttv5 hub, on the first connect or after a move, the connection stops with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`; the sample reports that and exits 1. A move to another mqttv3 hub needs nothing from the application.
+- A move to another mqttv3 hub needs nothing from the application.
 - Platforms: Linux and Windows.
 
 ## Service requirements
@@ -93,9 +93,6 @@ C2D #1: 5 bytes key0=value0 => hello
 Received 1 message(s).
 ```
 
-On an mqttv5 hub it prints
-`DPS assigned MQTTv5 (MQTT v5). Cloud-to-device messages are not available on this hub generation.`
-
 ## Troubleshooting
 
 | Symptom | Likely cause |
@@ -103,13 +100,12 @@ On an mqttv5 hub it prints
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. DPS verdicts are retried until the sample's run time ends. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
-| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK version does not know. |
+| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK does not support. |
 
 ## Where to look in `main.c`
 
 | What | Code |
 | --- | --- |
-| Register the MQTT 3.1.1 adapter only | `az_iot_paho_factory_create_v3_1_1()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()` |
+| MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
 | Create the client and set the handler | `az_iot_mqttv3_c2d_client_init()`, `az_iot_mqttv3_c2d_client_set_handler()` |
 | Handle a message and its properties | `on_c2d()` |
-| Report an mqttv5 assignment | `on_conn_state()` |

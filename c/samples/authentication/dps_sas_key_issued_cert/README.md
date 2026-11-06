@@ -3,8 +3,8 @@
 
 # SAS key to DPS, DPS-issued certificate to the hub
 
-Registers with DPS with a SAS token and a CSR, then connects to the assigned hub, on either
-generation, with the X.509 certificate DPS issued. See [`main.c`](main.c).
+Registers with DPS with a SAS token and a CSR, then connects to the assigned hub with
+the X.509 certificate DPS issued. See [`main.c`](main.c).
 
 ## Sample features
 
@@ -12,8 +12,7 @@ generation, with the X.509 certificate DPS issued. See [`main.c`](main.c).
   zeroed, so the hub uses the issued certificate only.
 - The managed provider owns the operational key, builds the CSR and stores the issued chain. It
   has no bootstrap certificate.
-- Renewal: `az_iot_connection_client_send_csr()` on an mqttv3 hub, or re-provisioning with the
-  key on either generation.
+- Renewal: `az_iot_connection_client_send_csr()`, or re-provisioning with the key.
 
 ## Service requirements
 
@@ -119,6 +118,6 @@ means the hub accepted the chain saved by a previous run.
 | Provider without a bootstrap certificate | `az_iot_certificate_provider_managed_init()` with only the operational paths |
 | Opt in to issuance | `opts.dps.request_operational_certificate = true` and `opts.csr_payload_buffer` |
 | Issuance notification | `az_iot_connection_client_set_operational_cert_callback()`, `on_operational_cert()` |
-| Send on the assigned generation | `send_telemetry()` |
+| Send on the assigned hub | `send_telemetry()` |
 
 Design background: [certificate-management.md](../../../docs/eng/certificate-management.md).

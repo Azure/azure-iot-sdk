@@ -3,9 +3,6 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-#if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
-#define _POSIX_C_SOURCE 200809L /* fileno, fsync */
-#endif
 /**
  * @file main.c
  * @brief Persists the DPS assignment and restores it on the next run.
@@ -17,27 +14,19 @@
  * Later runs: the saved assignment is loaded into opts.iothub_hostname, opts.device_id and
  * opts.connection_profile, so open() connects straight to the hub with the
  * persisted operational certificate. DPS stays configured: if the hub refuses
- * the identity, the client re-provisions and the new assignment is saved.
+ * the identity, the client re-provisions and the new assignment is saved. When
+ * the client gives up on the saved assignment, the file is deleted, so a
+ * restart registers with DPS instead of restoring it.
  *
  * Requires OpenSSL 3.0+ and the Paho or az_mqtt adapter. See README.md.
  */
+#include <errno.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#ifdef _WIN32
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <io.h>
-#include <windows.h>
-#else
-#include <fcntl.h>
-#include <unistd.h>
-#endif
 
 #include "azure/iot/az_iot.h"
 /* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
@@ -62,11 +51,8 @@
 #define SAMPLE_LINE_MAX 256
 /** @brief Where the assignment is saved, in the working directory. */
 #define SAMPLE_ASSIGNMENT_FILE "dps_assignment.txt"
-/** @brief Written first, then renamed over SAMPLE_ASSIGNMENT_FILE. */
-#define SAMPLE_ASSIGNMENT_TMP_FILE SAMPLE_ASSIGNMENT_FILE ".tmp"
-/** @brief Saved profile names. */
+/** @brief Saved profile name. */
 #define SAMPLE_PROFILE_MQTTV3 "mqttv3"
-#define SAMPLE_PROFILE_MQTTV5 "mqttv5"
 
 /** @brief A saved assignment. */
 typedef struct
@@ -85,18 +71,8 @@ typedef struct
   const char* assignment_path; /**< Where the assignment is saved. */
   bool assigned; /**< This run adopted a DPS assignment. */
   bool assignment_saved; /**< This run saved it. */
+  bool invalidated_assignment_kept; /**< An invalidated assignment could not be deleted. */
 } sample_context;
-
-/** @brief Opens @p path for reading; NULL if it cannot be opened. */
-static FILE* open_for_read(const char* path)
-{
-#ifdef _WIN32
-  FILE* f = NULL;
-  return fopen_s(&f, path, "rb") == 0 ? f : NULL;
-#else
-  return fopen(path, "rb");
-#endif
-}
 
 /** @brief Reads one non-empty line into @p dst without its line ending. */
 static bool read_line(FILE* f, char* dst, size_t dst_size)
@@ -112,7 +88,7 @@ static bool read_line(FILE* f, char* dst, size_t dst_size)
 /** @brief Loads a saved assignment. False when there is none or it is invalid. */
 static bool load_assignment(const char* path, saved_assignment* out)
 {
-  FILE* f = open_for_read(path);
+  FILE* f = sample_file_open_read_no_follow(path);
   if (f == NULL)
   {
     return false;
@@ -126,82 +102,37 @@ static bool load_assignment(const char* path, saved_assignment* out)
   {
     return false;
   }
-  if (strcmp(profile, SAMPLE_PROFILE_MQTTV3) == 0)
-  {
-    out->profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
-  }
-  else if (strcmp(profile, SAMPLE_PROFILE_MQTTV5) == 0)
-  {
-    out->profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
-  }
-  else
+  if (strcmp(profile, SAMPLE_PROFILE_MQTTV3) != 0)
   {
     return false;
   }
+  out->profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
   return true;
 }
 
-/** @brief Flushes @p f to storage. True on success. */
-static bool sync_file(FILE* f)
-{
-  if (fflush(f) != 0)
-  {
-    return false;
-  }
-#ifdef _WIN32
-  return _commit(_fileno(f)) == 0;
-#else
-  return fsync(fileno(f)) == 0;
-#endif
-}
-
-/** @brief Atomically and durably replaces @p to with @p from, both in the
- *  working directory. True on success. */
-static bool replace_file(const char* from, const char* to)
-{
-#ifdef _WIN32
-  return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != 0;
-#else
-  if (rename(from, to) != 0)
-  {
-    return false;
-  }
-  /* The rename is durable only once the directory is. */
-  int dir = open(".", O_RDONLY);
-  if (dir < 0)
-  {
-    return false;
-  }
-  bool ok = fsync(dir) == 0;
-  (void)close(dir);
-  return ok;
-#endif
-}
-
-/** @brief Saves the adopted assignment, replacing any earlier one. Written to a
- *  temporary file and renamed, so the record file always holds one complete
+/** @brief Saves the adopted assignment, replacing any earlier one through
+ *  sample_file_write_atomically(), so the record file always holds one complete
  *  record, the previous or the new one. */
 static void on_assignment(const az_iot_dps_assignment* assignment, void* user_ctx)
 {
   sample_context* ctx = (sample_context*)user_ctx;
-  const char* profile = assignment->profile->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-      ? SAMPLE_PROFILE_MQTTV5
-      : SAMPLE_PROFILE_MQTTV3;
-  FILE* f = sample_fopen_private(SAMPLE_ASSIGNMENT_TMP_FILE, false);
-  bool ok = f != NULL
-      && fprintf(f, "%s\n%s\n%s\n", assignment->hub_hostname, assignment->device_id, profile) > 0
-      && sync_file(f);
-  if (f != NULL && fclose(f) != 0)
-  {
-    ok = false;
-  }
-  ok = ok && replace_file(SAMPLE_ASSIGNMENT_TMP_FILE, ctx->assignment_path);
-  if (!ok)
-  {
-    (void)remove(SAMPLE_ASSIGNMENT_TMP_FILE);
-  }
+  /* Only mqttv3 assignments are adopted. */
+  const char* profile = SAMPLE_PROFILE_MQTTV3;
+  /* Three lines: hub, device id and profile, each shorter than SAMPLE_LINE_MAX. */
+  char record[3 * SAMPLE_LINE_MAX];
+  int record_length = snprintf(
+      record,
+      sizeof(record),
+      "%s\n%s\n%s\n",
+      assignment->hub_hostname,
+      assignment->device_id,
+      profile);
+  bool ok = record_length > 0 && (size_t)record_length < sizeof(record)
+      && sample_file_write_atomically(ctx->assignment_path, record, (size_t)record_length);
   ctx->assigned = true;
   ctx->assignment_saved = ok;
+  /* A saved replacement overwrites an invalidated record that could not be deleted. */
+  ctx->invalidated_assignment_kept = ctx->invalidated_assignment_kept && !ok;
   fprintf(
       stderr,
       "[persist] assigned hub=%s device_id=%s profile=%s; save to %s: %s\n",
@@ -212,6 +143,24 @@ static void on_assignment(const az_iot_dps_assignment* assignment, void* user_ct
       ok ? "ok" : "failed");
 }
 
+/** @brief Deletes the saved assignment durably: the client will not use it
+ *  again, so a restart must register with DPS instead of restoring it. A
+ *  failure is recorded; main() retries and reports it. */
+static void on_assignment_invalidated(az_iot_result reason, void* user_ctx)
+{
+  sample_context* ctx = (sample_context*)user_ctx;
+  bool deleted = sample_file_delete(ctx->assignment_path);
+  int delete_errno = deleted ? 0 : errno;
+  ctx->invalidated_assignment_kept = !deleted;
+  fprintf(
+      stderr,
+      "[persist] saved assignment invalidated (%s); delete %s: %s (errno %d)\n",
+      az_iot_result_to_string(reason),
+      ctx->assignment_path,
+      deleted ? "ok" : "failed",
+      delete_errno);
+}
+
 /** @brief Logs transitions and records the ones the main loop acts on. */
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
@@ -220,7 +169,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       stderr,
       "[persist] %s: %s (%s)\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
   if (event->scope == AZ_IOT_CONN_SCOPE_HUB)
   {
@@ -240,17 +189,6 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   }
 }
 
-/** @brief Sleeps out the rest of a SAMPLE_TICK_MS tick begun at @p start, so the
- *  do_work() loops cannot spin when there is no session to wait on. */
-static void finish_tick(uint64_t start)
-{
-  uint64_t spent = sample_now_ms() - start;
-  if (spent < SAMPLE_TICK_MS)
-  {
-    sample_sleep_ms((long)(SAMPLE_TICK_MS - spent));
-  }
-}
-
 int main(void)
 {
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
@@ -263,8 +201,8 @@ int main(void)
   }
 
   /* Every string cleanup frees is assigned before the first goto. */
-  char* op_key = sample_env_dup("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
-  char* op_cert = sample_env_dup("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
+  char* op_key = sample_env_copy("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
+  char* op_cert = sample_env_copy("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
 
   int rc = 1;
   sample_context ctx = { 0 };
@@ -272,8 +210,6 @@ int main(void)
   saved_assignment saved = { 0 };
   az_iot_certificate_provider_managed provider = { 0 };
   az_iot_connection_client client = { 0 };
-  az_iot_mqtt_factory* factory_v3 = NULL;
-  az_iot_mqtt_factory* factory_v5 = NULL;
 
   if (op_key == NULL || op_cert == NULL)
   {
@@ -296,7 +232,11 @@ int main(void)
     goto cleanup;
   }
 
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.workspace = connection_workspace;
+  opts.workspace_size = sizeof(connection_workspace);
   opts.dps.id_scope = config.id_scope;
   opts.dps.registration_id = config.reg_id;
   opts.dps.global_endpoint = config.dps_global_endpoint; /* NULL: the global default */
@@ -320,7 +260,7 @@ int main(void)
         "[persist] restoring hub=%s device_id=%s profile=%s from %s\n",
         saved.hub,
         saved.device_id,
-        sample_connection_profile_name(saved.profile),
+        az_iot_connection_profile_to_string(saved.profile),
         SAMPLE_ASSIGNMENT_FILE);
   }
   else
@@ -331,20 +271,25 @@ int main(void)
         SAMPLE_ASSIGNMENT_FILE);
   }
 
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
 #if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory_v3 = az_iot_paho_factory_create_v3_1_1();
-  factory_v5 = az_iot_paho_factory_create_v5();
+  opts.mqtt_adapter = az_iot_paho_get_adapter();
 #elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-  factory_v5 = az_iot_az_mqtt_factory_create_v5();
+  opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
 #endif
+  opts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  opts.mqtt_workspace = mqtt_workspace;
+  opts.mqtt_workspace_size = sizeof(mqtt_workspace);
+
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
       || az_iot_connection_client_set_dps_assignment_callback(&client, on_assignment, &ctx)
           != AZ_IOT_OK
-      /* DPS and an mqttv3 hub use MQTT 3.1.1; an mqttv5 hub uses MQTT 5. */
-      || az_iot_connection_client_register_mqtt_factory(&client, factory_v3) != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&client, factory_v5) != AZ_IOT_OK)
+      || az_iot_connection_client_set_dps_assignment_invalidated_callback(
+             &client, on_assignment_invalidated, &ctx)
+          != AZ_IOT_OK)
   {
     fprintf(stderr, "[persist] connection client setup failed\n");
     goto cleanup;
@@ -361,7 +306,7 @@ int main(void)
   {
     uint64_t tick = sample_now_ms();
     (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
-    finish_tick(tick);
+    sample_sleep_until_tick_end(tick, SAMPLE_TICK_MS);
   }
 
   if (ctx.hub_state == AZ_IOT_CONN_STATE_CONNECTED)
@@ -392,18 +337,23 @@ int main(void)
   {
     uint64_t tick = sample_now_ms();
     (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
-    finish_tick(tick);
+    sample_sleep_until_tick_end(tick, SAMPLE_TICK_MS);
+  }
+
+  /* Retried once: left in place, it would be restored on the next run. */
+  if (ctx.invalidated_assignment_kept && !sample_file_delete(ctx.assignment_path))
+  {
+    fprintf(
+        stderr,
+        "[persist] %s still holds an invalidated assignment (errno %d); delete it before the "
+        "next run\n",
+        ctx.assignment_path,
+        errno);
+    rc = 1;
   }
 
 cleanup:
   az_iot_connection_client_deinit(&client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory_v3);
-  az_iot_paho_factory_destroy(factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory_v3);
-  az_iot_az_mqtt_factory_destroy(factory_v5);
-#endif
   az_iot_certificate_provider_managed_deinit(&provider);
   free(op_key);
   free(op_cert);

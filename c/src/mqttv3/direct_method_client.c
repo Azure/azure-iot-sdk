@@ -20,20 +20,17 @@
 #include "internal/log_internal.h"
 #include "internal/mono_time.h"
 #include "internal/span_writer.h"
+#include "internal/workspace.h"
 
 #define METHODS_RESPONSE_PREFIX "$iothub/methods/res/"
 #define METHODS_RESPONSE_RID_MARKER "/?$rid="
 /* Longest decimal an int32 status can print, INT32_MIN included. */
 #define AZ_IOT_MQTTV3_DM_STATUS_MAX 11
 
-/* Derived from the parts the topic is built out of rather than fixed, because
- * AZ_IOT_DM_RID_MAX is a documented knob and it widens what the parser accepts.
- * At a fixed size the buffer did not widen with it, so an invocation carrying a
- * rid near the top of a raised bound was accepted, ran its handler, and then
- * could not be answered at all -- while shorter rids on the same build answered
- * normally. Deriving the size keeps "accepted" and "answerable" the same set.
- * Capacity works out at 40 + AZ_IOT_DM_RID_MAX against a worst case of 38,
- * terminator included, so it holds at every bound with two bytes spare. */
+/* Derived from the parts the topic is built out of, AZ_IOT_DM_RID_MAX included,
+ * so every rid the parser accepts can be answered. Capacity works out at
+ * 40 + AZ_IOT_DM_RID_MAX against a worst case of 38 + AZ_IOT_DM_RID_MAX,
+ * terminator included. */
 #define AZ_IOT_MQTTV3_DM_TOPIC_MAX                               \
   (sizeof(METHODS_RESPONSE_PREFIX) + AZ_IOT_MQTTV3_DM_STATUS_MAX \
    + sizeof(METHODS_RESPONSE_RID_MARKER) + AZ_IOT_DM_RID_MAX)
@@ -47,7 +44,7 @@
  *
  * Without this an application that drops a request -- a handler that returns
  * without responding, including on its own error paths -- would hold that slot
- * for the life of the client, and once AZ_IOT_DM_MAX_INFLIGHT had leaked every
+ * for the life of the client, and once every slot had leaked every
  * further invocation would be dropped.
  *
  * Feature clients get no periodic tick, so this runs whenever a method message
@@ -57,10 +54,10 @@
 static void requests_expire_stale(az_iot_mqttv3_direct_method_client* dm)
 {
   uint64_t now = az_iot_time_mono_ms();
-  for (size_t i = 0; i < AZ_IOT_DM_MAX_INFLIGHT; ++i)
+  for (size_t i = 0; i < DI(dm).max_in_flight_invocations; ++i)
   {
-    az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
-    if (!s->_internal.in_use || now < DI(dm).req_expires_at_ms[i])
+    az_iot_direct_method_slot* s = &DI(dm).invocations[i].slot;
+    if (!s->_internal.in_use || now < DI(dm).invocations[i].expires_at_ms)
     {
       continue;
     }
@@ -70,6 +67,29 @@ static void requests_expire_stale(az_iot_mqttv3_direct_method_client* dm)
         "slot",
         s->_internal.method_name);
     s->_internal.in_use = false;
+  }
+}
+
+/** @brief Session end: every invocation not answered yet ends with it, freeing its slot. */
+static void on_connection_event(const az_iot_connection_feature_event* event, void* user_ctx)
+{
+  az_iot_mqttv3_direct_method_client* dm = (az_iot_mqttv3_direct_method_client*)user_ctx;
+  if (event->kind != AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END)
+  {
+    return;
+  }
+  for (size_t i = 0; i < DI(dm).max_in_flight_invocations; ++i)
+  {
+    az_iot_direct_method_slot* s = &DI(dm).invocations[i].slot;
+    if (s->_internal.in_use)
+    {
+      AZ_IOT_LOG_WARNF(
+          AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+          "the session ended before '%s' was answered; IoT Hub fails the call",
+          s->_internal.method_name);
+      DI(dm).invocations[i].ended_by_session_seq = s->_internal.seq;
+      s->_internal.in_use = false;
+    }
   }
 }
 
@@ -89,11 +109,11 @@ static az_iot_direct_method_slot* request_resolve(
     return NULL;
   }
   size_t i = (size_t)request._internal.slot;
-  if (i >= AZ_IOT_DM_MAX_INFLIGHT || request._internal.seq == 0u)
+  if (i >= DI(dm).max_in_flight_invocations || request._internal.seq == 0u)
   {
     return NULL;
   }
-  az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
+  az_iot_direct_method_slot* s = &DI(dm).invocations[i].slot;
   if (!s->_internal.in_use || s->_internal.seq != request._internal.seq)
   {
     return NULL;
@@ -116,10 +136,10 @@ static bool request_acquire(
     az_iot_direct_method_request* out_request,
     az_iot_direct_method_slot** out_slot)
 {
-  for (size_t n = 0; n < AZ_IOT_DM_MAX_INFLIGHT; ++n)
+  for (size_t n = 0; n < DI(dm).max_in_flight_invocations; ++n)
   {
-    size_t i = (DI(dm).next_slot + n) % AZ_IOT_DM_MAX_INFLIGHT;
-    az_iot_direct_method_slot* s = &DI(dm).req_pool[i];
+    size_t i = (DI(dm).next_slot + n) % DI(dm).max_in_flight_invocations;
+    az_iot_direct_method_slot* s = &DI(dm).invocations[i].slot;
     if (!s->_internal.in_use)
     {
       memset(s, 0, sizeof(*s));
@@ -131,9 +151,9 @@ static bool request_acquire(
       }
       s->_internal.seq = DI(dm).next_seq;
       s->_internal.in_use = true;
-      DI(dm).req_expires_at_ms[i]
+      DI(dm).invocations[i].expires_at_ms
           = az_iot_time_mono_ms() + ((uint64_t)DI(dm).response_timeout_seconds * MS_PER_SECOND);
-      DI(dm).next_slot = (i + 1u) % AZ_IOT_DM_MAX_INFLIGHT;
+      DI(dm).next_slot = (i + 1u) % DI(dm).max_in_flight_invocations;
 
       memset(out_request, 0, sizeof(*out_request));
       out_request->_internal.owner = dm;
@@ -146,10 +166,10 @@ static bool request_acquire(
   }
   AZ_IOT_LOG_WARNF(
       AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
-      "dropping an invocation, all %d in-flight slots are held by requests "
+      "dropping an invocation, all %lu in-flight slots are held by requests "
       "that have not been answered and have not yet timed out. Answer them with "
-      "az_iot_mqttv3_direct_method_respond(), or raise AZ_IOT_DM_MAX_INFLIGHT.",
-      (int)AZ_IOT_DM_MAX_INFLIGHT);
+      "az_iot_mqttv3_direct_method_respond(), or raise limits.max_in_flight_invocations.",
+      (unsigned long)DI(dm).max_in_flight_invocations);
   return false;
 }
 
@@ -235,17 +255,70 @@ static void on_method_invocation(void* user_ctx, const az_iot_mqtt_message* msg)
   DI(dm).handler(req, method_name, msg->payload, msg->payload_len, DI(dm).handler_ctx);
 }
 
+/**
+ * @brief Writes @p limits' max_in_flight_invocations, with 0 replaced by the default, to @p out.
+ * @return false when it is above its maximum.
+ */
+static bool limits_resolve_max_in_flight_invocations(
+    const az_iot_mqttv3_direct_method_client_limits* limits,
+    size_t* out)
+{
+  *out = limits->max_in_flight_invocations == 0u
+      ? (size_t)AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_MAX_IN_FLIGHT_INVOCATIONS
+      : limits->max_in_flight_invocations;
+  return *out <= AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_MAX_IN_FLIGHT_INVOCATIONS_LIMIT;
+}
+
+AZ_NODISCARD az_iot_mqttv3_direct_method_client_options
+az_iot_mqttv3_direct_method_client_options_default(void)
+{
+  az_iot_mqttv3_direct_method_client_options options = { 0 };
+  return options;
+}
+
+AZ_NODISCARD size_t az_iot_mqttv3_direct_method_client_get_workspace_size(
+    const az_iot_mqttv3_direct_method_client_limits* limits)
+{
+  size_t max_in_flight_invocations = 0;
+  return limits != NULL
+          && limits_resolve_max_in_flight_invocations(limits, &max_in_flight_invocations)
+      ? AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE(max_in_flight_invocations)
+      : 0u;
+}
+
 AZ_NODISCARD az_iot_result az_iot_mqttv3_direct_method_client_init(
     az_iot_mqttv3_direct_method_client* client,
-    az_iot_connection_client* conn)
+    az_iot_connection_client* conn,
+    const az_iot_mqttv3_direct_method_client_options* options)
 {
-  if (client == NULL || conn == NULL)
+  if (client == NULL || conn == NULL || options == NULL)
   {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD, "init: invalid arguments");
     return AZ_IOT_ERR_INVALID_ARG;
   }
-
+  size_t max_in_flight_invocations = 0;
+  if (!limits_resolve_max_in_flight_invocations(&options->limits, &max_in_flight_invocations))
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+        "init: limits.max_in_flight_invocations is above its maximum");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  const size_t workspace_size
+      = AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_WORKSPACE_SIZE(max_in_flight_invocations);
   az_iot_result result
-      = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
+      = az_iot_workspace__check(options->workspace, options->workspace_size, workspace_size);
+  if (result != AZ_IOT_OK)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+        "init: the workspace is NULL or has %lu bytes; %lu needed",
+        (unsigned long)options->workspace_size,
+        (unsigned long)workspace_size);
+    return result;
+  }
+
+  result = az_iot_connection_client__require_profile(conn, AZ_IOT_CONNECTION_PROFILE_MQTT_V3);
   if (result != AZ_IOT_OK)
   {
     memset(client, 0, sizeof(*client));
@@ -254,6 +327,13 @@ AZ_NODISCARD az_iot_result az_iot_mqttv3_direct_method_client_init(
 
   memset(client, 0, sizeof(*client));
   DI(client).conn = conn;
+  memset(options->workspace, 0, workspace_size);
+  uint8_t* cursor = az_iot_workspace__start(options->workspace);
+  DI(client).invocations = az_iot_workspace__take(
+      &cursor, max_in_flight_invocations, sizeof(az_iot_mqttv3_direct_method_invocation));
+  DI(client).max_in_flight_invocations = max_in_flight_invocations;
+  DI(client).workspace = options->workspace;
+  DI(client).workspace_size = options->workspace_size;
   DI(client).response_timeout_seconds = AZ_IOT_MQTTV3_DM_RESPONSE_TIMEOUT_SECONDS;
   /* Seeded rather than started from zero: deinit() zeroes the client, so a
    * fresh init would otherwise reissue the same {slot, seq} a request from the
@@ -264,6 +344,12 @@ AZ_NODISCARD az_iot_result az_iot_mqttv3_direct_method_client_init(
    * are known before the connection resolves. */
   result = az_iot_connection_client__register_inbound_handler(
       conn, METHODS_REQUEST_PREFIX, on_method_invocation, client);
+  /* Before the subscription: one may be sent at once, and a later failure cannot withdraw it. */
+  if (result == AZ_IOT_OK)
+  {
+    result = az_iot_connection_client__add_feature_observer(
+        conn, AZ_IOT_CONNECTION_FEATURE_EVENT_SESSION_END, on_connection_event, client);
+  }
   if (result == AZ_IOT_OK)
   {
     result = az_iot_connection_client__add_subscription_on_connect(
@@ -276,6 +362,7 @@ AZ_NODISCARD az_iot_result az_iot_mqttv3_direct_method_client_init(
   }
   if (result != AZ_IOT_OK)
   {
+    az_iot_connection_client__remove_feature_observer(conn, on_connection_event, client);
     (void)az_iot_connection_client__remove_subscriptions_for(conn, client);
     (void)az_iot_connection_client__unregister_inbound_handlers(conn, client);
     az_iot_connection_client__release_profile(conn);
@@ -292,9 +379,14 @@ void az_iot_mqttv3_direct_method_client_deinit(az_iot_mqttv3_direct_method_clien
   {
     return;
   }
+  az_iot_connection_client__remove_feature_observer(DI(client).conn, on_connection_event, client);
   az_iot_connection_client__release_profile(DI(client).conn);
   (void)az_iot_connection_client__remove_subscriptions_for(DI(client).conn, client);
   (void)az_iot_connection_client__unregister_inbound_handlers(DI(client).conn, client);
+  if (DI(client).workspace != NULL)
+  {
+    memset(DI(client).workspace, 0, DI(client).workspace_size);
+  }
   memset(client, 0, sizeof(*client));
 }
 
@@ -340,7 +432,7 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
-        "this request was delivered by the mqttv5 client");
+        "this request was delivered by a client of another profile");
     return AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH;
   }
 
@@ -353,6 +445,15 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
   az_iot_direct_method_slot* slot = request_resolve(dm, request, &index);
   if (slot == NULL)
   {
+    if (request._internal.owner == dm && request._internal.slot < DI(dm).max_in_flight_invocations
+        && request._internal.seq != 0u
+        && DI(dm).invocations[request._internal.slot].ended_by_session_seq == request._internal.seq)
+    {
+      AZ_IOT_LOG_WARN(
+          AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+          "respond() called after the session the invocation arrived on ended; sending nothing");
+      return AZ_IOT_ERR_NOT_CONNECTED;
+    }
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
         "respond() called on a request that is no longer live -- "
@@ -362,7 +463,7 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
   }
   /* The sweep only runs when a method message arrives, so checking the slot's
    * own expiry here is what makes the refusal hold on an otherwise idle device. */
-  if (az_iot_time_mono_ms() >= DI(dm).req_expires_at_ms[index])
+  if (az_iot_time_mono_ms() >= DI(dm).invocations[index].expires_at_ms)
   {
     AZ_IOT_LOG_WARNF(
         AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
@@ -396,6 +497,34 @@ az_iot_result az_iot_mqttv3_direct_method_respond(
   out.retain = false;
 
   az_iot_result r = az_iot_connection_client__publish(DI(dm).conn, dm, &out, NULL, NULL);
+  if (r == AZ_IOT_ERR_NOT_CONNECTED
+      && az_iot_connection_client_get_state(DI(dm).conn, AZ_IOT_CONN_SCOPE_HUB)
+          == AZ_IOT_CONN_STATE_CONNECTING)
+  {
+    /* Dispatched while other subscriptions are still pending: the session is live. */
+    AZ_IOT_LOG_WARNF(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+        "'%s' answered before the connection finished setting up; answer it again once connected",
+        slot->_internal.method_name);
+    return AZ_IOT_ERR_BUSY;
+  }
+  if (r == AZ_IOT_ERR_NOT_CONNECTED)
+  {
+    /* Closing, or the link dropped ahead of its SESSION_END: answering again says so too. */
+    DI(dm).invocations[index].ended_by_session_seq = slot->_internal.seq;
+  }
+  else if (r != AZ_IOT_OK && r != AZ_IOT_ERR_INVALID_ARG)
+  {
+    /* Adapter BUSY, a payload too large to send, or an error from a link that dropped unseen: the
+     * slot stays answerable until its response timeout, or its SESSION_END records it. */
+    AZ_IOT_LOG_WARNF(
+        AZ_IOT_LOG_COMPONENT_MQTTV3_DIRECT_METHOD,
+        "the answer to '%s' was not sent (%s); it may be answered again",
+        slot->_internal.method_name,
+        az_iot_result_to_string(r));
+    /* AZ_IOT_ERR_TIMEOUT from respond() means the response timeout passed and the slot is free. */
+    return r == AZ_IOT_ERR_TIMEOUT ? AZ_IOT_ERR_BUSY : r;
+  }
   slot->_internal.in_use = false;
   return r;
 }

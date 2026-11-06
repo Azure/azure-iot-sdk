@@ -160,9 +160,13 @@ static void test_load_returns_file_contents(void** state)
   /* release() drops the key; a later load() reads it again. */
   mgr.base.vtable->release(&mgr.base, &mat);
 
+  /* Into reused storage: no stale key reference survives. */
   az_iot_certificate_material mat2;
-  memset(&mat2, 0, sizeof(mat2));
+  memset(&mat2, 0xA5, sizeof(mat2));
   assert_int_equal(AZ_IOT_OK, mgr.base.vtable->load(&mgr.base, AZ_IOT_CRED_BOOTSTRAP, 0, &mat2));
+  assert_null(mat2.client_key_uri);
+  assert_null(mat2.crypto_engine_id);
+  assert_int_equal(0, mat2.client_key_psa_id);
   assert_string_equal(k_cert_pem, mat2.client_cert_pem);
   assert_string_equal(k_key_pem, mat2.client_key_pem);
   assert_string_equal("hunter2", mat2.client_key_password);

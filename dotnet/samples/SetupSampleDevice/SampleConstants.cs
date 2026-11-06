@@ -228,8 +228,8 @@ namespace SetupSampleDevice
             X509Certificate2 certificate = LoadBootCertificate();
 
             return issuedCertificatePrivateKey == null
-                ? new(certificate)
-                : new(certificate, issuedCertificatePrivateKey);
+                ? new(certificate, null)
+                : new(certificate, null, issuedCertificatePrivateKey);
         }
 
         /// <summary>

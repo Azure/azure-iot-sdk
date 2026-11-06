@@ -3,10 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* File upload end-to-end (MQTTv3 IoT Hub). Runs on the Linux e2e legs. On
- * Windows the executable is built but not registered as a CTest test, so MSVC
- * keeps compiling it while nothing skips at run time -- see the note in main()
- * and c/tests/e2e/CMakeLists.txt.
+/* File upload end-to-end (MQTTv3 IoT Hub).
  *
  * Proves the device-side file-upload path against a real Azure IoT Hub that has
  * an Azure Storage account associated for file upload. The device provisions via
@@ -37,9 +34,7 @@
  * the e2e harness's own TLS transport (az_iot_e2e_https_request) -- the same
  * az_amqp transport the service facade uses -- so there is no external HTTP
  * client dependency. Mutual TLS with the device certificate authenticates the
- * hub REST calls; on Windows the harness's Schannel transport does not present
- * the self-signed device certificate on the CI runners, so the test is not
- * registered there (the OpenSSL transport on Linux presents it correctly).
+ * hub REST calls.
  *
  * Requires the standard e2e device environment and the service connection
  * strings (both provided by the e2e job), and a hub with an Azure Storage
@@ -59,15 +54,10 @@
 
 #include "azure/iot/az_iot.h"
 /* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-#include "azure/iot/adapters/az_iot_adapter_paho.h"
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
-#else
-#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
-#endif
+#include "e2e_mqtt_adapter.h"
 
 #include "az_iot_e2e_service.h"
+#include "e2e_connect_clock.h"
 #include "e2e_device.h"
 #include "e2e_log.h"
 #include "e2e_sas_device.h"
@@ -84,7 +74,8 @@
  * enableFileUploadNotifications is switched on is accepted and then never
  * published, so the only way to find out whether the hub is publishing yet is to
  * upload again. Two attempts cover the ~10s margin measured in CI with room to
- * spare; a hub that publishes nothing across both is a real failure. */
+ * spare; a hub that publishes nothing across both is a real failure. An attempt
+ * whose completion the hub refuses is retried the same way, without the wait. */
 #define E2E_ROUND_TRIP_ATTEMPTS 2
 #define E2E_PUMP_SLICE_MS 50
 /* The watcher spends this wait deliberately idle, and IoT Hub drops an idle AMQP
@@ -108,6 +99,7 @@ typedef struct
 {
   const char* cert;
   const char* key;
+  int last_status; /* HTTP status of the last hub answer; 0 when none arrived. */
 } hub_http_ctx;
 
 /* Split "https://host/path..." into host + origin-form path. */
@@ -146,6 +138,74 @@ static bool split_url(const char* url, char* host, size_t host_cap, char* path, 
   return true;
 }
 
+/** @brief Longest hub error body logged by hub_https_request(). */
+#define E2E_HUB_ERROR_BODY_MAX 512
+
+/**
+ * @brief Performs a hub REST call for an SDK HTTP hook and fills @p response.
+ *
+ * A non-2xx answer is logged with its elapsed time and body (the hub's error code
+ * and tracking id): the SDK reports only a mapped az_iot_result, and does not
+ * hand the hook a body buffer for a completion notification.
+ *
+ * @return true when a response arrived.
+ */
+static bool hub_https_request(
+    const char* host,
+    const char* method,
+    const char* path,
+    const char* cert,
+    const char* key,
+    const char* content_type,
+    const char* extra_header,
+    const uint8_t* body,
+    size_t body_len,
+    az_iot_file_upload_http_response* response)
+{
+  char error_body[E2E_HUB_ERROR_BODY_MAX];
+  bool has_body_buffer = response->body != NULL && response->body_capacity > 0;
+  char* resp_buf = has_body_buffer ? (char*)response->body : error_body;
+  size_t resp_cap = has_body_buffer ? response->body_capacity : sizeof(error_body);
+
+  int status = 0;
+  size_t resp_len = 0;
+  time_t start = time(NULL);
+  if (!az_iot_e2e_https_request(
+          host,
+          method,
+          path,
+          cert,
+          key,
+          content_type,
+          extra_header,
+          body,
+          body_len,
+          &status,
+          resp_buf,
+          resp_cap,
+          &resp_len))
+  {
+    return false; /* No HTTP response; the e2e HTTPS client logged why. */
+  }
+
+  if (status < 200 || status > 299)
+  {
+    fprintf(
+        stderr,
+        "[e2e] hub %s %.*s answered HTTP %d after %llds: %.*s\n",
+        method,
+        (int)strcspn(path, "?"),
+        path,
+        status,
+        (long long)(time(NULL) - start),
+        (int)(resp_len < E2E_HUB_ERROR_BODY_MAX ? resp_len : E2E_HUB_ERROR_BODY_MAX),
+        resp_buf);
+  }
+  response->status_code = status;
+  response->body_len = has_body_buffer ? resp_len : 0;
+  return true;
+}
+
 /* SDK HTTP transport hook for the MQTTv3 control plane: performs the hub REST
  * call over the harness TLS transport with the device certificate (mutual TLS). */
 static az_iot_result e2e_http_send(
@@ -168,27 +228,13 @@ static az_iot_result e2e_http_send(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  int status = 0;
-  size_t resp_len = 0;
-  if (!az_iot_e2e_https_request(
-          host,
-          method,
-          path,
-          hc->cert,
-          hc->key,
-          content_type,
-          NULL,
-          body,
-          body_len,
-          &status,
-          (char*)response->body,
-          response->body_capacity,
-          &resp_len))
+  hc->last_status = 0;
+  if (!hub_https_request(
+          host, method, path, hc->cert, hc->key, content_type, NULL, body, body_len, response))
   {
-    return AZ_IOT_ERR_MQTT;
+    return AZ_IOT_ERR_NOT_CONNECTED;
   }
-  response->status_code = status;
-  response->body_len = resp_len;
+  hc->last_status = response->status_code;
   return AZ_IOT_OK;
 }
 
@@ -357,18 +403,18 @@ static void report_notification_stats(fixture* fx)
   int delivered = 0;
   int captured = 0;
   int released = 0;
-  int stale = 0;
+  int unwatched = 0;
   int unparsed = 0;
   az_iot_e2e_service_file_notification_stats(
-      fx->svc, &delivered, &captured, &released, &stale, &unparsed);
+      fx->svc, &delivered, &captured, &released, &unwatched, &unparsed);
   fprintf(
       stderr,
       "file-upload notifications: delivered=%d captured=%d "
-      "released(other device)=%d accepted(stale)=%d undecodable=%d\n",
+      "released(other device)=%d accepted(no watcher)=%d undecodable=%d\n",
       delivered,
       captured,
       released,
-      stale,
+      unwatched,
       unparsed);
 }
 
@@ -376,7 +422,8 @@ static void report_notification_stats(fixture* fx)
  * e2e runs sharing one storage account. */
 static void make_blob_name(char* out, size_t cap, const char* tag)
 {
-  (void)snprintf(out, cap, "e2e-fileupload/%s-%lld.txt", tag, (long long)time(NULL));
+  (void)snprintf(
+      out, cap, AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY "%s-%lld.txt", tag, (long long)time(NULL));
 }
 
 /* Request a SAS URI and assert the hub granted one. */
@@ -558,12 +605,29 @@ static void test_upload_round_trip_and_failure_reporting(void** state)
     assert_int_equal((int)read_len, (int)strlen(k_blob_content));
     assert_memory_equal(readback, k_blob_content, strlen(k_blob_content));
 
-    /* 4. Report success. */
+    /* 4. Report success. The hub can refuse the completion of an upload it
+     *    granted seconds earlier, and the same calls succeed again moments
+     *    later; hub_https_request() logs its answer. Only such a refusal (an
+     *    HTTP 4xx) starts the next attempt with a fresh upload; any other
+     *    failure, and any failure of the last attempt, fails the test. */
     assert_int_equal(
         AZ_IOT_OK,
         az_iot_mqttv3_file_upload_client_notify_complete(
             &fx->fu, u.correlation_id, true, on_notify, &u));
     assert_true(u.notify_done);
+    int notify_http_status = fx->http_ctx.last_status;
+    if (u.notify_status != AZ_IOT_OK && notify_http_status >= 400 && notify_http_status <= 499
+        && attempt < E2E_ROUND_TRIP_ATTEMPTS)
+    {
+      fprintf(
+          stderr,
+          "file upload e2e: the hub refused the completion for attempt %d (HTTP %d, %s). "
+          "Uploading again.\n",
+          attempt,
+          notify_http_status,
+          az_iot_result_to_string(u.notify_status));
+      continue;
+    }
     assert_int_equal(u.notify_status, AZ_IOT_OK);
 
     /* 5. IoT Hub must publish the completion to the service notification
@@ -700,30 +764,10 @@ static az_iot_result e2e_http_send_sas(
     return AZ_IOT_ERR_INVALID_ARG;
   }
 
-  int status = 0;
-  size_t resp_len = 0;
-  bool ok = az_iot_e2e_https_request(
-      host,
-      method,
-      path,
-      NULL,
-      NULL,
-      content_type,
-      header,
-      body,
-      body_len,
-      &status,
-      (char*)response->body,
-      response->body_capacity,
-      &resp_len);
+  bool ok = hub_https_request(
+      host, method, path, NULL, NULL, content_type, header, body, body_len, response);
   memset(header, 0, sizeof(header));
-  if (!ok)
-  {
-    return AZ_IOT_ERR_MQTT;
-  }
-  response->status_code = status;
-  response->body_len = resp_len;
-  return AZ_IOT_OK;
+  return ok ? AZ_IOT_OK : AZ_IOT_ERR_NOT_CONNECTED;
 }
 
 static void on_sas_hub_state(const az_iot_connection_state_event* event, void* user_ctx)
@@ -755,22 +799,20 @@ static void test_sas_key_device_uploads_a_file(void** state)
 
   az_iot_connection_state hub_state = AZ_IOT_CONN_STATE_IDLE;
   az_iot_connection_client conn = { 0 };
+  uint8_t* mqtt_workspace = e2e_use_mqtt_adapter(&copts);
+  assert_non_null(mqtt_workspace);
   assert_int_equal(az_iot_connection_client_init(&conn, &copts), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client_add_state_observer(&conn, on_sas_hub_state, &hub_state), AZ_IOT_OK);
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  az_iot_mqtt_factory* factory = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  assert_int_equal(az_iot_connection_client_register_mqtt_factory(&conn, factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(&conn), AZ_IOT_OK);
-  time_t start = time(NULL);
+  e2e_connect_clock clock;
+  e2e_connect_clock_start(&clock);
   while (hub_state != AZ_IOT_CONN_STATE_CONNECTED && hub_state != AZ_IOT_CONN_STATE_FAULTED
-         && (time(NULL) - start) < E2E_SAS_FU_CONNECT_TIMEOUT_S)
+         && e2e_connect_clock_running(&clock, &conn, E2E_SAS_FU_CONNECT_TIMEOUT_S))
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
   }
+  e2e_connect_clock_log(&clock, "SAS file-upload device");
   assert_int_equal(hub_state, AZ_IOT_CONN_STATE_CONNECTED);
 
   int authorized = 0;
@@ -779,7 +821,8 @@ static void test_sas_key_device_uploads_a_file(void** state)
   assert_int_equal(az_iot_mqttv3_file_upload_client_init(&fu, &conn, &http), AZ_IOT_OK);
 
   char blob_name[96];
-  make_blob_name(blob_name, sizeof(blob_name), "sas");
+  /* Reported successful and not watched: tagged so watchers accept its notification. */
+  make_blob_name(blob_name, sizeof(blob_name), AZ_IOT_E2E_UNWATCHED_BLOB_TAG "sas");
   upload_ctx u;
   memset(&u, 0, sizeof(u));
   assert_int_equal(
@@ -816,17 +859,13 @@ static void test_sas_key_device_uploads_a_file(void** state)
 
   az_iot_mqttv3_file_upload_client_deinit(&fu);
   assert_int_equal(az_iot_connection_client_close(&conn), AZ_IOT_OK);
-  start = time(NULL);
+  time_t start = time(NULL);
   while (hub_state != AZ_IOT_CONN_STATE_IDLE && (time(NULL) - start) < E2E_SAS_FU_CLOSE_TIMEOUT_S)
   {
     (void)az_iot_connection_client_do_work(&conn, 50);
   }
   az_iot_connection_client_deinit(&conn);
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory);
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory);
-#endif
+  free(mqtt_workspace);
   e2e_sas_config_free(&cfg);
 }
 
@@ -842,17 +881,5 @@ int main(void)
     cmocka_unit_test(test_sas_key_device_uploads_a_file),
   };
 
-  /* Not registered as a test on Windows -- see c/tests/e2e/CMakeLists.txt. The
-   * mutual-TLS hub REST call the MQTTv3 control plane needs does not work
-   * through the e2e harness's Schannel transport on the CI runners. MEASURED
-   * (run 30506101665, where the old runtime skip was lifted to test the
-   * assumption): every get_sas_uri and notify_complete came back
-   * AZ_IOT_ERR_PROTOCOL after ~16s, i.e. the exchange produced no HTTP status
-   * line at all rather than an auth failure -- the hub closes the connection
-   * without responding. Only the argument-validation scenario, which touches no
-   * network, passed. The OpenSSL transport on Linux performs the same calls
-   * fine, so this is a harness limitation and not an SDK one; the feature is
-   * covered by the Linux e2e legs, and the file-upload sample builds and runs
-   * natively on Windows. */
   return cmocka_run_group_tests(tests, group_setup, group_teardown);
 }

@@ -91,6 +91,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             }
         }
 
+
         [Fact]
         public async Task ConnectToHubAsyncDoesNotProvisionWhenAReprovisionIsStanding()
         {
@@ -189,7 +190,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             // The application disconnects the device deliberately and then connects it again by hand -- without
             // provisioning -- holding the connection context that provisioning returned.
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<DeviceException>(
                 async () => await connectionClient.ConnectToHubAsync(connectionContext, TestContext.Current.CancellationToken));
@@ -216,7 +217,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(1, mockDps.RegistrationCount);
 
             // Like the C client's close(), a deliberate disconnect keeps the IoT hub assignment.
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
             Assert.Same(connectionContext, connectionClient.GetCurrentConnectionContext());
@@ -340,6 +341,394 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             // rather than replaying the ones minted for the first attempt.
             Assert.Equal(new[] { "boot-1", "boot-2", "boot-3" }, dpsPasswords);
             Assert.Equal(3, authentication.BootCredentialRequests);
+        }
+
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task ConnectFailureWrappedByMqttNetIsRetried(bool hasInnerException)
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            int dpsAttempts = 0;
+            mockMqttClient.OnConnect = connect =>
+            {
+                // MQTTnet 5 wraps a failure while exchanging CONNECT/CONNACK, such as the server closing the
+                // connection before answering, in its own MqttConnectingFailedException.
+                if (connect.HostName == GlobalDeviceEndpoint && Interlocked.Increment(ref dpsAttempts) == 1)
+                {
+                    throw new MQTTnet.Adapter.MqttConnectingFailedException(
+                        "Error while authenticating. Connection closed.",
+                        hasInnerException ? new MQTTnet.Exceptions.MqttCommunicationException("Connection closed.") : null!);
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new()
+            {
+                MqttClient = mockMqttClient,
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+            });
+
+            ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                new PrimaryAndSecondaryAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(FirstAssignedHub, connectionContext.IotHubHostName);
+            Assert.Equal(2, Volatile.Read(ref dpsAttempts));
+        }
+
+        [Theory]
+        [InlineData(IotHubConnectionType.Mqttv3)]
+        public async Task RejectedPrimaryCredentialsAreRetriedWithSecondaryCredentialsWithoutReprovisioning(
+            IotHubConnectionType connectionProfile)
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub, connectionProfile);
+
+            List<string> connectAttempts = new();
+            mockMqttClient.OnConnect = connect =>
+            {
+                lock (connectAttempts)
+                {
+                    connectAttempts.Add(ConnectAttempt(connect));
+                }
+
+                // Both DPS and the hub have rotated out the primary credentials. MQTTnet 5 returns a refused CONNACK
+                // rather than throwing it.
+                bool primary = Encoding.UTF8.GetString(connect.Password!).StartsWith("primary", StringComparison.Ordinal);
+                return Task.FromResult(new MqttConnectAck() { ResultCode = primary ? MqttConnectReasonCode.NotAuthorized : MqttConnectReasonCode.Success });
+            };
+
+            AbstractConnectionClient connectionClient = CreateCredentialFallbackClient(mockMqttClient);
+            using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
+
+            ConnectionContext connectionContext = await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                new PrimaryAndSecondaryAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(FirstAssignedHub, connectionContext.IotHubHostName);
+            Assert.Equal(1, mockDps.RegistrationCount);
+            lock (connectAttempts)
+            {
+                Assert.Equal(
+                    new[]
+                    {
+                        $"{GlobalDeviceEndpoint}:primary-boot",
+                        $"{GlobalDeviceEndpoint}:secondary-boot",
+                        $"{FirstAssignedHub}:primary-hub",
+                        $"{FirstAssignedHub}:secondary-hub",
+                    },
+                    connectAttempts);
+            }
+        }
+
+        [Theory]
+        [InlineData(IotHubConnectionType.Mqttv3, false)]
+        [InlineData(IotHubConnectionType.Mqttv3, true)]
+        public async Task RegistrationRejectedAsUnauthorizedIsRetriedWithSecondaryBootCredentials(
+            IotHubConnectionType connectionProfile, bool dpsRejectsSecondary)
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub, connectionProfile);
+
+            // Like the real service, DPS accepts any CONNECT and only checks the credentials when registering.
+            string lastDpsPassword = string.Empty;
+            List<string> connectAttempts = new();
+            mockMqttClient.OnConnect = connect =>
+            {
+                lock (connectAttempts)
+                {
+                    connectAttempts.Add(ConnectAttempt(connect));
+                }
+
+                if (connect.HostName == GlobalDeviceEndpoint)
+                {
+                    Volatile.Write(ref lastDpsPassword, Encoding.UTF8.GetString(connect.Password!));
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+            mockDps.RejectRegistrationAsUnauthorized = () =>
+                Volatile.Read(ref lastDpsPassword) == "primary-boot" || dpsRejectsSecondary;
+
+            AbstractConnectionClient connectionClient = CreateCredentialFallbackClient(mockMqttClient);
+            using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
+
+            Task<ConnectionContext> provisioning = connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                new PrimaryAndSecondaryAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            if (dpsRejectsSecondary)
+            {
+                DeviceException exception = await Assert.ThrowsAsync<DeviceException>(async () => await provisioning);
+                Assert.Equal(ErrorRetryability.IdentityTerminal, exception.Retryability);
+                Assert.Equal(0, mockDps.RegistrationCount);
+                lock (connectAttempts)
+                {
+                    Assert.Equal(new[] { $"{GlobalDeviceEndpoint}:primary-boot", $"{GlobalDeviceEndpoint}:secondary-boot" }, connectAttempts);
+                }
+
+                return;
+            }
+
+            ConnectionContext connectionContext = await provisioning;
+
+            Assert.Equal(FirstAssignedHub, connectionContext.IotHubHostName);
+            Assert.Equal(1, mockDps.RegistrationCount);
+            lock (connectAttempts)
+            {
+                Assert.Equal(
+                    new[]
+                    {
+                        $"{GlobalDeviceEndpoint}:primary-boot",
+                        $"{GlobalDeviceEndpoint}:secondary-boot",
+                        $"{FirstAssignedHub}:primary-hub",
+                    },
+                    connectAttempts);
+            }
+        }
+
+        [Fact]
+        public async Task RegistrationRetryDoesNotReconnectAfterDisconnectDuringDpsTeardown()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+            mockDps.RejectRegistrationAsUnauthorized = () => true;
+
+            int connectAttemptCount = 0;
+            mockMqttClient.OnConnect = _ =>
+            {
+                Interlocked.Increment(ref connectAttemptCount);
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            TaskCompletionSource internalDisconnectStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource releaseInternalDisconnect = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int disconnectAttemptCount = 0;
+            mockMqttClient.OnDisconnect = async _ =>
+            {
+                if (Interlocked.Increment(ref disconnectAttemptCount) == 1)
+                {
+                    internalDisconnectStarted.TrySetResult();
+                    await releaseInternalDisconnect.Task;
+                }
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+            Task<ConnectionContext> provisioning = connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                new PrimaryAndSecondaryAuthenticationProvider(),
+                forceProvisioning: true,
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            try
+            {
+                await internalDisconnectStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+                // Complete a public disconnect while the registration retry is still waiting for its DPS teardown.
+                await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            }
+            finally
+            {
+                releaseInternalDisconnect.TrySetResult();
+            }
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await provisioning.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            Assert.Equal(1, connectAttemptCount);
+            Assert.Equal(0, mockDps.RegistrationCount);
+        }
+
+        [Fact]
+        public async Task LateDpsDisconnectCallbackIsNotReportedAsHubConnectionLoss()
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { RaiseDisconnectCallbackOnClientDisconnect = false };
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub);
+
+            int lateCallbackRaised = 0;
+            mockMqttClient.OnConnect = async connect =>
+            {
+                if (connect.HostName == FirstAssignedHub && Interlocked.Exchange(ref lateCallbackRaised, 1) == 0)
+                {
+                    // MQTTnet raises the DPS connection's disconnect callback on its own thread, which may run only after
+                    // this client has moved on to connecting to the hub.
+                    await mockMqttClient.SimulateSpuriousDisconnectCallbackAsync(MqttDisconnectReason.NormalDisconnection);
+                }
+
+                return new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success };
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+            int hubConnectionLostCount = 0;
+            connectionClient.HubConnectionLost += () => Interlocked.Increment(ref hubConnectionLostCount);
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(1, lateCallbackRaised);
+            Assert.Equal(0, Volatile.Read(ref hubConnectionLostCount));
+
+            // A loss of the hub connection itself is still reported.
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy);
+            Assert.Equal(1, Volatile.Read(ref hubConnectionLostCount));
+        }
+
+        [Theory]
+        [InlineData(IotHubConnectionType.Mqttv3, false)]
+        [InlineData(IotHubConnectionType.Mqttv3, true)]
+        public async Task MidSessionIdentityFaultTriesSecondaryCredentialsBeforeReprovisioning(
+            IotHubConnectionType connectionProfile, bool hubRejectsSecondary)
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub, connectionProfile);
+
+            bool firstHubRejectsPrimary = false;
+            List<string> connectAttempts = new();
+            TaskCompletionSource recovered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnConnect = connect =>
+            {
+                string attempt = ConnectAttempt(connect);
+                lock (connectAttempts)
+                {
+                    connectAttempts.Add(attempt);
+                }
+
+                bool rejected = attempt == $"{FirstAssignedHub}:primary-hub" && Volatile.Read(ref firstHubRejectsPrimary)
+                    || attempt == $"{FirstAssignedHub}:secondary-hub" && hubRejectsSecondary;
+                return Task.FromResult(new MqttConnectAck() { ResultCode = rejected ? MqttConnectReasonCode.NotAuthorized : MqttConnectReasonCode.Success });
+            };
+
+            AbstractConnectionClient connectionClient = CreateCredentialFallbackClient(mockMqttClient);
+            using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                new PrimaryAndSecondaryAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                recovered.TrySetResult();
+                return Task.CompletedTask;
+            };
+
+            // The hub's primary key is rotated out while the device is connected.
+            Volatile.Write(ref firstHubRejectsPrimary, true);
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+
+            await recovered.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            string[] expectedAttempts = hubRejectsSecondary
+                ? new[]
+                {
+                    $"{GlobalDeviceEndpoint}:primary-boot",
+                    $"{FirstAssignedHub}:primary-hub",
+                    $"{FirstAssignedHub}:secondary-hub",
+                    $"{GlobalDeviceEndpoint}:primary-boot",
+                    $"{SecondAssignedHub}:primary-hub",
+                }
+                : new[]
+                {
+                    $"{GlobalDeviceEndpoint}:primary-boot",
+                    $"{FirstAssignedHub}:primary-hub",
+                    $"{FirstAssignedHub}:secondary-hub",
+                };
+            lock (connectAttempts)
+            {
+                Assert.Equal(expectedAttempts, connectAttempts);
+            }
+
+            // Only rejecting both sets of credentials re-provisions the device.
+            Assert.Equal(hubRejectsSecondary ? 2 : 1, mockDps.RegistrationCount);
+        }
+
+        [Theory]
+        [InlineData(IotHubConnectionType.Mqttv3, false)]
+        [InlineData(IotHubConnectionType.Mqttv3, true)]
+        public async Task SecondaryCredentialsRejectedLaterFallBackToPrimaryWithoutReprovisioning(
+            IotHubConnectionType connectionProfile, bool rejectedMidSession)
+        {
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, _ => FirstAssignedHub, connectionProfile);
+
+            // The hub first accepts only the secondary credentials, then only the primary ones once the keys are rotated
+            // back while the device is connected with the secondary.
+            bool hubAcceptsPrimary = false;
+            List<string> connectAttempts = new();
+            TaskCompletionSource recovered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnConnect = connect =>
+            {
+                string attempt = ConnectAttempt(connect);
+                lock (connectAttempts)
+                {
+                    connectAttempts.Add(attempt);
+                }
+
+                if (connect.HostName == GlobalDeviceEndpoint)
+                {
+                    return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+                }
+
+                bool acceptsPrimary = Volatile.Read(ref hubAcceptsPrimary);
+                bool accepted = attempt == $"{FirstAssignedHub}:primary-hub" ? acceptsPrimary : !acceptsPrimary;
+                return Task.FromResult(new MqttConnectAck() { ResultCode = accepted ? MqttConnectReasonCode.Success : MqttConnectReasonCode.NotAuthorized });
+            };
+
+            AbstractConnectionClient connectionClient = CreateCredentialFallbackClient(mockMqttClient);
+            using IDisposable connectionClientLifetime = (IDisposable)connectionClient;
+
+            await connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                new PrimaryAndSecondaryAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            connectionClient.DevicePresenceFlowCompletedAsync += _ =>
+            {
+                recovered.TrySetResult();
+                return Task.CompletedTask;
+            };
+
+            Volatile.Write(ref hubAcceptsPrimary, true);
+
+            // Either the hub revokes the secondary credentials of the live session, or the connection is lost for an
+            // unrelated reason and the hub refuses the secondary credentials when reconnecting.
+            await mockMqttClient.SimulateServerDisconnectAsync(
+                rejectedMidSession ? MqttDisconnectReason.NotAuthorized : MqttDisconnectReason.ServerBusy);
+
+            await recovered.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            string[] expectedAttempts = rejectedMidSession
+                ? new[]
+                {
+                    $"{GlobalDeviceEndpoint}:primary-boot",
+                    $"{FirstAssignedHub}:primary-hub",
+                    $"{FirstAssignedHub}:secondary-hub",
+                    $"{FirstAssignedHub}:primary-hub",
+                }
+                : new[]
+                {
+                    $"{GlobalDeviceEndpoint}:primary-boot",
+                    $"{FirstAssignedHub}:primary-hub",
+                    $"{FirstAssignedHub}:secondary-hub",
+                    $"{FirstAssignedHub}:secondary-hub",
+                    $"{FirstAssignedHub}:primary-hub",
+                };
+            lock (connectAttempts)
+            {
+                Assert.Equal(expectedAttempts, connectAttempts);
+            }
+
+            Assert.Equal(1, mockDps.RegistrationCount);
         }
 
         [Fact]
@@ -1043,10 +1432,24 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         [InlineData("unsubscribe", "hubUnreachable")]
         public async Task OperationInterruptedBeforeAckIsHeldUntilReprovisionedAndResentToNewHub(string operation, string trigger)
         {
-            const string Topic = "some/feature/topic";
+            const string FirstDeviceId = "firstDeviceId";
+            const string SecondDeviceId = "secondDeviceId";
+            string topicTemplate = $"ih/{IConnectionClient.DeviceIdPlaceholder}/srv/custom";
+            string firstTopic = $"ih/{FirstDeviceId}/srv/custom";
+            string secondTopic = $"ih/{SecondDeviceId}/srv/custom";
 
-            using MockConnectionMqttClient mockMqttClient = new();
-            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub);
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            MockDeviceProvisioningService mockDps = new(mockMqttClient, registrationCount => registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub)
+            {
+                TerminalRegistrationResultSelector = registrationCount => new()
+                {
+                    RegistrationId = RegistrationId,
+                    DeviceId = registrationCount == 1 ? FirstDeviceId : SecondDeviceId,
+                    AssignedHub = registrationCount == 1 ? FirstAssignedHub : SecondAssignedHub,
+                    Status = ProvisioningRegistrationStatus.Assigned,
+                    ConnectionProfile = IotHubConnectionType.Mqttv3,
+                },
+            };
 
             TaskCompletionSource reprovisioningRegistrationStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
             TaskCompletionSource releaseReprovisioningRegistration = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1080,12 +1483,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             // fails every operation still waiting for an acknowledgement. The drop can only be recovered from by
             // re-provisioning. Every attempt records the hub it was sent to.
             List<string?> hubsAttempted = new();
+            List<string> topicsAttempted = new();
             Task? disconnection = null;
-            void RecordAttempt()
+            void RecordAttempt(string topic)
             {
                 lock (hubsAttempted)
                 {
                     hubsAttempted.Add(Volatile.Read(ref currentHubHostName));
+                    topicsAttempted.Add(topic);
                     if (hubsAttempted.Count == 1)
                     {
                         disconnection = mockMqttClient.SimulateServerDisconnectAsync(
@@ -1103,25 +1508,29 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     return handleProvisioningPublishAsync.Invoke(publish);
                 }
 
-                RecordAttempt();
+                if (publish.Topic == firstTopic || publish.Topic == secondTopic)
+                {
+                    RecordAttempt(publish.Topic);
+                }
+
                 return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
             };
             mockMqttClient.OnSubscribe = subscribe =>
             {
-                if (subscribe.TopicFilters.Any(topicFilter => topicFilter.Topic == Topic))
+                if (subscribe.TopicFilters.Any(topicFilter => topicFilter.Topic == firstTopic || topicFilter.Topic == secondTopic))
                 {
-                    RecordAttempt();
+                    RecordAttempt(Assert.Single(subscribe.TopicFilters).Topic);
                 }
 
                 return Task.FromResult(MqttObjectHelpers.CreateSuccessfulSuback(subscribe));
             };
             mockMqttClient.OnUnsubscribe = unsubscribe =>
             {
-                RecordAttempt();
+                RecordAttempt(Assert.Single(unsubscribe.TopicFilters));
                 return Task.FromResult(MqttObjectHelpers.CreateSuccessfulUnsuback(unsubscribe));
             };
 
-            using TestConnectionClient connectionClient = new(new()
+            using ConnectionClient connectionClient = new(new()
             {
                 MqttClient = mockMqttClient,
                 ConnectionRetryPolicy = new ImmediateRetryPolicy(maxHubConnectAttemptsBeforeReprovision: 3),
@@ -1135,9 +1544,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Task pendingOperation = Task.Run(
                 () => operation switch
                 {
-                    "publish" => connectionClient.PublishAsync(new MqttPublish() { Topic = Topic, QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce }, TestContext.Current.CancellationToken),
-                    "subscribe" => connectionClient.SubscribeAsync(new MqttSubscribe(Topic, MqttQualityOfServiceLevel.AtLeastOnce), TestContext.Current.CancellationToken),
-                    _ => (Task)connectionClient.UnsubscribeAsync(new MqttUnsubscribe(Topic), TestContext.Current.CancellationToken),
+                    "publish" => connectionClient.PublishAsync(new MqttPublish() { Topic = topicTemplate, QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce }, TestContext.Current.CancellationToken),
+                    "subscribe" => connectionClient.SubscribeAsync(new MqttSubscribe(topicTemplate, MqttQualityOfServiceLevel.AtLeastOnce), TestContext.Current.CancellationToken),
+                    _ => (Task)connectionClient.UnsubscribeAsync(new MqttUnsubscribe(topicTemplate), TestContext.Current.CancellationToken),
                 },
                 TestContext.Current.CancellationToken);
 
@@ -1150,9 +1559,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.True(operationRemainedPendingDuringRegistration);
             Assert.Equal(2, mockDps.RegistrationCount);
             Assert.Equal(SecondAssignedHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
+            Assert.Equal(SecondDeviceId, connectionClient.GetCurrentConnectionContext()!.DeviceId);
             lock (hubsAttempted)
             {
                 Assert.Equal(new[] { FirstAssignedHub, SecondAssignedHub }, hubsAttempted);
+                Assert.Equal(new[] { firstTopic, secondTopic }, topicsAttempted);
             }
         }
 
@@ -1454,6 +1865,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
             Assert.True(connectionClient.IsConnectionTargetSet);
 
+            // The twin client gets the twin upon each connection to IoT hub, including the first one.
+            lock (hostsFeatureOperationsWereSentTo)
+            {
+                hostsFeatureOperationsWereSentTo.Clear();
+            }
+
             Task telemetry = Task.Run(
                 () => telemetryClient.SendTelemetryAsync(
                     new DeviceToCloudTelemetry() { Payload = Encoding.UTF8.GetBytes("hello") },
@@ -1473,7 +1890,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(2, mockDps.RegistrationCount);
             lock (hostsFeatureOperationsWereSentTo)
             {
-                Assert.Equal(new[] { SecondAssignedHub, SecondAssignedHub }, hostsFeatureOperationsWereSentTo);
+                // The telemetry, the application's get twin request and the twin client's own get twin request upon reconnecting.
+                Assert.True(hostsFeatureOperationsWereSentTo.Count >= 2);
+                Assert.All(hostsFeatureOperationsWereSentTo, host => Assert.Equal(SecondAssignedHub, host));
             }
         }
 
@@ -1512,7 +1931,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(ConnectionEndpoint.None, connectionClient.CurrentEndpoint);
             Assert.True(connectionClient.IsConnectionTargetSet);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             Assert.False(connectionClient.IsConnectionTargetSet);
             await Assert.ThrowsAsync<NotSupportedException>(
@@ -1589,7 +2008,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
             await retryPolicy.ReprovisioningRetryDelayStarted.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<OperationCanceledException>(() => pendingPublish.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
 
@@ -1634,7 +2053,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             Assert.Equal(ConnectionEndpoint.DeviceProvisioningService, connectionClient.CurrentEndpoint);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken)
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             Assert.False(mockMqttClient.IsConnected());
@@ -1644,8 +2063,18 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         [Fact]
         public async Task ExplicitDisconnectWhileRecoveryHubSubscriptionIsPendingStopsReprovisioning()
         {
-            using MockConnectionMqttClient mockMqttClient = new();
-            _ = new MockDeviceProvisioningService(mockMqttClient, _ => FirstAssignedHub);
+            using MockConnectionMqttClient mockMqttClient = new() { AutoRespondToBirth = true };
+            _ = new MockDeviceProvisioningService(mockMqttClient, _ => FirstAssignedHub)
+            {
+                TerminalRegistrationResultSelector = _ => new()
+                {
+                    RegistrationId = RegistrationId,
+                    DeviceId = DeviceId,
+                    AssignedHub = FirstAssignedHub,
+                    Status = ProvisioningRegistrationStatus.Assigned,
+                    ConnectionProfile = IotHubConnectionType.Mqttv3,
+                },
+            };
             TaskCompletionSource recoveryHubSubscriptionStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
             TaskCompletionSource<MqttSubscribeAck> releaseRecoveryHubSubscription = new(TaskCreationOptions.RunContinuationsAsynchronously);
             mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
@@ -1673,7 +2102,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
             await recoveryHubSubscriptionStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken)
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             Assert.False(mockMqttClient.IsConnected());
@@ -1745,7 +2174,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.True(madeReconnectAttempts);
             Assert.False(pendingPublish.IsCompleted);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken).WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             await Assert.ThrowsAsync<OperationCanceledException>(() => pendingPublish.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
 
@@ -1798,7 +2227,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ServerBusy);
             await reconnectionConnectStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken)
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             Volatile.Write(ref allowLateConnectionCleanup, 1);
@@ -1884,7 +2313,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
             await reprovisioningConnectStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
-            Task disconnect = connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+            Task disconnect = connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
 
             // The waiting operation is released straight away, without waiting for the in-flight connect to finish.
             await Assert.ThrowsAsync<OperationCanceledException>(() => pendingPublish.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
@@ -1945,7 +2374,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 _ = Task.Run(async () =>
                 {
                     await recoveryHubConnectStarted.Task;
-                    disconnectStarted.TrySetResult(connectionClient.DisconnectAsync(TestContext.Current.CancellationToken));
+                    disconnectStarted.TrySetResult(connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken));
                 });
 
                 return Task.CompletedTask;
@@ -2010,7 +2439,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
             await reprovisioningConnectStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
-            await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken)
+            await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             Assert.False(connectionFaulted.Task.IsCompleted);
@@ -2208,7 +2637,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             {
                 try
                 {
-                    await connectionClient.DisconnectAsync(TestContext.Current.CancellationToken);
+                    await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
                     ConnectionContext context = await connectionClient.ProvisionAndConnectAsync(
                         CreateProvisioningSettings(),
                         CreateAuthenticationProvider(),
@@ -2565,6 +2994,15 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(ConnectionEndpoint.IotHub, connectionClient.CurrentEndpoint);
         }
 
+        private static AbstractConnectionClient CreateCredentialFallbackClient(MockConnectionMqttClient mqttClient)
+        {
+            return new ConnectionClient(new()
+            {
+                MqttClient = mqttClient,
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+            });
+        }
+
         private static ProvisioningSettings CreateProvisioningSettings()
         {
             return new ProvisioningSettings(IdScope)
@@ -2580,7 +3018,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             var certificateRequest = new CertificateRequest($"CN={RegistrationId}", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             X509Certificate2 certificate = certificateRequest.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
 
-            return new X509AuthenticationProvider(certificate);
+            return new X509AuthenticationProvider(certificate, null);
         }
 
         /// <summary>
@@ -2659,19 +3097,46 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             public int BootCredentialRequests => Volatile.Read(ref _bootCredentialRequests);
 
-            public override AuthenticationCredentials GetBootAuthenticationCredentials()
+            public override Task<AuthenticationCredentials> GetPrimaryBootAuthenticationCredentialsAsync(CancellationToken cancellationToken = default)
             {
                 int request = Interlocked.Increment(ref _bootCredentialRequests);
-                return new AuthenticationCredentials() { Password = Encoding.UTF8.GetBytes($"boot-{request}") };
+                return Task.FromResult(new AuthenticationCredentials() { Password = Encoding.UTF8.GetBytes($"boot-{request}") });
             }
 
-            public override Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
+            public override Task<AuthenticationCredentials> GetPrimaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
             {
                 return Task.FromResult(new AuthenticationCredentials() { Password = Encoding.UTF8.GetBytes("operational") });
             }
 
             public override string GetRegistrationId() => RegistrationId;
         }
+
+        /// <summary>
+        /// Labels each set of credentials in its password ("primary-hub", "secondary-boot", ...), so a test can tell which
+        /// set a connect attempt presented.
+        /// </summary>
+        private sealed class PrimaryAndSecondaryAuthenticationProvider : AuthenticationProvider
+        {
+            public override Task<AuthenticationCredentials> GetPrimaryBootAuthenticationCredentialsAsync(CancellationToken cancellationToken = default) => Task.FromResult(Create("primary-boot"));
+
+            public override Task<AuthenticationCredentials?> GetSecondaryBootAuthenticationCredentialsAsync(CancellationToken cancellationToken = default) => Task.FromResult<AuthenticationCredentials?>(Create("secondary-boot"));
+
+            public override Task<AuthenticationCredentials> GetPrimaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
+            {
+                return Task.FromResult(Create("primary-hub"));
+            }
+
+            public override Task<AuthenticationCredentials?> GetSecondaryOperationalAuthenticationCredentialsAsync(string hostName, string deviceId, IReadOnlyList<string>? issuedClientCertificates, CancellationToken cancellationToken = default)
+            {
+                return Task.FromResult<AuthenticationCredentials?>(Create("secondary-hub"));
+            }
+
+            public override string GetRegistrationId() => RegistrationId;
+
+            private static AuthenticationCredentials Create(string label) => new() { Password = Encoding.UTF8.GetBytes(label) };
+        }
+
+        private static string ConnectAttempt(MqttConnect connect) => $"{connect.HostName}:{Encoding.UTF8.GetString(connect.Password!)}";
 
         /// <summary>
         /// A retry policy that abandons retrying on the very first failure, so that a test can drive a recovery loop to
@@ -2698,13 +3163,18 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             private readonly MockConnectionMqttClient _mqttClient;
             private readonly Func<int, string> _assignedHubSelector;
+            private readonly IotHubConnectionType _connectionProfile;
 
             private int _registrationCount;
 
-            public MockDeviceProvisioningService(MockConnectionMqttClient mqttClient, Func<int, string> assignedHubSelector)
+            public MockDeviceProvisioningService(
+                MockConnectionMqttClient mqttClient,
+                Func<int, string> assignedHubSelector,
+                IotHubConnectionType connectionProfile = IotHubConnectionType.Mqttv3)
             {
                 _mqttClient = mqttClient;
                 _assignedHubSelector = assignedHubSelector;
+                _connectionProfile = connectionProfile;
                 _mqttClient.OnPublish = HandlePublishAsync;
             }
 
@@ -2743,9 +3213,24 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             /// </summary>
             public event Func<int, Task>? RegistrationRequested;
 
+            /// <summary>
+            /// When set and returning true, the registration request is refused with a 401 the way the real service
+            /// refuses credentials it does not recognize, after having accepted the CONNECT. Rejected requests are not
+            /// counted as registrations.
+            /// </summary>
+            public Func<bool>? RejectRegistrationAsUnauthorized { get; set; }
+
             private async Task<MqttPublishAck> HandlePublishAsync(MqttPublish publish)
             {
-                if (publish.Topic.StartsWith(RegisterTopicPrefix))
+                if (publish.Topic.StartsWith(RegisterTopicPrefix) && RejectRegistrationAsUnauthorized?.Invoke() == true)
+                {
+                    await _mqttClient.SimulatePublishReceivedAsync(new MqttPublish()
+                    {
+                        Topic = "$dps/registrations/res/401/?$rid=1",
+                        Payload = Encoding.UTF8.GetBytes("{\"errorCode\":401002,\"message\":\"The device is unauthorized.\"}"),
+                    });
+                }
+                else if (publish.Topic.StartsWith(RegisterTopicPrefix))
                 {
                     int registrationCount = Interlocked.Increment(ref _registrationCount);
 
@@ -2770,6 +3255,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                             RegistrationId = RegistrationId,
                             DeviceId = AssignedDeviceIdSelector?.Invoke(RegistrationCount) ?? DeviceId,
                             AssignedHub = _assignedHubSelector(RegistrationCount),
+                            ConnectionProfile = _connectionProfile,
                             Status = ProvisioningRegistrationStatus.Assigned,
                         };
 

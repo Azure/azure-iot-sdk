@@ -28,7 +28,6 @@ Add `azure-iot-sdk` to a consumer's `DEPENDS` and link with
 | `paho` | on | `adapter_paho` |
 | `crypto-openssl` | on | `crypto_openssl` |
 | `certificate-provider-managed` | on | `certificate_provider_managed` |
-| `rust-mqtt` | off | `adapter_rust_mqtt` |
 | `mbedtls` | off | `crypto_mbedtls` (needs meta-oe's `mbedtls`, 3.6 LTS or 4.1+) |
 
 A selected component that does not build fails `do_install`.
@@ -36,8 +35,9 @@ A selected component that does not build fails `do_install`.
 ## Sources and revisions
 
 - The library: `SRCREV_sdk` in `azure-iot-sdk-src.inc`. To bump it, set it to a
-  commit on `main` and `PV` to that commit's `AZ_IOT_VERSION_STRING` (`-` -> `~`),
-  e.g. to the tagged commit after a release.
+  commit on `main` and `PV` to that commit's `AZ_IOT_VERSION_STRING` (`-` -> `~`).
+  For a release, the last pull request before the tag sets them to the `main` head
+  it branched from: the tagged commit then differs from it only in this layer.
 - azure-sdk-for-c and Eclipse Paho MQTT C are fetched by bitbake, not by CMake,
   and passed with `FETCHCONTENT_SOURCE_DIR_*`. Their `SRCREV`s in
   `azure-iot-sdk_git.bb` must match `AZ_SDK_C_TAG` and `PAHO_C_TAG`.

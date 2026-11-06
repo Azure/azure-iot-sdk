@@ -52,6 +52,25 @@ connection,
 The platform transport (`az_mqtt_transport_sizeof()`, caller storage): 560 B with OpenSSL, 4,176 B with mbedTLS 3.6, 480 B without TLS. An `az_mqtt_websocket` is 416 B (caller storage); its sends use a
 512 B stack buffer (`AZ_MQTT_WEBSOCKET_SEND_CHUNK`), its upgrade a 768 B one.
 
+## ESP32 (ESP-IDF v6.0.3)
+
+`libaz_mqtt.a` as linked into the [ESP32 sample](../samples/esp32/README.md) (`--gc-sections`,
+GCC esp-15.2.0, mbedTLS 4), from `idf.py size-components`: az_mqtt, the azure-sdk-for-c files it
+compiles, and the mbedTLS glue (`tls_mbedtls.c`); not mbedTLS or lwIP. The sample uses one MQTT
+version, so the other one is not linked.
+
+| Variant ([samples/esp32/ci](../samples/esp32/ci)) | Optimization | .text | .rodata | DRAM | IRAM |
+|---|---|---:|---:|---:|---:|
+| `v3`: mqttv3, mbedTLS, proxy, WebSockets, logging | -Og (ESP-IDF default) | 20,063 B | 565 B | 12 B | 0 |
+| `v5`: as `v3`, mqttv5 | -Og | 26,086 B | 615 B | 12 B | 0 |
+| `v3_tcp`: mqttv3, no TLS, no proxy, no WebSockets | -Og | 13,216 B | 368 B | 12 B | 0 |
+| `v5_min`: mqttv5, mbedTLS, no proxy, no WebSockets, no logging, no preconditions | -Os | 16,397 B | 118 B | 0 | 0 |
+
+DRAM: azure-sdk-for-c `az_log.c` (8 B) and `az_precondition.c` (4 B) callbacks.
+`az_mqtt_transport_sizeof()` (caller storage): 3,296 B with mbedTLS, 64 B without TLS.
+In QEMU, the sample task (8,192 B stack) used about 3.8 KB of stack with TLS (handshake included)
+and 1.9 KB without.
+
 ## Before the shared core (az_mqtt5 library)
 
 The figures below were measured on the earlier MQTT 5.0-only library, with GCC 13.3,

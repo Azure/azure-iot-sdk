@@ -1,0 +1,58 @@
+menu "az_mqtt"
+
+    config AZ_MQTT_ENABLE_MQTTV3
+        bool "MQTT 3.1.1 client (az_mqttv3)"
+        default y
+
+    config AZ_MQTT_ENABLE_MQTTV5
+        bool "MQTT 5.0 client (az_mqttv5)"
+        default y
+
+    config AZ_MQTT_ENABLE_PROXY
+        bool "HTTP CONNECT proxy support"
+        default y
+
+    config AZ_MQTT_ENABLE_WEBSOCKETS
+        bool "MQTT over WebSockets"
+        default y
+
+    choice AZ_MQTT_TLS_BACKEND
+        prompt "TLS backend"
+        default AZ_MQTT_TLS_MBEDTLS
+
+        config AZ_MQTT_TLS_MBEDTLS
+            bool "mbedTLS"
+        config AZ_MQTT_TLS_NONE
+            bool "None (plain TCP only)"
+    endchoice
+
+    config AZ_MQTT_LOGGING
+        bool "Logging (azure-sdk-for-c az_log)"
+        default y
+        help
+            Off defines AZ_NO_LOGGING, which compiles az_mqtt logging out.
+
+    config AZ_MQTT_PRECONDITIONS
+        bool "Precondition checks"
+        default y
+        help
+            Off defines AZ_NO_PRECONDITION_CHECKING.
+
+    config AZ_MQTT_BUILD_AZ_CORE
+        bool "Build the azure-sdk-for-c sources az_mqtt needs"
+        default y
+        help
+            Compiles az_span.c, az_log.c, az_precondition.c (and az_base64.c with proxy or
+            WebSockets) from deps/azure-sdk-for-c. Turn off when another component already
+            compiles them, to avoid duplicate symbols.
+
+    config AZ_MQTT_AZ_CORE_COMPONENT
+        string "Component that compiles the azure-sdk-for-c sources"
+        depends on !AZ_MQTT_BUILD_AZ_CORE
+        default ""
+        help
+            Required. It must also provide the azure-sdk-for-c headers (sdk/inc) as public
+            include directories. az_mqtt links to it, so its archive follows az_mqtt's on the
+            link line.
+
+endmenu

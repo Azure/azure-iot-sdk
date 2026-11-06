@@ -16,14 +16,12 @@ extern "C"
 {
 #endif
 
-/* Max number of inbound-topic handlers a dispatch table can hold. */
-#ifndef AZ_IOT_MAX_INBOUND_HANDLERS
-#define AZ_IOT_MAX_INBOUND_HANDLERS 8
+#if defined(AZ_IOT_MAX_INBOUND_HANDLERS) || defined(AZ_IOT_DISPATCH_PREFIX_MAX)
+#error "Dispatch sizes are no longer set by macros: use az_iot_connection_client_limits."
 #endif
-/* Max length (bytes) of a handler's topic-prefix match string. */
-#ifndef AZ_IOT_DISPATCH_PREFIX_MAX
+
+/* Max length (bytes) of a handler's topic-prefix match string, terminator included. */
 #define AZ_IOT_DISPATCH_PREFIX_MAX 128
-#endif
 
   /* Invoked when an inbound MQTT message's topic matches a registered prefix. */
   typedef void (*az_iot_inbound_handler_callback)(void* user_ctx, const az_iot_mqtt_message* msg);
@@ -38,10 +36,11 @@ extern "C"
     bool in_use; /* slot occupied?                 */
   } az_iot_dispatch_entry;
 
-  /* Fixed-capacity table of prefix->handler routes, scanned on each inbound msg. */
+  /* Table of prefix->handler routes over caller storage, scanned on each inbound msg. */
   typedef struct az_iot_dispatch_table
   {
-    az_iot_dispatch_entry entries[AZ_IOT_MAX_INBOUND_HANDLERS];
+    az_iot_dispatch_entry* entries; /* capacity entries               */
+    size_t capacity; /* entries[] length               */
     size_t count; /* number of populated entries    */
   } az_iot_dispatch_table;
 

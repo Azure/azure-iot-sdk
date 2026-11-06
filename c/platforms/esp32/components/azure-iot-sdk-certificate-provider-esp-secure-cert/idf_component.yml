@@ -1,0 +1,4 @@
+## Dependencies for the esp_secure_cert certificate provider component.
+dependencies:
+  idf: ">=6.0"
+  espressif/esp_secure_cert_mgr: "==2.9.3"

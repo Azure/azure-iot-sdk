@@ -2,5 +2,5 @@
 {
    nodiscard
    drd:ConflictingAccess
-   fun:az_iot_mqtt_user_properties_next
+   fun:az_iot_mqtt_connack_result
 }

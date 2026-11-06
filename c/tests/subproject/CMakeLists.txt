@@ -24,9 +24,7 @@ set(_src_dir ${CMAKE_CURRENT_LIST_DIR}/../install)
 set(_sources
     core                          core_test.c
     mqttv3                        mqttv3_test.c
-    mqttv5                        mqttv5_test.c
     adapter_paho                  adapter_paho_test.c
-    adapter_rust_mqtt             adapter_rust_mqtt_test.c
     crypto_openssl                crypto_test.c
     crypto_mbedtls                crypto_test.c
     certificate_provider_managed  certificate_provider_managed_test.c

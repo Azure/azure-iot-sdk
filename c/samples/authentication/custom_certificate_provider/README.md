@@ -6,13 +6,13 @@
 The same flow as [`dps_csr_managed`](../dps_csr_managed/README.md): authenticate to DPS with the
 bootstrap certificate, send a CSR with the registration, save the issued operational chain, and
 connect to the assigned hub with it. The difference is who owns the crypto: here the certificate
-provider is sample application code in [`samples/common`](../../common/sample_cert_provider.c),
+provider is sample application code next to `main.c` ([`sample_cert_provider.c`](sample_cert_provider.c)),
 showing how an application implements the provider interface. It is sample code, not a production
 component.
 
 ## Sample features
 
-- Hub generations: mqttv3 and mqttv5, whichever DPS assigns.
+- Hub: mqttv3 (MQTT 3.1.1).
 - `sample_cert_provider` implements the full `az_iot_certificate_provider` interface and builds a real PKCS#10 CSR with OpenSSL 3.0+ (`sample_csr_openssl.c`) on every platform.
 - Opts in to issuance with `dps.request_operational_certificate`.
 - Platforms: Linux and Windows.
@@ -101,15 +101,15 @@ Exit code 0 when the hub connection was reached; the last line says with which i
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. DPS verdicts are retried until the sample's run time ends. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
-| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK version does not know. |
+| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK does not support. |
 | `connected with bootstrap identity` | DPS issued no certificate: the enrollment group has no credential policy. |
 
 ## Where to look in `main.c`
 
 | What | Code |
 | --- | --- |
-| The provider | [`sample_cert_provider.c`](../../common/sample_cert_provider.c), `sample_cert_provider_init()` |
-| CSR code | [`sample_csr_openssl.c`](../../common/sample_csr_openssl.c) |
+| The provider | [`sample_cert_provider.c`](sample_cert_provider.c), `sample_cert_provider_init()` |
+| CSR code | [`sample_csr_openssl.c`](sample_csr_openssl.c) |
 | Opt in to issuance | `copts.dps.request_operational_certificate = true` and `copts.csr_payload_buffer` |
 | Issuance notification | `az_iot_connection_client_set_operational_cert_callback()`, `on_operational_cert()` |
 

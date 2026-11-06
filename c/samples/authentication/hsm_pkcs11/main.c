@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /* authentication/hsm_pkcs11 - sample.
  *
- * Connect to whichever hub DPS assigns -- MQTTv3 or MQTTv5 -- with a
+ * Connect to whichever hub DPS assigns (MQTTv3) with a
  * device private key that NEVER LEAVES the hardware (design decision D8). The
  * provider hands the SDK a key REFERENCE -- an RFC 7512 "pkcs11:" URI plus the
  * id of the OpenSSL provider that owns it -- instead of a key, and the MQTT
@@ -18,11 +18,9 @@
  * (SoftHSM2, a TPM through tpm2-pkcs11, an ATECC608, a smart card). The URI
  * names the object inside it; the SDK never learns anything else about it.
  *
- * Key custody is generation-agnostic -- the token signs a TLS handshake and
- * neither MQTT version is visible to it. So, as in samples/unified/connect_first,
- * both MQTT adapters are registered and the telemetry client is built only once
- * CONNECTED, for the profile DPS assigned.
- * The custody code is the same either way.
+ * Key custody is protocol-agnostic -- the token signs a TLS handshake and the
+ * MQTT version is not visible to it. As in samples/unified/connect_first, the
+ * telemetry client is built only once CONNECTED, for the profile DPS assigned.
  *
  * Requirements on the host:
  *   - OpenSSL 3.0+ and an OpenSSL 3.x provider for the token, e.g.
@@ -102,13 +100,13 @@ static void hsm_config_release(hsm_config* c)
 static int hsm_config_load(hsm_config* c)
 {
   memset(c, 0, sizeof(*c));
-  c->id_scope = sample_env_dup("AZ_IOT_DPS_ID_SCOPE", SAMPLE_ID_SCOPE);
-  c->reg_id = sample_env_dup("AZ_IOT_DPS_REGISTRATION_ID", SAMPLE_REGISTRATION_ID);
-  c->cert = sample_env_dup("AZ_IOT_CLIENT_CERT", SAMPLE_CLIENT_CERT);
-  c->key_uri = sample_env_dup("AZ_IOT_CLIENT_KEY_URI", SAMPLE_CLIENT_KEY_URI);
-  c->engine_id = sample_env_dup("AZ_IOT_CRYPTO_ENGINE_ID", SAMPLE_CRYPTO_ENGINE_ID);
-  c->ca = sample_env_dup("AZ_IOT_TRUSTED_CA", SAMPLE_TRUSTED_CA);
-  c->dps_global_endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL);
+  c->id_scope = sample_env_copy("AZ_IOT_DPS_ID_SCOPE", SAMPLE_ID_SCOPE);
+  c->reg_id = sample_env_copy("AZ_IOT_DPS_REGISTRATION_ID", SAMPLE_REGISTRATION_ID);
+  c->cert = sample_env_copy("AZ_IOT_CLIENT_CERT", SAMPLE_CLIENT_CERT);
+  c->key_uri = sample_env_copy("AZ_IOT_CLIENT_KEY_URI", SAMPLE_CLIENT_KEY_URI);
+  c->engine_id = sample_env_copy("AZ_IOT_CRYPTO_ENGINE_ID", SAMPLE_CRYPTO_ENGINE_ID);
+  c->ca = sample_env_copy("AZ_IOT_TRUSTED_CA", SAMPLE_TRUSTED_CA);
+  c->dps_global_endpoint = sample_env_copy("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL);
 
   return (is_set(c->id_scope) && is_set(c->reg_id) && is_set(c->cert) && is_set(c->key_uri)
           && is_set(c->engine_id))
@@ -251,15 +249,16 @@ int main(void)
   user_context user_ctx = { 0 };
   hsm_provider provider = { .base = { .vtable = &k_hsm_vtable }, .config = &config };
   az_iot_connection_client connection_client = { 0 };
-  az_iot_mqtt_factory* factory_v3 = NULL;
-  az_iot_mqtt_factory* factory_v5 = NULL;
-  /* Only the one matching `profile` is initialized, once CONNECTED. */
+  /* Initialized once CONNECTED, when the profile is mqttv3. */
   az_iot_mqttv3_telemetry_client mqttv3 = { 0 };
-  az_iot_mqttv5_telemetry_client mqttv5 = { 0 };
   az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
   int telemetry_initialized = 0;
 
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   copts.device_id = config.reg_id;
   /* This sample carries its own config struct (PKCS#11 URI and engine id), not
    * the shared sample_config, so it sets the DPS fields directly -- including
@@ -272,32 +271,23 @@ int main(void)
     copts.dps.global_endpoint = config.dps_global_endpoint;
   }
   copts.certificate_provider = &provider.base;
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
 
   if (az_iot_connection_client_init(&connection_client, &copts) != AZ_IOT_OK)
   {
     goto cleanup;
   }
   az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &user_ctx);
-
-  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory_v3 = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v3) != AZ_IOT_OK)
-  {
-    goto cleanup;
-  }
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v5) != AZ_IOT_OK)
-  {
-    goto cleanup;
-  }
 
   az_iot_result open_rc = az_iot_connection_client_open(&connection_client);
   if (open_rc != AZ_IOT_OK)
@@ -322,13 +312,12 @@ int main(void)
     fprintf(stderr, "[hsm_pkcs11] connected; the handshake signed inside the token\n");
 
     az_iot_result init_rc = AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
-    if (sample_get_hub_profile(&connection_client, &profile) == AZ_IOT_OK)
+    az_iot_hub_profile hub_profile;
+    if (az_iot_connection_client_get_hub_profile(&connection_client, &hub_profile) == AZ_IOT_OK)
     {
-      if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-      {
-        init_rc = az_iot_mqttv5_telemetry_client_init(&mqttv5, &connection_client);
-      }
-      else if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
+      profile = hub_profile.connection_profile;
+      printf("Hub profile: %s\n", az_iot_connection_profile_to_string(profile));
+      if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
       {
         init_rc = az_iot_mqttv3_telemetry_client_init(&mqttv3, &connection_client);
       }
@@ -343,9 +332,7 @@ int main(void)
     az_iot_result sent = AZ_IOT_ERR_NOT_INITIALIZED;
     if (telemetry_initialized)
     {
-      sent = profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-          ? az_iot_mqttv5_telemetry_client_send(&mqttv5, &msg, on_send_done, &user_ctx)
-          : az_iot_mqttv3_telemetry_client_send(&mqttv3, &msg, on_send_done, &user_ctx);
+      sent = az_iot_mqttv3_telemetry_client_send(&mqttv3, &msg, on_send_done, &user_ctx);
     }
     if (sent == AZ_IOT_OK)
     {
@@ -378,23 +365,9 @@ int main(void)
 cleanup:
   if (telemetry_initialized)
   {
-    if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-    {
-      az_iot_mqttv5_telemetry_client_deinit(&mqttv5);
-    }
-    else
-    {
-      az_iot_mqttv3_telemetry_client_deinit(&mqttv3);
-    }
+    az_iot_mqttv3_telemetry_client_deinit(&mqttv3);
   }
   az_iot_connection_client_deinit(&connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory_v3);
-  az_iot_paho_factory_destroy(factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory_v3);
-  az_iot_az_mqtt_factory_destroy(factory_v5);
-#endif
   hsm_config_release(&config);
   return rc;
 }

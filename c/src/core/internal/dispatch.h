@@ -17,7 +17,11 @@ extern "C"
 {
 #endif
 
-  void az_iot_dispatch_init(az_iot_dispatch_table* tbl);
+  /** @brief Empties @p tbl over @p entries (@p capacity of them, cleared). */
+  void az_iot_dispatch_init(
+      az_iot_dispatch_table* tbl,
+      az_iot_dispatch_entry* entries,
+      size_t capacity);
 
   az_iot_result az_iot_dispatch_register_prefix(
       az_iot_dispatch_table* tbl,

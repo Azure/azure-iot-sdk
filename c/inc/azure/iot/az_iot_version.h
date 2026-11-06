@@ -15,7 +15,7 @@
 #define AZ_IOT_VERSION_H
 
 /** @brief Full version: `MAJOR.MINOR.PATCH[-PRERELEASE]`. */
-#define AZ_IOT_VERSION_STRING "1.0.0-preview"
+#define AZ_IOT_VERSION_STRING "1.0.0"
 
 /** @brief Major version. */
 #define AZ_IOT_VERSION_MAJOR 1
@@ -26,8 +26,7 @@
 /** @brief Patch version. */
 #define AZ_IOT_VERSION_PATCH 0
 
-/** @brief Pre-release label. Defined only for a pre-release; undefined for a stable release. */
-#define AZ_IOT_VERSION_PRERELEASE "preview"
+/* AZ_IOT_VERSION_PRERELEASE: defined only for a pre-release (e.g. "preview.1"). */
 
 #ifdef __cplusplus
 extern "C"

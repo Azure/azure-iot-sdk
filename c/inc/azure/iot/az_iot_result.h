@@ -63,12 +63,11 @@ extern "C"
      * it is caught at open, because the alternative is a NULL private key
      * failing deep inside the TLS stack with nothing that names the cause. */
     AZ_IOT_ERR_CREDENTIAL_INCOMPLETE,
-    /* A generation-specific feature client was initialized against a
-     * connection resolved to the other profile. */
+    /* A profile-specific feature client was initialized against a
+     * connection resolved to another profile. */
     AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH,
-    /** @brief A QoS 1 PUBLISH that would be refused again if resent: an MQTT 5 PUBACK of 0x87,
-     * 0x90 or 0x99, or 0x95 for one over the server's Maximum Packet Size. See
-     * az_iot_mqtt_puback_result(). */
+    /** @brief A QoS 1 PUBLISH that would be refused again if resent. MQTT 3.1.1 has no PUBACK
+     * refusal, so the bundled adapters never report it. */
     AZ_IOT_ERR_PUBLISH_REFUSED
   } az_iot_result;
 

@@ -43,6 +43,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// </summary>
         public bool AutoRespondToBirth { get; set; }
 
+        /// <summary>
+        /// When cleared, a client-initiated DISCONNECT does not raise the disconnect callback, so that a test can raise it
+        /// later (see <see cref="SimulateSpuriousDisconnectCallbackAsync"/>) to reproduce MQTTnet raising it late.
+        /// </summary>
+        public bool RaiseDisconnectCallbackOnClientDisconnect { get; set; } = true;
+
         /// <summary>How many CONNECTs have been attempted, including the ones the server refused.</summary>
         public int ConnectAttemptCount => Volatile.Read(ref _connectAttemptCount);
 
@@ -64,7 +70,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             if (ConnectingAsync != null)
             {
-                connect = await ConnectingAsync.Invoke(connect, cancellationToken);
+                foreach (Func<MqttConnect, CancellationToken, Task<MqttConnect>> handler in ConnectingAsync.GetInvocationList())
+                {
+                    connect = await handler(connect, cancellationToken);
+                }
             }
 
             Interlocked.Increment(ref _connectAttemptCount);
@@ -102,7 +111,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 await OnDisconnect.Invoke(disconnect);
             }
 
-            if (wasConnected && DisconnectedAsync != null)
+            if (wasConnected && RaiseDisconnectCallbackOnClientDisconnect && DisconnectedAsync != null)
             {
                 // The real client raises this from its own I/O loop rather than inline with the caller.
                 _ = DisconnectedAsync.Invoke(new() { Reason = MqttDisconnectReason.NormalDisconnection });
@@ -139,23 +148,30 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             }
         }
 
-        public async Task SimulatePublishReceivedAsync(MqttPublish publish)
+        public Task SimulatePublishReceivedAsync(MqttPublish publish)
+        {
+            return SimulatePublishReceivedEventAsync(new MockMqttPublishReceivedEventArgs() { Publish = publish });
+        }
+
+        public async Task SimulatePublishReceivedEventAsync(MqttPublishReceivedEventArgs args)
         {
             if (PublishReceivedAsync != null)
             {
-                await PublishReceivedAsync.Invoke(new MockMqttPublishReceivedEventArgs() { Publish = publish });
+                await PublishReceivedAsync.Invoke(args);
             }
         }
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (AutoRespondToBirth)
             {
                 SimulateBirthAckIfBirthPublish(publish);
             }
 
             MqttPublishAck puback = OnPublish != null
-                ? await OnPublish.Invoke(publish)
+                ? await OnPublish.Invoke(publish).WaitAsync(cancellationToken)
                 : new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success };
 
             RecordSentTraffic(new(publish));

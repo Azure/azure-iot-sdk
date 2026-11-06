@@ -40,22 +40,22 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             AuthenticationProvider authentication = providerKind switch
             {
                 0 => new SymmetricKeyAuthenticationProvider(
-                    registrationId, idScope, key,
+                    registrationId, idScope, key, null,
                     iotHubSasTokenTimeToLive: iotHubTimeToLive, dpsSasTokenTimeToLive: dpsTimeToLive),
                 1 => new SymmetricKeyAuthenticationProvider(
-                    registrationId, idScope, key, privateKey,
+                    registrationId, idScope, key, null, privateKey,
                     iotHubSasTokenTimeToLive: iotHubTimeToLive, dpsSasTokenTimeToLive: dpsTimeToLive),
                 2 => new SymmetricKeyAuthenticationProvider(
-                    registrationId, idScope, key, _ => throw new InvalidOperationException("No certificate has been issued."),
+                    registrationId, idScope, key, null, _ => throw new InvalidOperationException("No certificate has been issued."),
                     iotHubSasTokenTimeToLive: iotHubTimeToLive, dpsSasTokenTimeToLive: dpsTimeToLive),
                 _ => throw new ArgumentOutOfRangeException(nameof(providerKind)),
             };
 
-            var bootCredentials = authentication.GetBootAuthenticationCredentials();
+            var bootCredentials = await authentication.GetPrimaryBootAuthenticationCredentialsAsync(TestContext.Current.CancellationToken);
             Assert.Null(bootCredentials.ClientCertificate);
             AssertSasToken(bootCredentials.Password, key, $"{idScope}/registrations/{registrationId}", "registration", dpsTimeToLive ?? TimeSpan.FromMinutes(10));
 
-            var operationalCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(hostName, deviceId, null, TestContext.Current.CancellationToken);
+            var operationalCredentials = await authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(hostName, deviceId, null, TestContext.Current.CancellationToken);
             Assert.Null(operationalCredentials.ClientCertificate);
             AssertSasToken(operationalCredentials.Password, key, $"{hostName}/devices/{deviceId}", null, iotHubTimeToLive ?? TimeSpan.FromHours(1));
         }
@@ -64,8 +64,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         public void NullKeyIsRejected()
         {
             ArgumentNullException exception = Assert.Throws<ArgumentNullException>(
-                () => new SymmetricKeyAuthenticationProvider("registration-id", "0ne00000000", null!));
-            Assert.Equal("symmetricKey", exception.ParamName);
+                () => new SymmetricKeyAuthenticationProvider("registration-id", "0ne00000000", null!, null));
+            Assert.Equal("primarySymmetricKey", exception.ParamName);
         }
 
         [Fact]
@@ -73,7 +73,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         {
             ArgumentNullException exception = Assert.Throws<ArgumentNullException>(
                 () => new SymmetricKeyAuthenticationProvider(
-                    "registration-id", "0ne00000000", new byte[] { 1 },
+                    "registration-id", "0ne00000000", new byte[] { 1 }, null,
                     issuedCertificatePrivateKey: null!));
             Assert.Equal("issuedCertificatePrivateKey", exception.ParamName);
         }
@@ -83,7 +83,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         {
             ArgumentNullException exception = Assert.Throws<ArgumentNullException>(
                 () => new SymmetricKeyAuthenticationProvider(
-                    "registration-id", "0ne00000000", new byte[] { 1 },
+                    "registration-id", "0ne00000000", new byte[] { 1 }, null,
                     handleCertificateSigningCompleteAsync: null!));
             Assert.Equal("handleCertificateSigningCompleteAsync", exception.ParamName);
         }
@@ -92,9 +92,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         public async Task BasicConstructorKeepsUsingSasTokensWhenCertificatesAreIssued()
         {
             byte[] key = new byte[] { 0x00, 0xFF, 0x80, 0x01 };
-            SymmetricKeyAuthenticationProvider authentication = new("registration-id", "0ne00000000", key);
+            SymmetricKeyAuthenticationProvider authentication = new("registration-id", "0ne00000000", key, null);
 
-            var credentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
+            var credentials = await authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
                 "some-hub.azure-devices.net", "device-id", new[] { "issued-certificate" }, TestContext.Current.CancellationToken);
 
             Assert.Null(authentication.IssuedCertificatePrivateKey);
@@ -116,12 +116,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             RemoteCertificateValidationCallback remoteValidation = (_, _, _, _) => true;
             LocalCertificateSelectionCallback localSelection = (_, _, _, _, _) => certificate;
             SymmetricKeyAuthenticationProvider authentication = useCallback
-                ? new("registration-id", "0ne00000000", key, _ => Task.FromResult(certificate), remoteValidation, localSelection)
-                : new("registration-id", "0ne00000000", key, privateKey, remoteValidation, localSelection);
+                ? new("registration-id", "0ne00000000", key, null, _ => Task.FromResult(certificate), remoteValidation, localSelection)
+                : new("registration-id", "0ne00000000", key, null, privateKey, remoteValidation, localSelection);
 
             Assert.Same(useCallback ? null : privateKey, authentication.IssuedCertificatePrivateKey);
             Assert.NotNull(authentication.HandleCertificateSigningCompleteAsync);
-            var operationalCredentials = await authentication.GetOperationalAuthenticationCredentialsAsync(
+            var operationalCredentials = await authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
                 "some-hub.azure-devices.net", "device-id", issuedChain, TestContext.Current.CancellationToken);
             Assert.NotNull(operationalCredentials.ClientCertificate);
             Assert.Equal(certificate.Thumbprint, operationalCredentials.ClientCertificate.Thumbprint);
@@ -130,11 +130,32 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Same(remoteValidation, operationalCredentials.RemoteCertificateValidationCallback);
             Assert.Same(localSelection, operationalCredentials.LocalCertificateSelectionCallback);
 
-            var bootCredentials = authentication.GetBootAuthenticationCredentials();
+            var bootCredentials = await authentication.GetPrimaryBootAuthenticationCredentialsAsync(TestContext.Current.CancellationToken);
             Assert.Null(bootCredentials.ClientCertificate);
             AssertSasToken(bootCredentials.Password, key, "0ne00000000/registrations/registration-id", "registration", TimeSpan.FromMinutes(10));
             Assert.Same(remoteValidation, bootCredentials.RemoteCertificateValidationCallback);
             Assert.Same(localSelection, bootCredentials.LocalCertificateSelectionCallback);
+        }
+
+        [Fact]
+        public async Task SecondaryCredentialsAreSignedWithTheSecondaryKeyUntilACertificateIsIssued()
+        {
+            byte[] secondaryKey = new byte[] { 0x10, 0x20, 0x30, 0x40 };
+            SymmetricKeyAuthenticationProvider withoutSecondary = new("registration-id", "0ne00000000", new byte[] { 1 }, null, _ => throw new InvalidOperationException());
+            SymmetricKeyAuthenticationProvider authentication = new("registration-id", "0ne00000000", new byte[] { 1 }, secondaryKey, _ => throw new InvalidOperationException());
+
+            Assert.Null(await withoutSecondary.GetSecondaryBootAuthenticationCredentialsAsync(TestContext.Current.CancellationToken));
+            Assert.Null(await withoutSecondary.GetSecondaryOperationalAuthenticationCredentialsAsync(
+                "some-hub.azure-devices.net", "device-id", null, TestContext.Current.CancellationToken));
+
+            AssertSasToken((await authentication.GetSecondaryBootAuthenticationCredentialsAsync(TestContext.Current.CancellationToken))!.Password, secondaryKey, "0ne00000000/registrations/registration-id", "registration", TimeSpan.FromMinutes(10));
+            var secondaryCredentials = await authentication.GetSecondaryOperationalAuthenticationCredentialsAsync(
+                "some-hub.azure-devices.net", "device-id", null, TestContext.Current.CancellationToken);
+            AssertSasToken(secondaryCredentials!.Password, secondaryKey, "some-hub.azure-devices.net/devices/device-id", null, TimeSpan.FromHours(1));
+
+            // Once a certificate is issued it is presented instead of a SAS token, so there is no secondary to fall back to.
+            Assert.Null(await authentication.GetSecondaryOperationalAuthenticationCredentialsAsync(
+                "some-hub.azure-devices.net", "device-id", new[] { "issued-certificate" }, TestContext.Current.CancellationToken));
         }
 
         [Theory]
@@ -147,7 +168,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             TimeSpan timeToLive = TimeSpan.FromSeconds(seconds);
             ArgumentOutOfRangeException exception = Assert.Throws<ArgumentOutOfRangeException>(
                 () => new SymmetricKeyAuthenticationProvider(
-                    "registration-id", "0ne00000000", new byte[] { 1 },
+                    "registration-id", "0ne00000000", new byte[] { 1 }, null,
                     iotHubSasTokenTimeToLive: configureIotHub ? timeToLive : null,
                     dpsSasTokenTimeToLive: configureIotHub ? null : timeToLive));
 

@@ -15,12 +15,9 @@
  * required at init(). The blob PUT to Azure Storage is always the application's
  * own HTTPS call.
  *
- * There is no MQTT v5 counterpart: file upload is not carried on that hub, and
- * this client pins MQTTv3, so init() on an MQTT v5 connection is refused with
- * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. init() also needs the assigned hub,
- * so this sample builds its client the way unified/connect_first does: once
- * CONNECTED, after reading the profile. On an MQTTv5 hub it reports that and
- * exits non-zero. One-shot: it does not wait for the device to be moved.
+ * init() needs the assigned hub, so this sample builds its client the way
+ * unified/connect_first does: once CONNECTED, after reading the profile.
+ * One-shot: it does not wait for the device to be moved.
  *
  * This sample uses libcurl (compiled in when CMake's find_package(CURL) succeeds
  * and defines AZ_IOT_SAMPLE_WITH_CURL) both as the HTTP hook and for the Storage
@@ -62,8 +59,6 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_mqtt_factory* factory_v3;
-  az_iot_mqtt_factory* factory_v5;
   az_iot_mqttv3_file_upload_client file_upload_client;
 } sample_state;
 
@@ -71,13 +66,6 @@ static void sample_state_destroy(sample_state* s)
 {
   az_iot_mqttv3_file_upload_client_deinit(&s->file_upload_client);
   az_iot_connection_client_deinit(&s->connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(s->factory_v3);
-  az_iot_paho_factory_destroy(s->factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(s->factory_v3);
-  az_iot_az_mqtt_factory_destroy(s->factory_v5);
-#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
@@ -443,11 +431,26 @@ int main(void)
   }
 
   /* Connection client (DPS provisioning is internal). */
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   copts.dps.id_scope = state.config.id_scope;
   copts.dps.registration_id = state.config.reg_id;
   copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
   {
@@ -455,30 +458,6 @@ int main(void)
     return 1;
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
-
-  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state.factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state.factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state.factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
 
   /* Open (internally provisions via DPS then connects to the assigned hub). */
   if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
@@ -496,19 +475,19 @@ int main(void)
     }
   }
 
-  az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
+  az_iot_hub_profile hub_profile = { 0 };
   if (user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED)
   {
     printf("Failed to reach CONNECTED (state=%d).\n", (int)user_ctx.conn_state);
   }
-  else if (sample_get_hub_profile(&state.connection_client, &profile) != AZ_IOT_OK)
+  else if (
+      az_iot_connection_client_get_hub_profile(&state.connection_client, &hub_profile) != AZ_IOT_OK)
   {
-    /* Already reported. */
+    printf("Hub profile not available.\n");
   }
-  else if (profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
+  else if (hub_profile.connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
   {
-    /* No mqttv5 file upload client exists; the mqttv3 one would refuse this
-     * connection at init(). */
+    /* The mqttv3 file upload client would refuse this connection at init(). */
     printf("File upload is not available on this hub generation.\n");
   }
   else

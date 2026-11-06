@@ -102,6 +102,7 @@ The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different eno
 |---|---|---|
 | Device provisioning      | :heavy_check_mark: | Provision your device through an Azure Device Provisioning Service enrollment
 | X509 Authentication      | :heavy_check_mark: | 
+| Symmetric key authentication      | :heavy_check_mark: | Authenticate with SAS tokens generated from a symmetric key. Only supported by MQTTv3 IoT Hubs
 | MQTTv3 connection to IoT Hub       | :heavy_check_mark: | After provisioning device, connect to IoT Hub via MQTTv3 connection
 | MQTTv5 connection to IoT Hub       | :heavy_minus_sign: | This feature will only be supported in v2.0.0
 | Device-to-cloud telemetry       | :heavy_check_mark: | 
@@ -121,6 +122,7 @@ The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different eno
 |---|---|---|
 | Device provisioning      | :heavy_check_mark: | Provision your device through an Azure Device Provisioning Service enrollment
 | X509 Authentication      | :heavy_check_mark: | 
+| Symmetric key authentication      | :heavy_check_mark:* | *Only works with MQTTv3 IoT Hubs. MQTTv5 IoT Hubs only accept X509 authentication
 | MQTTv3 connection to IoT Hub       | :heavy_check_mark: | When provisioned to an MQTTv3 IoT Hub, the ```ConnectionClient``` will automatically do this
 | MQTTv5 connection to IoT Hub       | :heavy_check_mark: | When provisioned to an MQTTv5 IoT Hub, the ```ConnectionClient``` will automatically do this 
 | Device-to-cloud telemetry       | :heavy_check_mark: | 
@@ -141,6 +143,7 @@ The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different eno
 |---|---|---|
 | Device provisioning      | :heavy_check_mark: | Provision your device through an Azure Device Provisioning Service enrollment
 | X509 Authentication      | :heavy_check_mark: | 
+| Symmetric key authentication      | :heavy_minus_sign: | MQTTv5 IoT Hubs only accept X509 authentication. Use the Unified API set with an MQTTv3 IoT Hub for symmetric key authentication
 | MQTTv3 connection to IoT Hub       | :heavy_minus_sign: | 
 | MQTTv5 connection to IoT Hub       | :heavy_check_mark: | 
 | Device-to-cloud telemetry       | :heavy_check_mark: | 

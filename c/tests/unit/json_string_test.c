@@ -4,7 +4,8 @@
 
 /* SPDX-License-Identifier: MIT */
 /* Unit tests for az_iot_json_string_decode(): every escape form, each UTF-8
- * width, surrogate pairs, truncation, and destination bounds. */
+ * width, surrogate pairs, truncation, and destination bounds; and for
+ * az_iot_json_string_equals(). */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -147,6 +148,56 @@ static void a_null_output_is_rejected(void** state)
       AZ_IOT_ERR_INVALID_ARG);
 }
 
+/** @brief az_iot_json_string_equals() of two C strings. */
+static bool strings_equal(const char* escaped, const char* other, bool other_is_escaped)
+{
+  return az_iot_json_string_equals(
+      az_span_create((uint8_t*)(uintptr_t)escaped, (int32_t)strlen(escaped)),
+      az_span_create((uint8_t*)(uintptr_t)other, (int32_t)strlen(other)),
+      other_is_escaped);
+}
+
+static void escaped_strings_equal_their_decoded_text(void** state)
+{
+  (void)state;
+  assert_true(strings_equal("f1", "f1", false));
+  assert_true(strings_equal("", "", false));
+  assert_true(strings_equal("f\\u0031", "f1", false));
+  assert_true(strings_equal("a\\/b\\n", "a/b\n", false));
+  assert_true(strings_equal("\\u00e9\\uD83D\\uDE00", "\xC3\xA9\xF0\x9F\x98\x80", false));
+
+  /* Decoded text is compared as is: its backslash is not an escape. */
+  assert_false(strings_equal("f1", "f\\u0031", false));
+  assert_true(strings_equal("f\\\\u0031", "f\\u0031", false));
+
+  assert_false(strings_equal("f1", "f10", false));
+  assert_false(strings_equal("f10", "f1", false));
+  assert_false(strings_equal("f1", "F1", false));
+  assert_false(strings_equal("f1", "", false));
+}
+
+static void two_escaped_strings_are_compared_decoded(void** state)
+{
+  (void)state;
+  assert_true(strings_equal("f\\u0031", "\\u00661", true));
+  assert_true(strings_equal("f1", "f\\u0031", true));
+  /* An escape and a literal UTF-8 character decode to the same bytes. */
+  assert_true(strings_equal("\\u00e9x", "\xC3\xA9x", true));
+  assert_true(strings_equal("\xC3\xA9x", "\\u00e9x", true));
+  assert_false(strings_equal("f\\u0031", "f\\u0032", true));
+  assert_false(strings_equal("f\\u0031", "f\\u00310", true));
+}
+
+static void a_malformed_escape_is_never_equal(void** state)
+{
+  (void)state;
+  assert_false(strings_equal("f\\x31", "f\\x31", true));
+  assert_false(strings_equal("f\\u00", "f\\u00", false));
+  assert_false(strings_equal("f1", "f\\", true));
+  assert_false(strings_equal("\\uD83D", "\\uD83D", true));
+  assert_false(strings_equal("\\u0000", "", false));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -158,6 +209,9 @@ int main(void)
     cmocka_unit_test(a_destination_too_small_is_reported),
     cmocka_unit_test(decoding_in_place_is_supported),
     cmocka_unit_test(a_null_output_is_rejected),
+    cmocka_unit_test(escaped_strings_equal_their_decoded_text),
+    cmocka_unit_test(two_escaped_strings_are_compared_decoded),
+    cmocka_unit_test(a_malformed_escape_is_never_equal),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

@@ -55,7 +55,6 @@
                 "AZ_IOT_BUILD_TESTS": "ON",
                 "AZ_IOT_ENABLE_COVERAGE": "ON",
                 "AZ_IOT_WITH_PAHO": "ON",
-                "AZ_IOT_WITH_RUST_MQTT": "OFF",
                 "AZ_IOT_WITH_CRYPTO_OPENSSL": "ON",
                 "AZ_IOT_WITH_CRYPTO_MBEDTLS": "ON",
                 "AZ_IOT_WITH_CERT_PROVIDER_MANAGED": "ON"

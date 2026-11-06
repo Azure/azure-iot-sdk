@@ -4,11 +4,12 @@
 # TSA (c/.config/tsaoptions.json); third-party sources fetched by CMake are declared in
 # c/cgmanifest.json for Component Governance.
 #
-# PR validation stays on GitHub Actions; this pipeline runs on main and weekly.
+# PR validation stays on GitHub Actions; this pipeline runs on main and releases/public-preview,
+# on push and weekly.
 
 trigger:
   branches:
-    include: [ main ]
+    include: [ main, releases/public-preview ]
   paths:
     include: [ c ]
 
@@ -18,8 +19,17 @@ schedules:
   - cron: '0 9 * * 1'
     displayName: Weekly
     branches:
-      include: [ main ]
+      include: [ main, releases/public-preview ]
     always: true
+
+variables:
+  # Build trees outside the checkout: Component Governance scans the sources directory, and
+  # FetchContent's third-party sources (_deps) would otherwise be reported as our components.
+  # Dependencies are declared in c/cgmanifest.json.
+  BUILD_DIR: $(Build.BinariesDirectory)/build
+  BUILD_STATIC_DIR: $(Build.BinariesDirectory)/build-static
+  # azure-sdk-for-c clones vcpkg when no toolchain file is set; the SDK does not need it.
+  AZURE_SDK_DISABLE_AUTO_VCPKG: 1
 
 resources:
   repositories:
@@ -31,16 +41,20 @@ resources:
 extends:
   template: v1/1ES.Official.PipelineTemplate.yml@1ESPipelineTemplates
   parameters:
-    # Microsoft-hosted agents, as the other C SDK pipelines in this project use. `vmImage` is passed
-    # through as is; the template maps `image` to vmImage only for macOS.
+    # 1ES PT runs only on 1ES hosted pools whose images carry the 1es-pt-prerequisites artifact.
+    # `image` becomes the demand `ImageOverride -equals <image>`, matched against the pool image aliases.
     pool:
-      name: Azure Pipelines
-      vmImage: ubuntu-24.04
+      name: azure-iot-sdk-c-ubuntu-2404
+      image: ubuntu-24.04
       os: linux
+    settings:
+      # The organization's effective policy set, stated explicitly: Permissive (GitHub reachable for
+      # FetchContent) plus the required CFSClean policies.
+      networkIsolationPolicy: Permissive, CFSClean, CFSClean2, CFSClean3
     sdl:
       sourceAnalysisPool:
-        name: Azure Pipelines
-        vmImage: windows-2022
+        name: azure-iot-sdk-c-windows-2022
+        image: windows-2022
         os: windows
       codeql:
         language: cpp
@@ -72,16 +86,26 @@ extends:
             steps:
               - checkout: self
                 submodules: false
+              # The image normally has these. Network isolation blocks some apt sources
+              # (archive.ubuntu.com, Launchpad PPAs), so apt runs only for what is missing.
               - bash: |
                   set -euo pipefail
-                  sudo apt-get update
-                  sudo apt-get install -y --no-install-recommends \
-                    cmake ninja-build libssl-dev libcurl4-openssl-dev
+                  missing=()
+                  command -v cmake >/dev/null || missing+=(cmake)
+                  command -v ninja >/dev/null || missing+=(ninja-build)
+                  for pkg in libssl-dev libcurl4-openssl-dev; do
+                    dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
+                  done
+                  if [ ${#missing[@]} -gt 0 ]; then
+                    sudo apt-get update || true
+                    sudo apt-get install -y --no-install-recommends "${missing[@]}"
+                  fi
+                  cmake --version | head -1; ninja --version
                 displayName: Install toolchain
               # Warnings are gated on GitHub Actions; this image's compiler may differ.
               - bash: |
                   set -euo pipefail
-                  cmake -S c -B c/build -G Ninja \
+                  cmake -S c -B "$(BUILD_DIR)" -G Ninja \
                     -DCMAKE_BUILD_TYPE=RelWithDebInfo \
                     -DBUILD_SHARED_LIBS=ON \
                     -DAZ_IOT_BUILD_TESTS=ON \
@@ -91,17 +115,17 @@ extends:
                   grep -q 'enabling Paho TLS' "$AGENT_TEMPDIRECTORY/configure.log" \
                     || { echo "##vso[task.logissue type=error]OpenSSL not found: Paho TLS disabled"; exit 1; }
                 displayName: Configure
-              - bash: cmake --build c/build
+              - bash: cmake --build "$(BUILD_DIR)"
                 displayName: Build
-              - bash: ctest --test-dir c/build --output-on-failure
+              - bash: ctest --test-dir "$(BUILD_DIR)" --output-on-failure
                 displayName: Unit tests
               - bash: |
                   set -euo pipefail
                   out="$BUILD_ARTIFACTSTAGINGDIRECTORY/linux"
                   mkdir -p "$out"
-                  find c/build/src -type f -name 'libaz_iot*.so*' -exec cp {} "$out/" \;
+                  find "$(BUILD_DIR)/src" -type f -name 'libaz_iot*.so*' -exec cp {} "$out/" \;
                   # Samples are the only binaries linking the static adapters (Paho, OpenSSL crypto, managed certificates).
-                  (cd c/build && find samples -type f -perm -u+x -exec cp --parents {} "$out/" \;)
+                  (cd "$(BUILD_DIR)" && find samples -type f -perm -u+x -exec cp --parents {} "$out/" \;)
                   ls -lR "$out"
                   [ -n "$(ls -A "$out/samples")" ] || { echo "##vso[task.logissue type=error]no samples staged"; exit 1; }
                 displayName: Stage binaries
@@ -109,8 +133,8 @@ extends:
           - job: windows
             displayName: Windows (MSVC x64, shared, RelWithDebInfo)
             pool:
-              name: Azure Pipelines
-              vmImage: windows-2022
+              name: azure-iot-sdk-c-windows-2022
+              image: windows-2022
               os: windows
             templateContext:
               outputs:
@@ -133,43 +157,23 @@ extends:
                   Write-Host "##vso[task.setvariable variable=CMAKE]$cmake"
                   Write-Host "##vso[task.setvariable variable=CTEST]$ctest"
                 displayName: Locate CMake
-              # OpenSSL comes from the `paho` feature of c/vcpkg.json; static triplet to match /MT.
-              # vcpkg resolves port versions from the manifest's builtin-baseline commit,
-              # which the vcpkg clone must contain: fetch it when the image's clone is older.
+              # OpenSSL: the image's full slproweb install (static libraries, /MT to match the SDK).
+              # Not vcpkg: its OpenSSL port needs tools from hosts that network isolation blocks.
               - powershell: |
                   $ErrorActionPreference = 'Stop'
-                  $root = $env:VCPKG_INSTALLATION_ROOT
-                  if (-not $root -or -not (Test-Path "$root/scripts/buildsystems/vcpkg.cmake")) {
-                    $root = Join-Path $env:AGENT_TEMPDIRECTORY 'vcpkg'
-                    git clone https://github.com/microsoft/vcpkg $root
-                    if ($LASTEXITCODE) { exit $LASTEXITCODE }
-                    & "$root/bootstrap-vcpkg.bat" -disableMetrics
-                    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+                  $root = Join-Path $env:ProgramFiles 'OpenSSL'
+                  foreach ($lib in 'libcrypto_static.lib', 'libssl_static.lib') {
+                    if (-not (Test-Path (Join-Path $root "lib/VC/x64/MT/$lib"))) { throw "$lib not found under $root" }
                   }
-                  $baseline = (Get-Content c/vcpkg.json -Raw | ConvertFrom-Json).'builtin-baseline'
-                  git -C $root rev-parse --verify --quiet "$baseline^{commit}" | Out-Null
-                  if ($LASTEXITCODE) {
-                    # A plain fetch keeps a shallow clone's history boundary.
-                    $fetch = @('fetch', '--quiet', 'origin')
-                    if ((git -C $root rev-parse --is-shallow-repository) -eq 'true') {
-                      $fetch = @('fetch', '--quiet', '--unshallow', 'origin')
-                    }
-                    git -C $root @fetch
-                    if ($LASTEXITCODE) { exit $LASTEXITCODE }
-                    git -C $root rev-parse --verify --quiet "$baseline^{commit}" | Out-Null
-                    if ($LASTEXITCODE) {
-                      Write-Host "##vso[task.logissue type=error]vcpkg baseline $baseline not found in $root"
-                      exit 1
-                    }
-                  }
-                  Write-Host "##vso[task.setvariable variable=VCPKG_ROOT]$root"
-                displayName: Locate vcpkg
+                  & (Join-Path $root 'bin/openssl.exe') version
+                  Write-Host "##vso[task.setvariable variable=OPENSSL_ROOT]$root"
+                displayName: Locate OpenSSL
               - powershell: |
                   $log = Join-Path $env:AGENT_TEMPDIRECTORY 'configure.log'
-                  & "$(CMAKE)" -S c -B c/build -G "Visual Studio 17 2022" -A x64 `
-                    "-DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake" `
-                    -DVCPKG_TARGET_TRIPLET=x64-windows-static `
-                    -DVCPKG_MANIFEST_FEATURES=paho `
+                  & "$(CMAKE)" -S c -B "$(BUILD_DIR)" -G "Visual Studio 17 2022" -A x64 `
+                    "-DOPENSSL_ROOT_DIR=$(OPENSSL_ROOT)" `
+                    -DOPENSSL_USE_STATIC_LIBS=TRUE `
+                    -DOPENSSL_MSVC_STATIC_RT=TRUE `
                     -DBUILD_SHARED_LIBS=ON `
                     -DAZ_IOT_BUILD_SAMPLES=OFF `
                     -DAZ_IOT_BUILD_TESTS=ON `
@@ -182,41 +186,49 @@ extends:
                     exit 1
                   }
                 displayName: Configure
+                # Windows PowerShell turns native stderr into errors; $LASTEXITCODE decides.
+                errorActionPreference: continue
               - powershell: |
-                  & "$(CMAKE)" --build c/build --config RelWithDebInfo
+                  & "$(CMAKE)" --build "$(BUILD_DIR)" --config RelWithDebInfo
                   exit $LASTEXITCODE
                 displayName: Build
+                # Windows PowerShell turns native stderr into errors; $LASTEXITCODE decides.
+                errorActionPreference: continue
               - powershell: |
-                  & "$(CTEST)" --test-dir c/build -C RelWithDebInfo --output-on-failure
+                  & "$(CTEST)" --test-dir "$(BUILD_DIR)" -C RelWithDebInfo --output-on-failure
                   exit $LASTEXITCODE
                 displayName: Unit tests
+                # Windows PowerShell turns native stderr into errors; $LASTEXITCODE decides.
+                errorActionPreference: continue
               # Static build with samples: the only binaries linking the static adapters
               # (Paho, OpenSSL crypto, managed certificates). Separate tree: shared builds skip samples.
               - powershell: |
-                  & "$(CMAKE)" -S c -B c/build-static -G "Visual Studio 17 2022" -A x64 `
-                    "-DCMAKE_TOOLCHAIN_FILE=$(VCPKG_ROOT)/scripts/buildsystems/vcpkg.cmake" `
-                    -DVCPKG_TARGET_TRIPLET=x64-windows-static `
-                    -DVCPKG_MANIFEST_FEATURES=paho `
+                  & "$(CMAKE)" -S c -B "$(BUILD_STATIC_DIR)" -G "Visual Studio 17 2022" -A x64 `
+                    "-DOPENSSL_ROOT_DIR=$(OPENSSL_ROOT)" `
+                    -DOPENSSL_USE_STATIC_LIBS=TRUE `
+                    -DOPENSSL_MSVC_STATIC_RT=TRUE `
                     -DBUILD_SHARED_LIBS=OFF `
                     -DAZ_IOT_BUILD_SAMPLES=ON `
                     -DAZ_IOT_BUILD_TESTS=OFF `
                     -DAZ_IOT_WITH_PAHO=ON `
                     -DAZ_IOT_WARNINGS_AS_ERRORS=OFF
                   if ($LASTEXITCODE) { exit $LASTEXITCODE }
-                  & "$(CMAKE)" --build c/build-static --config RelWithDebInfo
+                  & "$(CMAKE)" --build "$(BUILD_STATIC_DIR)" --config RelWithDebInfo
                   exit $LASTEXITCODE
                 displayName: Build samples (static)
+                # Windows PowerShell turns native stderr into errors; $LASTEXITCODE decides.
+                errorActionPreference: continue
               - powershell: |
                   $ErrorActionPreference = 'Stop'
                   $out = Join-Path $env:BUILD_ARTIFACTSTAGINGDIRECTORY 'windows'
                   New-Item -ItemType Directory -Force $out | Out-Null
-                  Get-ChildItem c/build -Recurse -File -Include 'az_iot*.dll', 'az_iot*.pdb' |
+                  Get-ChildItem "$(BUILD_DIR)" -Recurse -File -Include 'az_iot*.dll', 'az_iot*.pdb' |
                     Where-Object { $_.FullName -notmatch '[\\/]_deps[\\/]' } |
                     Copy-Item -Destination $out
                   $samples = Join-Path $out 'samples'
                   New-Item -ItemType Directory -Force $samples | Out-Null
                   # Keep the directory layout: sample names repeat across groups.
-                  $src = (Resolve-Path c/build-static/samples).Path
+                  $src = (Resolve-Path "$(BUILD_STATIC_DIR)/samples").Path
                   Get-ChildItem $src -Recurse -File -Include '*.exe', '*.pdb' |
                     Where-Object { $_.FullName -notmatch '[\\/]CMakeFiles[\\/]' } |
                     ForEach-Object {

@@ -22,11 +22,6 @@ Default (ci-c-e2e), inputs from the environment (repository secrets/variables):
   E2E_SHARED_IOTHUB_REGISTRY_CS  IoT Hub connection string with RegistryWrite, written as
                              IOTHUB_REGISTRY_CONNECTION_STRING for the TPM suite's device cleanup
 
--Prefix E2E_MQTTV5_SHARED (ci-c-e2e-mqttv5) reads the same variables under that prefix except
-SAS_GROUP_KEY, DPS_CS and IOTHUB_REGISTRY_CS (mqttv5 hubs accept X.509 only; no SAS key is
-written, and there is no TPM suite), and optionally
-E2E_MQTTV5_SHARED_DPS_HOST, the DPS device endpoint.
-
 -Csr (ci-c-e2e-csr), writes the IOT_DPS_GROUP_X509_* bootstrap identity instead:
   E2E_CSR_SHARED_GROUP_CA    base64 of a PEM holding the group's issuing CA certificate and its
                              private key, then any CA certificates above it (issuer first)
@@ -39,8 +34,6 @@ param(
     [Parameter(Mandatory)][ValidatePattern('^[a-z0-9][a-z0-9-]{0,127}$')][string]$RegistrationId,
     [ValidateRange(0, 99)][int]$DeviceIndex = 0,
     [ValidatePattern('^[A-Za-z0-9$._-]{1,50}$')][string]$ConsumerGroup = '$Default',
-    # Variable prefix for the default (non -Csr) mode.
-    [ValidateSet('E2E_SHARED', 'E2E_MQTTV5_SHARED')][string]$Prefix = 'E2E_SHARED',
     [switch]$Csr,
     [string]$OutFile = 'test_config/set_test_env_vars.ps1'
 )
@@ -48,11 +41,9 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$Vars = if ($Csr) { 'E2E_CSR_SHARED' } else { $Prefix }
+$Vars = if ($Csr) { 'E2E_CSR_SHARED' } else { 'E2E_SHARED' }
 function Get-Shared([string]$Name) { [Environment]::GetEnvironmentVariable("${Vars}_$Name") }
-$Mqttv5 = -not $Csr -and $Prefix -eq 'E2E_MQTTV5_SHARED'
 $Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE', 'SAS_GROUP_KEY') }
-            elseif ($Mqttv5) { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE') }
             else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE', 'SAS_GROUP_KEY', 'DPS_CS', 'IOTHUB_REGISTRY_CS') }
 $Missing = $Required | ForEach-Object { "${Vars}_$_" } |
     Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
@@ -123,13 +114,12 @@ $Lines = if ($Csr) {
         Format-Assignment 'IOTHUB_EVENTHUB_CONNECTION_STRING' (Get-Shared 'EVENTHUB_CS')
         Format-Assignment 'IOTHUB_EVENTHUB_CONSUMER_GROUP' $ConsumerGroup
         Format-Assignment 'IOT_DPS_ID_SCOPE' (Get-Shared 'ID_SCOPE')
-        if ($Mqttv5 -and (Get-Shared 'DPS_HOST')) { Format-Assignment 'IOT_DPS_GLOBAL_ENDPOINT' (Get-Shared 'DPS_HOST') }
         Format-Assignment "IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$DeviceIndex" $RegistrationId
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$DeviceIndex" (ConvertTo-B64 $Chain)
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_KEY_$DeviceIndex" $KeyB64
-        if (-not $Mqttv5) { Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' (Get-Shared 'SAS_GROUP_KEY') }
-        if (-not $Mqttv5) { Format-Assignment 'IOT_DPS_CONNECTION_STRING' (Get-Shared 'DPS_CS') }
-        if (-not $Mqttv5) { Format-Assignment 'IOTHUB_REGISTRY_CONNECTION_STRING' (Get-Shared 'IOTHUB_REGISTRY_CS') }
+        Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' (Get-Shared 'SAS_GROUP_KEY')
+        Format-Assignment 'IOT_DPS_CONNECTION_STRING' (Get-Shared 'DPS_CS')
+        Format-Assignment 'IOTHUB_REGISTRY_CONNECTION_STRING' (Get-Shared 'IOTHUB_REGISTRY_CS')
     )
 }
 $OutDir = Split-Path -Parent $OutFile

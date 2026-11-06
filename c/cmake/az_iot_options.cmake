@@ -2,7 +2,6 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 option(AZ_IOT_WITH_PAHO        "Build the Paho-C MQTT adapter (default)"      ON)
-option(AZ_IOT_WITH_RUST_MQTT   "Build the Rust MQTT adapter shell"             OFF)
 option(AZ_IOT_WITH_AZ_MQTT     "Build the az_mqtt MQTT adapter (deps/az_mqtt)"  OFF)
 # TLS backend of the az_mqtt adapter on Linux/macOS (Windows: Schannel).
 set(AZ_IOT_AZ_MQTT_TLS "openssl" CACHE STRING "az_mqtt adapter TLS backend: openssl | mbedtls")
@@ -23,11 +22,6 @@ option(AZ_IOT_BUILD_TESTS      "Build unit tests"                               
 # default (they require provisioned cloud resources + the Paho adapter). The
 # e2e GitHub Actions workflow enables this alongside AZ_IOT_BUILD_TESTS.
 option(AZ_IOT_BUILD_E2E        "Build the end-to-end test device agent"         OFF)
-# The software updates device-update e2e suite. Selects that suite WITHIN the e2e tests;
-# AZ_IOT_BUILD_E2E and AZ_IOT_WITH_PAHO are still required, and this option on
-# its own creates no target. Separate because the suite needs a Device Update
-# environment and an X.509 enrollment that the other e2e jobs do not provision.
-option(AZ_IOT_BUILD_E2E_SU "Build the software updates device-update end-to-end suite (needs AZ_IOT_BUILD_E2E + AZ_IOT_WITH_PAHO)" OFF)
 # The conformance suites drive a REAL MQTT broker over the network. The harness
 # executables always build when the Paho adapter is on -- customers link the
 # conformance library to validate their own adapter -- but they are registered
@@ -58,9 +52,6 @@ option(AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS "Include the TLS certificate-validatio
 # only the dedicated ci-c-e2e-csr workflow provisions. Same rule as above: the
 # test is built when it is going to be run, not built-and-skipped.
 option(AZ_IOT_BUILD_E2E_CSR    "Build the CSR enrollment e2e test (needs a CA-linked DPS enrollment)" OFF)
-# The mqttv5 e2e suites need an mqttv5 hub configured for them (custom topic
-# templates), which only the ci-c-e2e-mqttv5 workflow has. Same rule as above.
-option(AZ_IOT_BUILD_E2E_MQTTV5 "Build the mqttv5 e2e tests (needs the mqttv5 e2e environment)" OFF)
 # The PKCS#11 custody tests drive a REAL token (SoftHSM2 in CI) through an
 # OpenSSL 3.x pkcs11 provider. Same rule as the conformance suites: the test is
 # built when it is going to be run, not built-and-skipped. The token URI comes
@@ -69,9 +60,11 @@ option(AZ_IOT_BUILD_PKCS11_TESTS "Register the Paho key-custody tests that need 
 # The custody e2e suite runs DPS issuance and hub traffic with a device key that
 # lives inside a PKCS#11 token. It needs BOTH a provisioned token and the
 # standard e2e Azure resources, which only the e2e workflow has, so it follows
-# the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR. With
-# AZ_IOT_BUILD_E2E_MQTTV5 it also builds the mqttv5 custody suite.
+# the same build-it-when-it-will-run rule as AZ_IOT_BUILD_E2E_CSR.
 option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e tests (need a token + e2e resources)" OFF)
+# The ESP32 e2e test runs the ESP32 IoT Hub sample's firmware in QEMU against the e2e resources;
+# only the e2e workflow's esp32-qemu legs build that firmware. Same build-it-when-it-will-run rule.
+option(AZ_IOT_BUILD_E2E_ESP32_QEMU "Build the ESP32 QEMU e2e test (needs E2E_ESP32_QEMU_COMMAND + e2e resources)" OFF)
 # Install rules and the azure-iot-sdk CMake package (find_package). On by default
 # only for a top-level build, so a parent project that adds this tree with
 # add_subdirectory() or FetchContent does not install it as a side effect.
@@ -103,7 +96,8 @@ option(AZ_IOT_USE_INSTALLED_AZURE_SDK_FOR_C "Use an installed azure-sdk-for-c (c
 option(AZ_IOT_USE_INSTALLED_PAHO "Use an installed Eclipse Paho C (find_package(eclipse-paho-mqtt-c)) instead of fetching it" OFF)
 
 # Options that would otherwise create nothing without saying so.
-foreach(_opt AZ_IOT_BUILD_E2E_SU AZ_IOT_BUILD_E2E_CSR AZ_IOT_BUILD_E2E_MQTTV5 AZ_IOT_BUILD_E2E_PKCS11)
+foreach(_opt AZ_IOT_BUILD_E2E_CSR AZ_IOT_BUILD_E2E_PKCS11
+        AZ_IOT_BUILD_E2E_ESP32_QEMU)
     if(${_opt} AND NOT AZ_IOT_BUILD_E2E)
         message(FATAL_ERROR "${_opt}=ON needs AZ_IOT_BUILD_E2E=ON")
     endif()

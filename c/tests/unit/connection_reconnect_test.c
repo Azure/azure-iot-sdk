@@ -31,10 +31,10 @@
 
 #include "support/connection_test_harness.h"
 
-/* Backoff long enough that a single do_work() cannot cross the deadline in the
- * same call that schedules it (which would hide the RETRY_PENDING state), yet
- * short enough to keep the suite fast. No jitter: timing must be exact. */
-#define RETRY_DELAY_MS 20u
+/* Backoff too long to elapse during a test, so pumping cannot fire a retry
+ * before the test has observed RETRY_PENDING; tests fire it with
+ * az_iot_test_make_retry_due_now(). No jitter: timing must be exact. */
+#define RETRY_DELAY_MS 60000u
 
 static az_iot_connection_client_options reconnect_options(uint32_t max_attempts)
 {
@@ -43,6 +43,7 @@ static az_iot_connection_client_options reconnect_options(uint32_t max_attempts)
   opts.reconnection_policy.max_delay_ms = RETRY_DELAY_MS;
   opts.reconnection_policy.max_attempts = max_attempts;
   opts.reconnection_policy.jitter_pct = 0;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
   return opts;
 }
 
@@ -58,9 +59,6 @@ static int setup_with_policy(void** state, uint32_t max_attempts)
       az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
       AZ_IOT_OK);
   az_iot_connection_client__seed_rng(fx->client, 0xC0FFEEFEEDFACEull);
-
-  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(fx->factory);
 
   *state = fx;
   return 0;
@@ -90,14 +88,12 @@ static int setup_no_reconnect(void** state)
   assert_non_null(fx);
 
   az_iot_connection_client_options opts = az_iot_test_mqtt_v3_options();
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
   fx->client = &fx->client_storage;
   assert_int_equal(
       az_iot_connection_client_add_state_observer(fx->client, az_iot_test_on_state, &fx->log),
       AZ_IOT_OK);
-
-  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(fx->factory);
 
   *state = fx;
   return 0;
@@ -108,8 +104,7 @@ static int teardown(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   if (fx)
   {
-    az_iot_connection_client_deinit(&fx->client_storage);
-    az_iot_mock_mqtt_factory_destroy(fx->factory);
+    az_iot_test_connection_client_deinit(&fx->client_storage);
     free(fx);
   }
   return 0;
@@ -117,10 +112,8 @@ static int teardown(void** state)
 
 static az_iot_mock_mqtt_client* open_to_connected(az_iot_test_conn* fx)
 {
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -128,13 +121,13 @@ static az_iot_mock_mqtt_client* open_to_connected(az_iot_test_conn* fx)
   return m;
 }
 
-/* Let the backoff elapse and pump until the retry CONNECT has been issued;
+/* Let the backoff pass and pump until the retry CONNECT has been issued;
  * returns the adapter instance created for the new attempt. */
 static az_iot_mock_mqtt_client* advance_to_retry(az_iot_test_conn* fx)
 {
-  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m);
   return m;
 }
@@ -222,7 +215,7 @@ static void retry_waits_for_the_backoff_deadline(void** state)
   {
     (void)az_iot_connection_client_do_work(fx->client, 0);
   }
-  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
 
   az_iot_mock_mqtt_client* retry = advance_to_retry(fx);
@@ -241,7 +234,7 @@ static void retry_destroys_the_old_adapter_and_builds_a_new_one(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   /* The old adapter is destroyed as soon as the retry is scheduled -- the
    * client does not hold a dead session open across the backoff window. */
-  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
 
   /* The replacement starts from a clean slate: exactly the retry's CONNECT and
    * nothing inherited from the previous session. (Pointer identity proves
@@ -327,8 +320,6 @@ static void persistent_subscription_is_issued_on_connect(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-  assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
           fx->client,
           "devices/ut-device/messages/devicebound/#",
@@ -339,7 +330,7 @@ static void persistent_subscription_is_issued_on_connect(void** state)
       AZ_IOT_OK);
 
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
@@ -352,8 +343,6 @@ static void persistent_subscription_is_issued_on_connect(void** state)
 static void persistent_subscriptions_are_reissued_after_a_reconnect(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
           fx->client,
@@ -374,7 +363,7 @@ static void persistent_subscriptions_are_reissued_after_a_reconnect(void** state
       AZ_IOT_OK);
 
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE), 2);
@@ -491,7 +480,7 @@ static void persistent_subscription_registry_full_is_rejected(void** state)
   log_capture cap;
   install_error_capture(&cap);
 
-  for (unsigned i = 0; i < AZ_IOT_MAX_PERSISTENT_SUBS; ++i)
+  for (unsigned i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS; ++i)
   {
     filter[0] = 'f';
     filter[1] = (char)('0' + (int)i);
@@ -506,7 +495,7 @@ static void persistent_subscription_registry_full_is_rejected(void** state)
   /* A capacity failure rather than NOT_SUPPORTED: a larger registry would take
    * this filter, whereas nothing about a larger array makes a genuinely
    * unsupported operation work. The two need to be told apart by a caller
-   * deciding whether to raise AZ_IOT_MAX_PERSISTENT_SUBS. */
+   * deciding whether to raise AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PERSISTENT_SUBSCRIPTIONS. */
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
           fx->client,
@@ -590,10 +579,10 @@ static void removing_one_owner_leaves_the_other_owners_filters(void** state)
   az_iot_mock_mqtt_client_clear_calls(m);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
-  az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m2);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m2, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -626,10 +615,10 @@ static void a_withdrawn_filter_is_not_restored_on_reconnect(void** state)
   az_iot_mock_mqtt_client_clear_calls(m);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
-  az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m2);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m2, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -645,8 +634,6 @@ static void removing_while_disconnected_still_clears_the_registry(void** state)
   int owner = 0;
 
   assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-  assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
           fx->client,
           "$iothub/twin/res/#",
@@ -658,7 +645,7 @@ static void removing_while_disconnected_still_clears_the_registry(void** state)
   assert_int_equal(az_iot_connection_client__remove_subscriptions_for(fx->client, &owner), 1);
 
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
@@ -697,12 +684,17 @@ typedef struct sub_failure_probe
   az_iot_result reason;
   int32_t protocol_code;
   char topic[64];
+  /* The Reason String, copied; -1: NULL. */
+  char reason_string[64];
+  int reason_string_length;
 } sub_failure_probe;
 
 static void on_sub_failed(
     const char* topic_filter,
     az_iot_result reason,
     int32_t protocol_code,
+    const char* reason_string,
+    size_t reason_string_len,
     const void* owner)
 {
   sub_failure_probe* p = (sub_failure_probe*)owner;
@@ -710,6 +702,13 @@ static void on_sub_failed(
   p->reason = reason;
   p->protocol_code = protocol_code;
   snprintf(p->topic, sizeof(p->topic), "%s", topic_filter ? topic_filter : "");
+  p->reason_string_length = reason_string != NULL ? (int)reason_string_len : -1;
+  snprintf(
+      p->reason_string,
+      sizeof(p->reason_string),
+      "%.*s",
+      reason_string != NULL ? (int)reason_string_len : 0,
+      reason_string != NULL ? reason_string : "");
 }
 
 /* Register one session-scoped filter and drive the connection to the point
@@ -717,14 +716,12 @@ static void on_sub_failed(
 static az_iot_mock_mqtt_client* open_to_pending_gate(az_iot_test_conn* fx, const char* filter)
 {
   assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-  assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
           fx->client, filter, AZ_IOT_MQTT_QOS_1, fx, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL),
       AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   return m;
@@ -768,6 +765,30 @@ static void a_refused_session_filter_faults_terminally(void** state)
       az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
 }
 
+/* A refused gated SUBACK drained after a server DISCONNECT in the same process_loop belongs to the
+ * ending session: the DISCONNECT's transition, code and Reason String stand. */
+static void a_refused_session_filter_after_a_server_disconnect_is_ignored(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_pending_gate(fx, "restored/#");
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+
+  static const char reason[] = "quota exceeded";
+  az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
+  assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x97, reason));
+  assert_true(az_iot_mock_mqtt_client_inject_suback_refusal(m, sub->packet_id, 0x87));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  /* Not FAULTED by the refusal: the DISCONNECT is retried under the policy. */
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
+  size_t const i = fx->log.count - 1u;
+  assert_true(fx->log.error_present[i]);
+  assert_int_equal(fx->log.error_sources[i], AZ_IOT_CONN_ERR_SRC_MQTT);
+  assert_int_equal(fx->log.error_codes[i], 0x97);
+  assert_string_equal(fx->log.error_message[i], reason);
+}
+
 /* Quota exceeded or an unspecified error is how a passing service-side fault
  * presents, so the session retries rather than abandoning a filter the broker
  * may well grant on the next attempt. */
@@ -791,14 +812,12 @@ static void a_failed_subscribe_call_reconnects(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-  assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
           fx->client, "restored/#", AZ_IOT_MQTT_QOS_1, fx, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL),
       AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_SUBSCRIBE, AZ_IOT_ERR_MQTT);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -822,8 +841,6 @@ static void a_refused_self_scoped_filter_keeps_the_connection(void** state)
   sub_failure_probe probe = { 0 };
 
   assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-  assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
           fx->client,
           "custom/topic/#",
@@ -834,7 +851,7 @@ static void a_refused_self_scoped_filter_keeps_the_connection(void** state)
       AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
@@ -852,15 +869,121 @@ static void a_refused_self_scoped_filter_keeps_the_connection(void** state)
   assert_int_equal(probe.calls, 1);
   assert_int_equal(probe.reason, AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
   assert_string_equal(probe.topic, "custom/topic/#");
+  /* The SUBACK carried no Reason String. */
+  assert_int_equal(probe.reason_string_length, -1);
 
   /* Dropped from the registry, so the reconnect does not resurrect it. */
   az_iot_mock_mqtt_client_clear_calls(m);
   assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
-  az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
+  assert_non_null(m2);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m2, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m2, AZ_IOT_MOCK_CALL_SUBSCRIBE), 0);
+}
+
+typedef struct sub_failure_lifecycle_calls
+{
+  az_iot_connection_client* client;
+  int calls;
+  az_iot_result close_result;
+  az_iot_result open_result;
+  az_iot_result deinit_result;
+} sub_failure_lifecycle_calls;
+
+static void close_open_and_deinit_on_sub_failed(
+    const char* topic_filter,
+    az_iot_result reason,
+    int32_t protocol_code,
+    const char* reason_string,
+    size_t reason_string_len,
+    const void* owner)
+{
+  (void)topic_filter;
+  (void)reason;
+  (void)protocol_code;
+  (void)reason_string;
+  (void)reason_string_len;
+  sub_failure_lifecycle_calls* r = (sub_failure_lifecycle_calls*)(uintptr_t)owner;
+  r->calls++;
+  r->close_result = az_iot_connection_client_close(r->client);
+  r->open_result = az_iot_connection_client_open(r->client);
+  r->deinit_result = az_iot_connection_client_deinit(r->client);
+}
+
+/* close(), open() and deinit() from a self-scoped filter's failure callback, run on a synchronous
+ * SUBSCRIBE failure at CONNECTED, are refused; the session reaches CONNECTED. */
+static void close_open_and_deinit_from_a_subscription_failure_callback_are_refused(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  sub_failure_lifecycle_calls r = { fx->client, 0, AZ_IOT_OK, AZ_IOT_OK, AZ_IOT_OK };
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          fx->client,
+          "custom/topic/#",
+          AZ_IOT_MQTT_QOS_1,
+          &r,
+          AZ_IOT_SUBSCRIPTION_FAILS_SELF,
+          close_open_and_deinit_on_sub_failed),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_SUBSCRIBE, AZ_IOT_ERR_MQTT);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(r.calls, 1);
+  assert_int_equal(r.close_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(r.open_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(r.deinit_result, AZ_IOT_ERR_BUSY);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_CONNECTED);
+  assert_true(az_iot_connection_client__is_connected(fx->client));
+}
+
+/* A self-scoped refusal drained after a server DISCONNECT is still reported and dropped, so the
+ * reconnect does not reissue it; the DISCONNECT's transition and detail stand. */
+static void a_refused_self_scoped_filter_after_a_server_disconnect_is_reported(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  sub_failure_probe probe = { 0 };
+
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          fx->client,
+          "custom/topic/#",
+          AZ_IOT_MQTT_QOS_1,
+          &probe,
+          AZ_IOT_SUBSCRIPTION_FAILS_SELF,
+          on_sub_failed),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+
+  static const char reason[] = "quota exceeded";
+  az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
+  assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x97, reason));
+  assert_true(az_iot_mock_mqtt_client_inject_suback_refusal(m, sub->packet_id, 0x87));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(probe.calls, 1);
+  assert_int_equal(probe.reason, AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
+  size_t const i = fx->log.count - 1u;
+  assert_int_equal(fx->log.error_codes[i], 0x97);
+  assert_string_equal(fx->log.error_message[i], reason);
+
+  /* Dropped from the registry, so the reconnect does not reissue it. */
+  az_iot_test_make_retry_due_now(fx->client);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m2);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m2, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -900,6 +1023,90 @@ static uint16_t subscribe_pid_for(const az_iot_mock_mqtt_client* m, const char* 
   return 0;
 }
 
+/** @brief A refused filter's owner that registers a replacement filter from its callback. */
+typedef struct
+{
+  sub_failure_probe probe; /* First: on_sub_failed() records into it. */
+  az_iot_connection_client* client;
+  az_iot_result reregister_result;
+} sub_failed_actor;
+
+static void on_sub_failed_then_reregister(
+    const char* topic_filter,
+    az_iot_result reason,
+    int32_t protocol_code,
+    const char* reason_string,
+    size_t reason_string_len,
+    const void* owner)
+{
+  on_sub_failed(topic_filter, reason, protocol_code, reason_string, reason_string_len, owner);
+  sub_failed_actor* actor = (sub_failed_actor*)(uintptr_t)owner;
+  actor->reregister_result = az_iot_connection_client__add_subscription_on_connect(
+      actor->client,
+      "replacement/#",
+      AZ_IOT_MQTT_QOS_1,
+      actor,
+      AZ_IOT_SUBSCRIPTION_FAILS_SELF,
+      on_sub_failed);
+}
+
+/**
+ * @brief Connect with one FAILS_SELF filter owned by @p actor, then drain a server DISCONNECT and
+ * that filter's refusal in one process_loop(). Returns the ended session's mock client.
+ */
+static az_iot_mock_mqtt_client* refuse_self_scoped_filter_after_disconnect(
+    az_iot_test_conn* fx,
+    sub_failed_actor* actor,
+    uint8_t disconnect_code)
+{
+  actor->client = fx->client;
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          fx->client,
+          "custom/topic/#",
+          AZ_IOT_MQTT_QOS_1,
+          actor,
+          AZ_IOT_SUBSCRIPTION_FAILS_SELF,
+          on_sub_failed_then_reregister),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+
+  az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
+  assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, disconnect_code, NULL));
+  assert_true(az_iot_mock_mqtt_client_inject_suback_refusal(m, sub->packet_id, 0x87));
+  return m;
+}
+
+/* A filter registered from the refusal callback while the session is ending is not issued on that
+ * session; it stays registered and is subscribed on the next one. */
+static void a_filter_registered_after_a_server_disconnect_waits_for_the_next_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  sub_failed_actor actor;
+  memset(&actor, 0, sizeof(actor));
+  az_iot_mock_mqtt_client* m = refuse_self_scoped_filter_after_disconnect(fx, &actor, 0x97);
+  /* The ended session would refuse it, and a refused SUBSCRIBE rolls the registration back. The
+   * session is destroyed by the drain: m is not used after do_work(). */
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_SUBSCRIBE, AZ_IOT_ERR_NOT_CONNECTED);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(actor.probe.calls, 1);
+  assert_int_equal(actor.reregister_result, AZ_IOT_OK);
+
+  az_iot_test_make_retry_due_now(fx->client);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
+  assert_non_null(m2);
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m2, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_not_equal(subscribe_pid_for(m2, "replacement/#"), 0);
+}
+
 /* The callback contract promises the verbatim wire code, not just a result.
  * Asserting only the result would still pass if every owner were handed 0. */
 static void a_refused_self_scoped_filter_reports_the_wire_code(void** state)
@@ -907,8 +1114,6 @@ static void a_refused_self_scoped_filter_reports_the_wire_code(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   sub_failure_probe probe = { 0 };
 
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
           fx->client,
@@ -920,31 +1125,64 @@ static void a_refused_self_scoped_filter_reports_the_wire_code(void** state)
       AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
-  /* 0x87 Not authorized, as an MQTTv5 topic-space refusal would arrive. */
+  /* 0x87 Not authorized, as a broker-side authorization refusal would arrive, with the broker's
+   * Reason String. */
+  static const char reason[] = "no topic space allows this filter";
   az_iot_mqtt_event ack;
   memset(&ack, 0, sizeof(ack));
   ack.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
   ack.packet_id = subscribe_pid_for(m, "custom/topic/#");
   ack.status = AZ_IOT_ERR_SUBSCRIPTION_REFUSED;
   ack.protocol_code = 0x87;
+  ack.reason_string = reason;
+  ack.reason_string_len = sizeof(reason) - 1;
   assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
   assert_int_equal(probe.calls, 1);
   assert_int_equal(probe.protocol_code, 0x87);
+  assert_int_equal(probe.reason_string_length, (int)sizeof(reason) - 1);
+  assert_string_equal(probe.reason_string, reason);
   assert_true(az_iot_connection_client__is_connected(fx->client));
+}
+
+/* A gated filter's refusal ends the session; the SUBACK's Reason String says why, as the error
+ * message of the state event reporting it. */
+static void a_refused_session_filter_reports_the_reason_string(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_pending_gate(fx, "restored/#");
+  const az_iot_mock_call* sub = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_SUBSCRIBE);
+  assert_non_null(sub);
+
+  static const char reason[] = "no topic space allows this filter";
+  az_iot_mqtt_event ack;
+  memset(&ack, 0, sizeof(ack));
+  ack.kind = AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK;
+  ack.packet_id = sub->packet_id;
+  ack.status = AZ_IOT_ERR_SUBSCRIPTION_REFUSED;
+  ack.protocol_code = 0x87;
+  ack.reason_string = reason;
+  ack.reason_string_len = sizeof(reason) - 1;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &ack));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  size_t const i = fx->log.count - 1u;
+  assert_true(fx->log.error_present[i]);
+  assert_int_equal(fx->log.error_sources[i], AZ_IOT_CONN_ERR_SRC_MQTT);
+  assert_int_equal(fx->log.error_codes[i], 0x87);
+  assert_string_equal(fx->log.error_message[i], reason);
 }
 
 /* CONNECTED waits for EVERY gated filter, not merely the first to answer. */
 static void connected_waits_for_all_gated_subacks(void** state)
 {
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
           fx->client, "first/#", AZ_IOT_MQTT_QOS_1, fx, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL),
@@ -955,7 +1193,7 @@ static void connected_waits_for_all_gated_subacks(void** state)
       AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
@@ -977,8 +1215,6 @@ static void a_self_scoped_refusal_does_not_release_the_gate(void** state)
   sub_failure_probe probe = { 0 };
 
   assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(fx->client, fx->factory), AZ_IOT_OK);
-  assert_int_equal(
       az_iot_connection_client__add_subscription_on_connect(
           fx->client, "gated/#", AZ_IOT_MQTT_QOS_1, fx, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL),
       AZ_IOT_OK);
@@ -993,7 +1229,7 @@ static void a_self_scoped_refusal_does_not_release_the_gate(void** state)
       AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
 
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
 
@@ -1140,9 +1376,9 @@ static void a_dropped_session_clears_the_gate(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_not_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
 
-  az_iot_test_wait_ms(RETRY_DELAY_MS + 5u);
+  az_iot_test_make_retry_due_now(fx->client);
   (void)az_iot_connection_client_do_work(fx->client, 0);
-  az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m2 = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m2);
   assert_true(az_iot_mock_mqtt_client_inject_connected(m2, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -1196,6 +1432,190 @@ static void matching_puback_invokes_the_callback(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(probe.calls, 1);
   assert_int_equal(probe.last_status, AZ_IOT_OK);
+}
+
+/** @brief Closes the client from a publish callback; records the result and the session's
+ * DISCONNECT calls. */
+/**
+ * @brief Drain, in one process_loop(): a gated filter's refusal with @p suback_protocol_code (none
+ * when 0), then a server DISCONNECT 0x8B and a local DISCONNECTED (no codes if @p clean_local_end,
+ * else a transport code), the server's first if @p server_first. IDLE reports the server's code and
+ * Reason String.
+ */
+static void assert_the_server_disconnect_detail_survives_a_local_end(
+    az_iot_test_conn* fx,
+    bool server_first,
+    int32_t suback_protocol_code,
+    bool clean_local_end)
+{
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+  az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
+  if (suback_protocol_code != 0)
+  {
+    assert_int_equal(
+        az_iot_connection_client__add_subscription_on_connect(
+            fx->client, "gated/#", AZ_IOT_MQTT_QOS_1, fx, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL),
+        AZ_IOT_OK);
+    assert_true(az_iot_mock_mqtt_client_inject_suback_refusal(
+        m, subscribe_pid_for(m, "gated/#"), suback_protocol_code));
+  }
+  az_iot_mqtt_event local_end;
+  memset(&local_end, 0, sizeof(local_end));
+  local_end.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  local_end.status = AZ_IOT_ERR_MQTT;
+  local_end.transport_code = clean_local_end ? 0 : -3;
+  if (server_first)
+  {
+    assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x8B, "server shutting down"));
+  }
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &local_end));
+  if (!server_first)
+  {
+    assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x8B, "server shutting down"));
+  }
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  size_t const last = fx->log.count - 1;
+  assert_int_equal(fx->log.states[last], AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(fx->log.error_sources[last], AZ_IOT_CONN_ERR_SRC_MQTT);
+  assert_int_equal(fx->log.error_codes[last], 0x8B);
+  assert_string_equal(fx->log.error_message[last], "server shutting down");
+}
+
+/* A local end after the server DISCONNECT is redundant: it does not replace the server's code. */
+static void a_local_end_after_a_server_disconnect_keeps_its_detail(void** state)
+{
+  assert_the_server_disconnect_detail_survives_a_local_end(
+      (az_iot_test_conn*)*state, true, 0, false);
+}
+
+/* An adapter ERROR after the server DISCONNECT in the same process_loop() is redundant: the
+ * DISCONNECT's transition and code stand, not the ERROR's fault and transport code. */
+static void an_adapter_error_after_a_server_disconnect_keeps_its_detail(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+  az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
+  assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x8B, NULL));
+  az_iot_mqtt_event error;
+  memset(&error, 0, sizeof(error));
+  error.kind = AZ_IOT_MQTT_EVT_ERROR;
+  error.status = AZ_IOT_ERR_MQTT;
+  error.transport_code = -3;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &error));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  size_t const last = fx->log.count - 1;
+  assert_int_equal(fx->log.states[last], AZ_IOT_CONN_STATE_IDLE);
+  assert_int_equal(fx->log.error_sources[last], AZ_IOT_CONN_ERR_SRC_MQTT);
+  assert_int_equal(fx->log.error_codes[last], 0x8B);
+}
+
+/* A server DISCONNECT after a local end is not redundant: its code is reported. */
+static void a_server_disconnect_after_a_local_end_is_reported(void** state)
+{
+  assert_the_server_disconnect_detail_survives_a_local_end(
+      (az_iot_test_conn*)*state, false, 0, false);
+}
+
+/* A coded SUBACK refusal and a code-less local end before the server DISCONNECT: the refusal's
+ * staged wire code does not count as the server's end, so the server's code is reported. */
+static void a_server_disconnect_after_a_coded_refusal_and_a_clean_local_end_is_reported(
+    void** state)
+{
+  assert_the_server_disconnect_detail_survives_a_local_end(
+      (az_iot_test_conn*)*state, false, 0x87, true);
+}
+
+/* An identity refusal without codes after a local end is acted on, though codes cannot tell it
+ * from a local end: with retries disabled it faults. */
+static void an_identity_refusal_after_a_local_end_faults(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+  az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
+  az_iot_mqtt_event end;
+  memset(&end, 0, sizeof(end));
+  end.kind = AZ_IOT_MQTT_EVT_DISCONNECTED;
+  end.status = AZ_IOT_ERR_MQTT;
+  end.transport_code = -3;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &end));
+  end.status = AZ_IOT_ERR_AUTH;
+  end.transport_code = 0;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &end));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_AUTH);
+  /* The local end's transport code is not the refusal's cause. */
+  assert_false(fx->log.error_present[fx->log.count - 1]);
+}
+
+/**
+ * @brief A code-less identity refusal of @p kind, then a server DISCONNECT 0x8B in one drain: the
+ * client still faults with the refusal.
+ */
+static void assert_a_server_disconnect_keeps_the_identity_refusal_fault(
+    az_iot_test_conn* fx,
+    az_iot_mqtt_event_kind kind)
+{
+  az_iot_mock_mqtt_client* m = open_to_connected(fx);
+  az_iot_mock_mqtt_client_set_events_per_loop(m, SIZE_MAX);
+  az_iot_mqtt_event refusal;
+  memset(&refusal, 0, sizeof(refusal));
+  refusal.kind = kind;
+  refusal.status = AZ_IOT_ERR_AUTH;
+  assert_true(az_iot_mock_mqtt_client_inject_event(m, &refusal));
+  assert_true(az_iot_mock_mqtt_client_inject_server_disconnect(m, 0x8B, NULL));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_AUTH);
+}
+
+/* A server DISCONNECT after a code-less identity refusal does not replace it. */
+static void a_server_disconnect_after_an_identity_refusal_keeps_the_fault(void** state)
+{
+  assert_a_server_disconnect_keeps_the_identity_refusal_fault(
+      (az_iot_test_conn*)*state, AZ_IOT_MQTT_EVT_DISCONNECTED);
+}
+
+/* As above when the adapter reports the refusal as an ERROR. */
+static void a_server_disconnect_after_an_identity_refusal_error_keeps_the_fault(void** state)
+{
+  assert_a_server_disconnect_keeps_the_identity_refusal_fault(
+      (az_iot_test_conn*)*state, AZ_IOT_MQTT_EVT_ERROR);
+}
+
+/* While close() disconnects the session, a gated SUBACK does not announce CONNECTED and a new
+ * filter is kept for the next session without a SUBSCRIBE on the closing one. */
+static void close_while_the_subscription_gate_is_open_ignores_the_closing_session(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          fx->client, "gated/#", AZ_IOT_MQTT_QOS_1, fx, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL),
+      AZ_IOT_OK);
+  assert_int_equal(az_iot_connection_client_open(fx->client), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
+  assert_true(az_iot_mock_mqtt_client_inject_connected(m, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  uint16_t const subscribe_id = subscribe_pid_for(m, "gated/#");
+  assert_int_not_equal(subscribe_id, 0);
+  assert_int_equal(az_iot_connection_client_close(fx->client), AZ_IOT_OK);
+
+  assert_true(az_iot_mock_mqtt_client_inject_suback(m, subscribe_id, AZ_IOT_OK));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_DISCONNECTING);
+  assert_int_equal(
+      az_iot_connection_client__add_subscription_on_connect(
+          fx->client, "late/#", AZ_IOT_MQTT_QOS_1, fx, AZ_IOT_SUBSCRIPTION_FAILS_SESSION, NULL),
+      AZ_IOT_OK);
+  assert_int_equal(subscribe_pid_for(m, "late/#"), 0);
+
+  assert_true(az_iot_mock_mqtt_client_inject_disconnected(m));
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_IDLE);
 }
 
 static void unmatched_puback_is_ignored(void** state)
@@ -1311,9 +1731,9 @@ static void full_puback_table_publishes_nothing(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = open_to_connected(fx);
 
-  puback_probe probes[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
+  puback_probe probes[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES] = { 0 };
   uint16_t first_pid = 0;
-  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES; ++i)
   {
     uint16_t pid = publish_qos1(fx, m, &probes[i]);
     if (i == 0)
@@ -1348,8 +1768,8 @@ static void failed_publish_releases_its_slot(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = open_to_connected(fx);
 
-  puback_probe probes[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
-  for (size_t i = 0; i + 1 < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  puback_probe probes[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES] = { 0 };
+  for (size_t i = 0; i + 1 < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES; ++i)
   {
     (void)publish_qos1(fx, m, &probes[i]);
   }
@@ -1361,7 +1781,7 @@ static void failed_publish_releases_its_slot(void** state)
 
   /* The last slot is still free, and an ack for the refused publish's packet
    * id reaches nobody. */
-  (void)publish_qos1(fx, m, &probes[AZ_IOT_MAX_PENDING_PUBACKS - 1]);
+  (void)publish_qos1(fx, m, &probes[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES - 1]);
   assert_true(az_iot_mock_mqtt_client_inject_puback(m, failed_pid, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(failed.calls, 0);
@@ -1389,13 +1809,13 @@ static void reserved_and_shared_pools_do_not_borrow(void** state)
   static const int no_reservation = 0;
   assert_int_equal(az_iot_connection_client__reserve_pubacks(fx->client, &owner, 4), AZ_IOT_OK);
 
-  puback_probe probes[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
+  puback_probe probes[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES] = { 0 };
   size_t shared = 0;
   while (try_publish(fx, AZ_IOT_MQTT_QOS_1, &probes[shared]) == AZ_IOT_OK)
   {
     ++shared;
   }
-  assert_int_equal(shared, AZ_IOT_MAX_PENDING_PUBACKS - 4);
+  assert_int_equal(shared, AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES - 4);
   assert_false(az_iot_connection_client__can_track_publish(fx->client, NULL));
   /* An owner with no reservation draws from the shared pool. */
   assert_int_equal(try_publish_as(fx, &no_reservation, &probes[0]), AZ_IOT_ERR_BUSY);
@@ -1434,11 +1854,11 @@ static void reservations_cannot_exceed_the_table(void** state)
       az_iot_connection_client__reserve_pubacks(fx->client, NULL, 1), AZ_IOT_ERR_INVALID_ARG);
   assert_int_equal(
       az_iot_connection_client__reserve_pubacks(
-          fx->client, &a, (uint16_t)(AZ_IOT_MAX_PENDING_PUBACKS + 1)),
+          fx->client, &a, (uint16_t)(AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES + 1)),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   assert_int_equal(
       az_iot_connection_client__reserve_pubacks(
-          fx->client, &a, (uint16_t)AZ_IOT_MAX_PENDING_PUBACKS),
+          fx->client, &a, (uint16_t)AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES),
       AZ_IOT_OK);
   assert_false(az_iot_connection_client__can_track_publish(fx->client, NULL));
   assert_int_equal(
@@ -1447,7 +1867,7 @@ static void reservations_cannot_exceed_the_table(void** state)
   /* Re-reserving replaces the owner's count rather than adding to it. */
   assert_int_equal(
       az_iot_connection_client__reserve_pubacks(
-          fx->client, &a, (uint16_t)(AZ_IOT_MAX_PENDING_PUBACKS - 1)),
+          fx->client, &a, (uint16_t)(AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES - 1)),
       AZ_IOT_OK);
   assert_int_equal(az_iot_connection_client__reserve_pubacks(fx->client, &b, 1), AZ_IOT_OK);
 
@@ -1455,7 +1875,7 @@ static void reservations_cannot_exceed_the_table(void** state)
   assert_int_equal(az_iot_connection_client__reserve_pubacks(fx->client, &a, 0), AZ_IOT_OK);
   assert_int_equal(
       az_iot_connection_client__reserve_pubacks(
-          fx->client, &a, (uint16_t)(AZ_IOT_MAX_PENDING_PUBACKS - 1)),
+          fx->client, &a, (uint16_t)(AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES - 1)),
       AZ_IOT_OK);
 }
 
@@ -1464,20 +1884,20 @@ static void reservation_holders_are_bounded(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   (void)open_to_connected(fx);
 
-  static const char owners[AZ_IOT_MAX_PUBACK_RESERVATIONS + 1] = { 0 };
-  for (size_t i = 0; i < AZ_IOT_MAX_PUBACK_RESERVATIONS; ++i)
+  static const char owners[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS + 1] = { 0 };
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS; ++i)
   {
     assert_int_equal(
         az_iot_connection_client__reserve_pubacks(fx->client, &owners[i], 1), AZ_IOT_OK);
   }
   assert_int_equal(
       az_iot_connection_client__reserve_pubacks(
-          fx->client, &owners[AZ_IOT_MAX_PUBACK_RESERVATIONS], 1),
+          fx->client, &owners[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS], 1),
       AZ_IOT_ERR_NOT_ENOUGH_SPACE);
   az_iot_connection_client__release_pubacks(fx->client, &owners[0]);
   assert_int_equal(
       az_iot_connection_client__reserve_pubacks(
-          fx->client, &owners[AZ_IOT_MAX_PUBACK_RESERVATIONS], 1),
+          fx->client, &owners[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PUBLISH_RESERVATIONS], 1),
       AZ_IOT_OK);
 }
 
@@ -1488,9 +1908,9 @@ static void reservation_waits_for_shared_publishes_in_flight(void** state)
   az_iot_test_conn* fx = (az_iot_test_conn*)*state;
   az_iot_mock_mqtt_client* m = open_to_connected(fx);
 
-  puback_probe probes[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
-  uint16_t pids[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
-  for (size_t i = 0; i < AZ_IOT_MAX_PENDING_PUBACKS; ++i)
+  puback_probe probes[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES] = { 0 };
+  uint16_t pids[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES] = { 0 };
+  for (size_t i = 0; i < AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES; ++i)
   {
     pids[i] = publish_qos1(fx, m, &probes[i]);
   }
@@ -1560,13 +1980,13 @@ static void released_reservation_in_flight_publishes_complete_from_the_shared_po
   uint16_t pid = az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PUBLISH)->packet_id;
   az_iot_connection_client__release_pubacks(fx->client, &owner);
 
-  puback_probe probes[AZ_IOT_MAX_PENDING_PUBACKS] = { 0 };
+  puback_probe probes[AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES] = { 0 };
   size_t shared = 0;
   while (try_publish(fx, AZ_IOT_MQTT_QOS_1, &probes[shared]) == AZ_IOT_OK)
   {
     ++shared;
   }
-  assert_int_equal(shared, AZ_IOT_MAX_PENDING_PUBACKS - 1);
+  assert_int_equal(shared, AZ_IOT_CONNECTION_CLIENT_DEFAULT_MAX_PENDING_PUBLISHES - 1);
 
   assert_true(az_iot_mock_mqtt_client_inject_puback(m, pid, AZ_IOT_OK));
   (void)az_iot_connection_client_do_work(fx->client, 0);
@@ -1587,10 +2007,10 @@ static void deinit_while_reconnect_is_scheduled(void** state)
   (void)az_iot_connection_client_do_work(fx->client, 0);
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_RETRY_PENDING);
-  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
 
   size_t transitions = fx->log.count;
-  az_iot_connection_client_deinit(fx->client);
+  az_iot_test_connection_client_deinit(fx->client);
   assert_int_equal(fx->log.count, transitions);
 
   /* Neutralize the fixture teardown's deinit(): already destroyed. */
@@ -1608,7 +2028,7 @@ static void deinit_does_not_complete_pending_pubacks(void** state)
   puback_probe probe = { 0 };
   (void)publish_qos1(fx, m, &probe);
 
-  az_iot_connection_client_deinit(fx->client);
+  az_iot_test_connection_client_deinit(fx->client);
   assert_int_equal(probe.calls, 0);
 
   /* Neutralize the fixture teardown's deinit(): already destroyed. */
@@ -1660,15 +2080,57 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         a_refused_session_filter_faults_terminally, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
+        a_refused_session_filter_after_a_server_disconnect_is_ignored,
+        setup_two_attempts,
+        teardown),
+    cmocka_unit_test_setup_teardown(
         a_transient_suback_failure_reconnects, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_subscribe_call_reconnects, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_self_scoped_filter_keeps_the_connection, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
+        close_open_and_deinit_from_a_subscription_failure_callback_are_refused,
+        setup_two_attempts,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_self_scoped_filter_after_a_server_disconnect_is_reported,
+        setup_two_attempts,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_local_end_after_a_server_disconnect_keeps_its_detail, setup_no_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_adapter_error_after_a_server_disconnect_keeps_its_detail, setup_no_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_server_disconnect_after_a_local_end_is_reported, setup_no_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_server_disconnect_after_a_coded_refusal_and_a_clean_local_end_is_reported,
+        setup_no_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        an_identity_refusal_after_a_local_end_faults, setup_no_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_server_disconnect_after_an_identity_refusal_keeps_the_fault,
+        setup_no_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_server_disconnect_after_an_identity_refusal_error_keeps_the_fault,
+        setup_no_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        close_while_the_subscription_gate_is_open_ignores_the_closing_session,
+        setup_no_reconnect,
+        teardown),
+    cmocka_unit_test_setup_teardown(
+        a_filter_registered_after_a_server_disconnect_waits_for_the_next_session,
+        setup_two_attempts,
+        teardown),
+    cmocka_unit_test_setup_teardown(
         a_gate_that_is_never_acked_times_out, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         a_refused_self_scoped_filter_reports_the_wire_code, setup_two_attempts, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_refused_session_filter_reports_the_reason_string, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(
         connected_waits_for_all_gated_subacks, setup_two_attempts, teardown),
     cmocka_unit_test_setup_teardown(

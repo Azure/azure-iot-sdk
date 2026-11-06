@@ -41,6 +41,7 @@ static const char k_sas_json[] = "{\"correlationId\":\"c\",\"hostName\":\"h\","
                                  "\"containerName\":\"k\",\"blobName\":\"b\",\"sasToken\":\"?s\"}";
 
 static uint8_t g_sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(1, AZ_IOT_SAS_TOKEN_SIZE(256))];
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
 typedef struct
 {
@@ -108,13 +109,17 @@ static az_iot_connection_client_options sas_options(void)
   opts.unix_time.get_time = fixed_time;
   opts.sas_buffer.buffer = g_sas_buffer;
   opts.sas_buffer.size = sizeof(g_sas_buffer);
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
   return opts;
 }
 
 static void start(fixture* fx, const az_iot_connection_client_options* opts)
 {
   memset(&g_http, 0, sizeof(g_http));
-  assert_int_equal(az_iot_connection_client_init(&fx->conn, opts), AZ_IOT_OK);
+  az_iot_connection_client_options with_mqtt = *opts;
+  az_iot_test_use_mock_mqtt_adapter(&with_mqtt);
+  assert_int_equal(az_iot_connection_client_init(&fx->conn, &with_mqtt), AZ_IOT_OK);
   az_iot_file_upload_http_transport http = { mock_send, NULL };
   assert_int_equal(az_iot_mqttv3_file_upload_client_init(&fx->fu, &fx->conn, &http), AZ_IOT_OK);
 }

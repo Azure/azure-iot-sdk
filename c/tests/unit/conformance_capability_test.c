@@ -80,91 +80,110 @@ static void custody_material_is_all_or_none_per_route(void** state)
   const bool no_ctx = false;
 
   assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, NULL, NULL, no_sign, no_ctx),
+      az_iot_conformance_custody_material_state(NULL, NULL, NULL, no_sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_NONE);
 
   /* Each route complete on its own, and both together sharing one certificate. */
   assert_int_equal(
-      az_iot_conformance_custody_material_state(u, e, c, no_sign, no_ctx),
+      az_iot_conformance_custody_material_state(u, e, c, no_sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_URI);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, NULL, c, sign, no_ctx),
+      az_iot_conformance_custody_material_state(NULL, NULL, c, sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_SIGN);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(u, e, c, sign, no_ctx),
+      az_iot_conformance_custody_material_state(u, e, c, sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_URI | AZ_IOT_CONFORMANCE_CUSTODY_SIGN);
 
   /* URI route, one or two of three. The engine-only and certificate-only cases
    * are the ones the key_uri-only test used to wave through. */
   assert_int_equal(
-      az_iot_conformance_custody_material_state(u, NULL, NULL, no_sign, no_ctx),
+      az_iot_conformance_custody_material_state(u, NULL, NULL, no_sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, e, NULL, no_sign, no_ctx),
+      az_iot_conformance_custody_material_state(NULL, e, NULL, no_sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, NULL, c, no_sign, no_ctx),
+      az_iot_conformance_custody_material_state(NULL, NULL, c, no_sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(u, e, NULL, no_sign, no_ctx),
+      az_iot_conformance_custody_material_state(u, e, NULL, no_sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(u, NULL, c, no_sign, no_ctx),
+      az_iot_conformance_custody_material_state(u, NULL, c, no_sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, e, c, no_sign, no_ctx),
+      az_iot_conformance_custody_material_state(NULL, e, c, no_sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
 
   /* Sign route without the certificate it must present. */
   assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, NULL, NULL, sign, no_ctx),
+      az_iot_conformance_custody_material_state(NULL, NULL, NULL, sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
 
   /* A complete sign route does not excuse a half-built URI route beside it. */
   assert_int_equal(
-      az_iot_conformance_custody_material_state(u, NULL, c, sign, no_ctx),
+      az_iot_conformance_custody_material_state(u, NULL, c, sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, e, c, sign, no_ctx),
+      az_iot_conformance_custody_material_state(NULL, e, c, sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
 
   /* sign_ctx is opaque and legitimately NULL alongside a callback, so it only
    * ever signals intent in one direction: a context with no callback to hand it
    * to is material that nothing will use. */
   assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, NULL, c, no_sign, ctx),
+      az_iot_conformance_custody_material_state(NULL, NULL, c, no_sign, ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, NULL, NULL, no_sign, ctx),
+      az_iot_conformance_custody_material_state(NULL, NULL, NULL, no_sign, ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(u, e, c, no_sign, ctx),
+      az_iot_conformance_custody_material_state(u, e, c, no_sign, ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, NULL, c, sign, ctx),
+      az_iot_conformance_custody_material_state(NULL, NULL, c, sign, ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_SIGN);
 
   /* An empty string is missing, not supplied. The harnesses already map an
    * empty environment variable to NULL, and "" as a key URI would otherwise
    * pass the completeness gate and reach the TLS case. */
   assert_int_equal(
-      az_iot_conformance_custody_material_state("", e, c, no_sign, no_ctx),
+      az_iot_conformance_custody_material_state("", e, c, no_sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(u, "", c, no_sign, no_ctx),
+      az_iot_conformance_custody_material_state(u, "", c, no_sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(u, e, "", no_sign, no_ctx),
+      az_iot_conformance_custody_material_state(u, e, "", no_sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state(NULL, NULL, "", sign, no_ctx),
+      az_iot_conformance_custody_material_state(NULL, NULL, "", sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
   assert_int_equal(
-      az_iot_conformance_custody_material_state("", "", "", no_sign, no_ctx),
+      az_iot_conformance_custody_material_state("", "", "", no_sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_NONE);
   assert_int_equal(
-      az_iot_conformance_custody_material_state("", NULL, NULL, no_sign, no_ctx),
+      az_iot_conformance_custody_material_state("", NULL, NULL, no_sign, no_ctx, 0),
       AZ_IOT_CONFORMANCE_CUSTODY_NONE);
+
+  /* PSA route: a key id needs the certificate carrying its public key, and
+   * shares it with the other routes. */
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(NULL, NULL, c, no_sign, no_ctx, 7),
+      AZ_IOT_CONFORMANCE_CUSTODY_PSA);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(NULL, NULL, NULL, no_sign, no_ctx, 7),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(NULL, NULL, "", no_sign, no_ctx, 7),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(u, e, c, sign, no_ctx, 7),
+      AZ_IOT_CONFORMANCE_CUSTODY_URI | AZ_IOT_CONFORMANCE_CUSTODY_SIGN
+          | AZ_IOT_CONFORMANCE_CUSTODY_PSA);
+  assert_int_equal(
+      az_iot_conformance_custody_material_state(u, NULL, c, no_sign, no_ctx, 7),
+      AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL);
 }
 
 int main(void)

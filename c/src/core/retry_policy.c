@@ -340,6 +340,18 @@ az_iot_retry_policy az_iot_connection_client_get_default_identity_recovery_polic
   return p;
 }
 
+az_iot_retry_policy az_iot_connection_client_get_default_identity_recovery_after_assignment_policy(
+    void)
+{
+  az_iot_retry_policy p = {
+    .initial_delay_ms = AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_INITIAL_DELAY_MS,
+    .max_delay_ms = AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_MAX_DELAY_MS,
+    .max_attempts = AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_MAX_ATTEMPTS,
+    .jitter_pct = AZ_IOT_DEFAULT_IDENTITY_RECOVERY_AFTER_ASSIGNMENT_JITTER_PCT,
+  };
+  return p;
+}
+
 az_iot_retry_policy az_iot_connection_client_get_disabled_retry_policy(void)
 {
   /* initial_delay_ms == 0 is what disables retrying. Returning it from a named

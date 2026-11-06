@@ -1,0 +1,9 @@
+description: Zero-allocation MQTT 3.1.1 and 5.0 client (az_mqtt)
+url: https://github.com/ewertons/az_mqtt
+license: MIT
+dependencies:
+  idf: ">=6.0"
+files:
+  exclude:
+    - "build/**/*"
+    - "tests/**/*"

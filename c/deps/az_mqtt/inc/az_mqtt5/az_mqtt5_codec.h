@@ -31,7 +31,8 @@
  * @param[in]     opts  CONNECT options.
  * @retval AZ_ERROR_NOT_ENOUGH_SPACE @p dest too small.
  * @retval AZ_ERROR_ARG A string not valid UTF-8 or over 65,535 bytes, a Will Topic empty or with
- * a wildcard, or a Will Response Topic with a wildcard.
+ * a wildcard, a Will Response Topic with a wildcard, a Will QoS over 2, or Authentication Data
+ * without an Authentication Method.
  */
 AZ_NODISCARD az_result az_mqtt5_codec_encode_connect(az_span* dest, az_mqtt5_connect_options const* opts);
 
@@ -41,7 +42,7 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_connect(az_span* dest, az_mqtt5_con
  * @param[in]     opts      Publish options.
  * @param[in]     packet_id Packet identifier (must be non-zero for QoS>0).
  * @retval AZ_ERROR_ARG Topic over 65,535 bytes, with a wildcard, or empty without a Topic Alias;
- * Response Topic with a wildcard; either not valid UTF-8.
+ * Response Topic with a wildcard; either not valid UTF-8; a QoS over 2.
  */
 AZ_NODISCARD az_result az_mqtt5_codec_encode_publish(
     az_span* dest,
@@ -85,7 +86,8 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_pubcomp(
  * @param[in]     subs      Array of subscriptions.
  * @param[in]     sub_count Number of subscriptions.
  * @param[in]     packet_id Packet identifier.
- * @retval AZ_ERROR_ARG A Topic Filter empty, with a misplaced wildcard or not valid UTF-8.
+ * @retval AZ_ERROR_ARG A Topic Filter empty, with a misplaced wildcard or not valid UTF-8; a QoS or
+ * Retain Handling over 2; No Local on a Shared Subscription ("$share/").
  */
 AZ_NODISCARD az_result az_mqtt5_codec_encode_subscribe(
     az_span* dest,
@@ -113,6 +115,9 @@ AZ_NODISCARD az_result az_mqtt5_codec_encode_disconnect(
 
 /**
  * @brief Encode an AUTH packet.
+ * @retval AZ_ERROR_ARG @p reason_code is not Success, Continue authentication or Re-authenticate.
+ * @retval AZ_ERROR_ARG No @p authentication_method, unless @p reason_code is Success and there is
+ * no @p authentication_data.
  */
 AZ_NODISCARD az_result az_mqtt5_codec_encode_auth(
     az_span* dest,

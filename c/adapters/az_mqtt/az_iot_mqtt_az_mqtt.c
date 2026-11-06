@@ -3,7 +3,7 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* az_mqtt adapter: what the MQTT 3.1.1 and MQTT 5 builds share, and the factory destructor. */
+/* az_mqtt adapter: helpers of the MQTT 3.1.1 client. */
 
 #include "az_iot_mqtt_az_mqtt_internal.h"
 
@@ -19,23 +19,7 @@
 #include <openssl/provider.h>
 #endif
 
-#include <stdlib.h>
 #include <string.h>
-
-char* az_iot_az_mqtt_strdup(const char* s)
-{
-  if (s == NULL)
-  {
-    return NULL;
-  }
-  size_t const n = strlen(s) + 1;
-  char* copy = (char*)malloc(n);
-  if (copy != NULL)
-  {
-    memcpy(copy, s, n);
-  }
-  return copy;
-}
 
 bool az_iot_az_mqtt_has_text(const char* s) { return s != NULL && s[0] != '\0'; }
 
@@ -90,7 +74,7 @@ az_iot_result az_iot_az_mqtt_session_result(az_result rc)
     return AZ_IOT_ERR_NOT_SUPPORTED;
   }
   // A CONNECT or an inbound packet larger than the buffers.
-  if (rc == AZ_ERROR_NOT_ENOUGH_SPACE)
+  if (rc == AZ_ERROR_NOT_ENOUGH_SPACE || rc == AZ_MQTT_ERROR_PACKET_TOO_LARGE)
   {
     return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
   }
@@ -140,5 +124,3 @@ const char* az_iot_az_mqtt_string_writer_add(az_iot_az_mqtt_string_writer* w, az
   w->next += n + 1;
   return out;
 }
-
-void az_iot_az_mqtt_factory_destroy(az_iot_mqtt_factory* factory) { free(factory); }

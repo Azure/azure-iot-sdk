@@ -11,7 +11,6 @@
 #define MQTT_PUBACK 0x40
 #define MQTT_SUBACK 0x90
 #define MQTT_PINGRESP 0xD0
-#define MQTT_DISCONNECT 0xE0
 
 static az_iot_test_mqtt_packet packet_empty(void)
 {
@@ -20,7 +19,7 @@ static az_iot_test_mqtt_packet packet_empty(void)
   return p;
 }
 
-/* Reason-code mapping, kept in one place because the two versions disagree and
+/* Reason-code mapping, kept in one place because
  * 3.1.1 has fewer codes than there are things to say. Written as if/else rather
  * than switch: the build enables -Wswitch-enum, and an exhaustive switch here
  * would have to restate every enumerator in every mapping. */
@@ -31,11 +30,7 @@ static uint8_t connack_code(az_iot_test_mqtt_version version, az_iot_test_mqtt_r
   {
     return 0x00;
   }
-  if (version == AZ_IOT_TEST_MQTT_V5)
-  {
-    /* 0x87 Not authorized; 0x80 Unspecified error for everything else. */
-    return (reason == AZ_IOT_TEST_MQTT_REASON_NOT_AUTHORIZED) ? 0x87u : 0x80u;
-  }
+  (void)version;
   /* 3.1.1 return codes: 0x05 is the only refusal that fits these reasons. */
   return 0x05u;
 }
@@ -47,20 +42,8 @@ static uint8_t suback_code(az_iot_test_mqtt_version version, az_iot_test_mqtt_re
     return 0x00u; /* granted QoS 0 */
   }
   /* 3.1.1 has exactly one failure code, so both refusal reasons land on it. */
-  return (version == AZ_IOT_TEST_MQTT_V5) ? 0x87u : 0x80u;
-}
-
-static uint8_t disconnect_code(az_iot_test_mqtt_reason reason)
-{
-  if (reason == AZ_IOT_TEST_MQTT_REASON_SERVER_SHUTTING_DOWN)
-  {
-    return 0x8Bu;
-  }
-  if (reason == AZ_IOT_TEST_MQTT_REASON_NOT_AUTHORIZED)
-  {
-    return 0x87u;
-  }
-  return (reason == AZ_IOT_TEST_MQTT_REASON_SUCCESS) ? 0x00u : 0x80u;
+  (void)version;
+  return 0x80u;
 }
 
 az_iot_test_mqtt_packet az_iot_test_mqtt_connack_raw(
@@ -71,24 +54,13 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_connack_raw(
   az_iot_test_mqtt_packet p = packet_empty();
   uint8_t flags = session_present ? 0x01u : 0x00u;
 
+  (void)version;
   p.bytes[0] = MQTT_CONNACK;
-  if (version == AZ_IOT_TEST_MQTT_V5)
-  {
-    /* ack flags, reason code, property length. */
-    p.bytes[1] = 0x03;
-    p.bytes[2] = flags;
-    p.bytes[3] = code;
-    p.bytes[4] = 0x00;
-    p.len = 5;
-  }
-  else
-  {
-    /* ack flags, return code. */
-    p.bytes[1] = 0x02;
-    p.bytes[2] = flags;
-    p.bytes[3] = code;
-    p.len = 4;
-  }
+  /* ack flags, return code. */
+  p.bytes[1] = 0x02;
+  p.bytes[2] = flags;
+  p.bytes[3] = code;
+  p.len = 4;
   return p;
 }
 
@@ -107,55 +79,12 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_suback_raw(az_iot_test_mqtt_version ver
   /* The packet id is left zero: the proxy patches in the id of the SUBSCRIBE
    * being answered, which is what makes the ack match rather than be discarded
    * as unsolicited. */
-  if (version == AZ_IOT_TEST_MQTT_V5)
-  {
-    p.bytes[1] = 0x04;
-    p.bytes[2] = 0x00;
-    p.bytes[3] = 0x00;
-    p.bytes[4] = 0x00; /* property length */
-    p.bytes[5] = code;
-    p.len = 6;
-  }
-  else
-  {
-    p.bytes[1] = 0x03;
-    p.bytes[2] = 0x00;
-    p.bytes[3] = 0x00;
-    p.bytes[4] = code;
-    p.len = 5;
-  }
-  p.packet_id_offset = 2;
-  p.echo_packet_id = 1;
-  return p;
-}
-
-az_iot_test_mqtt_packet az_iot_test_mqtt_puback_v5_raw(uint8_t code, const char* reason_string)
-{
-  az_iot_test_mqtt_packet p = packet_empty();
-  size_t const n = reason_string ? strlen(reason_string) : 0;
-  /* Property 0x1F, a 2-byte length, the string. */
-  size_t const props = reason_string ? 3 + n : 0;
-  /* Packet id, reason code, property length, properties: kept single-byte lengths. */
-  size_t const remaining = 2 + 1 + 1 + props;
-  if (remaining > 127)
-  {
-    return p;
-  }
-
-  p.bytes[0] = MQTT_PUBACK;
-  p.bytes[1] = (uint8_t)remaining;
-  p.bytes[2] = 0x00; /* packet id, patched by the proxy */
+  (void)version;
+  p.bytes[1] = 0x03;
+  p.bytes[2] = 0x00;
   p.bytes[3] = 0x00;
   p.bytes[4] = code;
-  p.bytes[5] = (uint8_t)props;
-  if (reason_string)
-  {
-    p.bytes[6] = 0x1F;
-    p.bytes[7] = 0x00;
-    p.bytes[8] = (uint8_t)n;
-    memcpy(&p.bytes[9], reason_string, n);
-  }
-  p.len = 2 + remaining;
+  p.len = 5;
   p.packet_id_offset = 2;
   p.echo_packet_id = 1;
   return p;
@@ -174,7 +103,8 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_puback(
 {
   az_iot_test_mqtt_packet p = packet_empty();
 
-  if (reason != AZ_IOT_TEST_MQTT_REASON_SUCCESS && version != AZ_IOT_TEST_MQTT_V5)
+  (void)version;
+  if (reason != AZ_IOT_TEST_MQTT_REASON_SUCCESS)
   {
     return p; /* 3.1.1 has no reason code in a PUBACK */
   }
@@ -182,39 +112,10 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_puback(
   p.bytes[0] = MQTT_PUBACK;
   p.bytes[2] = 0x00; /* packet id, patched by the proxy */
   p.bytes[3] = 0x00;
-  if (reason == AZ_IOT_TEST_MQTT_REASON_SUCCESS)
-  {
-    /* Remaining length 2 means "success, no properties" in both versions. */
-    p.bytes[1] = 0x02;
-    p.len = 4;
-  }
-  else
-  {
-    /* v5: remaining length 3 carries a reason code and, per MQTT 5.0
-     * 3.4.2.2.1, omits the property length entirely. */
-    p.bytes[1] = 0x03;
-    p.bytes[4] = (reason == AZ_IOT_TEST_MQTT_REASON_NOT_AUTHORIZED) ? 0x87u : 0x80u;
-    p.len = 5;
-  }
+  p.bytes[1] = 0x02;
+  p.len = 4;
   p.packet_id_offset = 2;
   p.echo_packet_id = 1;
-  return p;
-}
-
-az_iot_test_mqtt_packet az_iot_test_mqtt_disconnect(
-    az_iot_test_mqtt_version version,
-    az_iot_test_mqtt_reason reason)
-{
-  az_iot_test_mqtt_packet p = packet_empty();
-
-  if (version != AZ_IOT_TEST_MQTT_V5)
-  {
-    return p; /* 3.1.1 has no server-sent DISCONNECT */
-  }
-  p.bytes[0] = MQTT_DISCONNECT;
-  p.bytes[1] = 0x01;
-  p.bytes[2] = disconnect_code(reason);
-  p.len = 3;
   return p;
 }
 
@@ -224,119 +125,6 @@ az_iot_test_mqtt_packet az_iot_test_mqtt_pingresp(void)
   p.bytes[0] = MQTT_PINGRESP;
   p.bytes[1] = 0x00;
   p.len = 2;
-  return p;
-}
-
-/* Length of a length-delimited MQTT UTF-8 string, counting NULL as empty. */
-static size_t lenstr_len(const char* s) { return s ? strlen(s) : 0u; }
-
-/* Bytes a Variable Byte Integer of @p v takes (v < 2^21: every packet built here is far smaller).
- */
-static size_t vbi_len(size_t v) { return v < 128u ? 1u : (v < 16384u ? 2u : 3u); }
-
-static void write_vbi(uint8_t* buf, size_t* pos, size_t v)
-{
-  do
-  {
-    uint8_t b = (uint8_t)(v % 128u);
-    v /= 128u;
-    buf[(*pos)++] = v > 0 ? (uint8_t)(b | 0x80u) : b;
-  } while (v > 0);
-}
-
-/* Append a two-byte length followed by the bytes themselves. `pos` is advanced;
- * the caller has already proved the result fits. */
-static void write_lenstr(uint8_t* buf, size_t* pos, const char* s)
-{
-  size_t n = lenstr_len(s);
-  buf[(*pos)++] = (uint8_t)(n >> 8);
-  buf[(*pos)++] = (uint8_t)(n & 0xFFu);
-  if (n)
-  {
-    memcpy(buf + *pos, s, n);
-    *pos += n;
-  }
-}
-
-az_iot_test_mqtt_packet az_iot_test_mqtt_publish_v5(
-    const char* topic,
-    const uint8_t* payload,
-    size_t payload_len,
-    const az_iot_test_mqtt_user_property* user_properties,
-    size_t user_properties_count,
-    const char* content_type)
-{
-  az_iot_test_mqtt_packet p = packet_empty();
-  size_t i;
-
-  if (topic == NULL || (payload_len > 0 && payload == NULL)
-      || (user_properties_count > 0 && user_properties == NULL))
-  {
-    return p;
-  }
-
-  /* Size it before writing any of it: a packet that does not fit must come back
-   * empty rather than truncated, because a truncated one still looks like a
-   * packet to whatever injects it. Every term is bounded by the buffer before
-   * it is added, so the sums cannot wrap. */
-  const size_t max = sizeof(p.bytes);
-  size_t topic_len = strlen(topic);
-  if (topic_len > max || payload_len > max)
-  {
-    return p;
-  }
-  size_t props_len = 0;
-  if (content_type != NULL)
-  {
-    size_t ct_len = lenstr_len(content_type);
-    if (ct_len > max)
-    {
-      return p;
-    }
-    props_len += 1u + 2u + ct_len;
-  }
-  for (i = 0; i < user_properties_count; ++i)
-  {
-    size_t key_len = lenstr_len(user_properties[i].key);
-    size_t value_len = lenstr_len(user_properties[i].value);
-    if (key_len > max || value_len > max)
-    {
-      return p;
-    }
-    props_len += 1u + 2u + key_len + 2u + value_len;
-    if (props_len > max)
-    {
-      return p;
-    }
-  }
-  size_t remaining = 2u + topic_len + vbi_len(props_len) + props_len + payload_len;
-  if (1u + vbi_len(remaining) + remaining > sizeof(p.bytes))
-  {
-    return p;
-  }
-
-  size_t pos = 0;
-  p.bytes[pos++] = 0x30u; /* PUBLISH, QoS 0, no DUP, no RETAIN */
-  write_vbi(p.bytes, &pos, remaining);
-  write_lenstr(p.bytes, &pos, topic);
-  write_vbi(p.bytes, &pos, props_len);
-  if (content_type != NULL)
-  {
-    p.bytes[pos++] = 0x03u; /* Content Type */
-    write_lenstr(p.bytes, &pos, content_type);
-  }
-  for (i = 0; i < user_properties_count; ++i)
-  {
-    p.bytes[pos++] = 0x26u; /* User Property */
-    write_lenstr(p.bytes, &pos, user_properties[i].key);
-    write_lenstr(p.bytes, &pos, user_properties[i].value);
-  }
-  if (payload_len)
-  {
-    memcpy(p.bytes + pos, payload, payload_len);
-    pos += payload_len;
-  }
-  p.len = pos;
   return p;
 }
 

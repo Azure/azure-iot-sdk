@@ -9,8 +9,7 @@ built for constrained and embedded devices.
 - **Single-threaded API.** The connection and feature clients start no threads, and callbacks fire
   synchronously on the thread that called into the SDK. The Paho adapter runs Paho's own I/O
   threads internally and hands their events over to that thread. Callbacks are dispatched mostly
-  from `az_iot_connection_client_do_work()`, but a feature client's own entry points can dispatch
-  them too (for example `az_iot_su_client_do_work()` and `az_iot_su_client_resume()`).
+  from `az_iot_connection_client_do_work()`.
   The SDK does not lock its state against other threads: make every SDK call, for every client in
   the process, from one thread, or serialize the calls in the application. Callbacks run inside
   those calls; a callback must not wait for another thread that is calling the SDK.
@@ -31,18 +30,14 @@ built for constrained and embedded devices.
 flowchart TB
     APP["Application"]
     V3["mqttv3 feature clients<br/>telemetry, twin, direct methods,<br/>cloud-to-device, file upload"]
-    V5["mqttv5 feature clients<br/>telemetry, twin, direct methods,<br/>custom topics"]
-    SU["Software updates client"]
     CONN["Connection client<br/>DPS provisioning, connect, reconnect,<br/>certificates, adapter registry"]
     CORE["Core<br/>results, logging, dispatch, messages"]
     IFACE["MQTT adapter interface"]
     ADAPT["MQTT adapters<br/>Paho C (default) or your own"]
     CERT["Certificate provider<br/>PEM files, managed (OpenSSL), or your own"]
 
-    APP --> V3 & V5 & SU & CONN
+    APP --> V3 & CONN
     V3 --> CONN
-    V5 --> CONN
-    SU --> CONN
     CONN --> CORE
     CONN --> CERT
     CONN --> IFACE --> ADAPT
@@ -51,62 +46,38 @@ flowchart TB
 | Layer | Headers | Role |
 | --- | --- | --- |
 | Connection client | `az_iot_connection_client.h`, `az_iot_retry_policy.h` | One per device. Provisions through DPS, connects to the assigned hub, reconnects, and owns the MQTT session. |
-| Feature clients | `mqttv3/*.h`, `mqttv5/*.h` | Protocol features. Each binds to a connection client, which delivers its messages. Some also need their own pump: call `az_iot_mqttv5_twin_client_do_work()` to expire unanswered requests. |
-| Software updates client | `az_iot_su.h` | Checks for, verifies, downloads, installs and reports device updates. Pumped by `az_iot_su_client_do_work()`. |
+| Feature clients | `mqttv3/*.h` | Protocol features. Each binds to a connection client, which delivers its messages. The connection client's `do_work()` drives their timeouts. |
 | Certificate provider | `az_iot_certificate_provider.h` | Supplies TLS credentials and, optionally, handles CSRs and issued certificates. |
 | MQTT adapter interface | `az_iot_mqtt_iface.h` | The contract an MQTT client library implements. |
 
 `az_iot.h` includes the public headers.
 
-## Hub generations: mqttv3 and mqttv5
+## Hub connection profile
 
-A device is assigned by DPS to an IoT Hub that speaks one of two protocol generations:
-
-| Generation | MQTT | Feature clients |
-| --- | --- | --- |
-| mqttv3 | 3.1.1 | `az_iot_mqttv3_*` |
-| mqttv5 | 5 | `az_iot_mqttv5_*` |
-
-DPS always uses MQTT 3.1.1. The DPS assignment carries a `connectionProfile`: `"mqttV5"` selects
-mqttv5; `"classic"`, absent or `null` selects mqttv3. The SDK picks the MQTT version from it, and
-the application reads the result with `az_iot_connection_client_get_hub_profile()`.
+DPS always uses MQTT 3.1.1. The DPS assignment carries a `connectionProfile`: `"classic"`, absent
+or `null` selects mqttv3 (MQTT 3.1.1, `az_iot_mqttv3_*` feature clients). The application reads
+the result with `az_iot_connection_client_get_hub_profile()`.
 
 Rules:
 
-- A connection serves one generation at a time. Attaching a feature client of the other
-  generation fails with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
-- An unrecognised profile fails the connection with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`.
-  The SDK does not guess.
-- If a re-provisioning assigns the other generation, the connection faults with
-  `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`. Rebuild the feature clients for the new profile, then
-  `close()` and `open()`.
+- A connection serves one profile at a time. Attaching a feature client of another profile fails
+  with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
+- An unrecognised profile, `"mqttV5"` included, fails the connection with
+  `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`. The SDK does not guess; `connection_profile_raw`
+  reports the string received.
 
-The samples under [`samples/unified`](../samples/unified) handle both generations;
-[`samples/mqttv5`](../samples/mqttv5) targets mqttv5 only.
-
-### Feature availability
-
-| Feature | mqttv3 | mqttv5 |
-| --- | --- | --- |
-| Telemetry | Yes | Yes |
-| Device twin | Yes | Yes |
-| Direct methods | Yes | Yes |
-| Cloud-to-device messages | Yes | No |
-| Custom topics (publish) | No | Yes |
-| File upload | Yes | No |
-| Certificate renewal over the hub | Yes | No |
-| Software updates | Yes, over DPS | Yes, over DPS |
+The samples under [`samples/unified`](../samples/unified) use the mqttv3 feature clients.
 
 ## MQTT adapters
 
-The connection client keeps a registry of adapter factories. Each factory declares the MQTT version
-it speaks. For every session the client picks a factory for the required version and creates a
-fresh adapter instance, so a device provisioned onto an mqttv5 hub uses a 3.1.1 adapter for DPS and
-a 5 adapter for the hub.
+The application gives the connection client one MQTT adapter (`az_iot_mqtt_adapter`), the sizes of
+its clients and a workspace. For every session the client asks the adapter's `init()` for a fresh
+client of the required MQTT version, built in that workspace. The workspace holds one client at a
+time.
 
-The Paho C adapter (`az_iot_adapter_paho.h`) registers both versions. So does the az_mqtt adapter
-(`az_iot_adapter_az_mqtt.h`, built with `AZ_IOT_WITH_AZ_MQTT=ON`): it connects and receives inside
-`process_loop()` and writes sends when called, with no thread of its own, over the
+The Paho C adapter (`az_iot_adapter_paho.h`) builds MQTT 3.1.1 clients. So does the
+az_mqtt adapter (`az_iot_adapter_az_mqtt.h`, built with `AZ_IOT_WITH_AZ_MQTT=ON`): it connects and
+receives inside `process_loop()` and writes sends when called, with no thread of its own, over the
 [az_mqtt](../deps/az_mqtt/README.md) client from this repository. To use another MQTT library, see
 [Bring your own MQTT client](how_to_byo_mqtt_client.md).
 
@@ -114,10 +85,8 @@ The Paho C adapter (`az_iot_adapter_paho.h`) registers both versions. So does th
 
 These are enforced in CI by [`eng/check-layering.sh`](../eng/check-layering.sh):
 
-1. mqttv3 and mqttv5 sources and public headers never reference each other.
-2. The core, including the connection client, never references `mqttv3_` or `mqttv5_` symbols.
-   It publishes the resolved generation as data.
-3. Each generation's public headers expose only constructs that generation supports.
+1. The core, including the connection client, never references `mqttv3_` symbols.
+   It publishes the resolved profile as data.
 
 ## Further reading
 

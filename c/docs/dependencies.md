@@ -4,16 +4,30 @@ Libraries the C SDK builds against, and the known issues of each.
 
 | Library | Version | Used by | Needed |
 | --- | --- | --- | --- |
-| [azure-sdk-for-c](https://github.com/Azure/azure-sdk-for-c) | 1.5.0 (`AZ_SDK_C_TAG`) | Core, mqttv3 and mqttv5 clients | Always |
-| [Eclipse Paho MQTT C](https://github.com/eclipse-paho/paho.mqtt.c) | v1.3.16 (`PAHO_C_TAG`); installed: 1.3.14+ | Paho adapter | `AZ_IOT_WITH_PAHO` |
-| [OpenSSL](https://www.openssl.org/) | Any Paho supports for Paho TLS; 3.0+ for Paho key custody, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=openssl`), the OpenSSL crypto backend and the managed certificate provider | Those components | Only for the components listed; az_mqtt can use Mbed TLS, or Schannel on Windows |
+| [azure-sdk-for-c](https://github.com/Azure/azure-sdk-for-c) | 1.5.0 (`AZ_SDK_C_TAG`) | Core and mqttv3 clients | Always |
+| [Eclipse Paho MQTT C](https://github.com/eclipse-paho/paho.mqtt.c) | v1.3.16 (`PAHO_C_TAG`) with three upstream fixes ([races](#races-on-the-command-queue-and-client-state), [double free](#publish-freed-twice-after-a-failed-write)); installed: 1.3.14+ | Paho adapter | `AZ_IOT_WITH_PAHO` |
+| [OpenSSL](https://www.openssl.org/) | 3.0 to 4.1, [tested](#openssl) (Paho TLS alone: any Paho supports) | Paho TLS and key custody, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=openssl`), the OpenSSL crypto backend, the managed certificate provider | Only for the components listed; az_mqtt can use Mbed TLS, or Schannel on Windows ([Windows without OpenSSL](../samples/README.md#windows-without-openssl)) |
 | [Mbed TLS](https://github.com/Mbed-TLS/mbedtls) | 3.6 LTS or 4.1+ | mbedTLS crypto backend, az_mqtt TLS (`AZ_IOT_AZ_MQTT_TLS=mbedtls`) | Optional |
 | az_mqtt | Published from this repository: [deps/az_mqtt](../deps/az_mqtt/README.md) | az_mqtt adapter | `AZ_IOT_WITH_AZ_MQTT` |
-| [cmocka](https://gitlab.com/cmocka/cmocka) | 1.1.7 (`CMOCKA_TAG`) | Tests only | `AZ_IOT_BUILD_TESTS` |
-| [libcurl](https://curl.se/libcurl/) | Any; 7.55.0+ for the software update download sample (`CURLINFO_SIZE_DOWNLOAD_T`) | Samples (file upload, DPS TPM, software update download); software updates e2e offer suite | Optional for samples; required by `AZ_IOT_BUILD_E2E_SU` on non-Windows |
+| [cmocka](https://cmocka.org/) | 1.1.7 (`CMOCKA_URL`, signed release tarball) | Tests only | `AZ_IOT_BUILD_TESTS` |
+| [libcurl](https://curl.se/libcurl/) | Any | Samples (file upload, DPS TPM) | Optional for samples |
 
 Exact commits are in [cgmanifest.json](../cgmanifest.json). How to use installed copies instead of
 the fetched ones: [Installed dependencies](client-configuration.md#installed-dependencies).
+
+## OpenSSL
+
+CI builds and tests 3.0 (Linux distribution) and 3.6 (Windows runner, vcpkg), and 4.1 on Linux
+and Windows. The e2e suites run on 3.0 and 4.1 on Linux, and on 4.1 on Windows.
+`find_package(OpenSSL 3.0)` sets no upper bound.
+
+### PKCS#11 provider on OpenSSL 4.x
+
+pkcs11-provider 0.6, the default of `eng/setup-pkcs11-provider.sh`, does not build against OpenSSL
+4.x, which makes `ASN1_STRING` opaque.
+
+**Mitigation:** use pkcs11-provider 1.3.0 or later with OpenSSL 4.x
+(`PKCS11_PROVIDER_TAG=v1.3.0`), as CI does.
 
 ## Eclipse Paho MQTT C
 
@@ -73,7 +87,7 @@ locked queue. The race CI suppresses only these Paho frames
 
 ### Races on the command queue and client state
 
-Two Paho data races are reported upstream and not fixed in v1.3.16:
+Two Paho data races, reported upstream and not fixed in v1.3.16:
 
 - [eclipse-paho/paho.mqtt.c#1709](https://github.com/eclipse-paho/paho.mqtt.c/issues/1709):
   `MQTTAsync_destroy()` changes the global command queue (`MQTTAsync_freeCommands`) holding only
@@ -82,16 +96,32 @@ Two Paho data races are reported upstream and not fixed in v1.3.16:
   `MQTTAsync_connect()` writes the client's state (and the `retryLoopIntervalms` global) without
   `mqttasync_mutex`, while the async threads read it (`MQTTAsync_checkTimeouts`, `MQTTAsync_retry`).
 
-ThreadSanitizer reports them intermittently in `az_iot_paho_teardown_race` and the Paho conformance
-suites. The races on the command queue and the client state are on heap memory (the queue's list
-and the client), which the suppression policy (third-party globals only) cannot cover.
-`retryLoopIntervalms` is a global a reviewed entry could cover; it is not suppressed, as the reports
-on the client state would remain. No failure other than the sanitizer reports has been seen.
+The adapter cannot avoid them: no Paho API stops its threads, and `MQTTAsync_connect()` starts them
+itself before the unlocked writes.
 
-**Mitigation:** none in the SDK. The TSan CI job skips `az_iot_paho_teardown_race`, where the
-#1709 report occurs most; helgrind and DRD still run it. Other reports listed here are known flaky
-failures: rerun the job. A report in those tests with other frames is not covered by this. Remove
-this entry when a `PAHO_C_TAG` with the fixes is adopted.
+**Mitigation:** the fetched Paho is patched with the upstream fixes, which are not merged yet:
+[#1711](https://github.com/eclipse-paho/paho.mqtt.c/pull/1711) (#1709) and
+[#1716](https://github.com/eclipse-paho/paho.mqtt.c/pull/1716) (#1714), in
+[adapters/paho/patches](../adapters/paho/patches/README.md). They are applied only to v1.3.16 (commit
+`4a939ddb`). Any other `PAHO_C_TAG`, `FETCHCONTENT_SOURCE_DIR_PAHO_MQTT_C` (as the Yocto recipe sets) or
+`AZ_IOT_USE_INSTALLED_PAHO` builds Paho unpatched, with the races; CMake warns for the first two.
+Remove the patches when a `PAHO_C_TAG` contains the fixes.
+
+### PUBLISH freed twice after a failed write
+
+When the write of a QoS 1 PUBLISH fails with a socket error (the peer reset the connection, as IoT
+Hub does when it refuses a packet over its Maximum Packet Size), `MQTTAsync_processCommand()` frees
+the command's topic and payload, which the message it stored for retry still points at. They are
+freed again when the session is cleaned or, for a session that outlives the connection (the SDK's
+hub session), in `MQTTAsync_destroy()`: a crash or heap corruption. Paho also reports that failure
+with token 0. Present in 1.3.16; fixed upstream in `develop`
+([eclipse-paho/paho.mqtt.c#1592](https://github.com/eclipse-paho/paho.mqtt.c/issues/1592),
+[#1310](https://github.com/eclipse-paho/paho.mqtt.c/issues/1310)), not released.
+
+**Mitigation:** the fetched Paho is patched with that fix (`0003` in
+[adapters/paho/patches](../adapters/paho/patches/README.md)), under the same conditions as above.
+The adapter reports the failure with the publish's packet id from its own context, whatever token
+Paho passes.
 
 ### WebSocket handshake split across TCP segments
 

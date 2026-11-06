@@ -3,64 +3,87 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* az_mqtt adapter with AZ_IOT_AZ_MQTT_MESSAGE_STORAGE_SIZE 0 (az_mqtt_no_store_config.h): a
- * connect whose session outlives the connection is refused; any other connect is accepted. */
+/* az_mqtt adapter with no message store (az_iot_mqtt_limits.message_store_size 0): a connect whose
+ * session outlives the connection is refused, and so is such a session usage at init; any other
+ * connect is accepted. */
 
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdlib.h>
 
 #include <cmocka.h>
 
 #include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
 #include "azure/iot/az_iot_mqtt_iface.h"
 
-static az_iot_result connect_once(
-    az_iot_mqtt_factory* (*create_factory)(void),
-    bool clean_start,
-    uint32_t session_expiry_seconds)
+static az_iot_result connect_once(az_iot_mqtt_version version, bool clean_start)
 {
-  az_iot_mqtt_factory* f = create_factory();
-  assert_non_null(f);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
-  assert_non_null(c);
+  az_iot_mqtt_limits const limits = {
+    .send_buffer_size = 1024,
+    .receive_buffer_size = 1024,
+    .max_in_flight_messages = 1,
+    .message_store_size = 0,
+    .connect_strings_size = 256,
+  };
+  size_t const size = az_iot_az_mqtt_get_workspace_size(&limits);
+  uint8_t* workspace = (uint8_t*)malloc(size);
+  assert_non_null(workspace);
+  az_iot_mqtt_client* c = NULL;
+  assert_int_equal(
+      az_iot_az_mqtt_get_adapter()->init(version, &limits, workspace, size, &c), AZ_IOT_OK);
   az_iot_mqtt_connect_options o = { 0 };
   o.host = "h";
   o.client_id = "c";
   o.clean_start = clean_start;
-  o.session_expiry_seconds = session_expiry_seconds;
   az_iot_result rc = c->iface->connect(c, &o);
   (void)c->iface->disconnect(c);
   c->iface->destroy(c);
-  az_iot_az_mqtt_factory_destroy(f);
+  free(workspace);
   return rc;
 }
 
 static void v3_only_a_clean_session_is_accepted(void** state)
 {
   (void)state;
-  assert_int_equal(connect_once(az_iot_az_mqtt_factory_create_v3_1_1, true, 0), AZ_IOT_OK);
-  assert_int_equal(
-      connect_once(az_iot_az_mqtt_factory_create_v3_1_1, false, 0), AZ_IOT_ERR_NOT_SUPPORTED);
+  assert_int_equal(connect_once(AZ_IOT_MQTT_VERSION_3_1_1, true), AZ_IOT_OK);
+  assert_int_equal(connect_once(AZ_IOT_MQTT_VERSION_3_1_1, false), AZ_IOT_ERR_NOT_SUPPORTED);
 }
 
-static void v5_only_a_session_with_expiry_and_no_clean_start_is_refused(void** state)
+/* The init-time check refuses exactly the sessions connect() refuses: those that outlive their
+ * connection, and only without a store. */
+static void the_session_usage_check_matches_connect(void** state)
 {
   (void)state;
-  assert_int_equal(connect_once(az_iot_az_mqtt_factory_create_v5, true, 0), AZ_IOT_OK);
-  assert_int_equal(connect_once(az_iot_az_mqtt_factory_create_v5, true, 60), AZ_IOT_OK);
-  assert_int_equal(connect_once(az_iot_az_mqtt_factory_create_v5, false, 0), AZ_IOT_OK);
+  const az_iot_mqtt_adapter* adapter = az_iot_az_mqtt_get_adapter();
+  assert_non_null(adapter->validate_limits_for_session_usage);
+  az_iot_mqtt_limits limits = {
+    .send_buffer_size = 1024,
+    .receive_buffer_size = 1024,
+    .max_in_flight_messages = 1,
+    .message_store_size = 0,
+    .connect_strings_size = 256,
+  };
+  az_iot_mqtt_session_usage const clean = { .session_outlives_connection = false };
+  az_iot_mqtt_session_usage const outliving = { .session_outlives_connection = true };
+  assert_int_equal(adapter->validate_limits_for_session_usage(&limits, &clean), AZ_IOT_OK);
   assert_int_equal(
-      connect_once(az_iot_az_mqtt_factory_create_v5, false, 60), AZ_IOT_ERR_NOT_SUPPORTED);
+      adapter->validate_limits_for_session_usage(&limits, &outliving), AZ_IOT_ERR_INVALID_ARG);
+  limits.message_store_size = 1024 + 18;
+  assert_int_equal(adapter->validate_limits_for_session_usage(&limits, &outliving), AZ_IOT_OK);
+  assert_int_equal(
+      adapter->validate_limits_for_session_usage(NULL, &clean), AZ_IOT_ERR_INVALID_ARG);
+  assert_int_equal(
+      adapter->validate_limits_for_session_usage(&limits, NULL), AZ_IOT_ERR_INVALID_ARG);
 }
 
 int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(v3_only_a_clean_session_is_accepted),
-    cmocka_unit_test(v5_only_a_session_with_expiry_and_no_clean_start_is_refused),
+    cmocka_unit_test(the_session_usage_check_matches_connect),
   };
   return cmocka_run_group_tests_name("az_mqtt_adapter_no_store", tests, NULL, NULL);
 }

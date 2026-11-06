@@ -11,18 +11,14 @@
  * any specific adapter implementation. To validate a new adapter, the
  * customer:
  *
- *   1. Builds their adapter as a static or shared library that exposes a
- *      function returning an `az_iot_mqtt_factory*` for one or both
- *      MQTT versions.
+ *   1. Builds their adapter as a static or shared library that exposes an
+ *      `az_iot_mqtt_adapter` building MQTT 3.1.1 clients.
  *   2. Links the conformance library (`az_iot_conformance`) and produces
- *      one harness exe per (version, role) tuple that calls
- *      `az_iot_conformance_run()` with the factory and the suite to run.
- *
- * The suite is split by MQTT version so adapters that only implement v3.1.1
- * or only v5 can still pass the relevant suite.
+ *      a harness exe that calls `az_iot_conformance_run()` with the adapter
+ *      and the suite to run.
  *
  * Tests in the suite are designed to be self-contained: each test creates a
- * fresh client from the factory, connects, exercises the iface, and tears
+ * fresh client with the adapter, connects, exercises the iface, and tears
  * down. State leakage between tests is therefore disallowed at the iface
  * level.
  *
@@ -51,8 +47,7 @@ extern "C"
    * for the given MQTT version. */
   typedef enum az_iot_conformance_suite
   {
-    AZ_IOT_CONFORMANCE_SUITE_V3_1_1 = 0,
-    AZ_IOT_CONFORMANCE_SUITE_V5 = 1
+    AZ_IOT_CONFORMANCE_SUITE_V3_1_1 = 0
   } az_iot_conformance_suite;
 
   /* Optional adapter capabilities (D8 and later).
@@ -135,7 +130,14 @@ extern "C"
      * the material. Proved by a mutual-TLS session whose PEM buffers are wiped
      * as soon as connect() returns, so the adapter must copy them during the
      * call. Requires a TLS build. */
-    AZ_IOT_CONFORMANCE_CAP_TLS_PEM = 1u << 4
+    AZ_IOT_CONFORMANCE_CAP_TLS_PEM = 1u << 4,
+
+    /* client_key_psa_id: the stack is mbedTLS and signs with a key held in the
+     * PSA Crypto key store (an HSM, secure element or the ESP32 Digital
+     * Signature peripheral behind a PSA driver). Proved with
+     * az_iot_conformance_options client_key_psa_id + client_cert_path, by a
+     * handshake and a reconnect with the same key. */
+    AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA = 1u << 5
   } az_iot_conformance_capability;
 
   typedef struct az_iot_conformance_options
@@ -157,6 +159,10 @@ extern "C"
      *   sign             a callback that signs one digest with that key
      *   sign_ctx         opaque, handed back to sign(); NULL is legitimate
      *   client_cert_path as above
+     *
+     * AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA needs:
+     *   client_key_psa_id a PSA key id, usable for the whole run, of that key
+     *   client_cert_path  as above
      *
      * client_cert_path is shared: declare both capabilities and one certificate
      * serves both, provided its public key is the one behind each route.
@@ -191,9 +197,14 @@ extern "C"
 
     /* AZ_IOT_CONFORMANCE_CAP_PROXY needs nothing here: the suite starts its own
      * in-process CONNECT proxy, including for the authenticated cases. */
+
+    /* AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA: see the custody material above.
+     * Last, so positional initializers of the fields above keep compiling. */
+    uint32_t client_key_psa_id;
   } az_iot_conformance_options;
 
-  /* Run the conformance suite for `suite_kind` against the given factory.
+  /* Run the conformance suite for `suite_kind` against the given adapter, which
+   * builds each client of the suite's MQTT version in a heap workspace.
    * Returns:
    *   0  on success: all tests passed and every declared capability was
    *      exercised -- UNLESS AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1 was set in
@@ -211,7 +222,9 @@ extern "C"
    * Equivalent to az_iot_conformance_run_with_options() with no capabilities
    * declared. An adapter that implements an optional feature should call that
    * instead, or the suite cannot hold it to the feature's contract. */
-  int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory);
+  int az_iot_conformance_run(
+      az_iot_conformance_suite suite_kind,
+      const az_iot_mqtt_adapter* adapter);
 
   /* Result of az_iot_conformance_custody_material_state(): either NONE,
    * or PARTIAL, or the OR of the route bits whose material is complete. */
@@ -220,7 +233,8 @@ extern "C"
     AZ_IOT_CONFORMANCE_CUSTODY_NONE = 0,
     AZ_IOT_CONFORMANCE_CUSTODY_PARTIAL = 1u << 0,
     AZ_IOT_CONFORMANCE_CUSTODY_URI = 1u << 1,
-    AZ_IOT_CONFORMANCE_CUSTODY_SIGN = 1u << 2
+    AZ_IOT_CONFORMANCE_CUSTODY_SIGN = 1u << 2,
+    AZ_IOT_CONFORMANCE_CUSTODY_PSA = 1u << 3
   };
 
   /* Internal, exposed for the suite's own tests.
@@ -236,7 +250,8 @@ extern "C"
       const char* crypto_engine_id,
       const char* client_cert_path,
       bool has_sign,
-      bool has_sign_ctx);
+      bool has_sign_ctx,
+      uint32_t client_key_psa_id);
 
   /* Internal, exposed for the suite's own tests.
    *
@@ -255,7 +270,7 @@ extern "C"
    * which means the same as declaring nothing. */
   int az_iot_conformance_run_with_options(
       az_iot_conformance_suite suite_kind,
-      az_iot_mqtt_factory* factory,
+      const az_iot_mqtt_adapter* adapter,
       const az_iot_conformance_options* options);
 
 #ifdef __cplusplus

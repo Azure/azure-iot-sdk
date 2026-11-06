@@ -10,10 +10,11 @@ name: ci-c-coverage-combined
 #
 # TIMING. The contributing nightlies start at 11:00, 11:30 and 12:00 UTC and take
 # up to 30 minutes each. This runs at 13:00 UTC, comfortably after the last of
-# them, and reads the artifacts they left behind.
+# them, and reads the artifacts they left behind. For releases/public-preview,
+# ci-c-public-preview-nightly.yml dispatches the nightlies and this 3 hours later.
 #
 # CORRECTNESS. Those runs are independent, so nothing guarantees they used the
-# same commit -- a merge to main between 11:00 and 12:00 is enough to split them.
+# same commit -- a merge between 11:00 and 12:00 is enough to split them.
 # Merging tracefiles from different revisions of a file attributes hits to lines
 # that have since moved, producing a plausible but wrong percentage rather than
 # an error. Two defences: this workflow only accepts runs whose head_sha matches
@@ -27,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       sha:
-        description: 'Full SHA of a commit on main to build the report for (default: the last nightly e2e run)'
+        description: 'Full SHA of a commit on the dispatched branch to build the report for (default: the last nightly e2e run)'
         required: false
         type: string
 
@@ -40,7 +41,17 @@ jobs:
     name: combined coverage
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    # The branch the report is for: main when scheduled, else the dispatched ref.
+    env:
+      BRANCH: ${{ github.ref_name }}
     steps:
+      - name: Check the branch
+        run: |
+          case "$BRANCH" in
+            main|releases/public-preview) ;;
+            *) echo "::error::combined coverage runs only for main and releases/public-preview, not $BRANCH"; exit 1 ;;
+          esac
+
       - name: Resolve the target commit
         id: target
         env:
@@ -49,13 +60,13 @@ jobs:
           PINNED: ${{ inputs.sha }}
         run: |
           set -euo pipefail
-          # Newest successful run of main itself, as "<sha> <run id>". Pull
+          # Newest successful run of the branch itself, as "<sha> <run id>". Pull
           # request runs are excluded server-side: --branch matches head_branch,
-          # which a fork pull request from a branch named "main" also carries.
+          # which a fork pull request from a branch of the same name also carries.
           # Sorted here rather than trusting the order of a one-result query.
-          latest_main_run () {
+          latest_branch_run () {
             for ev in push schedule workflow_dispatch; do
-              gh run list --repo "$REPO" --workflow "$1" --branch main --event "$ev" \
+              gh run list --repo "$REPO" --workflow "$1" --branch "$BRANCH" --event "$ev" \
                 --status success --limit 20 --json headSha,databaseId,createdAt --jq '.[]' || exit 1
             done | jq -rs 'sort_by(.createdAt) | last // {} |
                            "\(.headSha // "") \(.databaseId // "") \(.createdAt // "")"'
@@ -63,8 +74,8 @@ jobs:
           # Looked up once; the download step uses these, so both steps agree.
           runs=""
           anchor=""
-          for leg in e2e e2e-csr e2e-adu; do
-            out=$(latest_main_run "ci-c-$leg.yml")
+          for leg in e2e e2e-csr; do
+            out=$(latest_branch_run "ci-c-$leg.yml")
             read -r leg_sha leg_id leg_at <<< "$out"
             echo "$leg: last green run ${leg_id:-none} ${leg_sha:-} ${leg_at:-}"
             if [ -n "$leg_sha" ]; then runs="$runs $leg=$leg_sha:$leg_id"; fi
@@ -79,7 +90,7 @@ jobs:
             # the natural anchor for the others to agree with.
             sha="$anchor"
             if [ -z "$sha" ]; then
-              echo "::error::no successful ci-c-e2e run on main to anchor the report to"
+              echo "::error::no successful ci-c-e2e run on $BRANCH to anchor the report to"
               exit 1
             fi
           fi
@@ -90,12 +101,12 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "target commit: $sha"
 
-      # Check out main, then move to the target only if main contains it, so
-      # nothing outside main is built.
+      # Check out the branch, then move to the target only if the branch contains
+      # it, so nothing outside main or releases/public-preview is built.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
-          ref: main
+          ref: ${{ github.ref_name }}
           fetch-depth: 0
 
       - name: Check out the target commit
@@ -103,8 +114,8 @@ jobs:
           SHA: ${{ steps.target.outputs.sha }}
         run: |
           set -euo pipefail
-          if ! git merge-base --is-ancestor "$SHA" origin/main 2>/dev/null; then
-            echo "::error::$SHA is not a commit on main"
+          if ! git merge-base --is-ancestor "$SHA" "origin/$BRANCH" 2>/dev/null; then
+            echo "::error::$SHA is not a commit on $BRANCH"
             exit 1
           fi
           git checkout -q --detach "$SHA"
@@ -161,7 +172,6 @@ jobs:
           }
           add coverage-trace-e2e     e2e
           add coverage-trace-e2e-csr e2e-csr
-          add coverage-trace-e2e-adu e2e-adu
           # Unpinned, the target IS the e2e run's commit, so e2e must be in.
           if [ -z "${PINNED}" ] && [[ " $have" != *" e2e="* ]]; then
             echo "::error::e2e tracefile missing for its own commit $SHA"

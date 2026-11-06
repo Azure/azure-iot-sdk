@@ -26,8 +26,7 @@ through the named OpenSSL 3.x provider so the TLS handshake signs inside the
 hardware. The `sign()` hook is carried to the adapter but has no Paho
 implementation: Paho takes its client key as a file path and exposes no
 `SSL_CTX` and no key callback, so it refuses a `sign()`-only credential rather
-than connecting without a client key. That route is for BYO adapters. The
-`rust_mqtt` adapter has no TLS credential handling at all and is not covered.
+than connecting without a client key. That route is for BYO adapters.
 
 ## Abstract
 
@@ -108,6 +107,18 @@ Providers in the tree:
   a key type (start from `az_iot_certificate_provider_managed_options_default()`). It generates
   the operational key and CSR, and persists the issued chain. Every CSR is over the operational
   key.
+  - **Durable writes.** The key and the chain are written to a temporary file, flushed, and
+    renamed over the destination. The rename is then flushed too (the parent directory is
+    fsynced on POSIX; `MOVEFILE_WRITE_THROUGH` on Windows), so a stored chain survives a power
+    loss. DPS issues a chain once, so the stored file may be its only copy. If only that last
+    directory sync fails, the store still succeeds: the new file has already replaced the old
+    one and is what `load()` serves, so a failure would break the all-or-nothing contract.
+  - **Unencrypted key, by design.** The operational key is written as unencrypted PEM. It is
+    protected only by file permissions: 0600 on POSIX, an owner-only DACL on Windows. Encrypting
+    it would need a passphrase stored on the same device, which adds no protection. Devices that
+    need key protection should keep the key non-extractable instead: an HSM, TPM or secure
+    element through PKCS#11 (`client_key_uri`), a PSA Crypto key (`client_key_psa_id`), or
+    `sign()`. See [Device certificate storage methods](#device-certificate-storage-methods).
 
 **Key stability.** While the connection client is open, a provider's operational key does not
 change: `get_csr()` signs over it, and `store_issued_certificate()` refuses a chain whose leaf
@@ -150,8 +161,7 @@ operational credential is held.
 
 ## Hub-side renewal (MQTTv3)
 
-Renews the operational certificate without re-provisioning through DPS. MQTTv5 hubs do not
-support it.
+Renews the operational certificate without re-provisioning through DPS.
 
 - **API version:** the hub refuses these topics (`errorCode` 400001) unless the CONNECT username
   carries `api-version=2025-08-01-preview`, which the SDK sends on every mqttv3 hub connection.
@@ -160,8 +170,11 @@ support it.
 - **Body:** `{ "id": "<deviceId>", "csr": "<base64 DER>", "replace": "*"|<request id>|null }`.
   The device id is taken from the connected client id.
 - **Two-phase:** `202 Accepted` (signing in progress), then `200` with the issued chain.
-- **Recovery:** pass a prior `request_id` to resubmit after a dropped connection; `replace`
-  supersedes an active hub-side operation.
+- **Recovery:** a renewal open when the session ends fails with `AZ_IOT_ERR_NOT_CONNECTED`; pass
+  its `request_id` to resubmit once reconnected. `replace` supersedes an active hub-side operation:
+  a renewal the hub accepted (`202`) before the session ended may still be active, and its
+  resubmission then fails with a `409` code; resubmit with `replace` and a new `request_id`. If
+  that fails with `412`, the request ended meanwhile: send it again without `replace`.
 - **Errors:** routed on the response status (`202`/`200`/other). The JSON body's `errorCode`
   is surfaced as `service_code`, `retryAfter` as `retry_after_s`, `info.credentialError` as
   `credential_error`, `info.credentialMessage` as `credential_message` and `trackingId` as
@@ -192,11 +205,13 @@ The CSR always comes from the provider's `get_csr()` (subject: the device id), r
 receives `az_iot_csr_event`: `AZ_IOT_CSR_ACCEPTED`, then `AZ_IOT_CSR_ISSUED` with the chain and
 `store_status`, or `AZ_IOT_CSR_FAILED` with `status`, `service_code`, `retry_after_s`,
 `credential_error`, `credential_message` and `tracking_id`. One
-renewal may be in flight (`AZ_IOT_ERR_BUSY` otherwise); with no terminal response within an
-internal timeout the callback fires once with `AZ_IOT_CSR_FAILED` / `AZ_IOT_ERR_TIMEOUT`.
+renewal may be in flight (`AZ_IOT_ERR_BUSY` otherwise); with no terminal response within
+`opts.csr_response_timeout_ms` (120 s by default, restarted by a `202`) the callback fires once with
+`AZ_IOT_CSR_FAILED` / `AZ_IOT_ERR_TIMEOUT`, and a session end fails it with
+`AZ_IOT_ERR_NOT_CONNECTED`.
 Requests are tracked from a pending-PUBACK slot reserved when `opts.csr_payload_buffer` is set: a
-broker rejection fires `AZ_IOT_CSR_FAILED` with the PUBACK status at once. Cancel, timeout and a
-terminal response free the slot, so the next request is never held by an acknowledgement that does not come.
+broker rejection fires `AZ_IOT_CSR_FAILED` with the PUBACK status at once. Cancel, timeout, a
+session end and a terminal response free the slot, so the next request is never held by an acknowledgement that does not come.
 
 **Storing, then reconnecting.** On a complete `200` the SDK stores the chain with the
 provider's `store_issued_certificate()` before `AZ_IOT_CSR_ISSUED`, and reports the result in
@@ -233,26 +248,31 @@ typedef struct az_iot_certificate_material
      * TLS adapter uses this reference instead. */
     const char* client_key_uri;    /* e.g. PKCS#11: "pkcs11:token=...;object=..." */
     const char* crypto_engine_id;  /* OpenSSL ENGINE/provider id: "pkcs11", "tpm2", ... */
+    uint32_t client_key_psa_id;    /* PSA Crypto key id (mbedTLS); 0: none */
 } az_iot_certificate_material;
 ```
 
 Adapter support:
 
 - **Key reference:** `az_iot_mqtt_tls_options` carries
-  `client_key_uri` / `crypto_engine_id` / `sign` / `sign_ctx`,
+  `client_key_uri` / `crypto_engine_id` / `sign` / `sign_ctx` / `client_key_psa_id`,
   `connection_client.c` fills them on both the DPS/bootstrap connect and the
   operational/reconnect connect, and
   [`az_iot_paho_key_custody.c`](../../adapters/paho/az_iot_paho_key_custody.c) loads the
   named OpenSSL 3.x provider, resolves the URI through it, and hands Paho a key
   *reference* (the provider's own PEM form, or the standard `PKCS#11 PROVIDER URI`
   block) rather than key bytes — it refuses outright to write anything that turns out to
-  be extractable. `rust_mqtt` is **not** covered: it has no TLS credential handling.
+  be extractable.
 - **`sign()` callback:** where no engine abstraction exists, the fallback is a **`sign()` callback** on the
   provider vtable that the TLS layer invokes. The SDK carries it end to end and any BYO
   adapter can consume it (`samples/authentication/hsm_sign_callback` shows exactly
   where). **Paho cannot**: it accepts a client key only as a file path and exposes
   neither the `SSL_CTX` nor a key hook (upstream Paho has none either), so it fails such
   a credential with `AZ_IOT_ERR_NOT_SUPPORTED` instead of connecting without a key.
+- **PSA key id:** `client_key_psa_id` names a key in the PSA Crypto key store, which on
+  ESP-IDF v6 can be the Digital Signature peripheral. The az_mqtt adapter hands it to its
+  mbedTLS backend; with another backend, and in Paho, the connect fails
+  with `AZ_IOT_ERR_NOT_SUPPORTED`.
 
 Two guards stop a key-less credential from failing inside the handshake with no useful
 diagnostic:
@@ -329,8 +349,7 @@ model (D9).
    **Adapter status.** `paho`: (a) implemented — the URI is resolved through the OpenSSL
    3.x provider named by `crypto_engine_id` and the handshake signs in hardware; (b) not
    implementable on stock Paho, which exposes no `SSL_CTX` and no key callback, so it is
-   refused with a diagnostic rather than silently ignored. `rust_mqtt`: neither, and no
-   TLS credential handling to add them to. A BYO adapter gets both through
+   refused with a diagnostic rather than silently ignored. A BYO adapter gets both through
    `az_iot_mqtt_tls_options` with no dependency on the certificate-provider ABI.
 
    The provider must also register a DECODER for its own key-reference PEM, since that is
@@ -396,7 +415,7 @@ Under [`samples/authentication/`](../../samples/authentication/README.md). Each 
 | `dps_csr_managed/` | D9 provider-owned: the `managed` provider, DPS issuance |
 | `hub_renew/` | D7 hub renewal: the SDK gets the CSR from the provider and stores the chain, then `close()`/`open()` |
 | `custom_certificate_provider/` | D9: an application-written provider that makes the CSR and stores the chain |
-| `hsm_pkcs11/` | D8 key-reference URI (non-extractable key), Paho, either hub generation |
+| `hsm_pkcs11/` | D8 key-reference URI (non-extractable key), Paho |
 | `hsm_sign_callback/` | D8 provider `sign()` hook |
 | `custom_provider_template/` | A starting point for a custom provider |
 
@@ -411,7 +430,6 @@ In `tests/e2e/tests/`, run by [`ci-c-e2e.yml`](../../../.github/workflows/ci-c-e
 | DPS issuance and hub renewal | `e2e_csr_test.c` | `AZ_IOT_BUILD_E2E_CSR` (needs a CA-linked DPS enrollment) |
 | SAS onboarding, DPS-issued certificate for the hub | `e2e_csr_sas_test.c` | `AZ_IOT_BUILD_E2E_CSR` (CA-linked symmetric-key group) |
 | Storage / custody: the key held in a PKCS#11 token (SoftHSM2 in CI) | `e2e_custody_test.c` | `AZ_IOT_BUILD_E2E_PKCS11` |
-| Storage / custody on an mqttv5 hub ([`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml)) | `e2e_mqttv5_custody_test.c` | `AZ_IOT_BUILD_E2E_PKCS11` + `AZ_IOT_BUILD_E2E_MQTTV5` |
 
 [`eng/setup-softhsm.sh`](../../eng/setup-softhsm.sh) initializes a SoftHSM2 token, imports the
 device key, deletes the on-disk copy and prints the key URI.

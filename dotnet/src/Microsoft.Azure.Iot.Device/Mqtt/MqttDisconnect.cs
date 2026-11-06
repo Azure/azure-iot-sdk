@@ -18,10 +18,10 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
         public string? ReasonString { get; set; }
 
         /// <summary>
-        ///     Gets or sets the session expiry interval.
+        ///     Gets or sets the session expiry interval, in seconds. Defaults to 3600 (one hour).
         ///     <remarks>MQTT 5.0.0+ feature.</remarks>
         /// </summary>
-        public uint SessionExpiryInterval { get; set; }
+        public uint SessionExpiryInterval { get; set; } = 3600;
 
         /// <summary>
         ///     Gets or sets the user properties.
