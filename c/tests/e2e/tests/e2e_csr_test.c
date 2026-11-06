@@ -60,6 +60,10 @@
 /* The SDK waits up to 120 s for the 202 and, after it, 120 s for the 200. */
 #define E2E_RENEW_TIMEOUT_S 270
 #define E2E_RENEW_ATTEMPTS 5
+/* Wait before resending a renewal the hub failed transiently without a retryAfter, and the
+ * longest retryAfter honored. */
+#define E2E_RENEW_TRANSIENT_DELAY_S 5
+#define E2E_RENEW_TRANSIENT_MAX_DELAY_S 60
 
 static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
@@ -87,6 +91,10 @@ typedef struct
   bool renew_conflict;
   /* Set when the hub refused a replacement with 412: the request it replaced has ended. */
   bool renew_nothing_to_replace;
+  /* Set when the hub failed the renewal transiently (429xxx or 5xxxxx). */
+  bool renew_transient;
+  /* That failure's retryAfter, in seconds; 0 if none. */
+  uint32_t renew_retry_after_s;
   /* Set when the hub session is lost (RETRY_PENDING). */
   bool hub_dropped;
 } csr_ctx;
@@ -166,6 +174,14 @@ static void on_send_done(az_iot_result status, void* user_ctx)
   c->send_done = 1;
 }
 
+/** @brief Whether the hub @p service_code is one it documents as transient: 429xxx
+ * (throttled) or 5xxxxx (server error, unavailable). */
+static bool is_transient_renewal_failure(int32_t service_code)
+{
+  int32_t status = service_code / 1000;
+  return status == 429 || (status >= 500 && status <= 599);
+}
+
 static void on_renew_event(const az_iot_csr_event* evt, void* user_ctx)
 {
   csr_ctx* c = (csr_ctx*)user_ctx;
@@ -200,6 +216,12 @@ static void on_renew_event(const az_iot_csr_event* evt, void* user_ctx)
     c->renew_nothing_to_replace = true; /* It ended meanwhile: sent again without replace. */
     return;
   }
+  if (evt->kind == AZ_IOT_CSR_FAILED && is_transient_renewal_failure(evt->service_code))
+  {
+    c->renew_transient = true; /* Sent again after retry_after_s, under a new request id. */
+    c->renew_retry_after_s = evt->retry_after_s;
+    return;
+  }
   c->renew_kind = evt->kind;
   c->renew_status = evt->status;
   c->renew_store_status = evt->store_status;
@@ -223,6 +245,16 @@ static void pump_until_hub_state(
   }
 }
 
+/** @brief Pumps @p conn for @p seconds. */
+static void pump_for_seconds(az_iot_connection_client* conn, uint32_t seconds)
+{
+  time_t start = time(NULL);
+  while ((uint32_t)(time(NULL) - start) < seconds)
+  {
+    (void)az_iot_connection_client_do_work(conn, 50);
+  }
+}
+
 /** @brief Renews the operational certificate over the connected mqttv3 hub
  * session, then reconnects with the renewed certificate.
  *
@@ -232,7 +264,9 @@ static void pump_until_hub_state(
  * request it accepted before the drop is still active there: it is replaced
  * ("*") under a new request id, so a late response to it is ignored. If that
  * request ended before the replacement arrived, the hub answers 412 and the
- * renewal is sent again, without replace, under another new request id. */
+ * renewal is sent again, without replace, under another new request id. A
+ * transient failure (429xxx, 5xxxxx) ends the request: it is sent again after
+ * its retryAfter (E2E_RENEW_TRANSIENT_DELAY_S if none) under a new request id. */
 static void renew_on_hub(az_iot_connection_client* conn, csr_ctx* ctx)
 {
   char base_request_id[24];
@@ -250,6 +284,14 @@ static void renew_on_hub(az_iot_connection_client* conn, csr_ctx* ctx)
   {
     if (attempt > 0)
     {
+      if (ctx->renew_transient)
+      {
+        uint32_t delay_s
+            = ctx->renew_retry_after_s > 0 ? ctx->renew_retry_after_s : E2E_RENEW_TRANSIENT_DELAY_S;
+        pump_for_seconds(
+            conn,
+            delay_s < E2E_RENEW_TRANSIENT_MAX_DELAY_S ? delay_s : E2E_RENEW_TRANSIENT_MAX_DELAY_S);
+      }
       pump_until_hub_state(conn, ctx, AZ_IOT_CONN_STATE_CONNECTED, E2E_CONNECT_TIMEOUT_S);
       assert_int_equal(ctx->conn_state, AZ_IOT_CONN_STATE_CONNECTED);
       if (ctx->renew_done)
@@ -258,7 +300,7 @@ static void renew_on_hub(az_iot_connection_client* conn, csr_ctx* ctx)
       }
       az_iot_result cancelled = az_iot_connection_client_cancel_csr(conn);
       assert_true(cancelled == AZ_IOT_OK || cancelled == AZ_IOT_ERR_NOT_FOUND);
-      if (ctx->renew_conflict || ctx->renew_nothing_to_replace)
+      if (ctx->renew_conflict || ctx->renew_nothing_to_replace || ctx->renew_transient)
       {
         (void)snprintf(request_id, sizeof(request_id), "%s-%d", base_request_id, attempt);
       }
@@ -267,6 +309,7 @@ static void renew_on_hub(az_iot_connection_client* conn, csr_ctx* ctx)
           "[e2e-csr] %s; resubmitting renewal %s\n",
           ctx->renew_conflict                 ? "another request active, replacing it"
               : ctx->renew_nothing_to_replace ? "nothing left to replace, sending it again"
+              : ctx->renew_transient          ? "transient hub failure, sending it again"
                                               : "hub session lost",
           request_id);
     }
@@ -275,12 +318,14 @@ static void renew_on_hub(az_iot_connection_client* conn, csr_ctx* ctx)
     ctx->hub_dropped = false;
     ctx->renew_conflict = false;
     ctx->renew_nothing_to_replace = false;
+    ctx->renew_transient = false;
     assert_int_equal(
         AZ_IOT_OK,
         az_iot_connection_client_send_csr(conn, request_id, replace, on_renew_event, ctx));
     time_t start = time(NULL);
     while (!ctx->renew_done && !ctx->hub_dropped && !ctx->renew_conflict
-           && !ctx->renew_nothing_to_replace && (time(NULL) - start) < E2E_RENEW_TIMEOUT_S)
+           && !ctx->renew_nothing_to_replace && !ctx->renew_transient
+           && (time(NULL) - start) < E2E_RENEW_TIMEOUT_S)
     {
       (void)az_iot_connection_client_do_work(conn, 50);
     }
