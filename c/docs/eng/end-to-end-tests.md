@@ -157,7 +157,9 @@ its policy signs the device delete, sent to the `IOTHUB_CONNECTION_STRING` host)
 - [`e2e_tpm_test.c`](../../tests/e2e/tests/e2e_tpm_test.c) — a TPM simulated in software
   (`samples/common/sample_tpm_sim.c`) gets a new individual enrollment through the DPS service
   API, registers over HTTPS, connects to the assigned mqttv3 hub with TPM-signed SAS tokens and
-  sends telemetry. The enrollment, registration and device are deleted. `ci-c-e2e`.
+  sends telemetry. It then deletes the device and its enrollment, expects the hub to refuse the
+  identity, enrolls it again under a new device ID, registers again and sends again. The enrollment, registration and device are deleted.
+  `ci-c-e2e`.
 
 **mqttv5 suites** (`AZ_IOT_BUILD_E2E_MQTTV5`; DPS assigns the device to an mqttv5 hub):
 

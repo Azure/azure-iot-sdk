@@ -1262,7 +1262,8 @@ static bool dps_service_call(const char* method, const char* path, const char* b
 
 bool az_iot_e2e_dps_tpm_enrollment_create(
     const char* registration_id,
-    const char* endorsement_key_base64)
+    const char* endorsement_key_base64,
+    const char* device_id)
 {
   char path[256];
   char body[2048];
@@ -1271,21 +1272,32 @@ bool az_iot_e2e_dps_tpm_enrollment_create(
   int m = snprintf(
       body,
       sizeof(body),
-      "{\"registrationId\":\"%s\",\"attestation\":{\"type\":\"tpm\",\"tpm\":"
+      "{\"registrationId\":\"%s\",%s%s%s\"attestation\":{\"type\":\"tpm\",\"tpm\":"
       "{\"endorsementKey\":\"%s\"}}}",
       registration_id,
+      device_id != NULL ? "\"deviceId\":\"" : "",
+      device_id != NULL ? device_id : "",
+      device_id != NULL ? "\"," : "",
       endorsement_key_base64);
   return n > 0 && (size_t)n < sizeof(path) && m > 0 && (size_t)m < sizeof(body)
       && dps_service_call("PUT", path, body, false);
 }
 
-bool az_iot_e2e_dps_enrollment_delete(const char* registration_id)
+/** @brief Deletes the registration record of @p registration_id; a missing one counts as deleted.
+ */
+static bool dps_registration_delete(const char* registration_id)
 {
   char path[256];
   int n = snprintf(
       path, sizeof(path), "/registrations/%s?api-version=" E2E_DPS_API_VERSION, registration_id);
-  bool ok = n > 0 && (size_t)n < sizeof(path) && dps_service_call("DELETE", path, NULL, true);
-  n = snprintf(
+  return n > 0 && (size_t)n < sizeof(path) && dps_service_call("DELETE", path, NULL, true);
+}
+
+bool az_iot_e2e_dps_enrollment_delete(const char* registration_id)
+{
+  char path[256];
+  bool ok = dps_registration_delete(registration_id);
+  int n = snprintf(
       path, sizeof(path), "/enrollments/%s?api-version=" E2E_DPS_API_VERSION, registration_id);
   return n > 0 && (size_t)n < sizeof(path) && dps_service_call("DELETE", path, NULL, true) && ok;
 }
