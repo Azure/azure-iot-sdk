@@ -303,6 +303,42 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task QueuedResendOfCertificateSigningRequestThatCompletedMeanwhileIsDiscarded()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            ConnectionContext context = GetMockConnectionContext(false);
+            using ConnectionClient client = new(new() { MqttClient = mockMqttClient });
+            await client.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+            IotHubCertificateSigningRequest request = new(context.DeviceId, "csr");
+            CertificateSigningOperation operation = await client.SendCertificateSigningRequestAsync(request, TestContext.Current.CancellationToken);
+            TaskCompletionSource resendSubscribeReached = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource releaseResendSubscribe = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            mockMqttClient.OnSubscribe = async subscribe =>
+            {
+                if (subscribe.TopicFilters.Any(filter => filter.Topic == "$iothub/credentials/res/#"))
+                {
+                    resendSubscribeReached.TrySetResult();
+                    await releaseResendSubscribe.Task;
+                }
+
+                return MqttObjectHelpers.CreateSuccessfulSuback(subscribe);
+            };
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError)
+                .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            await resendSubscribeReached.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            // IoT hub finishes the request from the lost connection while the resend waits for its SUBACK.
+            await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "202", AcceptedResponse);
+            await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "200", CompletedResponse);
+            Assert.True(operation.Completed.IsCompletedSuccessfully);
+
+            releaseResendSubscribe.SetResult();
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.Single(GetCertificateSigningPublishes(mockMqttClient));
+        }
+
+        [Fact]
         public async Task ResentCertificateSigningRequestRecoversFromConflictAndMissingReplacedRequest()
         {
             using MockConnectionMqttClient mockMqttClient = new();

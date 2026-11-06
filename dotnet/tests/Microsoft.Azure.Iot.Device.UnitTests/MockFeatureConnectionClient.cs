@@ -63,11 +63,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// </summary>
         public void SimulateDeliberateDisconnect()
         {
-            IsConnectionTargetSet = false;
             IsClassicDevicePresenceEstablished = false;
             TaskCompletionSource reconnected;
             lock (PublishedMessages)
             {
+                IsConnectionTargetSet = false;
                 reconnected = _reconnected;
                 _reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
             }
@@ -142,6 +142,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Task reconnected;
             lock (PublishedMessages)
             {
+                // Like the connection client, a publish made after a deliberate disconnect fails rather than waiting.
+                if (!IsConnectionTargetSet)
+                {
+                    throw new OperationCanceledException("Deliberately disconnected.");
+                }
+
                 reconnected = _reconnected.Task;
             }
 

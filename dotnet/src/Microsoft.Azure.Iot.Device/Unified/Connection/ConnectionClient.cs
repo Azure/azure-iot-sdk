@@ -383,7 +383,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             CertificateSigningOperation operation = new();
             PendingCertificateSigning pending = new(operation, request, connectionContext, cancellationToken);
             Guid claimedNonce;
-            MqttPublish certificateSigningRequestPublish;
 
             lock (_certificateSigningLock)
             {
@@ -396,7 +395,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 // a different connection from the one this call sends it on.
                 claimedNonce = _classicConnection.Nonce;
                 pending.SentConnectionNonce = claimedNonce;
-                certificateSigningRequestPublish = BuildCertificateSigningPublish(pending);
             }
 
             CancellationTokenRegistration cancellationRegistration = default;
@@ -421,7 +419,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 await ManagedMqttConnection.SubscribeAsync(ConnectionEndpoint.IotHub, new(CertificateSigningResponseTopicFilter, MqttQualityOfServiceLevel.AtLeastOnce), cancellationToken); // TODO QoS correct?
 
                 // Puback is checked for non-success cases under this layer, so no need to check it here as well
-                await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.IotHub, certificateSigningRequestPublish, cancellationToken: cancellationToken);
+                await PublishPendingCertificateSigningAsync(pending, request.RequestId, claimedNonce);
+            }
+            catch (StaleCertificateSigningSendException)
+            {
+                // A reconnection already took over sending this request.
             }
             catch (MqttClientNotConnectedException) when (!IsConnectionAbandoned)
             {
@@ -437,6 +439,46 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
 
             return operation;
+        }
+
+        /// <summary>
+        /// Publish a pending request as the given request ID, on the connection it was claimed for.
+        /// </summary>
+        /// <remarks>
+        /// Sends may be queued (for example, behind the SUBACK, or on the thread pool), so whether the send is still wanted is
+        /// only decided once it is admitted for IoT hub, when the connection can no longer change underneath it. A send whose
+        /// request was canceled, completed, or resubmitted under another request ID, or that another send took over, is
+        /// discarded with <see cref="StaleCertificateSigningSendException"/> (or the request's own cancellation). A send whose
+        /// claimed connection was replaced, or that would go out as a different identity, throws
+        /// <see cref="MqttClientNotConnectedException"/>, so that the caller releases its claim and the request is resent
+        /// (or failed) by the current connection.
+        /// </remarks>
+        private Task<MqttPublishAck> PublishPendingCertificateSigningAsync(PendingCertificateSigning pending, string requestId, Guid claimedNonce)
+        {
+            return ManagedMqttConnection.BuildAndPublishAsync(
+                ConnectionEndpoint.IotHub,
+                () =>
+                {
+                    pending.CancellationToken.ThrowIfCancellationRequested();
+                    lock (_certificateSigningLock)
+                    {
+                        if (!_pendingCertificateSignings.TryGetValue(requestId, out PendingCertificateSigning? current)
+                            || current != pending
+                            || pending.SentConnectionNonce != claimedNonce)
+                        {
+                            throw new StaleCertificateSigningSendException();
+                        }
+
+                        ConnectionContext? connectionContext = CurrentConnectionContext;
+                        if (_classicConnection.Nonce != claimedNonce || connectionContext == null || !pending.IsForIdentity(connectionContext))
+                        {
+                            throw new MqttClientNotConnectedException("The connection this certificate signing request was to be sent on was replaced.");
+                        }
+
+                        return BuildCertificateSigningPublish(pending);
+                    }
+                },
+                pending.CancellationToken);
         }
 
         private static MqttPublish BuildCertificateSigningPublish(PendingCertificateSigning pending)
@@ -492,7 +534,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// </summary>
         private async Task ResendPendingCertificateSigningsAsync(Guid nonce)
         {
-            List<(PendingCertificateSigning Pending, MqttPublish Publish)> toSend = new();
+            List<(PendingCertificateSigning Pending, string RequestId)> toSend = new();
             List<PendingCertificateSigning> toFail = new();
             ConnectionContext? connectionContext = CurrentConnectionContext;
 
@@ -520,7 +562,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
                     pending.SentConnectionNonce = nonce;
                     pending.IsCurrentRequestResent = true;
-                    toSend.Add((pending, BuildCertificateSigningPublish(pending)));
+                    toSend.Add((pending, pending.RequestId));
                 }
             }
 
@@ -561,17 +603,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 return;
             }
 
-            await Task.WhenAll(toSend.Select(item => SendPendingCertificateSigningAsync(item.Pending, item.Publish, nonce)));
+            await Task.WhenAll(toSend.Select(item => SendPendingCertificateSigningAsync(item.Pending, item.RequestId, nonce)));
         }
 
         /// <summary>
         /// Send a request that is already pending. If the connection is lost first, the request is resent on the next one.
         /// </summary>
-        private async Task SendPendingCertificateSigningAsync(PendingCertificateSigning pending, MqttPublish publish, Guid claimedNonce)
+        private async Task SendPendingCertificateSigningAsync(PendingCertificateSigning pending, string requestId, Guid claimedNonce)
         {
             try
             {
-                await ManagedMqttConnection.PublishAsync(ConnectionEndpoint.IotHub, publish, pending.CancellationToken);
+                await PublishPendingCertificateSigningAsync(pending, requestId, claimedNonce);
             }
             catch (MqttClientNotConnectedException)
             {
@@ -579,7 +621,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
             catch (OperationCanceledException)
             {
-                // The application canceled this request (which already removed it) or is shutting this client down.
+                // The application canceled this request (which already removed it), this client is shutting down, or the
+                // send became stale before it was admitted.
             }
             catch (Exception e)
             {
@@ -700,7 +743,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// </summary>
         private void HandleCertificateSigningErrorResponse(PendingCertificateSigning pending, string requestId, CertificateSigningRequestErrorResponse error)
         {
-            MqttPublish? recoveryPublish = null;
+            string? recoveryRequestId = null;
             Guid claimedNonce = default;
 
             lock (_certificateSigningLock)
@@ -736,11 +779,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     _pendingCertificateSignings.Add(pending.RequestId, pending);
                     claimedNonce = _classicConnection.Nonce;
                     pending.SentConnectionNonce = claimedNonce;
-                    recoveryPublish = BuildCertificateSigningPublish(pending);
+                    recoveryRequestId = pending.RequestId;
                 }
             }
 
-            if (recoveryPublish == null)
+            if (recoveryRequestId == null)
             {
                 pending.Operation.SetFailed(new CertificateSigningRequestFailedException()
                 {
@@ -752,7 +795,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
 
             // Not awaited, because waiting for the PUBACK here would block the delivery of received publishes.
-            _ = Task.Run(() => SendPendingCertificateSigningAsync(pending, recoveryPublish, claimedNonce));
+            _ = Task.Run(() => SendPendingCertificateSigningAsync(pending, recoveryRequestId, claimedNonce));
+        }
+
+        // Discards a queued send of a certificate signing request that is no longer wanted. An OperationCanceledException, so
+        // that the connection layer passes it through as-is.
+        private sealed class StaleCertificateSigningSendException : OperationCanceledException
+        {
+            public StaleCertificateSigningSendException()
+                : base("The certificate signing request send is stale.")
+            {
+            }
         }
 
         // A certificate signing request that IoT hub has not finished, and what is needed to resend it.
