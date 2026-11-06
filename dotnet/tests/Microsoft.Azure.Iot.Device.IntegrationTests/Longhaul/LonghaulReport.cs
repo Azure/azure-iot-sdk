@@ -234,7 +234,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
                 {
                     violations.Add($"{operation.Name} never ran.");
                 }
-                else if (operation.SuccessRatePercent < thresholds.MinSuccessRatePercent)
+                // SuccessRatePercent is rounded for display; rounding up could hide a rate just below the minimum.
+                else if (100.0 * operation.Successes / operation.Attempts < thresholds.MinSuccessRatePercent)
                 {
                     violations.Add(string.Create(CultureInfo.InvariantCulture,
                         $"{operation.Name} succeeded {operation.SuccessRatePercent:0.###}% of the time ({operation.Failures} of {operation.Attempts} failed); the minimum is {thresholds.MinSuccessRatePercent:0.###}%."));
