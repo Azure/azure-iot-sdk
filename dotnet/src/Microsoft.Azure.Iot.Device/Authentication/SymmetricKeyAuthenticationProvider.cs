@@ -30,7 +30,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         private readonly TimeSpan _iotHubSasTokenTimeToLive;
 
         private readonly TimeSpan _dpsSasTokenTimeToLive;
-        
+
         private string _registrationId;
 
         private string _idScope;

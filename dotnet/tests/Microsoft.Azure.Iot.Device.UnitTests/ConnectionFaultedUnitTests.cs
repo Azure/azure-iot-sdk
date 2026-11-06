@@ -3087,7 +3087,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 return RetryGuidance.Retry;
             }
         }
-      
+
         /// Stands in for a SAS-token provider: each request for boot credentials returns a distinct password, so a test
         /// can tell whether a connect attempt presented newly minted credentials or replayed earlier ones.
         /// </summary>
