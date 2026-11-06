@@ -227,6 +227,7 @@ static void on_send_done(az_iot_result status, void* user_ctx)
 
 int main(void)
 {
+  sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
@@ -235,7 +236,7 @@ int main(void)
   {
     print_usage();
     hsm_config_release(&config);
-    return 0; /* no-op when unconfigured */
+    return sample_pipeline_checks_end(0); /* no-op when unconfigured */
   }
 
   fprintf(
@@ -369,5 +370,5 @@ cleanup:
   }
   az_iot_connection_client_deinit(&connection_client);
   hsm_config_release(&config);
-  return rc;
+  return sample_pipeline_checks_end(rc);
 }

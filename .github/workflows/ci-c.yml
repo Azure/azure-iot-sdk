@@ -99,10 +99,12 @@ jobs:
             preset: linux-clang-debug
             build_type: Debug
             with_paho: ON
+            sample_pipeline_hooks: ON
           - os: windows-latest
             preset: windows-msvc-debug
             build_type: Debug
             with_paho: ON
+            sample_pipeline_hooks: ON
           - os: ubuntu-24.04
             preset: linux-gcc-debug
             build_type: Debug
@@ -166,7 +168,7 @@ jobs:
           CMAKE_PREFIX_PATH: ${{ steps.curl.outputs.prefix }}
         run: |
           cmake -DBUILD_DIR=build/${{ matrix.preset }} -DMODE=prepare -P eng/check-dependencies.cmake
-          cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }} -DAZ_IOT_WITH_AZ_MQTT=ON
+          cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }} -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS=${{ matrix.sample_pipeline_hooks || 'OFF' }}
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }}
       # Every connecting sample is built for every adapter. Windows: az_mqtt has no

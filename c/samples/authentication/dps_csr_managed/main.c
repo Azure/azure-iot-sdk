@@ -170,13 +170,14 @@ static void pump(az_iot_connection_client* client)
 
 int main(void)
 {
+  sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_config config = { 0 };
   if (sample_config_load(&config) != 0)
   {
-    return 1;
+    return sample_pipeline_checks_end(1);
   }
 
   /* Every string cleanup frees is assigned before the first goto. */
@@ -377,5 +378,5 @@ cleanup:
   free(op_cert);
   free(registration_payload);
   sample_config_release(&config);
-  return rc;
+  return sample_pipeline_checks_end(rc);
 }

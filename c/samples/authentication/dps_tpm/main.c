@@ -507,6 +507,7 @@ static sample_tpm* open_tpm(void)
 
 int main(int argc, char** argv)
 {
+  sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
@@ -671,5 +672,5 @@ cleanup:
   free(endpoint);
   free(reg_id_env);
   free(ca);
-  return rc;
+  return sample_pipeline_checks_end(rc);
 }

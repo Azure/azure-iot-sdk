@@ -86,13 +86,14 @@ static void on_operational_cert(
 
 int main(void)
 {
+  sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_config config = { 0 };
   if (sample_config_load(&config) != 0)
   {
-    return 1;
+    return sample_pipeline_checks_end(1);
   }
 
   char* op_key = sample_env_copy("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
@@ -190,5 +191,5 @@ cleanup:
   free(op_key);
   free(op_cert);
   sample_config_release(&config);
-  return rc;
+  return sample_pipeline_checks_end(rc);
 }

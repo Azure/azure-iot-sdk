@@ -188,3 +188,15 @@ client in a static workspace sized for `SAMPLE_MQTT_LIMITS` in
 [`common/sample_utils.h`](common/sample_utils.h): raise those for larger messages. With samples
 on, at least one of the two adapters is required. The SAS-key samples use the OpenSSL crypto backend, or
 mbedTLS when OpenSSL is not built (`AZ_IOT_SAMPLE_CRYPTO_OPENSSL`, `AZ_IOT_SAMPLE_CRYPTO_MBEDTLS`).
+
+### Pipeline hooks
+
+The `main()` of each sample built with [`common/sample_utils.c`](common/sample_utils.c) calls
+`sample_pipeline_checks_begin()` first and returns through `sample_pipeline_checks_end()`
+([`common/sample_utils.h`](common/sample_utils.h)), so a CI pipeline can tell when it started and
+ended and what it returned. User builds compile them out: unless
+`AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS=ON` (default `OFF`) defines `SAMPLE_PIPELINE_HOOKS`, they
+are no-ops and the samples are unchanged. With it, the sample writes unbuffered output, prints
+`sample-pipeline: begin`, `sample-pipeline: end rc=<rc>` and, when the pipeline stops it,
+`sample-pipeline: stop <reason>` at the start of a stdout line, and records SIGINT, SIGTERM and
+(Windows) CTRL_BREAK as a stop request for a loop that checks `sample_is_stop_requested()`.

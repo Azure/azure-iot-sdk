@@ -191,6 +191,7 @@ static az_iot_result send_telemetry(az_iot_connection_client* client, sample_con
 
 int main(void)
 {
+  sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
@@ -212,7 +213,7 @@ int main(void)
         "[dps_sas_key] set AZ_IOT_DPS_ID_SCOPE, AZ_IOT_DPS_REGISTRATION_ID and exactly one of "
         "AZ_IOT_DPS_SYMMETRIC_KEY / AZ_IOT_DPS_ENROLLMENT_GROUP_KEY\n");
     config_release(&config);
-    return 1;
+    return sample_pipeline_checks_end(1);
   }
 
   int rc = 1;
@@ -235,7 +236,7 @@ int main(void)
     {
       fprintf(stderr, "[dps_sas_key] AZ_IOT_SAS_TOKEN_RENEWAL_PERCENT must be 1-99\n");
       config_release(&config);
-      return 1;
+      return sample_pipeline_checks_end(1);
     }
     sas.sas.renewal_percent = (uint8_t)pct;
   }
@@ -312,5 +313,5 @@ int main(void)
 cleanup:
   az_iot_connection_client_deinit(&client);
   config_release(&config);
-  return rc;
+  return sample_pipeline_checks_end(rc);
 }
