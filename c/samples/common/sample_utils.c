@@ -602,12 +602,13 @@ void sample_pipeline_checks_begin(void)
 {
   (void)setvbuf(stdout, NULL, _IONBF, 0);
   (void)setvbuf(stderr, NULL, _IONBF, 0);
-  printf("sample-pipeline: begin\n");
+  /* Before the marker, so a stop sent as soon as it appears is recorded. */
   sample_install_stop_handler();
 #if defined(SIGBREAK)
   /* Windows: CTRL_BREAK_EVENT, the only console event a process in its own group receives. */
   (void)signal(SIGBREAK, on_stop_signal);
 #endif
+  printf("sample-pipeline: begin\n");
 }
 
 int sample_pipeline_checks_end(int rc)
