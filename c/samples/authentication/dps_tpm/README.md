@@ -6,10 +6,15 @@
 Registers with DPS using TPM attestation, then sends telemetry to the assigned mqttv3 hub with SAS
 tokens the TPM signs. See [`main.c`](main.c).
 
-The TPM is simulated in software ([`sample_tpm_sim.c`](../../common/sample_tpm_sim.c), OpenSSL),
-so the sample runs without a TPM. The simulator keeps every key in process memory and in plain
-PEM files: use it only to try the flow. With a real TPM, implement `az_iot_dps_tpm_ops` with your
-TPM software stack instead.
+Two TPM backends implement `az_iot_dps_tpm_ops`:
+
+- `az_iot_sample_auth_dps_tpm` simulates the TPM in software
+  ([`sample_tpm_sim.c`](../../common/sample_tpm_sim.c), OpenSSL), so it runs without a TPM. The
+  simulator keeps every key in process memory and in plain PEM files: use it only to try the flow.
+- `az_iot_sample_auth_dps_tpm_tss` uses a TPM through the
+  [tpm2-tss](https://github.com/tpm2-software/tpm2-tss) ESAPI
+  ([`sample_tpm_tss.c`](../../common/sample_tpm_tss.c)): a hardware TPM, or a simulator such as
+  [swtpm](https://github.com/stefanberger/swtpm). The DPS key never leaves the TPM.
 
 ## Sample features
 
@@ -17,8 +22,9 @@ TPM software stack instead.
   [`az_iot_dps_tpm_client.h`](../../../inc/azure/iot/az_iot_dps_tpm_client.h) over libcurl, in
   `register_with_dps()`:
   1. A register request with the endorsement key (EK) and storage root key (SRK).
-  2. DPS answers 401 with a key encrypted to the TPM. The simulated TPM imports it, as
-     TPM2_ActivateCredential and TPM2_Import would.
+  2. DPS answers 401 with a key encrypted to the TPM. The TPM imports it: TPM2_ActivateCredential
+     with the EK, TPM2_Import and TPM2_Load under the SRK, then TPM2_EvictControl to persist it
+     (the simulator does the same in software).
   3. The same register request, with a SAS token the TPM signs (TPM2_HMAC).
   4. Polling until DPS assigns the device. The assignment carries the hub key, which the TPM
      imports in the same way.
@@ -28,7 +34,7 @@ TPM software stack instead.
 
 ## Service requirements
 
-A DPS individual enrollment with TPM attestation for the simulated TPM's EK, linked to an mqttv3
+A DPS individual enrollment with TPM attestation for the TPM's EK, linked to an mqttv3
 IoT Hub. Run the sample with `--enrollment` to print the registration ID and EK, and an
 `az iot dps enrollment create` command that creates the enrollment.
 
@@ -39,7 +45,9 @@ The sample reads these environment variables:
 | Variable | Required | Meaning |
 | --- | --- | --- |
 | `AZ_IOT_DPS_ID_SCOPE` | yes, except with `--enrollment` | DPS ID scope. |
-| `AZ_IOT_TPM_SIM_STATE` | no | Directory holding the simulated TPM's keys (`ek.pem`, `srk.pem`), created on the first run. Default: the current directory. |
+| `AZ_IOT_TPM_SIM_STATE` | no | Simulator only. Directory holding the simulated TPM's keys (`ek.pem`, `srk.pem`), created on the first run. Default: the current directory. |
+| `AZ_IOT_TPM_TCTI` | no | tpm2-tss only. [TCTI](https://tpm2-tss.readthedocs.io/en/latest/group__tss2__tctildr.html) configuration, e.g. `device:/dev/tpmrm0` or `swtpm:host=127.0.0.1,port=2321`. Default: the tpm2-tss default. |
+| `AZ_IOT_TPM_HMAC_KEY_HANDLE` | no | tpm2-tss only. Owner persistent handle (hex) where the DPS key is kept. Default `81000100`. |
 | `AZ_IOT_DPS_REGISTRATION_ID` | no | Registration ID. Default: derived from the EK (`az_iot_dps_tpm_registration_id_from_ek()`). |
 | `AZ_IOT_TRUSTED_CA` | no | CA bundle (PEM file) that validates the DPS and IoT Hub server certificates. Default: the system trust store. |
 | `AZ_IOT_DPS_GLOBAL_ENDPOINT` | no | Provisioning endpoint. Default `global.azure-devices-provisioning.net`. |
@@ -65,6 +73,35 @@ With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_auth_dps_tpm_az
 `az_mqtt/` next to that binary ([adapters](../../README.md#build)).
 
 The target exists when the OpenSSL crypto backend and libcurl are found.
+
+### With a TPM (tpm2-tss)
+
+`az_iot_sample_auth_dps_tpm_tss` also needs the tpm2-tss ESAPI, MU and TCTI loader libraries
+(`libtss2-dev` on Debian and Ubuntu; the target is skipped without them), and access to the TPM
+(e.g. membership of the `tss` group for `/dev/tpmrm0`). It uses the persistent EK (`0x81010001`)
+and SRK (`0x81000001`) when they exist, and otherwise creates them from the standard templates
+(TCG EK profile template L-1; RSA 2048 SRK), so `--enrollment` prints the same EK as
+`tpm2_createek -G rsa`. The DPS key is kept at `AZ_IOT_TPM_HMAC_KEY_HANDLE`, replacing any key
+there.
+
+```sh
+cmake --preset linux-gcc-debug
+cmake --build --preset linux-gcc-debug --target az_iot_sample_auth_dps_tpm_tss
+export AZ_IOT_TPM_TCTI='device:/dev/tpmrm0'
+./build/linux-gcc-debug/samples/authentication/az_iot_sample_auth_dps_tpm_tss --enrollment
+# create the enrollment with the printed command, then:
+export AZ_IOT_DPS_ID_SCOPE='<id-scope>'
+./build/linux-gcc-debug/samples/authentication/az_iot_sample_auth_dps_tpm_tss
+```
+
+To try it on swtpm instead of a TPM:
+
+```sh
+mkdir -p swtpm-state
+swtpm socket --tpm2 --tpmstate dir=swtpm-state --flags not-need-init,startup-clear \
+  --server type=tcp,port=2321 --ctrl type=tcp,port=2322 --daemon
+export AZ_IOT_TPM_TCTI='swtpm:host=127.0.0.1,port=2321'
+```
 
 ## How it ends
 

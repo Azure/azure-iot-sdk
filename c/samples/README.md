@@ -33,7 +33,7 @@ run it, and what to expect.
 | [authentication/hsm_pkcs11](authentication/hsm_pkcs11/README.md) | Private key in a PKCS#11 token or TPM. |
 | [authentication/hsm_sign_callback](authentication/hsm_sign_callback/README.md) | Private key reachable only through a `sign()` callback. |
 | [authentication/custom_provider_template](authentication/custom_provider_template/README.md) | Skeleton of a certificate provider. |
-| [authentication/dps_tpm](authentication/dps_tpm/README.md) | DPS TPM attestation over HTTPS, then hub SAS tokens signed by a simulated TPM. |
+| [authentication/dps_tpm](authentication/dps_tpm/README.md) | DPS TPM attestation over HTTPS, then hub SAS tokens signed by a simulated TPM or, through tpm2-tss, by a TPM. |
 
 ## How a unified sample handles the hub profile
 
@@ -65,6 +65,10 @@ walks through creating the DPS instance, the linked IoT Hub and the enrollment.
 
 ### Build tools
 
+The SDK is a C99 library built with CMake. You need a C99 compiler, CMake and the dependencies
+listed for your platform below, whichever compiler you pick. The SDK itself needs CMake 3.21 or
+newer (the minimum set in [c/CMakeLists.txt](../CMakeLists.txt)); the `cmake --preset` commands
+in these READMEs need CMake 3.25 or newer, to read [c/CMakePresets.json](../CMakePresets.json).
 The build fetches Paho MQTT C and azure-sdk-for-c itself.
 
 **Linux** (Debian/Ubuntu package names):
@@ -74,17 +78,29 @@ sudo apt-get update
 sudo apt-get install -y git build-essential cmake ninja-build libssl-dev ca-certificates pkg-config
 ```
 
-- A C99 compiler (GCC or Clang), CMake 3.21+, Ninja.
+- A C99 compiler (GCC or Clang), CMake 3.25+ (3.21+ without presets), Ninja.
 - OpenSSL 3.0 to 4.1 development files (`libssl-dev`), for TLS and for the samples that need
   OpenSSL.
 - `/etc/ssl/certs/ca-certificates.crt` (from `ca-certificates`) works as `AZ_IOT_TRUSTED_CA`.
 
 **Windows:**
 
-- [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) with the *Desktop development with
+- A C99 compiler: MSVC is the Windows compiler CI builds and tests the SDK with; other compilers
+  that CMake supports are untested, and MinGW-w64 GCC does not build the SDK as is. Suggested
+  way to get MSVC, not a requirement:
+  [Visual Studio 2022](https://visualstudio.microsoft.com/vs/) with the *Desktop development with
   C++* workload, or the
   [Build Tools for Visual Studio 2022](https://visualstudio.microsoft.com/downloads/#build-tools-for-visual-studio-2022).
-- [CMake 3.21+](https://cmake.org/download/) (bundled with Visual Studio).
+  Either installs MSVC, the Windows SDK, CMake and Ninja. If you cannot install
+  a Windows compiler, follow the Linux steps above in
+  [WSL](https://learn.microsoft.com/windows/wsl/install).
+- [Visual Studio Code](https://code.visualstudio.com/) is an editor, not a compiler: with its
+  [C/C++](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools) and
+  [CMake Tools](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cmake-tools)
+  extensions it drives a compiler you install separately.
+- [CMake 3.25+](https://cmake.org/download/) (3.21+ without presets) and
+  [Ninja](https://ninja-build.org/), which the `windows-msvc-debug` preset uses (both bundled
+  with Visual Studio).
 - OpenSSL 3.0 to 4.1 visible to CMake, either:
   - the full Win64 installer (not *Light*, which has no headers or libraries) from
     [OpenSSL for Windows](https://slproweb.com/products/Win32OpenSSL.html). CMake finds its default
@@ -96,7 +112,7 @@ sudo apt-get install -y git build-essential cmake ninja-build libssl-dev ca-cert
     enough.
 
   Or build without OpenSSL: see [Windows without OpenSSL](#windows-without-openssl).
-- Run the build from a *Developer PowerShell for VS 2022*.
+- With MSVC, run the build from a *Developer PowerShell for VS 2022*, so CMake finds the compiler.
 
 ### Windows without OpenSSL
 
