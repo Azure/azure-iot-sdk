@@ -4520,6 +4520,157 @@ static void a_reclaimed_exec_slot_names_the_method(void** state)
   assert_non_null(strstr(cap.all, "'dump'"));
 }
 
+/* Redeliver the probe of request id `seed`; returns the probe-acks it caused. */
+static size_t redeliver_probe(fixture* fx, uint8_t seed)
+{
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  uint8_t request_id[16];
+  make_request_id(request_id, seed);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "dump", 300);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 0);
+  return count_phase(fx->mock, "probe-ack:1");
+}
+
+static size_t count_live_tokens(fixture* fx)
+{
+  size_t live = 0;
+  for (size_t i = 0; i < CONCURRENT_CAPACITY; ++i)
+  {
+    live += fx->dm._internal.ready_pool[i]._internal.in_use ? 1u : 0u;
+  }
+  return live;
+}
+
+/* The exec consumed the token; its probe redelivered while the method runs creates none. */
+static void a_probe_redelivered_during_its_invocation_is_not_answered(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  run_one_invocation(fx, &rec, 0xB1);
+
+  assert_int_equal(redeliver_probe(fx, 0xB1), 0);
+  assert_int_equal(count_live_tokens(fx), 0);
+}
+
+#if DM_TEST_HOLDS_TWO_AT_ONCE
+/* A long-running invocation outlives its id in the ended-token ring: the in-flight check alone
+ * still keeps its redelivered probe from being answered. */
+static void a_probe_redelivered_after_its_id_left_the_ring_is_not_answered_while_running(
+    void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record pending = { 0 };
+  fx->rec = &pending;
+  run_one_invocation(fx, &pending, 0xB4);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  for (uint8_t i = 0; i < CONCURRENT_CAPACITY; ++i)
+  {
+    run_one_invocation(fx, &rec, (uint8_t)(0xD0 + i));
+    assert_int_equal(
+        az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+    ack_last_phase(fx, "result:1");
+  }
+
+  assert_int_equal(redeliver_probe(fx, 0xB4), 0);
+  assert_int_equal(count_live_tokens(fx), 0);
+}
+#endif
+
+/* Answered and acknowledged, the invocation is gone; its probe redelivered creates no token. */
+static void a_probe_redelivered_after_its_result_is_not_answered(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  run_one_invocation(fx, &rec, 0xB2);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  ack_last_phase(fx, "result:1");
+  assert_false(fx->dm._internal.invocations[rec.request._internal.slot].slot._internal.in_use);
+
+  assert_int_equal(redeliver_probe(fx, 0xB2), 0);
+  assert_int_equal(count_live_tokens(fx), 0);
+}
+
+/* An abandoned token's probe redelivered creates no token, so no second Abandon follows. */
+static void a_probe_redelivered_after_its_abandon_is_not_answered(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xB3);
+  uint8_t ready_id[16];
+  probe_and_accept(fx, request_id, "dump", 300, ready_id);
+  ack_last_phase(fx, "probe-ack:1");
+  for (size_t i = 0; i < CONCURRENT_CAPACITY; ++i)
+  {
+    if (memcmp(fx->dm._internal.ready_pool[i]._internal.request_id, request_id, 16) == 0)
+    {
+      fx->dm._internal.ready_pool[i]._internal.expires_at_ms = az_iot_time_mono_ms();
+    }
+  }
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  (void)az_iot_connection_client_do_work(&fx->conn, 0);
+  assert_int_equal(count_phase(fx->mock, "abandon:1"), 1);
+
+  assert_int_equal(redeliver_probe(fx, 0xB3), 0);
+  assert_int_equal(count_live_tokens(fx), 0);
+}
+
+/* A probe-ack dropped unsent at its connect budget ends its token: the probe redelivered without
+ * Message Expiry once connected is not answered. */
+static void a_probe_redelivered_after_its_unsent_probe_ack_expired_is_not_answered(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_conn(fx);
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xB5);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "reboot", 300);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 1);
+  sleep_past_one_second();
+  finish_birth(fx);
+  assert_null(find_phase(fx->mock, "probe-ack:1"));
+
+  az_iot_mock_mqtt_client_clear_calls(fx->mock);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 0);
+  assert_null(find_phase(fx->mock, "probe-ack:1"));
+  assert_int_equal(count_live_tokens(fx), 0);
+}
+
+/* The last max_concurrent_invocations ended tokens are remembered; an older probe is new again. */
+static void only_the_most_recently_ended_tokens_are_remembered(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  open_to_connected(fx);
+
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+  for (uint8_t i = 0; i <= CONCURRENT_CAPACITY; ++i)
+  {
+    run_one_invocation(fx, &rec, (uint8_t)(0xC8 + i));
+    assert_int_equal(
+        az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+    ack_last_phase(fx, "result:1");
+  }
+
+  assert_int_equal(redeliver_probe(fx, (uint8_t)(0xC8 + CONCURRENT_CAPACITY)), 0);
+  assert_int_equal(redeliver_probe(fx, 0xC8), 1);
+  assert_int_equal(count_live_tokens(fx), 1);
+}
+
 static void respond_rejects_a_request_this_client_never_handed_out(void** state)
 {
   fixture* fx = (fixture*)*state;
@@ -5453,6 +5604,22 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         an_exec_slot_inside_its_budget_is_not_reclaimed, setup, teardown),
     cmocka_unit_test_setup_teardown(a_reclaimed_exec_slot_names_the_method, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_probe_redelivered_during_its_invocation_is_not_answered, setup, teardown),
+#if DM_TEST_HOLDS_TWO_AT_ONCE
+    cmocka_unit_test_setup_teardown(
+        a_probe_redelivered_after_its_id_left_the_ring_is_not_answered_while_running,
+        setup,
+        teardown),
+#endif
+    cmocka_unit_test_setup_teardown(
+        a_probe_redelivered_after_its_result_is_not_answered, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_probe_redelivered_after_its_abandon_is_not_answered, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        a_probe_redelivered_after_its_unsent_probe_ack_expired_is_not_answered, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        only_the_most_recently_ended_tokens_are_remembered, setup, teardown),
     cmocka_unit_test_setup_teardown(
         in_flight_invocations_use_up_the_probe_capacity, setup, teardown),
     cmocka_unit_test_setup_teardown(

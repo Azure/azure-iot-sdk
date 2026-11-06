@@ -17,6 +17,7 @@ option and event in full.
 - [Workflow, steps and results](#workflow-steps-and-results)
 - [Reboot and resume](#reboot-and-resume)
 - [Delta updates](#delta-updates)
+- [Mini (detached) update manifests](#mini-detached-update-manifests)
 - [Library mode](#library-mode)
 - [Trust and root keys](#trust-and-root-keys)
 - [Device properties](#device-properties)
@@ -184,8 +185,8 @@ Your code does the device-side work. Every hook gets `hooks.user_ctx`, returns a
 
 | Hook | Needed | Called | May return |
 |---|---|---|---|
-| `download_fn` | Yes | Once per file (and per related file, see [Delta updates](#delta-updates)) | `SUCCESS`, `IN_PROGRESS`, `FAILURE` |
-| `read_file_fn` | Yes, unless your platform checks each file's integrity itself; required with download handlers | After each download, to check its SHA-256 against the signed manifest. NULL skips the check: the signature covers the manifest, not the downloaded bytes. | `SUCCESS`, `FAILURE` |
+| `download_fn` | Yes | Once per file (and per related file, see [Delta updates](#delta-updates)); for a mini manifest, first for its detached manifest file (`file_index` 0, `file_count` 1), which holds the full manifest; only that file is downloaded in `AZ_IOT_SU_STATE_VERIFYING_MANIFEST` | `SUCCESS`, `IN_PROGRESS`, `FAILURE` |
+| `read_file_fn` | Yes, unless your platform checks each file's integrity itself; required with download handlers and for mini manifests | After each download, to check its SHA-256 against the signed manifest. NULL skips the check: the signature covers the manifest, not the downloaded bytes. | `SUCCESS`, `FAILURE` |
 | `is_installed_fn` | Optional | Before anything is downloaded | `ALREADY_INSTALLED` (reported `SKIPPED`), `SUCCESS` |
 | `backup_fn` | Optional | Before each step's install | `SUCCESS`, `IN_PROGRESS`, `FAILURE` |
 | `install_fn` | Yes | Once per step | `SUCCESS`, `IN_PROGRESS`, `REBOOT_REQUIRED`, `FAILURE` |
@@ -200,8 +201,9 @@ Your code does the device-side work. Every hook gets `hooks.user_ctx`, returns a
   `nvs_commit()`). A length of 0 means erase.
 
 Ready-made hooks: the ESP32 OTA adapter
-([platforms/esp32](../platforms/esp32/README.md)). Real downloads with libcurl:
-[http_download](../samples/software_update/pc/http_download/README.md).
+([platforms/esp32](../platforms/esp32/README.md)); for mini manifests, give it a
+`detached_manifest_buffer` and register its observer, `az_iot_su_esp32_ota_handle_event()`.
+Real downloads with libcurl: [http_download](../samples/software_update/pc/http_download/README.md).
 
 ## Workflow, steps and results
 
@@ -293,6 +295,69 @@ Samples: [http_download § Delta updates](../samples/software_update/pc/http_dow
 API: `az_iot_su_download_handler` and `AZ_IOT_SU_DELTA_ERROR_*` in [`az_iot_su.h`](../inc/azure/iot/az_iot_su.h);
 the reference handler's options in [`az_iot_su_delta.h`](../adapters/su/delta/az_iot_su_delta.h).
 
+## Mini (detached) update manifests
+
+When an update manifest is over 4,096 bytes, Device Update sends a signed **mini manifest** in its
+place ([Full vs mini update manifest](https://learn.microsoft.com/azure/iot-hub-device-update/update-manifest#full-vs-mini-update-manifest)).
+The mini manifest has no steps. Its `detachedManifestFileId` names its only `files` entry, the
+**detached manifest file**: `{"updateManifest":"<full manifest>"}`. That file is not signed itself;
+the signed mini manifest gives its exact size and SHA-256.
+
+```mermaid
+flowchart LR
+    M[mini manifest: signature ok] --> D[download the detached manifest file]
+    D --> C{size and SHA-256 as signed?}
+    C -- yes --> F[full manifest: same updateId, not a mini] --> S[download, install, report its steps]
+    C -- no --> X[FAILED, AZ_IOT_SU_MANIFEST_ERROR_DETACHED_*]
+```
+
+**Managed client:** handled for you, with `download_fn` and `read_file_fn` (both required).
+- In `AZ_IOT_SU_STATE_VERIFYING_MANIFEST` the client downloads the detached manifest file
+  (`file_index` 0, `file_count` 1; no other file is downloaded in that state), reads it back,
+  checks it and replaces the mini manifest with the full manifest. The steps and step results are
+  then the full manifest's.
+- The file is stored after the update metadata, in `max_update_size`: both must fit
+  ([Memory and limits](#memory-and-limits)). It is persisted with the workflow, so a resumed
+  workflow does not download it again.
+- `az_iot_su_client_get_current_update()` returns the full manifest once it is checked;
+  `request->update_manifest` stays the mini manifest.
+- Hooks that store files in a special place (e.g. a firmware partition) tell the detached manifest
+  file apart by the state of the last `AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED`. The ESP32 OTA
+  adapter does this: give it a `detached_manifest_buffer` and register its observer
+  ([Platform hooks](#platform-hooks)).
+
+**Library mode:** your code downloads the file and calls `az_iot_su_parse_detached_manifest()`;
+see the flow in [Library mode](#library-mode).
+
+**API:** `az_iot_su_manifest_is_detached()`, `detached_manifest_file_id` in
+`az_iot_su_client_update_manifest`, `az_iot_su_parse_detached_manifest()`, and these
+`AZ_IOT_SU_FACILITY_MANIFEST` sub-codes in [`az_iot_su.h`](../inc/azure/iot/az_iot_su.h):
+
+| Sub-code | `AZ_IOT_SU_MANIFEST_ERROR_` | Meaning |
+|---|---|---|
+| `0xC` | `DETACHED_FILE_ENTRY` | The mini manifest's `files` is not exactly its detached manifest file |
+| `0xD` | `DETACHED_FILE_URL` | No `fileUrls` entry for that file |
+| `0xE` | `DETACHED_FILE_NO_READER` | No `read_file_fn` |
+| `0xF` | `DETACHED_FILE_TOO_LARGE` | The file does not fit in `max_update_size` after the metadata (both sizes are logged) |
+| `0x10` | `DETACHED_FILE_READ` | `read_file_fn` failed |
+| `0x11` | `DETACHED_FILE_HASH` | The file's size or SHA-256 differs from the mini manifest's |
+| `0x12` | `DETACHED_FILE_INVALID` | Not `{"updateManifest":"..."}` with a valid manifest |
+| `0x13` | `DETACHED_UPDATE_ID` | The full manifest's `updateId` differs from the mini manifest's |
+| `0x14` | `DETACHED_NESTED` | The full manifest is itself a mini manifest |
+
+A failing `download_fn` is reported with `AZ_IOT_SU_FACILITY_DOWNLOAD`, as for any file. The full
+manifest then goes through the same checks as one sent in full (e.g. `NO_STEPS`, `REFERENCE_STEP`).
+
+Samples: [http_download](../samples/software_update/pc/http_download/README.md) (managed, real
+download) and [library_mode](../samples/software_update/pc/library_mode/README.md) (reads the file
+from `SU_SIM_DETACHED_MANIFEST_FILE`). The other PC samples simulate downloads, so they serve a
+copy of the file from `SU_SIM_DETACHED_MANIFEST_FILE` and, without it, fail the update and print
+the file's URL
+([simulated_regular § Mini manifests](../samples/software_update/pc/simulated_regular/README.md#mini-manifests)).
+
+The [ESP32 sample](../samples/software_update/esp32/README.md#mini-manifests) accepts a detached
+manifest file of up to 20 KiB, a full manifest of about 16 KiB; its README says how to raise that.
+
 ## Library mode
 
 For an existing update agent: the client keeps the service side (checks, signature verification,
@@ -302,7 +367,29 @@ report delivery and retries) and hands each verified update to your code.
 2. On `AZ_IOT_SU_EVENT_UPDATE_AVAILABLE`, take `event->request` (workflow id, file URLs) and
    `event->manifest`. They stay valid until your final report.
 3. Download, check each file with `az_iot_su_verify_file_hash()`, install.
-4. Report progress and the outcome with `az_iot_su_client_report_status()`, one result per step.
+4. Report progress and the outcome with `az_iot_su_client_report_status()`. A final report takes 0
+   to `AZ_IOT_SU_MAX_STEP_COUNT` step results, entry i reported as step i of the manifest: include
+   them on failure; on success they may be omitted.
+
+A mini manifest (`az_iot_su_manifest_is_detached(event->manifest)`, no steps) needs one more step
+before 3: download the file named by `detached_manifest_file_id` from `event->request->file_urls`
+into your memory and call `az_iot_su_parse_detached_manifest()`. It checks the file against the
+signed mini manifest and gives you the full manifest, whose steps you install and report.
+`event->manifest` stays the mini manifest. It works the same for a mini manifest from
+`az_iot_su_parse_update_request()`.
+
+```mermaid
+flowchart TB
+    E[AZ_IOT_SU_EVENT_UPDATE_AVAILABLE: request, manifest] --> Q{az_iot_su_manifest_is_detached?}
+    Q -- no --> U[manifest to run = event manifest]
+    Q -- yes --> D[download the file named by detached_manifest_file_id, URL from request file_urls]
+    D --> P[az_iot_su_parse_detached_manifest]
+    P -- AZ_IOT_OK --> U2[manifest to run = full manifest, in your storage]
+    P -- error --> R[report FAILED: FACILITY_MANIFEST + out_error sub-code]
+    U --> I[per file: download, az_iot_su_verify_file_hash, install]
+    U2 --> I
+    I --> S[az_iot_su_client_report_status: results of the manifest run]
+```
 
 `az_iot_su_client_get_current_update()` returns the current update in either mode.
 
@@ -350,7 +437,7 @@ is valid only during the callback. Names below omit the `AZ_IOT_SU_EVENT_` prefi
 | `NO_UPDATE` | A check found nothing | Wait for the next check |
 | `REPORT_ACCEPTED` | The service accepted a report | — |
 | `OPERATION_ABANDONED` | A check or report was given up (`operation`, `reason`, `service_error`) | A check: log `service_error` and ask again later on the **same** route. A report: log only; the client reports again at its next reporting point (a rejected final report: see the header) |
-| `UPDATE_REFUSED` | An offer is too large or malformed; not processed | Raise the limit named by `reason`, or fix the update |
+| `UPDATE_REFUSED` | An offer is too large or malformed; not processed, reported `FAILED` | Raise the limit named by `reason`, or fix the update |
 | `UPDATE_DEFERRED` | A new update waits: the current one has started installing (or awaits its reboot) | Ask again once the current one ends |
 | `UPDATE_DUPLICATE` | The same update was offered again | — |
 | `UPDATE_RETRY_WAIT` | A failed update was offered before its retry time | Ask again after `retry_after_ms` |
@@ -359,8 +446,12 @@ is valid only during the callback. Names below omit the `AZ_IOT_SU_EVENT_` prefi
 
 ## Retries, duplicates and cancellation
 
-- **Transient service errors** are retried by the client (1 s doubling to 60 s, or the service's
-  `Retry-After`), within the request timeout.
+- **Transient service errors** are retried by the client (1 s doubling to 60 s, within the request
+  timeout). A throttled request waits for the service's `Retry-After` instead; on a 5xx the
+  `Retry-After` is only a floor for the backoff. The exception is a check answered
+  `UPSTREAM_UNAVAILABLE` without `Retry-After`: it ends at once with `OPERATION_ABANDONED`
+  (`reason` `AZ_IOT_ERR_DPS`), as the service asks, and the next scheduled check tries again. A
+  check held before registration releases it.
 - **A failed update** offered again is retried after 1 h, doubling up to 24 h, with jitter. The wait
   survives a restart when persistence is set.
 - **A new update while one runs** replaces it until its first `install_fn` call: an update still
@@ -379,8 +470,10 @@ Turn on the `su` and `dps` log components at `DEBUG` ([logging.md](logging.md)).
 | Always `NO_UPDATE` | Compatibility properties do not match the update, or it is already installed | Compare the properties the device sends with the update's `compatibility` |
 | Regular check `OPERATION_ABANDONED`, `INVALID_REQUEST` | The device has no device record yet | Use the onboarding route until it registers |
 | `OPERATION_ABANDONED`, `UPDATE_ACCOUNT_NOT_LINKED` or `..._ACCESS_DENIED` | ADR namespace not linked to Device Update | Fix the link; provisioning is not blocked |
+| Check `OPERATION_ABANDONED`, `UPSTREAM_UNAVAILABLE` | Device Update or its registry is temporarily unavailable | None; the next scheduled check tries again |
 | `FAILED`, facility `0x1` (`AZ_IOT_SU_FACILITY_MANIFEST`) | Signature not trusted: unknown or disabled root key | Pass the right root keys; the sub-code says which check failed |
 | `FAILED`, facility `0x3` (`HASH`) | A downloaded file differs from the signed one | Check `download_fn` and `read_file_fn` |
+| `FAILED`, facility `0x1`, sub-code `0xC` to `0x14` | A mini manifest's detached manifest file could not be used | [Mini (detached) update manifests](#mini-detached-update-manifests); for `0xF`, raise `max_update_size` |
 | `UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` | The update's metadata exceeds `max_update_size`, or it has too many files | Raise the limit ([Memory and limits](#memory-and-limits)) |
 | `init()` returns `AZ_IOT_ERR_INVALID_ARG` | Missing hooks, root keys, properties or workspace; or a build mismatch | The `ERROR` log names the cause |
 
@@ -391,7 +484,7 @@ For support, include the event's `service_error.tracking_id`.
 The client lives in memory you provide: `AZ_IOT_SU_WORKSPACE_DEFAULT_SIZE` bytes for the default
 `az_iot_su_limits`, or `az_iot_su_workspace_size()` / `AZ_IOT_SU_WORKSPACE_SIZE()` for your own. The
 update metadata (manifest, signature and file URLs) may be up to 64 KiB by default
-(`max_update_size`); the files themselves are downloaded by your hooks and are not limited by it.
+(`max_update_size`), which must also hold a mini manifest's detached manifest file; the files themselves are downloaded by your hooks and are not limited by it.
 Steps and files per update are build options (10 and 10). Every limit:
 [client-configuration.md § Software updates](client-configuration.md#software-updates-az_iot_suh).
 
@@ -409,19 +502,23 @@ Steps and files per update are build options (10 and 10). Every limit:
 
 PC samples run on Linux and Windows.
 
+Mini manifests: see [Mini (detached) update manifests](#mini-detached-update-manifests).
+
 ## Limitations
 
 - Updates go over DPS only; there is no IoT Hub route.
 - Only X.509 device authentication is supported for Software Update.
 - No root key package download or rotation, and no signing-key revocation.
-- Not supported: component targeting, proxy (gateway-to-leaf) updates, reference steps, mini
-  (detached) update manifests, step handlers (apt, script, swupdate), Delivery Optimization, log
-  upload. A mini manifest, or a manifest with a reference step or no step, fails before anything
-  is downloaded (`AZ_IOT_SU_MANIFEST_ERROR_*`).
+- Not supported: component targeting, proxy (gateway-to-leaf) updates, reference steps, step
+  handlers (apt, script, swupdate), Delivery Optimization, log upload. A manifest with a
+  reference step or no step fails before anything is downloaded (`AZ_IOT_SU_MANIFEST_ERROR_*`).
 - No built-in health check or automatic rollback after a reboot.
 - `AZ_IOT_SU_REPLACEMENT_ROLLBACK` is not supported yet.
-- An update refused by the device (`UPDATE_REFUSED`) is not reported to the service, which keeps
-  offering it.
+- An update refused by the device (`UPDATE_REFUSED`) is reported `FAILED` once (facility `0xB`),
+  unless its workflow ID is missing, undecodable or longer than `AZ_IOT_SU_WORKFLOW_ID_SIZE`. The
+  service records the failure but, as for any failed workflow, keeps offering it while the
+  deployment applies; each offer is refused again. Fix the update or raise the limit. The report is
+  not persisted: after a restart, the next refusal is reported again.
 - A skipped update is reported with result code -1.
 - During a service outage a check is retried until its timeout, not deferred to the next scheduled
   check.

@@ -8,14 +8,14 @@
 #include <inttypes.h>
 #include <string.h>
 
-#include "esp_log.h"
+#include "azure/iot/az_iot_log.h"
+#include "azure/iot/az_iot_log_components.h"
+
 #include "esp_timer.h"
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "nvs.h"
 #include "nvs_flash.h"
-
-static const char* TAG = "su_ota";
 
 #define SU_NVS_NAMESPACE "su_sample"
 #define SU_NVS_STATE_KEY "wf_state"
@@ -80,31 +80,68 @@ static void ota_download_close(az_iot_su_esp32_ota_context* c, bool abort_ota_wr
   }
 }
 
-/** @brief Open the HTTP download and the OTA write. Returns IN_PROGRESS or FAILURE. */
+/**
+ * @brief Whether the client is fetching a mini manifest's detached manifest file, which it does
+ * only in AZ_IOT_SU_STATE_VERIFYING_MANIFEST, rather than a step's file.
+ */
+static bool ota_is_detached_manifest_phase(const az_iot_su_esp32_ota_context* c)
+{
+  return c->workflow_state == AZ_IOT_SU_STATE_VERIFYING_MANIFEST;
+}
+
+/**
+ * @brief Abort a stale OTA write, then open the HTTP download, and the OTA write unless
+ * @p detached_manifest. Returns IN_PROGRESS or FAILURE.
+ */
 static int32_t ota_download_open(
     az_iot_su_esp32_ota_context* c,
     const az_iot_su_client_update_manifest_file* file,
-    az_span download_url)
+    az_span download_url,
+    bool detached_manifest)
 {
+  /* A complete image never installed is stale once another download opens. */
+  ota_download_close(c, true);
+
   char url[1024];
   if (!span_to_cstr(download_url, url, sizeof(url)))
   {
-    ESP_LOGE(TAG, "download URL too long");
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "ota: download URL too long");
     return AZ_IOT_SU_RESULT_FAILURE;
   }
 
-  c->update_partition = esp_ota_get_next_update_partition(NULL);
-  if (!c->update_partition)
+  if (detached_manifest)
   {
-    ESP_LOGE(TAG, "no free OTA partition");
-    return AZ_IOT_SU_RESULT_FAILURE;
+    if (file->size_in_bytes < 0 || az_span_size(c->detached_manifest_buffer) == 0
+        || file->size_in_bytes > (int64_t)az_span_size(c->detached_manifest_buffer))
+    {
+      AZ_IOT_LOG_ERRORF(
+          AZ_IOT_LOG_COMPONENT_SU,
+          "ota: detached manifest file of %lld bytes exceeds detached_manifest_buffer (%" PRId32
+          " bytes)",
+          (long long)file->size_in_bytes,
+          az_span_size(c->detached_manifest_buffer));
+      return AZ_IOT_SU_RESULT_FAILURE;
+    }
+    AZ_IOT_LOG_INFOF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "ota: downloading %lld-byte detached manifest file",
+        (long long)file->size_in_bytes);
   }
-  ESP_LOGI(
-      TAG,
-      "downloading %lld bytes -> partition '%s' @0x%08" PRIx32,
-      (long long)file->size_in_bytes,
-      c->update_partition->label,
-      c->update_partition->address);
+  else
+  {
+    c->update_partition = esp_ota_get_next_update_partition(NULL);
+    if (!c->update_partition)
+    {
+      AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "ota: no free OTA partition");
+      return AZ_IOT_SU_RESULT_FAILURE;
+    }
+    AZ_IOT_LOG_INFOF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "ota: downloading %lld bytes -> partition '%s' @0x%08" PRIx32,
+        (long long)file->size_in_bytes,
+        c->update_partition->label,
+        c->update_partition->address);
+  }
 
   /* timeout_ms bounds each blocking read; it must stay well below the MQTT keep-alive. */
   esp_http_client_config_t http = {
@@ -123,33 +160,75 @@ static int32_t ota_download_open(
   esp_err_t err = esp_http_client_open(c->http_client, 0);
   if (err != ESP_OK)
   {
-    ESP_LOGE(TAG, "http open failed: %s", esp_err_to_name(err));
+    AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_SU, "ota: http open failed: %s", esp_err_to_name(err));
     return AZ_IOT_SU_RESULT_FAILURE;
   }
   esp_http_client_fetch_headers(c->http_client);
   int status = esp_http_client_get_status_code(c->http_client);
   if (status != 200 && status != 206)
   {
-    ESP_LOGE(TAG, "http status %d", status);
+    AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_SU, "ota: http status %d", status);
     return AZ_IOT_SU_RESULT_FAILURE;
   }
 
-  if (esp_ota_begin(c->update_partition, OTA_SIZE_UNKNOWN, &c->ota_handle) != ESP_OK)
+  if (detached_manifest)
   {
-    ESP_LOGE(TAG, "esp_ota_begin failed");
-    return AZ_IOT_SU_RESULT_FAILURE;
+    c->detached_manifest_size = 0;
   }
-  c->ota_in_progress = true;
-  c->bytes_written = 0;
+  else
+  {
+    if (esp_ota_begin(c->update_partition, OTA_SIZE_UNKNOWN, &c->ota_handle) != ESP_OK)
+    {
+      AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "ota: esp_ota_begin failed");
+      return AZ_IOT_SU_RESULT_FAILURE;
+    }
+    c->ota_in_progress = true;
+    c->bytes_written = 0;
+  }
   c->download_url_hash = ota_download_url_hash(download_url);
   return AZ_IOT_SU_RESULT_IN_PROGRESS;
 }
 
 /**
- * @brief Write up to OTA_DOWNLOAD_BYTES_PER_CALL, starting no read after
- * OTA_DOWNLOAD_TIME_PER_CALL_US. Returns IN_PROGRESS, SUCCESS or FAILURE.
+ * @brief Store @p size downloaded bytes: appended to #detached_manifest_buffer when
+ * @p detached_manifest, else written to the OTA partition. Returns false on failure.
  */
-static int32_t ota_download_continue(az_iot_su_esp32_ota_context* c)
+static bool ota_download_store(
+    az_iot_su_esp32_ota_context* c,
+    bool detached_manifest,
+    const uint8_t* chunk,
+    size_t size)
+{
+  if (detached_manifest)
+  {
+    size_t const capacity = (size_t)az_span_size(c->detached_manifest_buffer);
+    if (size > capacity - c->detached_manifest_size)
+    {
+      AZ_IOT_LOG_ERRORF(
+          AZ_IOT_LOG_COMPONENT_SU,
+          "ota: detached manifest file exceeds detached_manifest_buffer (%zu bytes)",
+          capacity);
+      return false;
+    }
+    memcpy(az_span_ptr(c->detached_manifest_buffer) + c->detached_manifest_size, chunk, size);
+    c->detached_manifest_size += size;
+    return true;
+  }
+  if (esp_ota_write(c->ota_handle, chunk, size) != ESP_OK)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU, "ota: esp_ota_write failed at %zu", c->bytes_written);
+    return false;
+  }
+  c->bytes_written += size;
+  return true;
+}
+
+/**
+ * @brief Store up to OTA_DOWNLOAD_BYTES_PER_CALL with ota_download_store(), starting no read
+ * after OTA_DOWNLOAD_TIME_PER_CALL_US. Returns IN_PROGRESS, SUCCESS or FAILURE.
+ */
+static int32_t ota_download_continue(az_iot_su_esp32_ota_context* c, bool detached_manifest)
 {
   uint8_t buf[2048];
   size_t read_this_call = 0;
@@ -160,26 +239,31 @@ static int32_t ota_download_continue(az_iot_su_esp32_ota_context* c)
     int r = esp_http_client_read(c->http_client, (char*)buf, sizeof(buf));
     if (r < 0)
     {
-      ESP_LOGE(TAG, "http read error");
+      AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "ota: http read error");
       return AZ_IOT_SU_RESULT_FAILURE;
     }
     if (r == 0)
     {
-      ESP_LOGI(TAG, "download complete: %zu bytes written", c->bytes_written);
+      AZ_IOT_LOG_INFOF(
+          AZ_IOT_LOG_COMPONENT_SU,
+          "ota: download complete: %zu bytes written",
+          detached_manifest ? c->detached_manifest_size : c->bytes_written);
       return AZ_IOT_SU_RESULT_SUCCESS;
     }
-    if (esp_ota_write(c->ota_handle, buf, (size_t)r) != ESP_OK)
+    if (!ota_download_store(c, detached_manifest, buf, (size_t)r))
     {
-      ESP_LOGE(TAG, "esp_ota_write failed at %zu", c->bytes_written);
       return AZ_IOT_SU_RESULT_FAILURE;
     }
-    c->bytes_written += (size_t)r;
     read_this_call += (size_t)r;
   }
   return AZ_IOT_SU_RESULT_IN_PROGRESS;
 }
 
-/* Called again on each do_work() while it returns IN_PROGRESS. */
+/**
+ * @brief download_fn: a mini manifest's detached manifest file into #detached_manifest_buffer,
+ * else the app image into the OTA partition. Called again on each do_work() while it returns
+ * IN_PROGRESS. Fails until az_iot_su_esp32_ota_handle_event() gets an event.
+ */
 static int32_t ota_download(
     const az_iot_su_client_update_manifest_file* file,
     az_span download_url,
@@ -188,12 +272,24 @@ static int32_t ota_download(
     void* user_ctx)
 {
   az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)user_ctx;
+  if (c->workflow_state == AZ_IOT_SU_STATE_IDLE)
+  {
+    /* The client never downloads in IDLE: no state was announced to the observer. */
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "ota: az_iot_su_esp32_ota_handle_event() is not registered");
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  bool const detached_manifest = ota_is_detached_manifest_phase(c);
 
   /* The single payload is the new ESP32 app image; multi-file updates would need a
    * partition/file map. */
-  if (file_index != 0)
+  if (!detached_manifest && file_index != 0)
   {
-    ESP_LOGW(TAG, "ignoring extra file %u/%u", file_index + 1, file_count);
+    AZ_IOT_LOG_WARNF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "ota: ignoring extra file %" PRIu32 "/%" PRIu32,
+        file_index + 1u,
+        file_count);
     return AZ_IOT_SU_RESULT_SUCCESS;
   }
 
@@ -202,8 +298,9 @@ static int32_t ota_download(
     /* A different download replaced the one in progress. */
     ota_download_close(c, true);
   }
-  int32_t result = c->http_client == NULL ? ota_download_open(c, file, download_url)
-                                          : ota_download_continue(c);
+  int32_t result = c->http_client == NULL
+      ? ota_download_open(c, file, download_url, detached_manifest)
+      : ota_download_continue(c, detached_manifest);
   if (result != AZ_IOT_SU_RESULT_IN_PROGRESS)
   {
     /* Keep a complete image's OTA write open for install_fn. */
@@ -216,6 +313,10 @@ static int32_t ota_download(
 /* read back for hash verification                                           */
 /* ------------------------------------------------------------------------- */
 
+/**
+ * @brief read_file_fn: reads the detached manifest file from #detached_manifest_buffer, else the
+ * written image from the OTA partition.
+ */
 static int32_t ota_read_file(
     const az_iot_su_client_update_manifest_file* file,
     uint32_t file_index,
@@ -227,6 +328,18 @@ static int32_t ota_read_file(
 {
   (void)file_index;
   az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)user_ctx;
+  if (ota_is_detached_manifest_phase(c))
+  {
+    size_t const remaining
+        = offset < c->detached_manifest_size ? c->detached_manifest_size - offset : 0;
+    size_t const copied = remaining < buffer_size ? remaining : buffer_size;
+    if (copied > 0)
+    {
+      memcpy(buffer, az_span_ptr(c->detached_manifest_buffer) + offset, copied);
+    }
+    *out_read = copied;
+    return AZ_IOT_SU_RESULT_SUCCESS;
+  }
   if (!c->update_partition)
   {
     *out_read = 0;
@@ -277,7 +390,10 @@ static int32_t ota_backup(
   (void)user_ctx;
   /* The currently-running partition IS the backup: the bootloader rolls back
    * to it automatically if the new image fails to confirm itself healthy. */
-  ESP_LOGI(TAG, "backup step %u (implicit A/B rollback partition)", step);
+  AZ_IOT_LOG_INFOF(
+      AZ_IOT_LOG_COMPONENT_SU,
+      "ota: backup step %" PRIu32 " (implicit A/B rollback partition)",
+      step);
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
@@ -290,7 +406,8 @@ static int32_t ota_install(
   az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)user_ctx;
   if (!c->ota_in_progress)
   {
-    ESP_LOGE(TAG, "install step %u with no downloaded image", step);
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU, "ota: install step %" PRIu32 " with no downloaded image", step);
     return AZ_IOT_SU_RESULT_FAILURE;
   }
 
@@ -299,18 +416,24 @@ static int32_t ota_install(
   c->ota_in_progress = false;
   if (err != ESP_OK)
   {
-    ESP_LOGE(TAG, "esp_ota_end failed: %s", esp_err_to_name(err));
+    AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_SU, "ota: esp_ota_end failed: %s", esp_err_to_name(err));
     return AZ_IOT_SU_RESULT_FAILURE;
   }
 
   err = esp_ota_set_boot_partition(c->update_partition);
   if (err != ESP_OK)
   {
-    ESP_LOGE(TAG, "esp_ota_set_boot_partition failed: %s", esp_err_to_name(err));
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "ota: esp_ota_set_boot_partition failed: %s",
+        esp_err_to_name(err));
     return AZ_IOT_SU_RESULT_FAILURE;
   }
 
-  ESP_LOGI(TAG, "install step %u complete; reboot required to apply", step);
+  AZ_IOT_LOG_INFOF(
+      AZ_IOT_LOG_COMPONENT_SU,
+      "ota: install step %" PRIu32 " complete; reboot required to apply",
+      step);
   c->reboot_pending = true;
   return AZ_IOT_SU_RESULT_REBOOT_REQUIRED;
 }
@@ -321,10 +444,17 @@ static int32_t ota_apply(
     void* user_ctx)
 {
   (void)manifest;
-  (void)user_ctx;
+  az_iot_su_esp32_ota_context const* c = (az_iot_su_esp32_ota_context const*)user_ctx;
+  /* The image install_fn flashed boots only after the reboot it asked for:
+   * until then the old firmware runs, so the step is not applied yet. */
+  if (c->reboot_pending)
+  {
+    return AZ_IOT_SU_RESULT_IN_PROGRESS;
+  }
   /* Reached after the reboot, when the workflow resumes inside the freshly
    * booted image: the new firmware is already running, so apply is a no-op. */
-  ESP_LOGI(TAG, "apply step %u (new image already running)", step);
+  AZ_IOT_LOG_INFOF(
+      AZ_IOT_LOG_COMPONENT_SU, "ota: apply step %" PRIu32 " (new image already running)", step);
   return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
@@ -335,7 +465,10 @@ static int32_t ota_restore(
 {
   (void)manifest;
   az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)user_ctx;
-  ESP_LOGW(TAG, "restore step %u (rollback to running partition)", step);
+  AZ_IOT_LOG_WARNF(
+      AZ_IOT_LOG_COMPONENT_SU,
+      "ota: restore step %" PRIu32 " (rollback to running partition)",
+      step);
   ota_download_close(c, true);
   /* Rolled back: the reboot install asked for is no longer wanted. */
   c->reboot_pending = false;
@@ -344,7 +477,10 @@ static int32_t ota_restore(
   esp_err_t err = (running != NULL) ? esp_ota_set_boot_partition(running) : ESP_FAIL;
   if (err != ESP_OK)
   {
-    ESP_LOGE(TAG, "restore: could not select the running partition: %s", esp_err_to_name(err));
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "ota: restore: could not select the running partition: %s",
+        esp_err_to_name(err));
     return AZ_IOT_SU_RESULT_FAILURE;
   }
   return AZ_IOT_SU_RESULT_SUCCESS;
@@ -369,13 +505,14 @@ static int32_t ota_persist(const uint8_t* blob, size_t len, void* user_ctx)
     esp_err_t err = nvs_erase_key(h, SU_NVS_STATE_KEY);
     if ((err == ESP_OK || err == ESP_ERR_NVS_NOT_FOUND) && nvs_commit(h) == ESP_OK)
     {
-      ESP_LOGI(TAG, "cleared persisted workflow state from NVS");
+      AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_SU, "ota: cleared persisted workflow state from NVS");
       result = AZ_IOT_SU_RESULT_SUCCESS;
     }
   }
   else if (nvs_set_blob(h, SU_NVS_STATE_KEY, blob, len) == ESP_OK && nvs_commit(h) == ESP_OK)
   {
-    ESP_LOGI(TAG, "persisted %zu bytes of workflow state to NVS", len);
+    AZ_IOT_LOG_INFOF(
+        AZ_IOT_LOG_COMPONENT_SU, "ota: persisted %zu bytes of workflow state to NVS", len);
     result = AZ_IOT_SU_RESULT_SUCCESS;
   }
   nvs_close(h);
@@ -409,19 +546,21 @@ void az_iot_su_esp32_ota_release_download(az_iot_su_esp32_ota_context* context)
 {
   if (context->http_client != NULL || context->ota_in_progress)
   {
-    ESP_LOGW(TAG, "releasing an unfinished download");
+    AZ_IOT_LOG_WARN(AZ_IOT_LOG_COMPONENT_SU, "ota: releasing an unfinished download");
   }
   ota_download_close(context, true);
 }
 
 void az_iot_su_esp32_ota_handle_event(const az_iot_su_event* event, void* context)
 {
+  az_iot_su_esp32_ota_context* c = (az_iot_su_esp32_ota_context*)context;
+  c->workflow_state = event->state;
   /* A workflow replaced or ended outside download_fn and restore_fn. */
   if (event->kind == AZ_IOT_SU_EVENT_WORKFLOW_STATE_CHANGED
       && (event->state == AZ_IOT_SU_STATE_MANIFEST_RECEIVED || event->state == AZ_IOT_SU_STATE_IDLE
           || event->state == AZ_IOT_SU_STATE_FAILED))
   {
-    az_iot_su_esp32_ota_release_download((az_iot_su_esp32_ota_context*)context);
+    az_iot_su_esp32_ota_release_download(c);
   }
 }
 
@@ -434,7 +573,7 @@ void az_iot_su_esp32_ota_mark_running_image_valid(void)
   {
     if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK)
     {
-      ESP_LOGI(TAG, "image confirmed valid; rollback cancelled");
+      AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_SU, "ota: image confirmed valid; rollback cancelled");
     }
   }
 }

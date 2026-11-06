@@ -214,3 +214,149 @@ AZ_NODISCARD az_iot_result az_iot_su__verify_and_parse_detached_manifest_file(
   }
   return AZ_IOT_OK;
 }
+
+const az_iot_su_client_update_manifest_file* az_iot_su__find_detached_manifest_file(
+    const az_iot_su_client_update_manifest* mini_manifest)
+{
+  if (mini_manifest == NULL || !az_iot_su_manifest_is_detached(mini_manifest)
+      || mini_manifest->files_count != 1u)
+  {
+    return NULL;
+  }
+  return az_iot_su__find_manifest_file(mini_manifest, mini_manifest->detached_manifest_file_id);
+}
+
+/** @brief Whether two parsed (JSON-escaped) update ids are equal, compared decoded. */
+static bool update_ids_equal(
+    const az_iot_su_client_update_manifest_update_id* first,
+    const az_iot_su_client_update_manifest_update_id* second)
+{
+  return az_iot_json_string_equals(first->provider, second->provider, true)
+      && az_iot_json_string_equals(first->name, second->name, true)
+      && az_iot_json_string_equals(first->version, second->version, true);
+}
+
+/**
+ * @brief The JSON object at the start of @p region, without what follows it.
+ *
+ * @param region The `updateManifest` value after its in-place decode: the full manifest text, then
+ *               what is left of the escaped value.
+ * @return The full manifest text; empty when @p region does not start with a JSON object.
+ */
+static az_span leading_json_object(az_span region)
+{
+  az_json_reader jr;
+  if (az_span_size(region) <= 0 || az_result_failed(az_json_reader_init(&jr, region, NULL))
+      || az_result_failed(az_json_reader_next_token(&jr))
+      || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT
+      || az_result_failed(az_json_reader_skip_children(&jr)))
+  {
+    return AZ_SPAN_EMPTY;
+  }
+  const uint8_t* end = az_span_ptr(jr.token.slice) + az_span_size(jr.token.slice);
+  return az_span_slice(region, 0, (int32_t)(end - az_span_ptr(region)));
+}
+
+/**
+ * @brief Log why the full manifest is rejected, clear @p out_manifest and set
+ * @p out_manifest_error.
+ *
+ * @return AZ_IOT_ERR_INVALID_ARG.
+ */
+static az_iot_result reject_full_manifest(
+    uint32_t manifest_error,
+    const char* reason,
+    az_iot_su_client_update_manifest* out_manifest,
+    uint32_t* out_manifest_error)
+{
+  AZ_IOT_LOG_ERRORF(AZ_IOT_LOG_COMPONENT_SU, "detached manifest rejected: %s", reason);
+  memset(out_manifest, 0, sizeof(*out_manifest));
+  *out_manifest_error = manifest_error;
+  return AZ_IOT_ERR_INVALID_ARG;
+}
+
+AZ_NODISCARD az_iot_result az_iot_su__parse_detached_manifest(
+    const az_iot_crypto* crypto,
+    const az_iot_su_client_update_manifest* mini_manifest,
+    az_span file_content,
+    const az_iot_su_client_file_url* file_urls,
+    uint32_t file_urls_count,
+    az_iot_su_client_update_manifest_file* related_files,
+    size_t related_files_capacity,
+    az_iot_su_client_update_manifest* out_manifest,
+    az_span* out_manifest_text,
+    uint32_t* out_manifest_error)
+{
+  if (out_manifest_text != NULL)
+  {
+    *out_manifest_text = AZ_SPAN_EMPTY;
+  }
+  if (mini_manifest == NULL || out_manifest == NULL || out_manifest_error == NULL)
+  {
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  *out_manifest_error = 0;
+  const az_iot_su_client_update_manifest_file* entry
+      = az_iot_su__find_detached_manifest_file(mini_manifest);
+  if (entry == NULL)
+  {
+    return reject_full_manifest(
+        AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_ENTRY,
+        "the mini manifest files is not exactly its detached manifest file",
+        out_manifest,
+        out_manifest_error);
+  }
+  /* Copied first: out_manifest may be mini_manifest, which the parse overwrites. */
+  az_iot_su_client_update_manifest_file detached_file = *entry;
+  az_iot_su_client_update_manifest_update_id mini_update_id = mini_manifest->update_id;
+  /* Located before the in-place decode: the full manifest text starts there. */
+  az_span escaped = AZ_SPAN_EMPTY;
+  (void)find_update_manifest_property(file_content, &escaped);
+
+  az_iot_su__detached_manifest_error file_error = AZ_IOT_SU__DETACHED_MANIFEST_ERROR_NONE;
+  az_iot_result result = az_iot_su__verify_and_parse_detached_manifest_file(
+      crypto,
+      &detached_file,
+      file_content,
+      file_urls,
+      file_urls_count,
+      related_files,
+      related_files_capacity,
+      out_manifest,
+      &file_error);
+  if (result != AZ_IOT_OK)
+  {
+    *out_manifest_error = (file_error == AZ_IOT_SU__DETACHED_MANIFEST_ERROR_SIZE_MISMATCH
+                           || file_error == AZ_IOT_SU__DETACHED_MANIFEST_ERROR_HASH_MISMATCH)
+        ? AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_HASH
+        : AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_INVALID;
+    return result;
+  }
+  if (!update_ids_equal(&out_manifest->update_id, &mini_update_id))
+  {
+    return reject_full_manifest(
+        AZ_IOT_SU_MANIFEST_ERROR_DETACHED_UPDATE_ID,
+        "the full manifest updateId differs from the mini manifest's",
+        out_manifest,
+        out_manifest_error);
+  }
+  if (az_iot_su_manifest_is_detached(out_manifest))
+  {
+    return reject_full_manifest(
+        AZ_IOT_SU_MANIFEST_ERROR_DETACHED_NESTED,
+        "the full manifest is itself a mini manifest",
+        out_manifest,
+        out_manifest_error);
+  }
+  result = az_iot_su__check_manifest_supported(out_manifest, out_manifest_error);
+  if (result != AZ_IOT_OK)
+  {
+    memset(out_manifest, 0, sizeof(*out_manifest));
+    return result;
+  }
+  if (out_manifest_text != NULL)
+  {
+    *out_manifest_text = leading_json_object(escaped);
+  }
+  return AZ_IOT_OK;
+}

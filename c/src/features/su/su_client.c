@@ -32,6 +32,7 @@
 #include "azure/iot/az_iot_su.h"
 
 #include "internal/su_internal.h"
+#include "internal/su_detached_manifest_internal.h"
 #include "internal/su_manifest_internal.h"
 #include "internal/base64.h"
 #include "internal/crypto.h"
@@ -42,7 +43,7 @@
 #include "internal/span_writer.h"
 
 /** @brief Bytes of the persisted-record header, which precedes the request. */
-#define AZ_IOT_SU_PERSIST_HEADER_SIZE 40u
+#define AZ_IOT_SU_PERSIST_HEADER_SIZE 48u
 
 /** @brief How far the current file has got (az_iot_su_client::file_download_phase). */
 typedef enum
@@ -55,6 +56,9 @@ typedef enum
   SU_FILE_PHASE_BUILD,
   /** The file is downloaded in full, then its hash is checked. */
   SU_FILE_PHASE_FULL_DOWNLOAD,
+  /** In VERIFYING_MANIFEST: the mini manifest is verified and parsed; download_fn fetches its
+   * detached manifest file. */
+  SU_FILE_PHASE_DETACHED_MANIFEST,
 } su_file_download_phase;
 
 /* The public header reserves opaque storage for the SDK-built channel so the
@@ -66,7 +70,8 @@ static void set_su_state(az_iot_su_client* client, az_iot_su_state next);
 static void arm_pending_fetch_deadline(az_iot_su_client* client, uint32_t timeout_ms);
 static bool fetch_in_flight_overdue(const az_iot_su_client* client);
 static bool expire_fetch_in_flight(az_iot_su_client* client);
-static void raise_refused(az_iot_su_client* client, az_iot_result reason);
+static void refuse_update(az_iot_su_client* client, az_iot_result reason, az_span raw_workflow_id);
+static bool refused_report_in_flight(const az_iot_su_client* client);
 static void raise_deferred(az_iot_su_client* client);
 static void raise_retry_wait(az_iot_su_client* client, uint32_t retry_after_ms);
 static void notify_download_handlers_of_end(az_iot_su_client* client, az_iot_su_outcome outcome);
@@ -1335,6 +1340,7 @@ static void reset_to_idle(az_iot_su_client* client)
   SU_I(client).download_handler_end_owed = false;
   memset(&SU_I(client).current_request, 0, sizeof(SU_I(client).current_request));
   memset(&SU_I(client).current_manifest, 0, sizeof(SU_I(client).current_manifest));
+  SU_I(client).full_manifest_text = AZ_SPAN_EMPTY;
   SU_I(client).request_len = 0;
 }
 
@@ -1366,14 +1372,16 @@ static az_iot_result decode_manifest(az_iot_su_client* client)
  * @brief Parse the verified manifest_text into current_manifest, check that the client can install
  * it, and that every step file is described by it and has a download URL.
  *
- * current_manifest holds spans into manifest_text (client-owned request_buffer).
+ * current_manifest holds spans into manifest_text (client-owned request_buffer). A mini manifest
+ * has no steps: the managed client replaces it in fetch_detached_manifest(); in library mode the
+ * application gets the full manifest with az_iot_su_parse_detached_manifest().
  *
  * @param client             The client; decode_manifest() and verify_manifest() succeeded.
  * @param out_manifest_error Set to the AZ_IOT_SU_MANIFEST_ERROR_* sub-code when the manifest is
  *                           not supported; else 0.
  * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE when over a limit; AZ_IOT_ERR_INVALID_ARG when
- * malformed, without steps or a step file is unresolved; AZ_IOT_ERR_NOT_SUPPORTED for a mini
- * manifest or a reference step.
+ * malformed, without steps or a step file is unresolved; AZ_IOT_ERR_NOT_SUPPORTED for a
+ * reference step.
  */
 static az_iot_result parse_manifest(az_iot_su_client* client, uint32_t* out_manifest_error)
 {
@@ -1473,6 +1481,45 @@ static az_iot_result decode_nonempty(az_span s, az_span scratch)
  * checked string does not fit @p check_scratch; AZ_IOT_ERR_INVALID_ARG when malformed, without a
  * manifest, or a checked string is undecodable or empty.
  */
+/**
+ * @brief Read the root `workflowId` of update metadata, whatever else it holds.
+ *
+ * Independent of the order and validity of the other properties, so a refused
+ * update can still be named in its report.
+ *
+ * @param doc The update metadata.
+ * @return The `workflowId` as delivered (JSON-escaped); empty if not found
+ * before the first JSON error.
+ */
+static az_span read_root_workflow_id(az_span doc)
+{
+  az_json_reader jr;
+  if (az_result_failed(az_json_reader_init(&jr, doc, NULL))
+      || az_result_failed(az_json_reader_next_token(&jr))
+      || jr.token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
+  {
+    return AZ_SPAN_EMPTY;
+  }
+  while (az_result_succeeded(az_json_reader_next_token(&jr))
+         && jr.token.kind == AZ_JSON_TOKEN_PROPERTY_NAME)
+  {
+    az_json_token name = jr.token;
+    if (az_result_failed(az_json_reader_next_token(&jr)))
+    {
+      break;
+    }
+    if (az_json_token_is_text_equal(&name, AZ_SPAN_FROM_STR("workflowId")))
+    {
+      return jr.token.kind == AZ_JSON_TOKEN_STRING ? jr.token.slice : AZ_SPAN_EMPTY;
+    }
+    if (az_result_failed(az_json_reader_skip_children(&jr)))
+    {
+      break;
+    }
+  }
+  return AZ_SPAN_EMPTY;
+}
+
 static az_iot_result parse_update_metadata(
     az_span doc,
     az_iot_su_client_file_url* file_urls,
@@ -1765,6 +1812,23 @@ static void process_update_metadata(
   {
     return;
   }
+
+  /* Probe the transient buffer for the workflow identity. These spans are only
+   * valid for the duration of this call, which is enough to decide what to do,
+   * and to name the workflow in the report of a refusal. */
+  az_span transient = AZ_SPAN_EMPTY;
+  az_iot_su_client_update_request probe;
+  memset(&probe, 0, sizeof(probe));
+  az_iot_result pr = AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  az_span delivered_workflow_id = AZ_SPAN_EMPTY;
+  if (patch_len <= (size_t)INT32_MAX)
+  {
+    transient = az_span_create((uint8_t*)(uintptr_t)patch, (int32_t)patch_len);
+    pr = parse_update_metadata(transient, NULL, file_url_capacity(client), AZ_SPAN_EMPTY, &probe);
+    /* The id the client acts on: the parser's, else the first one found. */
+    delivered_workflow_id
+        = (pr == AZ_IOT_OK) ? probe.workflow.id : read_root_workflow_id(transient);
+  }
   if (patch_len > SU_I(client).request_buffer_size)
   {
     AZ_IOT_LOG_ERRORF(
@@ -1772,7 +1836,7 @@ static void process_update_metadata(
         "update payload of %u bytes exceeds az_iot_su_limits::max_update_size (%u); ignored",
         (unsigned)patch_len,
         (unsigned)SU_I(client).request_buffer_size);
-    raise_refused(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    refuse_update(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE, delivered_workflow_id);
     return;
   }
 
@@ -1782,22 +1846,16 @@ static void process_update_metadata(
   AZ_IOT_LOG_TRACEF(
       AZ_IOT_LOG_COMPONENT_SU, "update payload: %.*s", (int)patch_len, (const char*)patch);
 
-  /* Probe the transient buffer for the workflow identity. These spans are only
-   * valid for the duration of this call, which is enough to decide what to do. */
-  az_span transient = az_span_create((uint8_t*)(uintptr_t)patch, (int32_t)patch_len);
-  az_iot_su_client_update_request probe;
-  az_iot_result pr
-      = parse_update_metadata(transient, NULL, file_url_capacity(client), AZ_SPAN_EMPTY, &probe);
   if (pr == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
   {
-    raise_refused(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    refuse_update(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE, delivered_workflow_id);
     return;
   }
   if (pr != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_SU, "update payload not understood (%d); ignored", (int)pr);
-    raise_refused(client, AZ_IOT_ERR_PROTOCOL);
+    refuse_update(client, AZ_IOT_ERR_PROTOCOL, delivered_workflow_id);
     return;
   }
 
@@ -1813,7 +1871,7 @@ static void process_update_metadata(
   {
     AZ_IOT_LOG_ERROR(
         AZ_IOT_LOG_COMPONENT_SU, "update payload has an undecodable workflowId; ignored");
-    raise_refused(client, AZ_IOT_ERR_PROTOCOL);
+    refuse_update(client, AZ_IOT_ERR_PROTOCOL, delivered_workflow_id);
     return;
   }
   if (dr == AZ_IOT_ERR_NOT_ENOUGH_SPACE)
@@ -1824,7 +1882,7 @@ static void process_update_metadata(
         "update refused",
         (unsigned)sizeof(id_scratch),
         (int)az_span_size(probe.workflow.id));
-    raise_refused(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    refuse_update(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE, delivered_workflow_id);
     return;
   }
   bool retry = dr == AZ_IOT_OK && same_workflow_id(client, probe_id);
@@ -1868,13 +1926,13 @@ static void process_update_metadata(
         AZ_IOT_LOG_COMPONENT_SU,
         "update payload has a string over az_iot_su_limits::scratch_size (%u); ignored",
         (unsigned)SU_I(client).scratch_size);
-    raise_refused(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE);
+    refuse_update(client, AZ_IOT_ERR_NOT_ENOUGH_SPACE, delivered_workflow_id);
     return;
   }
   if (sr != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "update payload has an undecodable string; ignored");
-    raise_refused(client, AZ_IOT_ERR_PROTOCOL);
+    refuse_update(client, AZ_IOT_ERR_PROTOCOL, delivered_workflow_id);
     return;
   }
 
@@ -1910,6 +1968,17 @@ static void process_update_metadata(
   /* The replaced workflow's manifest points into request_buffer: end it first. */
   notify_download_handlers_of_end(client, AZ_IOT_SU_OUTCOME_CANCELED);
 
+  /* The service's offer is now this workflow: a refused one is no longer reported. */
+  az_iot_su_refused_report_state_internal* refused = &SU_I(client).refused_report.state;
+  if (*refused == AZ_IOT_SU_REFUSED_REPORT_OWED)
+  {
+    *refused = AZ_IOT_SU_REFUSED_REPORT_NONE;
+  }
+  else if (*refused == AZ_IOT_SU_REFUSED_REPORT_IN_FLIGHT)
+  {
+    *refused = AZ_IOT_SU_REFUSED_REPORT_SUPERSEDED;
+  }
+
   /* Stage the patch into client-owned storage and re-parse so current_request
    * / current_manifest reference stable memory. */
   memcpy(SU_I(client).request_buffer, patch, patch_len);
@@ -1933,6 +2002,7 @@ static void process_update_metadata(
   SU_I(client).have_request = true;
   SU_I(client).checkpoint_pending = false;
   SU_I(client).install_called = false;
+  SU_I(client).full_manifest_text = AZ_SPAN_EMPTY;
   SU_I(client).current_step = 0;
   SU_I(client).current_file = 0;
   result_init_steps(client, 0);
@@ -2069,9 +2139,52 @@ static void raise_completed(
   dispatch_event(client, &event);
 }
 
-/** @brief Raise AZ_IOT_SU_EVENT_UPDATE_REFUSED for an update not processed. */
-static void raise_refused(az_iot_su_client* client, az_iot_result reason)
+/** @brief Whether a refused update's FAILED report awaits its verdict. */
+static bool refused_report_in_flight(const az_iot_su_client* client)
 {
+  return SU_I(client).refused_report.state == AZ_IOT_SU_REFUSED_REPORT_IN_FLIGHT
+      || SU_I(client).refused_report.state == AZ_IOT_SU_REFUSED_REPORT_SUPERSEDED;
+}
+
+/**
+ * @brief Refuse a delivered update the client cannot process.
+ *
+ * Queues its FAILED report, so the service records the workflow as failed, then
+ * raises AZ_IOT_SU_EVENT_UPDATE_REFUSED. Nothing is queued when the workflow id
+ * is missing, undecodable or longer than AZ_IOT_SU_WORKFLOW_ID_SIZE (it cannot
+ * be reported exactly), is the active workflow's, whose own reports speak for
+ * it, or was already reported and accepted: the service re-offers a FAILED
+ * workflow, and each re-offer would only repeat the report. Only the last
+ * refusal is kept, and none is queued while one awaits its verdict; a
+ * redelivery queues it again.
+ *
+ * @param client          The client.
+ * @param reason          AZ_IOT_ERR_NOT_ENOUGH_SPACE or AZ_IOT_ERR_PROTOCOL.
+ * @param raw_workflow_id The update's `workflowId` as delivered (JSON-escaped); empty if unknown.
+ */
+static void refuse_update(az_iot_su_client* client, az_iot_result reason, az_span raw_workflow_id)
+{
+  az_iot_su_refused_report_internal* refused = &SU_I(client).refused_report;
+  uint8_t id_scratch[AZ_IOT_SU_WORKFLOW_ID_SIZE];
+  az_span id = AZ_SPAN_EMPTY;
+  if (az_span_size(raw_workflow_id) > 0
+      && az_iot_json_string_decode(raw_workflow_id, AZ_SPAN_FROM_BUFFER(id_scratch), &id)
+          == AZ_IOT_OK
+      && az_span_size(id) > 0 && memchr(az_span_ptr(id), '\0', (size_t)az_span_size(id)) == NULL
+      && !same_workflow_id(client, id) && !refused_report_in_flight(client)
+      && !(
+          refused->state == AZ_IOT_SU_REFUSED_REPORT_ACCEPTED
+          && az_span_is_content_equal(id, az_span_create_from_str(refused->workflow_id))))
+  {
+    memcpy(refused->workflow_id, az_span_ptr(id), (size_t)az_span_size(id));
+    refused->workflow_id[az_span_size(id)] = '\0';
+    refused->extended_result_code = AZ_IOT_SU_EXTENDED_RESULT(
+        AZ_IOT_SU_FACILITY_REFUSED,
+        reason == AZ_IOT_ERR_NOT_ENOUGH_SPACE ? AZ_IOT_SU_REFUSED_ERROR_TOO_LARGE
+                                              : AZ_IOT_SU_REFUSED_ERROR_MALFORMED);
+    refused->state = AZ_IOT_SU_REFUSED_REPORT_OWED;
+    AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_SU, "refused update will be reported FAILED");
+  }
   az_iot_su_event event = {
     .kind = AZ_IOT_SU_EVENT_UPDATE_REFUSED,
     .state = SU_I(client).state,
@@ -2080,6 +2193,40 @@ static void raise_refused(az_iot_su_client* client, az_iot_result reason)
     .service_error = k_no_service_error,
   };
   dispatch_event(client, &event);
+}
+
+/**
+ * @brief Hand the channel the owed FAILED report of a refused update.
+ *
+ * Waits out the backoff of a retryable verdict. Kept owed when the channel is
+ * busy, has no session or is out of memory; dropped on any other refusal.
+ *
+ * @param client The client.
+ */
+static void send_refused_update_report(az_iot_su_client* client)
+{
+  az_iot_su_refused_report_state_internal* state = &SU_I(client).refused_report.state;
+  if (*state != AZ_IOT_SU_REFUSED_REPORT_OWED || SU_I(client).terminal_report_in_flight
+      || az_iot_retry_state__pending(&SU_I(client).retry))
+  {
+    return;
+  }
+  /* Set before the call: a synchronous channel may deliver the verdict from inside it. */
+  *state = AZ_IOT_SU_REFUSED_REPORT_IN_FLIGHT;
+  az_iot_result r = az_iot_su__report_refused_update(client);
+  if (r == AZ_IOT_OK)
+  {
+    return;
+  }
+  bool keep
+      = r == AZ_IOT_ERR_BUSY || r == AZ_IOT_ERR_NOT_CONNECTED || r == AZ_IOT_ERR_OUT_OF_MEMORY;
+  *state = keep ? AZ_IOT_SU_REFUSED_REPORT_OWED : AZ_IOT_SU_REFUSED_REPORT_NONE;
+  if (keep)
+  {
+    return;
+  }
+  AZ_IOT_LOG_ERRORF(
+      AZ_IOT_LOG_COMPONENT_SU, "refused update's report not sent (%d); dropped", (int)r);
 }
 
 /** @brief Raise AZ_IOT_SU_EVENT_UPDATE_DEFERRED for a new workflow not started. */
@@ -2183,12 +2330,20 @@ static az_iot_result failure_reason(int32_t extended_result_code)
       switch (code & 0x0FFFFFFFu)
       {
         case AZ_IOT_SU_MANIFEST_ERROR_CRYPTO:
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_READ:
           return AZ_IOT_ERR_INTERNAL;
-        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST:
         case AZ_IOT_SU_MANIFEST_ERROR_REFERENCE_STEP:
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_NO_READER:
           return AZ_IOT_ERR_NOT_SUPPORTED;
         case AZ_IOT_SU_MANIFEST_ERROR_NO_STEPS:
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_ENTRY:
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_URL:
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_INVALID:
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_UPDATE_ID:
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_NESTED:
           return AZ_IOT_ERR_PROTOCOL;
+        case AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE:
+          return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
         default:
           return AZ_IOT_ERR_AUTH;
       }
@@ -2267,12 +2422,14 @@ static void settle_terminal_report(az_iot_su_client* client, az_iot_result resul
 #define AZ_IOT_SU_RETRY_JITTER_PCT 20u
 
 /**
- * @brief Pace the next fetch/report after a retryable verdict that named no delay.
+ * @brief Pace the next fetch/report after a retryable verdict.
  *
  * Exponential backoff with jitter. Service verdicts, and a report the channel
  * stopped awaiting (AZ_IOT_ERR_TIMEOUT), only: a lost session is paced by the
- * connection client, and a service-named delay by the channel. Never moves a
- * fetch deadline.
+ * connection client. A throttle (429) that names a delay is paced by the
+ * channel alone. A transient failure (5xx) is always backed off: the delay it
+ * names is set by DPS, not the update service, and the channel enforces it
+ * alongside, so the longer of the two applies. Never moves a fetch deadline.
  *
  * @return true if this verdict armed the backoff.
  */
@@ -2283,8 +2440,10 @@ static bool arm_retry_backoff(
     const az_iot_su_service_error* service_error)
 {
   if ((result != AZ_IOT_ERR_DPS && result != AZ_IOT_ERR_TIMEOUT)
-      || (action != AZ_IOT_SU_ERROR_ACTION_RETRY && action != AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER)
-      || (service_error != NULL && service_error->retry_after_ms != 0))
+      || (action != AZ_IOT_SU_ERROR_ACTION_RETRY && action != AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER
+          && action != AZ_IOT_SU_ERROR_ACTION_RETRY_NEXT_CHECK)
+      || (action == AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER && service_error != NULL
+          && service_error->retry_after_ms != 0))
   {
     return false;
   }
@@ -2338,6 +2497,66 @@ static void queue_conflict_recheck(az_iot_su_client* client)
   arm_pending_fetch_deadline(client, AZ_IOT_SU_REQUEST_DEFAULT_TIMEOUT_MS);
 }
 
+/**
+ * @brief Settle the refused update's FAILED report on the channel's verdict.
+ *
+ * Raises REPORT_ACCEPTED or OPERATION_ABANDONED as for any terminal report, but
+ * no WORKFLOW_COMPLETED: the update never started. A retryable verdict, or one
+ * asking for the agent information again, sends it again (after the backoff for
+ * the former), unless a workflow was accepted meanwhile; a conflict queues an
+ * update check; any other failure drops it.
+ *
+ * @param client        The client.
+ * @param result        The verdict.
+ * @param action        How to proceed when @p result is not AZ_IOT_OK.
+ * @param service_error What the service said; may be NULL.
+ */
+static void settle_refused_update_report(
+    az_iot_su_client* client,
+    az_iot_result result,
+    az_iot_su_error_action action,
+    const az_iot_su_service_error* service_error)
+{
+  az_iot_su_refused_report_state_internal* state = &SU_I(client).refused_report.state;
+  bool superseded = *state == AZ_IOT_SU_REFUSED_REPORT_SUPERSEDED;
+  *state = AZ_IOT_SU_REFUSED_REPORT_NONE;
+  if (result == AZ_IOT_OK)
+  {
+    az_iot_retry_state__reset(&SU_I(client).retry);
+    *state = AZ_IOT_SU_REFUSED_REPORT_ACCEPTED;
+    AZ_IOT_LOG_INFO(AZ_IOT_LOG_COMPONENT_SU, "refused update reported FAILED");
+    az_iot_su__report_view sent;
+    az_iot_su__refused_report_view(client, &sent);
+    raise_simple(
+        client, AZ_IOT_SU_EVENT_REPORT_ACCEPTED, AZ_IOT_SU_OP_REPORT_STATUS, true, &sent.report);
+    return;
+  }
+  if (action == AZ_IOT_SU_ERROR_ACTION_RETRY || action == AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER
+      || action == AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO)
+  {
+    if (superseded)
+    {
+      AZ_IOT_LOG_INFO(
+          AZ_IOT_LOG_COMPONENT_SU, "refused update's report superseded by a workflow; dropped");
+      return;
+    }
+    (void)arm_retry_backoff(client, result, action, service_error);
+    *state = AZ_IOT_SU_REFUSED_REPORT_OWED;
+    return;
+  }
+  AZ_IOT_LOG_ERRORF(
+      AZ_IOT_LOG_COMPONENT_SU, "refused update's report failed (%d); dropped", (int)result);
+  if (action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
+      || action == AZ_IOT_SU_ERROR_ACTION_RECHECK)
+  {
+    raise_abandoned(client, AZ_IOT_SU_OP_REPORT_STATUS, result, service_error);
+  }
+  if (action == AZ_IOT_SU_ERROR_ACTION_RECHECK)
+  {
+    queue_conflict_recheck(client);
+  }
+}
+
 static az_iot_su_operation fetch_operation(uint8_t fetch);
 
 static void on_channel_result(
@@ -2350,6 +2569,12 @@ static void on_channel_result(
   az_iot_su_client* client = (az_iot_su_client*)engine_ctx;
   if (client == NULL || SU_I(client).detached)
   {
+    return;
+  }
+  /* Verdicts carry no request identity: the channel takes one operation at a time. */
+  if (operation == AZ_IOT_SU_OP_REPORT_STATUS && refused_report_in_flight(client))
+  {
+    settle_refused_update_report(client, result, action, service_error);
     return;
   }
   if (operation != AZ_IOT_SU_OP_REPORT_STATUS)
@@ -2368,9 +2593,11 @@ static void on_channel_result(
     /* The accepted fetch has its verdict; nothing is awaited any more. */
     SU_I(client).fetch_in_flight = SU_FETCH_NONE;
   }
+  /* An update check deferred to the next scheduled one ends here, like FATAL. */
+  bool deferred = az_iot_su__check_deferred_to_next(action, service_error);
   if (result == AZ_IOT_OK || action == AZ_IOT_SU_ERROR_ACTION_FATAL
       || action == AZ_IOT_SU_ERROR_ACTION_PROCEED || action == AZ_IOT_SU_ERROR_ACTION_RECHECK
-      || action == AZ_IOT_SU_ERROR_ACTION_NONE)
+      || action == AZ_IOT_SU_ERROR_ACTION_NONE || deferred)
   {
     if (result == AZ_IOT_OK)
     {
@@ -2407,8 +2634,14 @@ static void on_channel_result(
     }
     if (result != AZ_IOT_OK
         && (action == AZ_IOT_SU_ERROR_ACTION_FATAL || action == AZ_IOT_SU_ERROR_ACTION_PROCEED
-            || action == AZ_IOT_SU_ERROR_ACTION_RECHECK))
+            || action == AZ_IOT_SU_ERROR_ACTION_RECHECK || deferred))
     {
+      if (deferred)
+      {
+        AZ_IOT_LOG_INFO(
+            AZ_IOT_LOG_COMPONENT_SU,
+            "update service unavailable upstream; the next scheduled check will retry");
+      }
       raise_abandoned(client, operation, result, service_error);
     }
     if (operation == AZ_IOT_SU_OP_REPORT_STATUS)
@@ -2723,7 +2956,13 @@ static void drive_pending_fetch(az_iot_su_client* client)
   }
   /* An owed terminal report goes first: until the service has the outcome, a
    * check advertises the previous state and may be offered the same update
-   * again. Queued here if nothing will send it (e.g. its session was lost). */
+   * again. Queued here if nothing will send it (e.g. its session was lost).
+   * A refused update's report goes first for the same reason. */
+  if (SU_I(client).refused_report.state == AZ_IOT_SU_REFUSED_REPORT_OWED
+      || refused_report_in_flight(client))
+  {
+    return;
+  }
   if (SU_I(client).report_owed || SU_I(client).terminal_report_in_flight)
   {
     if (!SU_I(client).terminal_report_in_flight && !SU_I(client).device_properties_report_pending)
@@ -3307,8 +3546,11 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
  *   [28] u32 manifest_off      (offset into request_buffer)
  *   [32] u32 manifest_len
  *   [36] u32 request_len
- *   [40] request_buffer[request_len]
- *   --- trailer (T = 40 + request_len) ---
+ *   [40] u32 full_manifest_off (offset into request_buffer; of a mini manifest whose
+ *                               detached manifest file is stored after the request)
+ *   [44] u32 full_manifest_len (0 = none)
+ *   [48] request_buffer[request_len]
+ *   --- trailer (T = 48 + request_len) ---
  *   [T+0]  u32 outcome            (latched terminal outcome)
  *   [T+4]  i32 result_code        (accumulated install_result)
  *   [T+8]  i32 extended_result_code
@@ -3340,20 +3582,20 @@ void az_iot_su_client_deinit(az_iot_su_client* client)
 #define AZ_IOT_SU_PERSIST_MAGIC2 'C'
 #define AZ_IOT_SU_PERSIST_MAGIC3 'P'
 /* Bump on any change to the layout above: resume() ignores a record of another version. */
-#define AZ_IOT_SU_PERSIST_VERSION 3u
+#define AZ_IOT_SU_PERSIST_VERSION 4u
 #define AZ_IOT_SU_PERSIST_FLAG_HAVE_REQUEST 0x2u
 #define AZ_IOT_SU_PERSIST_FLAG_REPORT_OWED 0x4u
 #define AZ_IOT_SU_PERSIST_FLAG_RETRY 0x8u
 /* Fixed part of the trailer (outcome + 3 result ints). */
 #define AZ_IOT_SU_PERSIST_TRAILER_FIXED 16u
 #define AZ_IOT_SU_PERSIST_STEP_RECORD 16u
-/* Upper bound on the trailer + crc with AZ_IOT_SU_MAX_FILE_COUNT URLs; each URL past those has
+/* Upper bound on the trailer + crc with AZ_IOT_SU_MAX_FILE_COUNT + 1 URLs; each URL past those has
  * AZ_IOT_SU_PERSIST_URL_RECORD_SIZE more in the workspace, per az_iot_su_limits::max_related_files.
  */
 #define AZ_IOT_SU_PERSIST_TRAILER_MAX                                                              \
   (AZ_IOT_SU_PERSIST_TRAILER_FIXED                                                                 \
    + ((uint32_t)(AZ_IOT_SU_MAX_STEP_COUNT) * AZ_IOT_SU_PERSIST_STEP_RECORD) + 4u                   \
-   + ((uint32_t)(AZ_IOT_SU_MAX_FILE_COUNT) * AZ_IOT_SU_PERSIST_URL_RECORD_SIZE) + 4u               \
+   + ((uint32_t)(AZ_IOT_SU_MAX_FILE_COUNT + 1) * AZ_IOT_SU_PERSIST_URL_RECORD_SIZE) + 4u           \
    + (uint32_t)(AZ_IOT_SU_WORKFLOW_ID_SIZE) + 4u + (uint32_t)(AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE)    \
    + 4u + (uint32_t)(AZ_IOT_SU_CHANNEL_STATE_MAX_SIZE) + 4u * (uint32_t)(AZ_IOT_SU_MAX_STEP_COUNT) \
    + AZ_IOT_RETRY_STATE_RECORD_SIZE + 4u)
@@ -3516,6 +3758,8 @@ static az_iot_result su_persist(az_iot_su_client* client, su_record kind)
   wr_u32le(&blob[28], terminal ? 0u : request_offset(client, SU_I(client).manifest_text));
   wr_u32le(&blob[32], terminal ? 0u : (uint32_t)az_span_size(SU_I(client).manifest_text));
   wr_u32le(&blob[36], request_len);
+  wr_u32le(&blob[40], terminal ? 0u : request_offset(client, SU_I(client).full_manifest_text));
+  wr_u32le(&blob[44], terminal ? 0u : (uint32_t)az_span_size(SU_I(client).full_manifest_text));
 
   uint32_t t = AZ_IOT_SU_PERSIST_HEADER_SIZE + request_len;
   const az_iot_su_client_install_result* r = &SU_I(client).install_result;
@@ -3901,8 +4145,11 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   uint32_t wf_len = rd_u32le(&blob[24]);
   uint32_t mf_off = rd_u32le(&blob[28]);
   uint32_t mf_len = rd_u32le(&blob[32]);
+  uint32_t full_off = rd_u32le(&blob[40]);
+  uint32_t full_len = rd_u32le(&blob[44]);
   if (mf_off > request_len || mf_len > request_len - mf_off || wf_off > request_len
-      || wf_len > request_len - wf_off)
+      || wf_len > request_len - wf_off || full_off > request_len
+      || full_len > request_len - full_off)
   {
     return AZ_IOT_OK;
   }
@@ -3930,9 +4177,13 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
 
   az_span manifest_text = az_span_create(SU_I(client).request_buffer + mf_off, (int32_t)mf_len);
   SU_I(client).manifest_text = manifest_text;
+  /* A mini manifest's full manifest is parsed from the stored detached manifest file. */
+  az_span full_manifest_text
+      = az_span_create(SU_I(client).request_buffer + full_off, (int32_t)full_len);
+  SU_I(client).full_manifest_text = full_manifest_text;
 
   if (az_iot_su__parse_update_manifest(
-          manifest_text,
+          full_len > 0 ? full_manifest_text : manifest_text,
           SU_I(client).related_file_storage,
           SU_I(client).max_related_files,
           &SU_I(client).current_manifest)
@@ -3960,8 +4211,14 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   bool step_installed = state == (uint32_t)AZ_IOT_SU_STATE_INSTALL_COMPLETE
       || state == (uint32_t)AZ_IOT_SU_STATE_APPLY_STARTED;
   uint32_t from = step_installed ? step + 1u : step;
+  bool verified = state != (uint32_t)AZ_IOT_SU_STATE_MANIFEST_RECEIVED
+      && state != (uint32_t)AZ_IOT_SU_STATE_VERIFYING_MANIFEST;
+  /* Past verification a mini manifest has its full manifest stored; before it, none. */
+  bool full_manifest_consistent
+      = verified ? !az_iot_su_manifest_is_detached(&SU_I(client).current_manifest) : full_len == 0;
   uint32_t manifest_error = 0;
-  if (az_iot_su__check_manifest_supported(&SU_I(client).current_manifest, &manifest_error)
+  if (!full_manifest_consistent
+      || az_iot_su__check_manifest_supported(&SU_I(client).current_manifest, &manifest_error)
           != AZ_IOT_OK
       || az_iot_su__check_step_file_references(
              &SU_I(client).current_manifest, from, req->file_urls, url_count)
@@ -3986,8 +4243,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_resume(az_iot_su_client* client)
   SU_I(client).checkpoint_retry = false;
   SU_I(client).checkpoint_superseded = false;
   /* A resumed workflow past verification owes its end to the download handlers. */
-  SU_I(client).download_handler_end_owed = state != (uint32_t)AZ_IOT_SU_STATE_MANIFEST_RECEIVED
-      && state != (uint32_t)AZ_IOT_SU_STATE_VERIFYING_MANIFEST;
+  SU_I(client).download_handler_end_owed = verified;
 
   /* Restore the accumulated result so completed step results of a multi-step
    * deployment survive a mid-deployment reboot. */
@@ -4051,6 +4307,130 @@ static az_span file_download_url(const az_iot_su_client* client, az_span json_id
       SU_I(client).current_request.file_urls_count,
       json_id);
   return (file_url != NULL) ? file_url->url : AZ_SPAN_EMPTY;
+}
+
+/**
+ * @brief Fetch the detached manifest file of the verified mini manifest in current_manifest, and
+ * replace current_manifest with the full manifest it carries.
+ *
+ * download_fn gets the file; read_file_fn reads it into request_buffer after the request, where
+ * it is verified, decoded in place, parsed and kept (request_len grows) so it is persisted with the
+ * request.
+ *
+ * @param client        The client, in VERIFYING_MANIFEST.
+ * @param out_facility  On failure, the AZ_IOT_SU_FACILITY_* of the step 0 result.
+ * @param out_code      On failure, the sub-code or download_fn result.
+ * @return AZ_IOT_SU_RESULT_SUCCESS; AZ_IOT_SU_RESULT_IN_PROGRESS while download_fn is;
+ * AZ_IOT_SU_RESULT_FAILURE otherwise.
+ */
+static int32_t fetch_detached_manifest(
+    az_iot_su_client* client,
+    uint32_t* out_facility,
+    int32_t* out_code)
+{
+  const az_iot_su_platform_hooks* h = &SU_I(client).hooks;
+  *out_facility = AZ_IOT_SU_FACILITY_MANIFEST;
+  const az_iot_su_client_update_manifest_file* file
+      = az_iot_su__find_detached_manifest_file(&SU_I(client).current_manifest);
+  if (file == NULL)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "mini manifest must have exactly one file, its detachedManifestFileId");
+    *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_ENTRY;
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  az_span url = file_download_url(client, file->id);
+  if (az_span_size(url) <= 0)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "detached manifest file has no download URL");
+    *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_URL;
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  if (h->read_file_fn == NULL)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_SU, "a mini manifest needs read_file_fn to read its detached file");
+    *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_NO_READER;
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  size_t free_space = SU_I(client).request_buffer_size - SU_I(client).request_len;
+  if (file->size_in_bytes < 0 || (uint64_t)file->size_in_bytes > (uint64_t)free_space)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_SU,
+        "detached manifest file is %lld bytes; az_iot_su_limits::max_update_size leaves %lu "
+        "after the request",
+        (long long)file->size_in_bytes,
+        (unsigned long)free_space);
+    *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE;
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+
+  int32_t dr = (h->download_fn != NULL) ? h->download_fn(file, url, 0, 1, h->user_ctx)
+                                        : AZ_IOT_SU_RESULT_FAILURE;
+  if (dr == AZ_IOT_SU_RESULT_IN_PROGRESS)
+  {
+    return dr;
+  }
+  if (dr != AZ_IOT_SU_RESULT_SUCCESS)
+  {
+    *out_facility = AZ_IOT_SU_FACILITY_DOWNLOAD;
+    *out_code = dr;
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+
+  /* Read up to sizeInBytes, plus one byte to tell a longer file. */
+  uint8_t* content = SU_I(client).request_buffer + SU_I(client).request_len;
+  size_t size = (size_t)file->size_in_bytes;
+  size_t total = 0;
+  uint8_t extra = 0;
+  for (;;)
+  {
+    uint8_t* into = (total < size) ? content + total : &extra;
+    size_t want = (total < size) ? size - total : 1u;
+    size_t got = 0;
+    if (h->read_file_fn(file, 0, total, into, want, &got, h->user_ctx) != AZ_IOT_SU_RESULT_SUCCESS
+        || got > want)
+    {
+      *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_READ;
+      return AZ_IOT_SU_RESULT_FAILURE;
+    }
+    if (got == 0 || total >= size)
+    {
+      total += got;
+      break;
+    }
+    total += got;
+  }
+  if (total > size)
+  {
+    AZ_IOT_LOG_ERROR(AZ_IOT_LOG_COMPONENT_SU, "detached manifest file is longer than sizeInBytes");
+    *out_code = (int32_t)AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_HASH;
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+
+  az_span full_manifest_text = AZ_SPAN_EMPTY;
+  uint32_t manifest_error = 0;
+  az_iot_result r = az_iot_su__parse_detached_manifest(
+      SU_I(client).crypto,
+      &SU_I(client).current_manifest,
+      az_span_create(content, (int32_t)total),
+      SU_I(client).current_request.file_urls,
+      SU_I(client).current_request.file_urls_count,
+      SU_I(client).related_file_storage,
+      SU_I(client).max_related_files,
+      &SU_I(client).current_manifest,
+      &full_manifest_text,
+      &manifest_error);
+  if (r != AZ_IOT_OK)
+  {
+    *out_code = (int32_t)manifest_error;
+    return AZ_IOT_SU_RESULT_FAILURE;
+  }
+  SU_I(client).request_len += total;
+  SU_I(client).full_manifest_text = full_manifest_text;
+  return AZ_IOT_SU_RESULT_SUCCESS;
 }
 
 /**
@@ -4439,6 +4819,8 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
     return AZ_IOT_OK;
   }
 
+  send_refused_update_report(client);
+
   /* Retry a requested update check that could not be issued earlier (e.g. the
    * channel was not ready, or the service rejected it retryably). Self-heals
    * across do_work iterations; does not preempt state-machine progress. */
@@ -4482,28 +4864,56 @@ az_iot_result az_iot_su_client_do_work(az_iot_su_client* client)
     case AZ_IOT_SU_STATE_VERIFYING_MANIFEST:
     {
       /* The manifest is parsed only after its signature verifies. */
-      uint32_t verify_error = 0;
-      if (verify_manifest(client, &verify_error) != AZ_IOT_SU_RESULT_SUCCESS)
+      if (SU_I(client).file_download_phase != (uint8_t)SU_FILE_PHASE_DETACHED_MANIFEST)
       {
-        result_init_steps(client, 1);
-        result_step_failure(client, 0, AZ_IOT_SU_FACILITY_MANIFEST, (int32_t)verify_error);
-        fail_workflow(client);
-        (void)az_iot_su__report_state(client);
-        break;
+        uint32_t verify_error = 0;
+        if (verify_manifest(client, &verify_error) != AZ_IOT_SU_RESULT_SUCCESS)
+        {
+          result_init_steps(client, 1);
+          result_step_failure(client, 0, AZ_IOT_SU_FACILITY_MANIFEST, (int32_t)verify_error);
+          fail_workflow(client);
+          (void)az_iot_su__report_state(client);
+          break;
+        }
+        uint32_t manifest_error = 0;
+        if (parse_manifest(client, &manifest_error) != AZ_IOT_OK)
+        {
+          /* An unsupported manifest has its own sub-code; any other parse failure is internal. */
+          result_init_steps(client, 1);
+          result_step_failure(
+              client,
+              0,
+              manifest_error != 0 ? AZ_IOT_SU_FACILITY_MANIFEST : AZ_IOT_SU_FACILITY_INTERNAL,
+              (int32_t)manifest_error);
+          fail_workflow(client);
+          (void)az_iot_su__report_state(client);
+          break;
+        }
+        /* In library mode the application fetches it (az_iot_su_parse_detached_manifest()). */
+        if (az_iot_su_manifest_is_detached(&SU_I(client).current_manifest)
+            && !SU_I(client).library_mode)
+        {
+          SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_DETACHED_MANIFEST;
+        }
       }
-      uint32_t manifest_error = 0;
-      if (parse_manifest(client, &manifest_error) != AZ_IOT_OK)
+      if (SU_I(client).file_download_phase == (uint8_t)SU_FILE_PHASE_DETACHED_MANIFEST)
       {
-        /* An unsupported manifest has its own sub-code; any other parse failure is internal. */
-        result_init_steps(client, 1);
-        result_step_failure(
-            client,
-            0,
-            manifest_error != 0 ? AZ_IOT_SU_FACILITY_MANIFEST : AZ_IOT_SU_FACILITY_INTERNAL,
-            (int32_t)manifest_error);
-        fail_workflow(client);
-        (void)az_iot_su__report_state(client);
-        break;
+        uint32_t facility = 0;
+        int32_t code = 0;
+        int32_t fr = fetch_detached_manifest(client, &facility, &code);
+        if (fr == AZ_IOT_SU_RESULT_IN_PROGRESS)
+        {
+          break; /* re-enter on next do_work */
+        }
+        if (fr != AZ_IOT_SU_RESULT_SUCCESS)
+        {
+          result_init_steps(client, 1);
+          result_step_failure(client, 0, facility, code);
+          fail_workflow(client);
+          (void)az_iot_su__report_state(client);
+          break;
+        }
+        SU_I(client).file_download_phase = (uint8_t)SU_FILE_PHASE_CHOOSE;
       }
       result_init_steps(client, (int32_t)SU_I(client).current_manifest.instructions.steps_count);
       SU_I(client).download_handler_end_owed = true;
@@ -4858,7 +5268,8 @@ AZ_NODISCARD az_iot_result az_iot_su_client_report_status(
   }
   if (terminal)
   {
-    if (step_results_count != SU_I(client).step_results_count)
+    /* The device API makes step results optional: step_<i> is step_results[i]. */
+    if (step_results_count > AZ_IOT_SU_MAX_STEP_COUNT)
     {
       return AZ_IOT_ERR_INVALID_ARG;
     }
@@ -4888,6 +5299,7 @@ AZ_NODISCARD az_iot_result az_iot_su_client_report_status(
 
   if (terminal)
   {
+    SU_I(client).step_results_count = step_results_count;
     for (int32_t i = 0; i < step_results_count; ++i)
     {
       az_iot_su_step_result* kept = &SU_I(client).step_results[i];
@@ -5266,6 +5678,44 @@ AZ_NODISCARD az_iot_result az_iot_su_parse_update_request(
   *out_request = req;
   *out_manifest = manifest;
   return AZ_IOT_OK;
+}
+
+AZ_NODISCARD az_iot_result az_iot_su_parse_detached_manifest(
+    const az_iot_su_client_update_manifest* mini_manifest,
+    const az_iot_su_client_update_request* request,
+    az_span detached_manifest_file,
+    const az_iot_crypto* crypto,
+    az_iot_su_client_update_manifest_file* related_files,
+    size_t max_related_files,
+    az_iot_su_client_update_manifest* out_manifest,
+    uint32_t* out_error)
+{
+  uint32_t ignored_error = 0;
+  uint32_t* manifest_error = (out_error != NULL) ? out_error : &ignored_error;
+  *manifest_error = 0;
+  if (mini_manifest == NULL || request == NULL || out_manifest == NULL
+      || az_iot_crypto__validate(crypto) != AZ_IOT_OK || az_span_size(detached_manifest_file) <= 0
+      || (request->file_urls == NULL && request->file_urls_count > 0)
+      || max_related_files > AZ_IOT_SU_MAX_LIMIT_COUNT
+      || (related_files == NULL && max_related_files > 0))
+  {
+    if (out_manifest != NULL)
+    {
+      memset(out_manifest, 0, sizeof(*out_manifest));
+    }
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
+  return az_iot_su__parse_detached_manifest(
+      crypto,
+      mini_manifest,
+      detached_manifest_file,
+      request->file_urls,
+      request->file_urls_count,
+      related_files,
+      max_related_files,
+      out_manifest,
+      NULL,
+      manifest_error);
 }
 
 AZ_NODISCARD az_iot_result az_iot_su_verify_file_hash(

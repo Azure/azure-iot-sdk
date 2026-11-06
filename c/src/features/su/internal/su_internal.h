@@ -63,6 +63,23 @@ extern "C"
    * Returns AZ_IOT_OK when the channel accepted the report. */
   az_iot_result az_iot_su__report_state(az_iot_su_client* client);
 
+  /**
+   * @brief The FAILED report of the refused update, as last handed to the channel.
+   *
+   * @param[in] client The client.
+   * @param[out] v     The report; it points into @p v.
+   */
+  void az_iot_su__refused_report_view(const az_iot_su_client* client, az_iot_su__report_view* v);
+
+  /**
+   * @brief Hand the channel the FAILED report of the refused update, with the
+   * installed update id cached now.
+   *
+   * @param[in] client The client; its channel is bound.
+   * @return The channel's result.
+   */
+  az_iot_result az_iot_su__report_refused_update(az_iot_su_client* client);
+
   /* Internal entry point: bind the engine to an explicit channel and crypto
    * backend. The public az_iot_su_client_init() builds the shipping channel,
    * takes the connection client's backend and calls this. Kept internal so

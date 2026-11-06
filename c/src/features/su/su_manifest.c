@@ -764,15 +764,9 @@ az_iot_result az_iot_su__check_manifest_supported(
     uint32_t* out_manifest_error)
 {
   *out_manifest_error = 0;
-  if (az_span_size(manifest->detached_manifest_file_id) > 0)
+  if (az_iot_su_manifest_is_detached(manifest))
   {
-    AZ_IOT_LOG_ERRORF(
-        AZ_IOT_LOG_COMPONENT_SU,
-        "manifest is a mini manifest (detachedManifestFileId '%.*s'), which is not supported",
-        (int)az_span_size(manifest->detached_manifest_file_id),
-        (const char*)az_span_ptr(manifest->detached_manifest_file_id));
-    *out_manifest_error = AZ_IOT_SU_MANIFEST_ERROR_DETACHED_MANIFEST;
-    return AZ_IOT_ERR_NOT_SUPPORTED;
+    return AZ_IOT_OK; /* steps come with the full manifest */
   }
   if (manifest->instructions.steps_count == 0)
   {

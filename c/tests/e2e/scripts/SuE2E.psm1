@@ -85,10 +85,11 @@ $script:Scenarios = [ordered]@{
     # The reference microsoft/delta:1 handler and the real delta processor.
     MICROSOFT_DELTA   = @{ Short = 'msdelta'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_MICROSOFT_DELTA'; Expected = 'Succeeded'; Delta = 'Microsoft' }
     # Detached = $true: an update manifest over 4,096 bytes, which the service offers as a
-    # signed mini manifest (see Import-SuE2EUpdate); managed and library mode. The device suite
-    # reads Expected too (<Variable>_EXPECTED): Failed while the client refuses mini manifests.
-    DETACHED              = @{ Short = 'mini'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED'; Expected = 'Failed'; Detached = $true }
-    DETACHED_LIBRARY_MODE = @{ Short = 'minilib'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_LIBRARY_MODE'; Expected = 'Failed'; Detached = $true }
+    # signed mini manifest (see Import-SuE2EUpdate); managed and library mode.
+    DETACHED              = @{ Short = 'mini'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED'; Expected = 'Succeeded'; Detached = $true }
+    DETACHED_LIBRARY_MODE = @{ Short = 'minilib'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_LIBRARY_MODE'; Expected = 'Succeeded'; Detached = $true }
+    # A mini manifest whose full manifest is a delta update (test handler), managed client.
+    DETACHED_DELTA        = @{ Short = 'minidelta'; Variable = 'AZ_IOT_E2E_SU_OFFER_MODEL_DETACHED_DELTA'; Expected = 'Succeeded'; Delta = 'Test'; Detached = $true }
 }
 
 function Get-SuE2EConfig {
@@ -625,8 +626,7 @@ function Get-SuE2EFixtureTag {
 <#
 .SYNOPSIS
     Exports the variables the device suites read for the offers staged under
-    -RunId (also to $env:GITHUB_ENV when set): per scenario its model, and as
-    <Variable>_EXPECTED its expected job result. No remote call.
+    -RunId (also to $env:GITHUB_ENV when set): per scenario its model. No remote call.
 #>
 function Export-SuE2EOfferVariables {
     param([Parameter(Mandatory)][string]$RunId)
@@ -635,7 +635,6 @@ function Export-SuE2EOfferVariables {
     foreach ($scenario in $names.Offers.Keys) {
         $s = $script:Scenarios[$scenario]
         $exports[$s.Variable] = $names.Offers[$scenario].Model
-        $exports["$($s.Variable)_EXPECTED"] = $s.Expected
     }
     foreach ($k in $exports.Keys) {
         Set-Item -Path "env:$k" -Value $exports[$k]

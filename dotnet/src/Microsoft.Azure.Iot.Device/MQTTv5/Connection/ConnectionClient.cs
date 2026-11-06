@@ -46,6 +46,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
         bool IConnectionClient.IsDesiredPushRequested => _receiveDesiredPropertyUpdates;
 
+        Task<MqttPublishAck> IConnectionClient.PublishAsync(MqttPublish publish, Action<string> validateTopic, CancellationToken cancellationToken)
+            => PublishAsync(publish, validateTopic, cancellationToken);
+
         event Action? IConnectionClient.ConnectionLost
         {
             add => HubConnectionLost += value;

@@ -41,6 +41,11 @@ on the device changes.
   Each check waits at most half the interval (120 s cap). The sample exits if it cannot report
   an applied update as installed.
 - Requires Azure Device Provisioning service, an Azure IoT Hub and Azure Device Update.
+- Mini manifests (sent by Device Update for a manifest over 4,096 bytes): the client asks
+  `download_fn` for the detached manifest file, which holds the full manifest, before any step's
+  file. The sample downloads and reads it back like any other file (to
+  `SAMPLE_DOWNLOAD_PREFIX<file id>`), so no setting is needed. The client keeps the file after
+  the request, so `limits.max_update_size` (64 KiB by default) bounds both.
 - Delta updates, in a Linux build with the reference `microsoft/delta:1` download handler
   (`-DAZ_IOT_WITH_SU_DELTA=ON`, on in the Linux presets): see [Delta updates](#delta-updates).
 

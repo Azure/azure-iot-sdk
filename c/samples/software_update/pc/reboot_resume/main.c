@@ -25,6 +25,8 @@
  *   SAMPLE_REBOOT_AT=<phase>:<n>   install:<n> or apply:<n>, 1-based step;
  *                                  default install:1
  *   SAMPLE_STATE_FILE=<path>       saved workflow (default ./su_reboot_state.bin)
+ *   SU_SIM_DETACHED_MANIFEST_FILE=<path>   copy of a mini manifest's detached
+ *                                  manifest file, served as its download
  *   AZ_IOT_SU_EXIT_AFTER_WORKFLOW=1   exit once the workflow completes
  *                                  (0 when it succeeded and its report was
  *                                  accepted, 2 otherwise)
@@ -339,6 +341,7 @@ int main(void)
 
   hooks_context.su = &su;
   hooks_context.state_file = sample_env_copy("SAMPLE_STATE_FILE", "./su_reboot_state.bin");
+  hooks_context.sim.detached_manifest_file = sample_env_copy("SU_SIM_DETACHED_MANIFEST_FILE", NULL);
   int exit_after_workflow = su_sample_env_flag("AZ_IOT_SU_EXIT_AFTER_WORKFLOW");
   long poll_interval_s = su_sample_env_long("AZ_IOT_SU_POLL_INTERVAL_S", 14400);
   if (manufacturer == NULL || model == NULL || reboot_at == NULL || hooks_context.state_file == NULL
@@ -452,7 +455,9 @@ int main(void)
   }
 
   /* Observe before resume(): it reports a restored workflow through events. */
-  if (az_iot_su_client_add_observer(&su, on_su_event, &flags) != AZ_IOT_OK)
+  if (az_iot_su_client_add_observer(&su, on_su_event, &flags) != AZ_IOT_OK
+      || az_iot_su_client_add_observer(&su, su_sim_track_workflow_state, &hooks_context.sim)
+          != AZ_IOT_OK)
   {
     goto cleanup;
   }
@@ -537,6 +542,7 @@ cleanup:
   az_iot_certificate_provider_pem_deinit(&certs);
   sample_config_release(&config);
   free(hooks_context.state_file);
+  free(hooks_context.sim.detached_manifest_file);
   free(manufacturer);
   free(model);
   free(reboot_at);

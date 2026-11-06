@@ -437,17 +437,17 @@ The software updates client's variable-size memory is not set by macros. The app
 
 | Limit | Default | Bounds |
 | --- | --- | --- |
-| `max_update_size` | 65536 | Copy of the update metadata (manifest, signature and file URLs); a one-file offer is about 5 KiB. A larger one is refused: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. Also bounds the persisted state, `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size, max_related_files)`. |
+| `max_update_size` | 65536 | Copy of the update metadata (manifest, signature and file URLs); a one-file offer is about 5 KiB. A larger one is refused and reported failed: `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. With a mini manifest, its detached manifest file is stored after the metadata, so both must fit; else the workflow fails with `AZ_IOT_SU_MANIFEST_ERROR_DETACHED_FILE_TOO_LARGE` and an `ERROR` log of both sizes. Also bounds the persisted state, `AZ_IOT_SU_STATE_BLOB_MAX_SIZE(max_update_size, result_details_size, max_related_files)`. |
 | `scratch_size` | 8192 | Signature verification and string decoding. A signature part that does not fit fails verification; a file URL that does not fit is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. |
 | `max_message_size` | 3456 | Update-check and status-report bodies. At least `AZ_IOT_SU_MIN_MESSAGE_SIZE` (2176 plus 128 per `AZ_IOT_SU_MAX_STEP_COUNT`; 3456 by default), which fits the largest status report the client builds, so no report is refused for its size. |
 | `device_properties_size` | 512 | Device-property strings (UTF-8 bytes, NUL terminators included), the only limit on compatibility properties besides their count. Size it with `az_iot_su_device_properties_buffer_size()` of the largest set the application will pass, including later `az_iot_su_client_update_device_properties()` calls; a set that does not fit is refused with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` and an `ERROR` log of the bytes needed. Counted twice, plus `AZ_IOT_SU_APPLIED_UPDATE_ID_SIZE`: the client's copy and the update check's, which may also carry the applied update ID. |
 | `max_root_keys` | 8 | Root keys `root_keys` may hold; more fail `az_iot_su_client_init()` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. At most `AZ_IOT_SU_MAX_LIMIT_COUNT` (1024). |
 | `max_observers` | 4 | Observers `az_iot_su_client_add_observer()` can register; one more returns `AZ_IOT_ERR_NOT_ENOUGH_SPACE`. At most `AZ_IOT_SU_MAX_LIMIT_COUNT` (1024). |
-| `max_related_files` | 40 | Related files (`relatedFiles`, e.g. delta updates) kept from a manifest, across all its files; more are left out with a `WARNING` log, so their files are downloaded in full. Also allows as many more `fileUrls`: the request holds `AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files)` (`AZ_IOT_SU_MAX_FILE_COUNT` plus this). Each costs `sizeof(az_iot_su_client_update_manifest_file)` + `sizeof(az_iot_su_client_file_url)` + 16 persisted bytes (216 on 64-bit). 0 keeps none. At most `AZ_IOT_SU_MAX_LIMIT_COUNT` (1024). |
+| `max_related_files` | 40 | Related files (`relatedFiles`, e.g. delta updates) kept from a manifest, across all its files; more are left out with a `WARNING` log, so their files are downloaded in full. Also allows as many more `fileUrls`: the request holds `AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files)` (`AZ_IOT_SU_MAX_FILE_COUNT` plus one for a detached manifest file plus this). Each costs `sizeof(az_iot_su_client_update_manifest_file)` + `sizeof(az_iot_su_client_file_url)` + 16 persisted bytes (216 on 64-bit). 0 keeps none. At most `AZ_IOT_SU_MAX_LIMIT_COUNT` (1024). |
 | `result_details_size` | 128 | `resultDetails` kept per step (`az_iot_su_client_set_step_result_details()`); at most 1024. Counted five times per step: the details, both persisted records and two copies of the reports sent. |
 
 The workspace also holds `2 * AZ_IOT_SU_PERSIST_OVERHEAD` bytes for the persisted-state records,
-`AZ_IOT_SU_MAX_FILE_COUNT` file URLs, and up to `sizeof(az_iot_su_workspace_alignment) - 1` bytes to
+`AZ_IOT_SU_MAX_FILE_COUNT` + 1 file URLs, and up to `sizeof(az_iot_su_workspace_alignment) - 1` bytes to
 align the root keys, observers, related files and file URLs. These values do not change the layout
 of `az_iot_su_client`.
 
@@ -459,8 +459,8 @@ and files one step references. The defaults (10, 10, 10) are the Device Update l
 it accepts is refused for its step or file count. An update over a limit is not installed and the
 limit is named in an `ERROR` log:
 
-- more `fileUrls` than `AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files)`: refused, nothing reported,
-  `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`;
+- more `fileUrls` than `AZ_IOT_SU_FILE_URL_CAPACITY(max_related_files)`: refused and reported
+  failed, `AZ_IOT_SU_EVENT_UPDATE_REFUSED` with `AZ_IOT_ERR_NOT_ENOUGH_SPACE`;
 - a manifest over a limit, or with more than 2 hashes for a file: the workflow fails after
   manifest verification and is reported failed. `az_iot_su_parse_update_request()` returns
   `AZ_IOT_ERR_NOT_ENOUGH_SPACE`.
