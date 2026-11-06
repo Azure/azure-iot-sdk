@@ -64,8 +64,20 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
             {
                 lock (_connectionLock)
                 {
-                    if (_recordingConnection && mqttClient.TargetsHub)
+                    // Earlier SDK handlers are awaited first, so this callback can arrive after the transport has
+                    // already dropped again; that connection is not a recovery and the outage stays open.
+                    if (_recordingConnection && mqttClient.TargetsHub && mqttClient.IsConnected())
                     {
+                        // Recording starts connected, and every drop opens an outage that only a hub connection
+                        // closes. A hub connection arriving with no outage open therefore means the previous
+                        // connection's disconnect callback hasn't arrived yet (and will be ignored once it does,
+                        // because the client is connected again). Record that drop now, as MqttConnectionManager
+                        // does; its start is unknown, so it adds no outage time.
+                        if (_disconnectedSince == null)
+                        {
+                            StartOutageLocked("Lost before reconnecting");
+                        }
+
                         _connects++;
                         EndOutageLocked();
                     }

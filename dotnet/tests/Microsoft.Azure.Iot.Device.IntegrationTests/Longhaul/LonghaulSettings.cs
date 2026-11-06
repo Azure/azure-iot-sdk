@@ -85,9 +85,11 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
 
         private static double ParsePositive(string name, string value)
         {
-            if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) || parsed <= 0)
+            if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture,             out double parsed) || !double.IsFinite(parsed) || parsed <= 0)
             {
-                throw new InvalidOperationException($"Environment variable '{name}' must be a positive number; got '{value}'.");
+                            // Reject NaN and infinity up front: the report's JSON serializer can't write them, so the run would
+                            // otherwise spend hours only to fail when writing its analysis.
+                            throw new InvalidOperationException($"Environment variable '{name}' must be a positive finite number; got '{value}'.");
             }
 
             return parsed;
