@@ -9,9 +9,13 @@ include(FetchContent)
 # c/cgmanifest.json. Not the git repository: its GitLab home is blocked by the
 # network isolation of the official Azure Pipelines build, and its older host,
 # git.cryptomilk.org, has failed clones since 2026-08-05.
+# Debian's copy of the same tarball (same hash) is tried when cmocka.org fails;
+# CMake tries the URLs of the list in order.
 # Overridable, so a mirror or a local copy (file://) can be substituted:
-#   cmake -DCMOCKA_URL=<url> ...
-set(CMOCKA_URL "https://cmocka.org/files/1.1/cmocka-1.1.7.tar.xz" CACHE STRING "cmocka release tarball")
+#   cmake -DCMOCKA_URL=<url>[;<url>...] ...
+set(CMOCKA_URL
+    "https://cmocka.org/files/1.1/cmocka-1.1.7.tar.xz;https://deb.debian.org/debian/pool/main/c/cmocka/cmocka_1.1.7.orig.tar.xz"
+    CACHE STRING "cmocka release tarball URLs, tried in order")
 set(CMOCKA_SHA256 "810570eb0b8d64804331f82b29ff47c790ce9cd6b163e98d47a4807047ecad82" CACHE STRING "SHA-256 of CMOCKA_URL")
 # Extracted files get the extraction time, so a changed URL rebuilds cmocka.
 if(POLICY CMP0135)
