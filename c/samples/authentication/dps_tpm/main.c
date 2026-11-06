@@ -17,6 +17,11 @@
  *
  * Run with `--enrollment` first to print the registration ID and endorsement
  * key for a DPS individual enrollment with TPM attestation.
+ *
+ * The connection client cannot re-provision a TPM device itself (its DPS
+ * session is MQTT). When the hub refuses the identity, this sample closes and
+ * deinitializes the client, registers with DPS again and connects to the new
+ * assignment, up to SAMPLE_MAX_REGISTRATIONS registrations.
  */
 #include <stdbool.h>
 #include <stdint.h>
@@ -68,6 +73,11 @@ typedef sample_tpm_sim sample_tpm;
 #define SAMPLE_CONNECT_TIMEOUT_MS 60000u
 #define SAMPLE_TICK_MS 50u
 #define SAMPLE_DEFAULT_ENDPOINT "global.azure-devices-provisioning.net"
+/** @brief DPS registrations per run: the first, then one per hub refusal of the identity. */
+#define SAMPLE_MAX_REGISTRATIONS 2
+/** @brief Hub retries after a refusal of the identity, and the delay between them. */
+#define SAMPLE_REFUSAL_RETRIES 3u
+#define SAMPLE_REFUSAL_RETRY_DELAY_MS 5000u
 /** @brief Response bytes kept per DPS request. */
 #define SAMPLE_RESPONSE_MAX 8192
 /** @brief Longest resource URI signed here: a hub host, `%2Fdevices%2F` and a
@@ -98,6 +108,7 @@ typedef struct
   az_iot_connection_state hub_state;
   bool failed;
   az_iot_result failed_reason;
+  bool identity_refused; /**< The hub refused the identity; register again. */
   bool sent;
   az_iot_result send_result;
 } sample_context;
@@ -416,9 +427,17 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
   ctx->hub_state = event->state;
+  bool identity
+      = event->recovery != NULL && event->recovery->classification == AZ_IOT_CONN_FAILURE_IDENTITY;
+  if (event->state == AZ_IOT_CONN_STATE_FAULTED && identity)
+  {
+    ctx->identity_refused = true;
+  }
+  /* A refusal is retried on identity_recovery before it faults. */
   if (event->reason != AZ_IOT_OK
       && (event->state == AZ_IOT_CONN_STATE_FAULTED || event->state == AZ_IOT_CONN_STATE_IDLE
-          || (event->state == AZ_IOT_CONN_STATE_RETRY_PENDING && !event->is_retriable)))
+          || (event->state == AZ_IOT_CONN_STATE_RETRY_PENDING && !event->is_retriable
+              && !identity)))
   {
     ctx->failed = true;
     ctx->failed_reason = event->reason;
@@ -505,6 +524,148 @@ static sample_tpm* open_tpm(void)
   return tpm;
 }
 
+/**
+ * @brief Registers with DPS over HTTPS, which imports the hub key into the TPM.
+ *
+ * @param[out] out_assignment The assignment, valid until @p dps is initialized again.
+ *
+ * @return AZ_IOT_OK when assigned to an mqttv3 hub with the key imported;
+ * AZ_IOT_ERR_NOT_SUPPORTED for another hub; the registration error otherwise.
+ */
+static az_iot_result register_device(
+    az_iot_dps_tpm_client* dps,
+    const az_iot_dps_tpm_client_options* dps_opts,
+    const char* endpoint,
+    const char* ca,
+    const az_iot_dps_tpm_assignment** out_assignment)
+{
+  static https_response response;
+  az_iot_result r = az_iot_dps_tpm_client_init(dps, dps_opts);
+  if (r == AZ_IOT_OK)
+  {
+    r = register_with_dps(dps, endpoint, ca, SAMPLE_REGISTER_TIMEOUT_MS, &response);
+  }
+  const az_iot_dps_tpm_assignment* a = az_iot_dps_tpm_client_get_assignment(dps);
+  if (r != AZ_IOT_OK || a == NULL)
+  {
+    return r != AZ_IOT_OK ? r : AZ_IOT_ERR_INTERNAL;
+  }
+  fprintf(stderr, "[dps_tpm] assigned to %s as %s\n", a->assigned_hub, a->device_id);
+  if (a->connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3 || !a->hub_key_imported)
+  {
+    fprintf(
+        stderr,
+        "[dps_tpm] connectionProfile \"%s\": this sample signs SAS tokens for mqttv3 hubs only\n",
+        a->connection_profile_raw);
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  *out_assignment = a;
+  return AZ_IOT_OK;
+}
+
+/**
+ * @brief Connects to the hub in @p a, sends one telemetry message, then closes and
+ * deinitializes the client.
+ *
+ * @return AZ_IOT_OK when sent; AZ_IOT_ERR_IDENTITY_REJECTED when the hub refused the
+ * identity; another error otherwise.
+ */
+static az_iot_result connect_and_send_telemetry(
+    sample_context* ctx,
+    const az_iot_dps_tpm_assignment* a,
+    const char* ca)
+{
+  az_iot_connection_client client = { 0 };
+  az_iot_mqttv3_telemetry_client telemetry = { 0 };
+  ctx->request.pending = false;
+  ctx->hub_state = AZ_IOT_CONN_STATE_IDLE;
+  ctx->failed = false;
+  ctx->identity_refused = false;
+  ctx->sent = false;
+
+  az_iot_auth hub_auth = { 0 };
+  hub_auth.sas.on_sas_token_required = on_token_required;
+  hub_auth.sas.user_ctx = ctx;
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.workspace = connection_workspace;
+  opts.workspace_size = sizeof(connection_workspace);
+  opts.iothub_hostname = a->assigned_hub;
+  opts.device_id = a->device_id;
+  opts.connection_profile = a->connection_profile;
+  opts.hub_auth = hub_auth;
+  /* A hub DPS has just assigned may refuse the device for a few seconds; retry it briefly, then
+   * fault so that the caller registers again. */
+  opts.identity_recovery.policy.initial_delay_ms = SAMPLE_REFUSAL_RETRY_DELAY_MS;
+  opts.identity_recovery.policy.max_delay_ms = SAMPLE_REFUSAL_RETRY_DELAY_MS;
+  opts.identity_recovery.policy.max_attempts = SAMPLE_REFUSAL_RETRIES;
+  static uint8_t sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(0, AZ_IOT_SAS_TOKEN_SIZE(256))];
+  opts.sas_buffer.buffer = sas_buffer;
+  opts.sas_buffer.size = sizeof(sas_buffer);
+  opts.trusted_ca.path = ca;
+
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  opts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  opts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  opts.mqtt_workspace = mqtt_workspace;
+  opts.mqtt_workspace_size = sizeof(mqtt_workspace);
+
+  if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
+      || az_iot_connection_client_add_state_observer(&client, on_conn_state, ctx) != AZ_IOT_OK
+      || az_iot_mqttv3_telemetry_client_init(&telemetry, &client) != AZ_IOT_OK
+      || az_iot_connection_client_open(&client) != AZ_IOT_OK)
+  {
+    fprintf(stderr, "[dps_tpm] connection client setup failed\n");
+    az_iot_mqttv3_telemetry_client_deinit(&telemetry);
+    az_iot_connection_client_deinit(&client);
+    return AZ_IOT_ERR_INTERNAL;
+  }
+  uint64_t deadline = sample_now_ms() + SAMPLE_CONNECT_TIMEOUT_MS;
+  while (ctx->hub_state != AZ_IOT_CONN_STATE_CONNECTED && !ctx->failed
+         && sample_now_ms() < deadline)
+  {
+    (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
+    issue_token(&client, ctx);
+  }
+
+  if (ctx->hub_state == AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    static const uint8_t payload[] = "{\"attestation\":\"tpm\"}";
+    az_iot_telemetry_message msg = { 0 };
+    msg.payload = payload;
+    msg.payload_len = sizeof(payload) - 1;
+    if (az_iot_mqttv3_telemetry_client_send(&telemetry, &msg, on_sent, ctx) == AZ_IOT_OK)
+    {
+      deadline = sample_now_ms() + SAMPLE_CONNECT_TIMEOUT_MS;
+      while (!ctx->sent && sample_now_ms() < deadline)
+      {
+        (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
+      }
+    }
+  }
+  az_iot_result result = ctx->sent ? ctx->send_result
+      : ctx->identity_refused      ? AZ_IOT_ERR_IDENTITY_REJECTED
+      : ctx->failed                ? ctx->failed_reason
+                                   : AZ_IOT_ERR_TIMEOUT;
+
+  az_iot_connection_client_close(&client);
+  deadline = sample_now_ms() + 5000u;
+  while (ctx->hub_state != AZ_IOT_CONN_STATE_IDLE && sample_now_ms() < deadline)
+  {
+    (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
+  }
+  az_iot_mqttv3_telemetry_client_deinit(&telemetry);
+  az_iot_connection_client_deinit(&client);
+  return result;
+}
+
 int main(int argc, char** argv)
 {
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
@@ -517,9 +678,6 @@ int main(int argc, char** argv)
   bool enrollment_only = argc > 1 && strcmp(argv[1], "--enrollment") == 0;
   int rc = 1;
   sample_context ctx = { 0 };
-  az_iot_connection_client client = { 0 };
-  az_iot_mqttv3_telemetry_client telemetry = { 0 };
-  static https_response response;
 
   ctx.tpm = open_tpm();
   if (ctx.tpm == NULL)
@@ -555,7 +713,9 @@ int main(int argc, char** argv)
     goto cleanup;
   }
 
-  /* 1. Register with DPS over HTTPS. */
+  /* Register, then connect to the assigned hub, where the TPM signs each token. A hub refusal of
+   * the identity after DPS re-assigned the device, or after it was deprovisioned and enrolled
+   * again under a new device ID, is fixed by registering again. */
   az_iot_dps_tpm_client_options dps_opts = az_iot_dps_tpm_client_options_default();
   dps_opts.id_scope = id_scope;
   dps_opts.registration_id = reg_id;
@@ -565,107 +725,31 @@ int main(int argc, char** argv)
   dps_opts.storage_root_key_len = srk_len;
   dps_opts.tpm = sample_tpm_ops(ctx.tpm);
   az_iot_dps_tpm_client dps;
+  az_iot_result r = AZ_IOT_ERR_INTERNAL;
   curl_global_init(CURL_GLOBAL_DEFAULT);
-  az_iot_result r = az_iot_dps_tpm_client_init(&dps, &dps_opts);
-  if (r == AZ_IOT_OK)
+  for (int registration = 1; registration <= SAMPLE_MAX_REGISTRATIONS; ++registration)
   {
-    r = register_with_dps(&dps, endpoint, ca, SAMPLE_REGISTER_TIMEOUT_MS, &response);
+    const az_iot_dps_tpm_assignment* a = NULL;
+    r = register_device(&dps, &dps_opts, endpoint, ca, &a);
+    if (r != AZ_IOT_OK)
+    {
+      break;
+    }
+    r = connect_and_send_telemetry(&ctx, a, ca);
+    if (r != AZ_IOT_ERR_IDENTITY_REJECTED || registration == SAMPLE_MAX_REGISTRATIONS)
+    {
+      break;
+    }
+    fprintf(stderr, "[dps_tpm] the hub refused the identity; registering with DPS again\n");
   }
   curl_global_cleanup();
-  const az_iot_dps_tpm_assignment* a = az_iot_dps_tpm_client_get_assignment(&dps);
-  if (r != AZ_IOT_OK || a == NULL)
-  {
-    goto cleanup;
-  }
-  fprintf(stderr, "[dps_tpm] assigned to %s as %s\n", a->assigned_hub, a->device_id);
-  if (a->connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3 || !a->hub_key_imported)
-  {
-    fprintf(
-        stderr,
-        "[dps_tpm] connectionProfile \"%s\": this sample signs SAS tokens for mqttv3 hubs only\n",
-        a->connection_profile_raw);
-    goto cleanup;
-  }
-
-  /* 2. Connect to the assigned hub; the TPM signs each token. */
-  az_iot_auth hub_auth = { 0 };
-  hub_auth.sas.on_sas_token_required = on_token_required;
-  hub_auth.sas.user_ctx = &ctx;
-  /* Memory for the connection client's entries, sized for the default limits. */
-  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
-  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-  opts.workspace = connection_workspace;
-  opts.workspace_size = sizeof(connection_workspace);
-  opts.iothub_hostname = a->assigned_hub;
-  opts.device_id = a->device_id;
-  opts.connection_profile = a->connection_profile;
-  opts.hub_auth = hub_auth;
-  static uint8_t sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(0, AZ_IOT_SAS_TOKEN_SIZE(256))];
-  opts.sas_buffer.buffer = sas_buffer;
-  opts.sas_buffer.size = sizeof(sas_buffer);
-  opts.trusted_ca.path = ca;
-
-  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
-   * then the hub. Limits: sample_utils.h. */
-  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  opts.mqtt_adapter = az_iot_paho_get_adapter();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
-#endif
-  opts.mqtt_limits = SAMPLE_MQTT_LIMITS;
-  opts.mqtt_workspace = mqtt_workspace;
-  opts.mqtt_workspace_size = sizeof(mqtt_workspace);
-
-  if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
-      || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
-      || az_iot_mqttv3_telemetry_client_init(&telemetry, &client) != AZ_IOT_OK
-      || az_iot_connection_client_open(&client) != AZ_IOT_OK)
-  {
-    fprintf(stderr, "[dps_tpm] connection client setup failed\n");
-    goto cleanup;
-  }
-  uint64_t deadline = sample_now_ms() + SAMPLE_CONNECT_TIMEOUT_MS;
-  while (ctx.hub_state != AZ_IOT_CONN_STATE_CONNECTED && !ctx.failed && sample_now_ms() < deadline)
-  {
-    (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
-    issue_token(&client, &ctx);
-  }
-
-  /* 3. One telemetry message. */
-  if (ctx.hub_state == AZ_IOT_CONN_STATE_CONNECTED)
-  {
-    static const uint8_t payload[] = "{\"attestation\":\"tpm\"}";
-    az_iot_telemetry_message msg = { 0 };
-    msg.payload = payload;
-    msg.payload_len = sizeof(payload) - 1;
-    if (az_iot_mqttv3_telemetry_client_send(&telemetry, &msg, on_sent, &ctx) == AZ_IOT_OK)
-    {
-      deadline = sample_now_ms() + SAMPLE_CONNECT_TIMEOUT_MS;
-      while (!ctx.sent && sample_now_ms() < deadline)
-      {
-        (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
-      }
-    }
-  }
-  rc = ctx.sent && ctx.send_result == AZ_IOT_OK ? 0 : 1;
+  rc = r == AZ_IOT_OK ? 0 : 1;
   fprintf(
       stderr,
       "[dps_tpm] %s\n",
-      rc == 0          ? "telemetry sent with a TPM-signed SAS token"
-          : ctx.failed ? az_iot_result_to_string(ctx.failed_reason)
-                       : "failed");
-
-  az_iot_connection_client_close(&client);
-  deadline = sample_now_ms() + 5000u;
-  while (ctx.hub_state != AZ_IOT_CONN_STATE_IDLE && sample_now_ms() < deadline)
-  {
-    (void)az_iot_connection_client_do_work(&client, SAMPLE_TICK_MS);
-  }
+      rc == 0 ? "telemetry sent with a TPM-signed SAS token" : az_iot_result_to_string(r));
 
 cleanup:
-  az_iot_mqttv3_telemetry_client_deinit(&telemetry);
-  az_iot_connection_client_deinit(&client);
   sample_tpm_destroy(ctx.tpm);
   free(id_scope);
   free(endpoint);
