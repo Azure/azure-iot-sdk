@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Authentication;
@@ -46,7 +46,43 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         public void SimulateConnectionLost()
         {
             IsClassicDevicePresenceEstablished = false;
+            lock (PublishedMessages)
+            {
+                if (_reconnected.Task.IsCompleted)
+                {
+                    _reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                }
+            }
+
             ConnectionLost?.Invoke();
+        }
+
+        /// <summary>
+        /// Simulate the application deliberately disconnecting: like the connection client, publishes that wait for the
+        /// connection to come back fail with <see cref="OperationCanceledException"/>.
+        /// </summary>
+        public void SimulateDeliberateDisconnect()
+        {
+            IsConnectionTargetSet = false;
+            IsClassicDevicePresenceEstablished = false;
+            TaskCompletionSource reconnected;
+            lock (PublishedMessages)
+            {
+                reconnected = _reconnected;
+                _reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            reconnected.TrySetException(new OperationCanceledException("Deliberately disconnected."));
+        }
+
+        // Completed while connected. Like the connection client, publishes made after the connection is lost wait for it.
+        private TaskCompletionSource _reconnected = CreateCompletedSource();
+
+        private static TaskCompletionSource CreateCompletedSource()
+        {
+            TaskCompletionSource source = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            source.SetResult();
+            return source;
         }
 
         public event Action? ClassicDevicePresenceEstablished;
@@ -66,8 +102,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         public void SimulateClassicDevicePresenceEstablished(Guid? connectionNonce = null)
         {
             ConnectionNonce = connectionNonce ?? Guid.NewGuid();
+            IsConnectionTargetSet = true;
             IsClassicDevicePresenceEstablished = true;
             ClassicDevicePresenceEstablished?.Invoke();
+            TaskCompletionSource reconnected;
+            lock (PublishedMessages)
+            {
+                reconnected = _reconnected;
+            }
+
+            reconnected.TrySetResult();
         }
 
         /// <summary>Every publish, subscribe and unsubscribe the feature clients sent, in order.</summary>
@@ -95,6 +139,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
+            Task reconnected;
+            lock (PublishedMessages)
+            {
+                reconnected = _reconnected.Task;
+            }
+
+            await reconnected.WaitAsync(cancellationToken);
+
             lock (PublishedMessages)
             {
                 PublishedMessages.Add(publish);
