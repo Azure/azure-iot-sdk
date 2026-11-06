@@ -47,8 +47,9 @@ typedef void (*az_iot_e2e_process_pump)(void* context);
  * process group. @p process must not be running.
  *
  * @param environment NULL, or "NAME=value" strings (NULL-terminated) set for the child only.
- * @param echo_prefix Printed before each whole line the child prints, echoed to stdout. Not copied.
- * @return false when it could not be started.
+ * @param echo_prefix Printed before each whole line the child prints, echoed to stdout; NULL for
+ * no echo. Not copied.
+ * @return false when it could not be started, or (POSIX) @p arguments[0] could not be run.
  */
 bool az_iot_e2e_process_start(
     az_iot_e2e_process* process,
@@ -97,10 +98,11 @@ bool az_iot_e2e_process_wait_for_exit(az_iot_e2e_process* process, int timeout_m
 /**
  * @brief Stops the child's process group and releases it; nothing when not running.
  *
- * Asks first (SIGTERM; CTRL_BREAK_EVENT on Windows), then kills the group after @p grace_ms.
- * Its exit code stays available to az_iot_e2e_process_wait_for_exit().
+ * Asks first (SIGTERM; CTRL_BREAK_EVENT on Windows), then kills the group (Windows: its job) after
+ * @p grace_ms. Its exit code stays available to az_iot_e2e_process_wait_for_exit().
  *
- * @return false when it had to be killed.
+ * @return false when it had to be killed: it had not exited, or what it started still held its
+ * output, after @p grace_ms.
  */
 bool az_iot_e2e_process_stop(az_iot_e2e_process* process, int grace_ms);
 

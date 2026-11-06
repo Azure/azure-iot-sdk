@@ -7,6 +7,7 @@
  *   exit <code>       exits with <code>
  *   print [args...]   prints two lines, one on stderr, and its arguments; exits 0
  *   environment NAME  prints NAME=<its value, or "(unset)">; exits 0
+ *   flood <count>     prints <count> 100-byte lines, "line <n>" (5 digits) then padding; exits 0
  *   wait              prints "ready", then on SIGTERM (CTRL_BREAK on Windows) prints "stopping
  *                     gracefully" and exits 3
  *   ignore-stop       prints "ready" and ignores SIGTERM (CTRL_BREAK) until killed */
@@ -81,6 +82,14 @@ int main(int argc, char** argv)
     char* value = az_iot_test_env_dup(argv[2]);
     printf("%s=%s\n", argv[2], value != NULL ? value : "(unset)");
     free(value);
+    return 0;
+  }
+  if (strcmp(mode, "flood") == 0 && argc > 2)
+  {
+    for (int i = 0; i < atoi(argv[2]); ++i)
+    {
+      printf("line %05d %088d\n", i, 0);
+    }
     return 0;
   }
   if (strcmp(mode, "wait") == 0 || strcmp(mode, "ignore-stop") == 0)
