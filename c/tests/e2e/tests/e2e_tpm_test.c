@@ -8,7 +8,7 @@
  * (samples/common/sample_tpm_sim.c): an individual enrollment for a new EK,
  * registration over HTTPS with az_iot_dps_tpm_client, then the assigned mqttv3
  * hub with SAS tokens the simulated TPM signs, and one telemetry message.
- * The device is then deleted from the hub: the hub refuses the identity, and
+ * The device and its registration record are then deleted: the hub refuses the identity, and
  * registering again (which re-creates the device and imports a new key) lets
  * the device send again. The enrollment, registration and device are deleted
  * afterwards.
@@ -371,9 +371,12 @@ static void test_dps_tpm_registration_hub_sas_and_reregistration(void** state)
     first_sent = connect_and_send_telemetry(&ctx, a, ca);
   }
 
-  /* Delete the device: the hub refuses the identity once the deletion reaches it. */
-  bool device_deleted_on_hub
-      = first_sent == AZ_IOT_OK && az_iot_e2e_service_device_delete(svc, device_id);
+  /* Delete the device and its registration record, as when deprovisioning it while keeping its
+   * enrollment (DPS refuses to register a device deleted from the hub while its record remains):
+   * the hub refuses the identity once the deletion reaches it. */
+  bool device_deleted_on_hub = first_sent == AZ_IOT_OK
+      && az_iot_e2e_service_device_delete(svc, device_id)
+      && az_iot_e2e_dps_registration_delete(reg_id);
   uint64_t deadline = sample_now_ms() + E2E_TPM_DELETE_PROPAGATION_MS;
   while (device_deleted_on_hub && refused != AZ_IOT_ERR_IDENTITY_REJECTED && !ctx.token_failed
          && sample_now_ms() < deadline)

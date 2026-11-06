@@ -1278,13 +1278,19 @@ bool az_iot_e2e_dps_tpm_enrollment_create(
       && dps_service_call("PUT", path, body, false);
 }
 
-bool az_iot_e2e_dps_enrollment_delete(const char* registration_id)
+bool az_iot_e2e_dps_registration_delete(const char* registration_id)
 {
   char path[256];
   int n = snprintf(
       path, sizeof(path), "/registrations/%s?api-version=" E2E_DPS_API_VERSION, registration_id);
-  bool ok = n > 0 && (size_t)n < sizeof(path) && dps_service_call("DELETE", path, NULL, true);
-  n = snprintf(
+  return n > 0 && (size_t)n < sizeof(path) && dps_service_call("DELETE", path, NULL, true);
+}
+
+bool az_iot_e2e_dps_enrollment_delete(const char* registration_id)
+{
+  char path[256];
+  bool ok = az_iot_e2e_dps_registration_delete(registration_id);
+  int n = snprintf(
       path, sizeof(path), "/enrollments/%s?api-version=" E2E_DPS_API_VERSION, registration_id);
   return n > 0 && (size_t)n < sizeof(path) && dps_service_call("DELETE", path, NULL, true) && ok;
 }
