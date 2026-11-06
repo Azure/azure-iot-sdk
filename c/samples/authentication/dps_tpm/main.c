@@ -715,7 +715,7 @@ int main(int argc, char** argv)
 
   /* Register, then connect to the assigned hub, where the TPM signs each token. A hub refusal of
    * the identity after DPS re-assigned the device, or after it was deprovisioned and enrolled
-   * again, is fixed by registering again. */
+   * again under a new device ID, is fixed by registering again. */
   az_iot_dps_tpm_client_options dps_opts = az_iot_dps_tpm_client_options_default();
   dps_opts.id_scope = id_scope;
   dps_opts.registration_id = reg_id;

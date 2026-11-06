@@ -9,8 +9,9 @@
  * registration over HTTPS with az_iot_dps_tpm_client, then the assigned mqttv3
  * hub with SAS tokens the simulated TPM signs, and one telemetry message.
  * The device is then deprovisioned (deleted from the hub, its enrollment from
- * DPS): the hub refuses the identity, and once enrolled again, registering again
- * (which re-creates the device and imports a new key) lets the device send again. The enrollment,
+ * DPS): the hub refuses the identity, and once enrolled again under a new device
+ * ID, registering again (which creates that device and imports a new key) lets
+ * the device send again. The enrollment,
  * registration and device are deleted afterwards.
  *
  * Environment: AZ_IOT_DPS_ID_SCOPE, IOT_DPS_CONNECTION_STRING,
@@ -337,7 +338,7 @@ static void test_dps_tpm_registration_hub_sas_and_reregistration(void** state)
       &written)));
   ek_b64[written] = '\0';
   fprintf(stderr, "[e2e_tpm] registration ID %s\n", reg_id);
-  if (!az_iot_e2e_dps_tpm_enrollment_create(reg_id, ek_b64))
+  if (!az_iot_e2e_dps_tpm_enrollment_create(reg_id, ek_b64, NULL))
   {
     (void)az_iot_e2e_dps_enrollment_delete(reg_id); /* in case it was created */
     fail_msg("creating the TPM enrollment for %s failed", reg_id);
@@ -355,6 +356,7 @@ static void test_dps_tpm_registration_hub_sas_and_reregistration(void** state)
   az_iot_dps_tpm_client dps;
   const az_iot_dps_tpm_assignment* a = NULL;
   char device_id[AZ_IOT_DPS_TPM_ID_MAX + 1] = { 0 };
+  char reenrolled_device_id[AZ_IOT_DPS_TPM_ID_MAX + 1] = { 0 };
   az_iot_result first_sent = AZ_IOT_ERR_INTERNAL;
   az_iot_result refused = AZ_IOT_ERR_INTERNAL;
   az_iot_result reregistered = AZ_IOT_ERR_INTERNAL;
@@ -388,10 +390,14 @@ static void test_dps_tpm_registration_hub_sas_and_reregistration(void** state)
     }
   }
 
-  /* Enroll the device again; registering again re-creates it and imports a new key. DPS may
-   * still refuse while the deletion propagates. */
-  bool reenrolled = refused == AZ_IOT_ERR_IDENTITY_REJECTED
-      && az_iot_e2e_dps_tpm_enrollment_create(reg_id, ek_b64);
+  /* Enroll the device again under a new device ID (DPS refuses, errorCode 409000, to re-create
+   * a device ID deleted from the hub); registering again creates it and imports a new key. DPS
+   * may still refuse while the deletion propagates. */
+  int written_id
+      = snprintf(reenrolled_device_id, sizeof(reenrolled_device_id), "%s-reenrolled", device_id);
+  bool reenrolled = refused == AZ_IOT_ERR_IDENTITY_REJECTED && written_id > 0
+      && (size_t)written_id < sizeof(reenrolled_device_id)
+      && az_iot_e2e_dps_tpm_enrollment_create(reg_id, ek_b64, reenrolled_device_id);
   deadline = sample_now_ms() + E2E_TPM_DELETE_PROPAGATION_MS;
   while (reenrolled && reregistered != AZ_IOT_OK && sample_now_ms() < deadline)
   {
@@ -401,6 +407,8 @@ static void test_dps_tpm_registration_hub_sas_and_reregistration(void** state)
       sample_sleep_ms((long)E2E_TPM_REFUSAL_RETRY_DELAY_MS);
     }
   }
+  bool reassigned_to_new_id
+      = reregistered == AZ_IOT_OK && strcmp(a->device_id, reenrolled_device_id) == 0;
   if (reregistered == AZ_IOT_OK)
   {
     second_sent = connect_and_send_telemetry(&ctx, a, ca);
@@ -412,7 +420,9 @@ static void test_dps_tpm_registration_hub_sas_and_reregistration(void** state)
    * delete it even when registration failed after DPS created it (404 counts as deleted). */
   bool device_deleted
       = az_iot_e2e_service_device_delete(svc, device_id[0] != '\0' ? device_id : reg_id);
-  bool cleaned = enrollment_deleted && device_deleted;
+  bool reenrolled_device_deleted = reenrolled_device_id[0] == '\0'
+      || az_iot_e2e_service_device_delete(svc, reenrolled_device_id);
+  bool cleaned = enrollment_deleted && device_deleted && reenrolled_device_deleted;
   az_iot_e2e_service_destroy(svc);
   sample_tpm_sim_destroy(ctx.tpm);
   free(id_scope);
@@ -429,6 +439,7 @@ static void test_dps_tpm_registration_hub_sas_and_reregistration(void** state)
   assert_int_equal(refused, AZ_IOT_ERR_IDENTITY_REJECTED);
   assert_true(reenrolled);
   assert_int_equal(reregistered, AZ_IOT_OK);
+  assert_true(reassigned_to_new_id);
   assert_int_equal(second_sent, AZ_IOT_OK);
   assert_true(cleaned);
 }

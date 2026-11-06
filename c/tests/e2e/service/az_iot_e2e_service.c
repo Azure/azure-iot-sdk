@@ -1261,7 +1261,8 @@ static bool dps_service_call(const char* method, const char* path, const char* b
 
 bool az_iot_e2e_dps_tpm_enrollment_create(
     const char* registration_id,
-    const char* endorsement_key_base64)
+    const char* endorsement_key_base64,
+    const char* device_id)
 {
   char path[256];
   char body[2048];
@@ -1270,9 +1271,12 @@ bool az_iot_e2e_dps_tpm_enrollment_create(
   int m = snprintf(
       body,
       sizeof(body),
-      "{\"registrationId\":\"%s\",\"attestation\":{\"type\":\"tpm\",\"tpm\":"
+      "{\"registrationId\":\"%s\",%s%s%s\"attestation\":{\"type\":\"tpm\",\"tpm\":"
       "{\"endorsementKey\":\"%s\"}}}",
       registration_id,
+      device_id != NULL ? "\"deviceId\":\"" : "",
+      device_id != NULL ? device_id : "",
+      device_id != NULL ? "\"," : "",
       endorsement_key_base64);
   return n > 0 && (size_t)n < sizeof(path) && m > 0 && (size_t)m < sizeof(body)
       && dps_service_call("PUT", path, body, false);
