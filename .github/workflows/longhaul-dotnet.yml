@@ -1,0 +1,401 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# .NET device longhaul: one C# device kept connected for hours while it sends
+# telemetry, updates reported properties, receives desired property patches,
+# answers direct methods and (MQTTv3 hub only) receives cloud-to-device
+# messages. Scenarios (dotnet/tests/.../Longhaul/LonghaulScenarioTests.cs):
+#
+#   UnifiedMQTTv3Hub     unified API set on an MQTTv3 IoT hub, provisioned per
+#                        run (resource group DotnetLonghaul-<run id>-<attempt>)
+#   UnifiedMQTTv5Hub     unified API set on the shared MQTTv5 IoT hub
+#   MQTTv5ApiMQTTv5Hub   MQTTv5 API set on the shared MQTTv5 IoT hub
+#
+# Each scenario runs in its own job and writes an analysis (operation success
+# rates and latency percentiles, connection drops and outages, managed memory
+# growth after warm-up) to the job summary and to the longhaul-<scenario>
+# artifact; the report job compares the scenarios side by side. A scenario
+# fails when an operation's success rate drops below min-success-percent,
+# managed memory grows more than max-memory-growth-mb, an operation never
+# runs, or the client faults unrecoverably.
+#
+# The MQTTv5 scenarios use the shared environment of ci-dotnet-e2e-mqttv5.yml
+# (same vars and secrets). A GitHub-hosted job runs for at most 360 minutes,
+# which bounds duration-minutes to 320 (build, setup and teardown included).
+
+name: longhaul-dotnet
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration-minutes:
+        description: How long each scenario runs, in minutes (1-320).
+        required: true
+        default: '320'
+      scenarios:
+        description: Which scenario(s) to run.
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - UnifiedMQTTv3Hub
+          - UnifiedMQTTv5Hub
+          - MQTTv5ApiMQTTv5Hub
+      os:
+        description: Runner the device runs on.
+        required: true
+        default: ubuntu-24.04
+        type: choice
+        options:
+          - ubuntu-24.04
+          - windows-latest
+      min-success-percent:
+        description: Minimum success rate, in percent, every operation must reach.
+        required: true
+        default: '99'
+      max-memory-growth-mb:
+        description: Maximum managed memory growth, in MB, after warm-up.
+        required: true
+        default: '64'
+
+permissions:
+  contents: read
+
+# Derived from the run (not a job output) so teardown still finds the group
+# when setup is cancelled; see ci-dotnet.yml. The cleanup-e2e-resources
+# janitor reaps leaked groups with this prefix.
+env:
+  E2E_RESOURCE_GROUP: DotnetLonghaul-${{ github.run_id }}-${{ github.run_attempt }}
+
+jobs:
+  plan:
+    name: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      needs-mqttv3: ${{ steps.plan.outputs.needs-mqttv3 }}
+      needs-mqttv5: ${{ steps.plan.outputs.needs-mqttv5 }}
+    steps:
+      - name: Validate inputs and select scenarios
+        id: plan
+        shell: bash
+        # Inputs are passed via env so they are data, never code.
+        env:
+          DURATION: ${{ inputs.duration-minutes }}
+          SCENARIOS: ${{ inputs.scenarios }}
+          RUNNER_OS_INPUT: ${{ inputs.os }}
+          MIN_SUCCESS: ${{ inputs.min-success-percent }}
+          MAX_GROWTH: ${{ inputs.max-memory-growth-mb }}
+          MQTTV5_ID_SCOPE: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
+        run: |
+          set -euo pipefail
+
+          # Force base 10: bash arithmetic would read a leading zero as octal
+          # (0400 -> 256) while the test parses it as decimal (400).
+          if ! [[ "$DURATION" =~ ^[0-9]{1,9}$ ]] || (( 10#$DURATION < 1 || 10#$DURATION > 320 )); then
+            echo "::error::duration-minutes must be a whole number from 1 to 320; got '$DURATION'."
+            exit 1
+          fi
+          number='^[0-9]+([.][0-9]+)?$'
+          if ! [[ "$MIN_SUCCESS" =~ $number ]] || ! awk -v v="$MIN_SUCCESS" 'BEGIN { exit !(v > 0 && v <= 100) }'; then
+            echo "::error::min-success-percent must be a number greater than 0 and at most 100; got '$MIN_SUCCESS'."
+            exit 1
+          fi
+          if ! [[ "$MAX_GROWTH" =~ $number ]] || ! awk -v v="$MAX_GROWTH" 'BEGIN { exit !(v > 0) }'; then
+            echo "::error::max-memory-growth-mb must be a positive number; got '$MAX_GROWTH'."
+            exit 1
+          fi
+
+          case "$SCENARIOS" in
+            all) selected="UnifiedMQTTv3Hub UnifiedMQTTv5Hub MQTTv5ApiMQTTv5Hub" ;;
+            UnifiedMQTTv3Hub|UnifiedMQTTv5Hub|MQTTv5ApiMQTTv5Hub) selected="$SCENARIOS" ;;
+            *) echo "::error::Unknown scenario '$SCENARIOS'."; exit 1 ;;
+          esac
+
+          needs_mqttv3=false
+          needs_mqttv5=false
+          include='[]'
+          for scenario in $selected; do
+            case "$scenario" in
+              UnifiedMQTTv3Hub) hub=MQTTv3; needs_mqttv3=true ;;
+              *) hub=MQTTv5; needs_mqttv5=true ;;
+            esac
+            include=$(jq -c --arg s "$scenario" --arg h "$hub" --arg o "$RUNNER_OS_INPUT" \
+              '. + [{scenario: $s, hub: $h, os: $o}]' <<< "$include")
+          done
+
+          if [[ "$needs_mqttv5" == true && -z "$MQTTV5_ID_SCOPE" ]]; then
+            echo "::error::The shared MQTTv5 environment is not configured (vars.E2E_MQTTV5_SHARED_ID_SCOPE is unset); run only UnifiedMQTTv3Hub."
+            exit 1
+          fi
+
+          {
+            echo "matrix=$(jq -c '{include: .}' <<< "$include")"
+            echo "needs-mqttv3=$needs_mqttv3"
+            echo "needs-mqttv5=$needs_mqttv5"
+          } >> "$GITHUB_OUTPUT"
+
+  setup:
+    name: setup (provision MQTTv3 hub)
+    # Wait for ADR repair (up to 210 minutes) before creating the resource
+    # group: otherwise that wait plus the longhaul run could outlast the
+    # cleanup-e2e-resources janitor's 8-hour cutoff, letting it delete the
+    # hub mid-run.
+    needs: [plan, adr-namespace]
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success' &&
+          needs.plan.outputs.needs-mqttv3 == 'true' &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') }}
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Azure Login via OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Provision resources
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@b96d2aa2eb2b36e1e4dfbdb04aa56cf3dccecf8a # v1.0.1
+        with:
+          rg-name: ${{ env.E2E_RESOURCE_GROUP }}
+          # See ci-dotnet.yml for why the region fallback lives here.
+          azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
+          enable-file-upload: 'false'
+          enable-certificate-management: 'false'
+
+      - name: Upload test config
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: longhaul-test-config
+          path: test_config/set_test_env_vars.ps1
+          retention-days: 1
+          if-no-files-found: error
+
+  # The namespace linking the shared MQTTv5 hub and DPS can drop out of Azure;
+  # repair it before starting hours of work that depend on it.
+  adr-namespace:
+    name: ADR namespace
+    needs: plan
+    if: needs.plan.outputs.needs-mqttv5 == 'true'
+    permissions:
+      contents: read
+      id-token: write
+    # actionlint 1.7.12 does not accept the $/ self-repository form yet.
+    uses: ./.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml # zizmor: ignore[self-repository]
+    secrets:
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+
+  longhaul:
+    name: ${{ matrix.scenario }} (${{ matrix.os }})
+    needs: [plan, setup, adr-namespace]
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success' &&
+          (needs.setup.result == 'success' || needs.setup.result == 'skipped') &&
+          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Build tests
+        working-directory: dotnet
+        run: |
+          dotnet build ./Project.slnx
+
+      - name: Download MQTTv3 hub config
+        if: matrix.hub == 'MQTTv3'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: longhaul-test-config
+          path: test_config
+
+      - name: Run longhaul
+        shell: pwsh
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+          HUB: ${{ matrix.hub }}
+          LONGHAUL_DURATION_MINUTES: ${{ inputs.duration-minutes }}
+          LONGHAUL_MIN_SUCCESS_PERCENT: ${{ inputs.min-success-percent }}
+          LONGHAUL_MAX_MANAGED_MEMORY_GROWTH_MB: ${{ inputs.max-memory-growth-mb }}
+          # Only the MQTTv5 scenarios get the shared environment's secrets.
+          IOTHUB_CONNECTION_STRING_MQTTV5: ${{ matrix.hub == 'MQTTv5' && secrets.E2E_MQTTV5_SHARED_IOTHUB_CS || '' }}
+          IOT_DPS_CONNECTION_STRING_MQTTV5: ${{ matrix.hub == 'MQTTv5' && secrets.E2E_MQTTV5_SHARED_DPS_CS || '' }}
+          IOT_DPS_ID_SCOPE_MQTTV5: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE }}
+          IOT_DPS_GLOBAL_ENDPOINT_MQTTV5: ${{ vars.E2E_MQTTV5_SHARED_DPS_HOST }}
+        run: |
+          if ($env:HUB -eq 'MQTTv3') {
+            # Sets IOTHUB_CONNECTION_STRING, IOT_DPS_CONNECTION_STRING and IOT_DPS_ID_SCOPE.
+            . ./test_config/set_test_env_vars.ps1
+            $required = 'IOTHUB_CONNECTION_STRING', 'IOT_DPS_CONNECTION_STRING', 'IOT_DPS_ID_SCOPE'
+          } else {
+            $required = 'IOTHUB_CONNECTION_STRING_MQTTV5', 'IOT_DPS_CONNECTION_STRING_MQTTV5', 'IOT_DPS_ID_SCOPE_MQTTV5'
+          }
+          $missing = $required | Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
+          if ($missing) { throw "$env:HUB e2e environment not configured; missing: $($missing -join ', ')." }
+
+          $env:LONGHAUL_OUTPUT_DIRECTORY = Join-Path $env:GITHUB_WORKSPACE 'longhaul-results'
+
+          dotnet test ./dotnet/Project.slnx `
+            --no-build `
+            --filter "Category=Longhaul&LonghaulScenario=$env:SCENARIO" `
+            --logger:"trx;LogFileName=longhaul-$env:SCENARIO.trx" `
+            --logger:"console;verbosity=normal" `
+            --results-directory ./test-results `
+            -- xunit.diagnosticMessages=true
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          # A filter that matches nothing, or a skipped test, still exits 0.
+          if (-not (Test-Path (Join-Path $env:LONGHAUL_OUTPUT_DIRECTORY "$env:SCENARIO.json"))) {
+            throw "The $env:SCENARIO longhaul produced no report."
+          }
+
+      - name: Publish analysis
+        if: always()
+        shell: pwsh
+        run: |
+          $reports = @(Get-ChildItem ./longhaul-results -Filter *.md -ErrorAction SilentlyContinue)
+          if ($reports.Count -eq 0) {
+            "## Longhaul: $env:SCENARIO ❌ no report`n`nThe run ended before writing its analysis; see the job log." |
+              Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+          $reports | ForEach-Object { Get-Content $_.FullName -Raw | Add-Content $env:GITHUB_STEP_SUMMARY }
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: longhaul-${{ matrix.scenario }}
+          path: |
+            longhaul-results/
+            test-results/
+          if-no-files-found: warn
+
+  report:
+    name: compare scenarios
+    needs: [plan, longhaul]
+    if: ${{ always() && needs.plan.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Download results
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: longhaul-*
+          path: results
+
+      - name: Summarize
+        shell: pwsh
+        env:
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+        run: |
+          $planned = @(($env:MATRIX | ConvertFrom-Json).include.scenario)
+          $reports = @{}
+          Get-ChildItem ./results -Recurse -Filter *.json -ErrorAction SilentlyContinue | ForEach-Object {
+            $report = Get-Content $_.FullName -Raw | ConvertFrom-Json
+            if ($report.scenario) { $reports[$report.scenario] = $report }
+          }
+
+          function Format-Number($value, $format) {
+            if ($null -eq $value) { 'n/a' } else { ([double]$value).ToString($format, [Globalization.CultureInfo]::InvariantCulture) }
+          }
+
+          $md = [Text.StringBuilder]::new()
+          [void]$md.AppendLine('# .NET longhaul comparison')
+          [void]$md.AppendLine()
+          [void]$md.AppendLine('| Scenario | API set | Hub | Result | Ran (min) | Lowest success % | Highest p95 ms | Disconnects | Longest outage s | Unrecoverable faults | Managed growth MB | Slope MB/h |')
+          [void]$md.AppendLine('|---|---|---|---|---|---|---|---|---|---|---|---|')
+          foreach ($scenario in $planned) {
+            $r = $reports[$scenario]
+            if (-not $r) {
+              [void]$md.AppendLine("| $scenario | | | ❌ no report | | | | | | | | |")
+              continue
+            }
+            $ops = @($r.operations)
+            $lowest = ($ops | Measure-Object -Property successRatePercent -Minimum).Minimum
+            $p95 = ($ops | ForEach-Object { $_.latencyMilliseconds.p95 } | Measure-Object -Maximum).Maximum
+            $result = if ($r.passed) { '✅ passed' } else { '❌ failed' }
+            [void]$md.AppendLine(
+              "| $scenario | $($r.apiSet) | $($r.hub) | $result | $(Format-Number $r.actualDurationMinutes '0.#') " +
+              "| $(Format-Number $lowest '0.###') | $(Format-Number $p95 '0') | $($r.connection.disconnects) " +
+              "| $(Format-Number $r.connection.longestOutageSeconds '0.#') | $($r.connection.unrecoverableFaults) " +
+              "| $(Format-Number $r.resources.managedMemoryGrowthMegabytes '0.##') | $(Format-Number $r.resources.managedMemorySlopeMegabytesPerHour '0.##') |")
+          }
+
+          # Per-operation comparison: success rate and p95 latency in each scenario.
+          $present = @($planned | Where-Object { $reports[$_] })
+          if ($present.Count -gt 0) {
+            $operations = @($present | ForEach-Object { $reports[$_].operations.name } | Select-Object -Unique)
+            [void]$md.AppendLine()
+            [void]$md.AppendLine('## Success % (p95 ms) per operation')
+            [void]$md.AppendLine()
+            [void]$md.AppendLine('| Operation | ' + ($present -join ' | ') + ' |')
+            [void]$md.AppendLine('|---|' + ('---|' * $present.Count))
+            foreach ($operation in $operations) {
+              $cells = foreach ($scenario in $present) {
+                $op = $reports[$scenario].operations | Where-Object name -EQ $operation
+                if ($op) { "$(Format-Number $op.successRatePercent '0.###') ($(Format-Number $op.latencyMilliseconds.p95 '0'))" } else { '—' }
+              }
+              [void]$md.AppendLine("| $operation | " + ($cells -join ' | ') + ' |')
+            }
+
+            $violations = foreach ($scenario in $present) {
+              foreach ($violation in $reports[$scenario].violations) { "- **$scenario**: $violation" }
+            }
+            if ($violations) {
+              [void]$md.AppendLine()
+              [void]$md.AppendLine('## Threshold violations')
+              [void]$md.AppendLine()
+              $violations | ForEach-Object { [void]$md.AppendLine($_) }
+            }
+          }
+
+          [void]$md.AppendLine()
+          [void]$md.AppendLine('Full per-scenario analyses are in the scenario job summaries and the `longhaul-<scenario>` artifacts.')
+          $md.ToString() | Add-Content $env:GITHUB_STEP_SUMMARY
+
+  teardown:
+    name: teardown (delete MQTTv3 hub)
+    needs: [plan, setup, longhaul]
+    # always() also covers cancellation; the destroy action no-ops when the
+    # group was never created.
+    if: ${{ always() && needs.plan.outputs.needs-mqttv3 == 'true' }}
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Azure Login via OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete Azure resources
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@b96d2aa2eb2b36e1e4dfbdb04aa56cf3dccecf8a # v1.0.1
+        with:
+          resource-group: ${{ env.E2E_RESOURCE_GROUP }}
