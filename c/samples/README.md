@@ -196,7 +196,8 @@ The `main()` of each sample built with [`common/sample_utils.c`](common/sample_u
 ([`common/sample_utils.h`](common/sample_utils.h)), so a CI pipeline can tell when it started and
 ended and what it returned. User builds compile them out: unless
 `AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS=ON` (default `OFF`) defines `SAMPLE_PIPELINE_HOOKS`, they
-are no-ops and the samples are unchanged. With it, the sample writes unbuffered output, prints
-`sample-pipeline: begin`, `sample-pipeline: end rc=<rc>` and, when the pipeline stops it,
-`sample-pipeline: stop <reason>` at the start of a stdout line, and records SIGINT, SIGTERM and
-(Windows) CTRL_BREAK as a stop request for a loop that checks `sample_is_stop_requested()`.
+are no-ops and the samples are unchanged. With it, the sample writes unbuffered output and prints
+`sample-pipeline: begin` and `sample-pipeline: end rc=<rc>` at the start of a stdout line. It records
+SIGINT, SIGTERM and (Windows) CTRL_BREAK as a stop request for a loop that checks
+`sample_is_stop_requested()`; a signal prints no marker. Only a call to
+`sample_pipeline_checks_request_stop(reason)` prints `sample-pipeline: stop <reason>`.
