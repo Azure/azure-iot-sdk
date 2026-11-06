@@ -24,7 +24,9 @@
 #include "support/e2e_process.h"
 #include "support/test_env.h"
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <sys/wait.h>
 #include <unistd.h>
 #endif
@@ -41,6 +43,17 @@ static void start_child(const char* mode, const char* argument, const char* cons
   arguments[1] = mode;
   arguments[2] = argument;
   assert_true(az_iot_e2e_process_start(&s_process, arguments, environment, "[child] "));
+}
+
+/** @brief Sleeps 200 ms: time for a child to fill the pipe. */
+static void sleep_briefly(void)
+{
+#ifdef _WIN32
+  Sleep(200);
+#else
+  struct timespec t = { 0, 200 * 1000 * 1000 };
+  (void)nanosleep(&t, NULL);
+#endif
 }
 
 /** @brief Counts its calls in the int @p context points to. */
@@ -107,6 +120,16 @@ static void the_log_keeps_the_newest_output(void** state)
   assert_false(az_iot_e2e_process_has_printed(&s_process, "line 00000 "));
 }
 
+static void waiting_finds_a_line_the_same_read_drops_from_the_log(void** state)
+{
+  (void)state;
+  const char* const arguments[] = { AZ_IOT_E2E_PROCESS_TEST_CHILD, "flood", "3000", NULL };
+  assert_true(az_iot_e2e_process_start(&s_process, arguments, NULL, NULL));
+  sleep_briefly(); // Its first line, then 300 KB, are waiting in the pipe.
+  assert_true(
+      az_iot_e2e_process_wait_for_output(&s_process, "line 00000 ", START_TIMEOUT_MS, NULL, NULL));
+}
+
 static void extra_environment_is_set_for_the_child_only(void** state)
 {
   (void)state;
@@ -150,6 +173,7 @@ static void waiting_pumps_until_printed_or_timed_out_then_stop_asks_first(void**
   assert_false(
       az_iot_e2e_process_wait_for_output(&s_process, "never printed", 200, count_pump, &pumps));
   assert_true(pumps > 0);
+  assert_true(pumps <= 200 / 10 + 1); // Paced: one tick of at least 10 ms per call.
   assert_true(time(NULL) - start < 5);
   assert_false(az_iot_e2e_process_wait_for_exit(&s_process, 100, NULL));
 
@@ -255,6 +279,7 @@ int main(void)
     cmocka_unit_test_teardown(stdout_stderr_and_arguments_are_captured, teardown),
     cmocka_unit_test_teardown(a_missing_program_does_not_start, teardown),
     cmocka_unit_test_teardown(the_log_keeps_the_newest_output, teardown),
+    cmocka_unit_test_teardown(waiting_finds_a_line_the_same_read_drops_from_the_log, teardown),
     cmocka_unit_test_teardown(extra_environment_is_set_for_the_child_only, teardown),
     cmocka_unit_test_teardown(a_shell_command_runs, teardown),
     cmocka_unit_test_teardown(

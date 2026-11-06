@@ -74,7 +74,8 @@ void az_iot_e2e_process_read_output(az_iot_e2e_process* process);
 bool az_iot_e2e_process_has_printed(const az_iot_e2e_process* process, const char* text);
 
 /**
- * @brief Reads output until it contains @p text, calling @p pump (may be NULL) each tick.
+ * @brief Reads output until it contains @p text, calling @p pump (may be NULL) each tick of at
+ * least 10 ms. Text the bounded log drops in the same read still counts.
  *
  * @return false after @p timeout_ms, or once the child exited and closed its output without
  * printing @p text.
