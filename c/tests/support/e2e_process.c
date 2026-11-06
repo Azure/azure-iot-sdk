@@ -149,12 +149,43 @@ static wchar_t* make_environment_block(const char* const* overrides)
   return block;
 }
 
+/**
+ * @brief Gives this process a console when it has none: CTRL_BREAK_EVENT reaches only processes
+ * that share the caller's console, and the child inherits this one.
+ */
+static void attach_console_if_none(void)
+{
+  DWORD process_ids[1];
+  if (GetConsoleProcessList(process_ids, 1) != 0)
+  {
+    return;
+  }
+  DWORD const kinds[] = { STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE };
+  HANDLE kept[3];
+  for (int i = 0; i < 3; ++i)
+  {
+    kept[i] = GetStdHandle(kinds[i]);
+  }
+  if (AllocConsole())
+  {
+    // AllocConsole() points the standard handles at the new console: keep any that were set.
+    for (int i = 0; i < 3; ++i)
+    {
+      if (kept[i] != NULL && kept[i] != INVALID_HANDLE_VALUE)
+      {
+        (void)SetStdHandle(kinds[i], kept[i]);
+      }
+    }
+  }
+}
+
 /** @brief Starts @p command_line (UTF-8) in a new process group and job, output piped to us. */
 static bool start_command_line(
     az_iot_e2e_process* process,
     const char* command_line,
     const char* const* environment)
 {
+  attach_console_if_none();
   SECURITY_ATTRIBUTES inherit = { sizeof(inherit), NULL, TRUE };
   HANDLE output_read = NULL;
   HANDLE output_write = NULL;
@@ -320,47 +351,84 @@ static bool set_environment(const char* const* environment)
   return true;
 }
 
-/** @brief Starts @p arguments in its own process group, output piped to us. */
+/** @brief Closes both ends of @p pipe_fds. */
+static void close_pipe(int const pipe_fds[2])
+{
+  (void)close(pipe_fds[0]);
+  (void)close(pipe_fds[1]);
+}
+
+/**
+ * @brief Starts @p arguments in its own process group, output piped to us; false, with errno set,
+ * when it could not be run.
+ */
 static bool start_arguments(
     az_iot_e2e_process* process,
     const char* const* arguments,
     const char* const* environment)
 {
-  int fds[2];
-  if (pipe(fds) != 0)
+  int output[2];
+  int exec_status[2]; // Closed by a successful exec; otherwise carries the child's errno.
+  if (pipe(output) != 0)
   {
+    return false;
+  }
+  if (pipe(exec_status) != 0)
+  {
+    close_pipe(output);
+    return false;
+  }
+  if (fcntl(exec_status[1], F_SETFD, FD_CLOEXEC) != 0 || fcntl(output[0], F_SETFD, FD_CLOEXEC) != 0)
+  {
+    close_pipe(output);
+    close_pipe(exec_status);
     return false;
   }
   pid_t const pid = fork();
   if (pid == 0)
   {
     (void)setpgid(0, 0);
-    (void)dup2(fds[1], STDOUT_FILENO);
-    (void)dup2(fds[1], STDERR_FILENO);
-    (void)close(fds[0]);
-    (void)close(fds[1]);
+    (void)dup2(output[1], STDOUT_FILENO);
+    (void)dup2(output[1], STDERR_FILENO);
+    close_pipe(output);
+    (void)close(exec_status[0]);
+    errno = EINVAL; // A malformed environment entry.
     if (set_environment(environment))
     {
       execvp(arguments[0], (char* const*)(uintptr_t)arguments);
     }
+    int const error = errno;
+    ssize_t const written = write(exec_status[1], &error, sizeof(error));
+    (void)written;
     _exit(127);
   }
-  (void)close(fds[1]);
+  (void)close(output[1]);
+  (void)close(exec_status[1]);
   if (pid < 0)
   {
-    (void)close(fds[0]);
+    (void)close(output[0]);
+    (void)close(exec_status[0]);
     return false;
   }
   (void)setpgid(pid, pid); // Also here: a stop right after the start must reach the group.
-  if (fcntl(fds[0], F_SETFD, FD_CLOEXEC) != 0 || fcntl(fds[0], F_SETFL, O_NONBLOCK) != 0)
+  int child_error = 0;
+  ssize_t n;
+  do
   {
+    n = read(exec_status[0], &child_error, sizeof(child_error));
+  } while (n < 0 && errno == EINTR);
+  (void)close(exec_status[0]);
+  if (n != 0 || fcntl(output[0], F_SETFL, O_NONBLOCK) != 0)
+  {
+    int const error = n > 0 ? child_error : errno;
     (void)kill(-pid, SIGKILL);
     (void)waitpid(pid, NULL, 0);
-    (void)close(fds[0]);
+    (void)close(output[0]);
+    errno = error;
     return false;
   }
   process->process_id = pid;
-  process->output_descriptor = fds[0];
+  process->output_descriptor = output[0];
   return true;
 }
 
@@ -424,7 +492,7 @@ static void reset(az_iot_e2e_process* process, const char* echo_prefix)
   process->exited = false;
   process->output_ended = false;
   process->exit_code = -1;
-  process->echo_prefix = echo_prefix != NULL ? echo_prefix : "";
+  process->echo_prefix = echo_prefix;
   process->log[0] = '\0';
   process->log_length = 0;
   process->echoed_length = 0;
@@ -494,6 +562,28 @@ bool az_iot_e2e_process_start_shell(
 #endif
 }
 
+/** @brief Echoes, prefixed, the whole lines of the log not echoed yet. */
+static void echo_complete_lines(az_iot_e2e_process* process)
+{
+  char* line_end;
+  while (process->echo_prefix != NULL
+         && (line_end = memchr(
+                 process->log + process->echoed_length,
+                 '\n',
+                 process->log_length - process->echoed_length))
+             != NULL)
+  {
+    const char* line = process->log + process->echoed_length;
+    int length = (int)(line_end - line);
+    if (length > 0 && line[length - 1] == '\r')
+    {
+      --length;
+    }
+    printf("%s%.*s\n", process->echo_prefix, length, line);
+    process->echoed_length = (size_t)(line_end - process->log) + 1;
+  }
+}
+
 void az_iot_e2e_process_read_output(az_iot_e2e_process* process)
 {
   if (!process->running)
@@ -504,6 +594,7 @@ void az_iot_e2e_process_read_output(az_iot_e2e_process* process)
   {
     if (process->log_length + 1 >= sizeof(process->log)) // Full: keep the newer half.
     {
+      echo_complete_lines(process);
       size_t const keep = sizeof(process->log) / 2;
       size_t const dropped = process->log_length - keep;
       memmove(process->log, process->log + dropped, keep);
@@ -529,22 +620,7 @@ void az_iot_e2e_process_read_output(az_iot_e2e_process* process)
     }
   }
   process->log[process->log_length] = '\0';
-  char* line_end;
-  while ((line_end = memchr(
-              process->log + process->echoed_length,
-              '\n',
-              process->log_length - process->echoed_length))
-         != NULL)
-  {
-    const char* line = process->log + process->echoed_length;
-    int length = (int)(line_end - line);
-    if (length > 0 && line[length - 1] == '\r')
-    {
-      --length;
-    }
-    printf("%s%.*s\n", process->echo_prefix, length, line);
-    process->echoed_length = (size_t)(line_end - process->log) + 1;
-  }
+  echo_complete_lines(process);
   (void)fflush(stdout);
 }
 
@@ -605,16 +681,18 @@ bool az_iot_e2e_process_stop(az_iot_e2e_process* process, int grace_ms)
   {
     return true;
   }
-  if (!poll_exit(process) && ask_to_stop(process))
+  // Done when the child exited and its output closed: what it started holds the pipe too.
+  az_iot_e2e_process_read_output(process);
+  if (!(poll_exit(process) && process->output_ended) && ask_to_stop(process))
   {
     int64_t const end = now_ms() + grace_ms;
-    while (!poll_exit(process) && now_ms() < end)
+    while (!(poll_exit(process) && process->output_ended) && now_ms() < end)
     {
-      az_iot_e2e_process_read_output(process);
       sleep_ms(TICK_MS);
+      az_iot_e2e_process_read_output(process);
     }
   }
-  bool const graceful = process->exited;
+  bool const graceful = process->exited && process->output_ended;
   kill_and_wait(process); // Also what the child started and left running.
   az_iot_e2e_process_read_output(process);
   release(process);

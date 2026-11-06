@@ -84,6 +84,24 @@ static void stdout_stderr_and_arguments_are_captured(void** state)
   assert_false(az_iot_e2e_process_has_printed(&s_process, "never printed"));
 }
 
+static void a_missing_program_does_not_start(void** state)
+{
+  (void)state;
+  const char* const arguments[] = { "az-iot-e2e-process-test-no-such-program", NULL };
+  assert_false(az_iot_e2e_process_start(&s_process, arguments, NULL, "[child] "));
+}
+
+static void the_log_keeps_the_newest_output(void** state)
+{
+  (void)state;
+  // 300 KB, over AZ_IOT_E2E_PROCESS_LOG_SIZE; not echoed.
+  const char* const arguments[] = { AZ_IOT_E2E_PROCESS_TEST_CHILD, "flood", "3000", NULL };
+  assert_true(az_iot_e2e_process_start(&s_process, arguments, NULL, NULL));
+  assert_true(az_iot_e2e_process_wait_for_exit(&s_process, START_TIMEOUT_MS, NULL));
+  assert_true(az_iot_e2e_process_has_printed(&s_process, "line 02999 "));
+  assert_false(az_iot_e2e_process_has_printed(&s_process, "line 00000 "));
+}
+
 static void extra_environment_is_set_for_the_child_only(void** state)
 {
   (void)state;
@@ -169,6 +187,8 @@ int main(void)
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_teardown(exit_codes_are_reported, teardown),
     cmocka_unit_test_teardown(stdout_stderr_and_arguments_are_captured, teardown),
+    cmocka_unit_test_teardown(a_missing_program_does_not_start, teardown),
+    cmocka_unit_test_teardown(the_log_keeps_the_newest_output, teardown),
     cmocka_unit_test_teardown(extra_environment_is_set_for_the_child_only, teardown),
     cmocka_unit_test_teardown(a_shell_command_runs, teardown),
     cmocka_unit_test_teardown(
