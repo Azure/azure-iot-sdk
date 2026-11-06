@@ -282,11 +282,14 @@ static az_iot_result connect_and_send_telemetry(
       }
     }
   }
-  az_iot_result result = !client_ok  ? AZ_IOT_ERR_INTERNAL
-      : ctx->sent                    ? ctx->send_status
-      : ctx->identity_refused        ? AZ_IOT_ERR_IDENTITY_REJECTED
-      : ctx->hub_reason != AZ_IOT_OK ? ctx->hub_reason
-                                     : AZ_IOT_ERR_TIMEOUT;
+  az_iot_result result = !client_ok ? AZ_IOT_ERR_INTERNAL
+      : ctx->sent                   ? ctx->send_status
+      : ctx->identity_refused       ? AZ_IOT_ERR_IDENTITY_REJECTED
+      /* Only a FAULTED hub has a final reason; a refusal reported any other way is not one. */
+      : ctx->hub_state == AZ_IOT_CONN_STATE_FAULTED && ctx->hub_reason != AZ_IOT_OK
+          && ctx->hub_reason != AZ_IOT_ERR_IDENTITY_REJECTED
+      ? ctx->hub_reason
+      : AZ_IOT_ERR_TIMEOUT;
   az_iot_connection_client_close(&client);
   deadline = sample_now_ms() + 5000u;
   while (ctx->hub_state != AZ_IOT_CONN_STATE_IDLE && sample_now_ms() < deadline)
