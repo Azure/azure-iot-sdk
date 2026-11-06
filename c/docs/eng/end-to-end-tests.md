@@ -247,7 +247,7 @@ failure, or a runner that dies before teardown.
 | `setup` | ubuntu | provisions one resource group (IoT Hub + DPS) via the shared `provision-e2e-resources` action and publishes the test-config artifact |
 | `test` | ubuntu + windows, 4 groups each (matrix) | builds the e2e tests, materializes its device's X.509 material, and runs its group: `core` (every e2e suite but the three below, plus custody and the file upload sample on Linux), `transport-paho`, `transport-az_mqtt`, `sas` (both adapters) |
 | `coverage` | ubuntu | merges the four Linux groups' tracefiles into `coverage-trace-e2e`, only when every `test` job passed |
-| `esp32-qemu` | ubuntu, esp32 and esp32c3 (matrix) | the ESP32 IoT Hub sample in QEMU, always on the shared environment ([ESP32 in QEMU](#esp32-in-qemu)) |
+| `esp32-qemu` | ubuntu, esp32, esp32c3 and esp32s3 (matrix) | the ESP32 IoT Hub sample in QEMU, always on the shared environment ([ESP32 in QEMU](#esp32-in-qemu)) |
 | `teardown` | ubuntu | `always()` deletes the resource group via `destroy-e2e-resources`, using the run-derived name (not a `setup` output) |
 
 Each `test` job has its own device (index os-index * 4 + group-index; eight DPS
@@ -295,6 +295,7 @@ to the same certificate policy.
 the service. The device is the [ESP32 IoT Hub sample](../../samples/unified/esp32/README.md)
 firmware in Espressif's QEMU. The test starts it with `E2E_ESP32_QEMU_COMMAND` (through
 `/bin/sh -c`, in its own process group) and reads the sample's stable `hub_esp32:` log lines.
+It runs the firmware through the child-process helper below.
 `E2E_ESP32_DEVICE_ID` is the registration id the firmware was built with. Once the firmware
 logs `hub_esp32: ready on`:
 
@@ -310,17 +311,29 @@ runs it all in an ESP-IDF environment with QEMU, a host compiler and OpenSSL hea
    for [`eng/esp-idf-build.sh`](../../eng/esp-idf-build.sh));
 2. writes the identity with [`eng/esp-idf-qemu-identity.sh`](../../eng/esp-idf-qemu-identity.sh):
    - esp32: an `esp_secure_cert` partition holding the certificate and key;
-   - esp32c3: the key goes into the Digital Signature peripheral. The script boots QEMU in
-     download mode, and `configure_esp_secure_cert.py --configure_ds` burns the DS key into an
-     emulated eFuse image and writes the partition with the encrypted DS parameters. DS takes RSA
-     keys of at most 3072 bits;
+   - esp32c3 and esp32s3: the key goes into the Digital Signature peripheral. The script boots
+     QEMU in download mode, and `configure_esp_secure_cert.py --configure_ds` burns the DS key
+     into an emulated eFuse image and writes the partition with the encrypted DS parameters. The
+     esp32c3 DS takes RSA keys of at most 3072 bits;
 3. builds and runs the test, booting the firmware with
    [`eng/esp-idf-qemu.sh`](../../eng/esp-idf-qemu.sh) `--run`.
 
-CI: job `esp32-qemu` in `ci-c-e2e.yml`. It runs esp32 and esp32c3 in `espressif/idf:v6.1`, with
-devices 12 and 13 issued by `e2e-shared-device.ps1`. It uses the shared environment on every run,
-push and nightly included: the per-run enrollments' RSA-4096 keys exceed DS's 3072 bits, while the
-shared group CA issues RSA-2048. Without the shared environment's secrets, the job fails.
+CI: job `esp32-qemu` in `ci-c-e2e.yml`. It runs esp32, esp32c3 and esp32s3 in
+`espressif/idf:v6.1`, with devices 12, 13 and 14 issued by `e2e-shared-device.ps1`. It uses the
+shared environment on every run, push and nightly included: the per-run enrollments' RSA-4096 keys
+exceed the esp32c3 DS's 3072 bits, while the shared group CA issues RSA-2048. Without the shared
+environment's secrets, the job fails.
+
+### Child-process helper
+
+[`tests/support/e2e_process.h`](../../tests/support/e2e_process.h) runs a program as a child, on
+POSIX and Windows, for suites whose device is another process: it starts an argument list or a
+shell command (extra environment variables for the child only), captures stdout and stderr through
+one pipe, echoes whole lines with a prefix, waits for a text while calling a pump (here the
+service facade), and stops the child: SIGTERM to its process group (Windows: `CTRL_BREAK_EVENT`
+to its process group), then SIGKILL (Windows: its job object is terminated) after a grace period.
+It is built in every build, not only with `AZ_IOT_BUILD_E2E`, and its test,
+`az_iot_tests_e2e_process`, runs in `ci-c`'s unit-test ctest on Linux and Windows.
 
 ---
 

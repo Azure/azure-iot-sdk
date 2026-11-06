@@ -128,7 +128,7 @@ if(AZ_IOT_BUILD_E2E_ESP32_QEMU)
         message(FATAL_ERROR "AZ_IOT_BUILD_E2E_ESP32_QEMU=ON needs a POSIX host (it starts QEMU)")
     endif()
     az_iot_add_cmocka_test(az_iot_tests_e2e_esp32_qemu tests/e2e_esp32_qemu_test.c)
-    target_link_libraries(az_iot_tests_e2e_esp32_qemu PRIVATE az_iot_e2e_service)
+    target_link_libraries(az_iot_tests_e2e_esp32_qemu PRIVATE az_iot_e2e_service az_iot_e2e_process)
     # DPS, TLS and MQTT run emulated: minutes, not seconds.
     set_tests_properties(az_iot_tests_e2e_esp32_qemu PROPERTIES TIMEOUT 1200)
 endif()
