@@ -388,17 +388,26 @@ static bool start_arguments(
   if (pid == 0)
   {
     (void)setpgid(0, 0);
-    (void)dup2(output[1], STDOUT_FILENO);
-    (void)dup2(output[1], STDERR_FILENO);
-    close_pipe(output);
-    (void)close(exec_status[0]);
-    errno = EINVAL; // A malformed environment entry.
-    if (set_environment(environment))
+    // Above stderr: with our stdout or stderr closed, pipe() may have returned 1 or 2, which the
+    // redirection below would overwrite.
+    int const writer = fcntl(output[1], F_DUPFD, STDERR_FILENO + 1);
+    int const status = fcntl(exec_status[1], F_DUPFD_CLOEXEC, STDERR_FILENO + 1);
+    int error = errno;
+    if (writer >= 0 && status >= 0)
     {
-      execvp(arguments[0], (char* const*)(uintptr_t)arguments);
+      close_pipe(output);
+      close_pipe(exec_status);
+      (void)dup2(writer, STDOUT_FILENO);
+      (void)dup2(writer, STDERR_FILENO);
+      (void)close(writer);
+      errno = EINVAL; // A malformed environment entry.
+      if (set_environment(environment))
+      {
+        execvp(arguments[0], (char* const*)(uintptr_t)arguments);
+      }
+      error = errno;
     }
-    int const error = errno;
-    ssize_t const written = write(exec_status[1], &error, sizeof(error));
+    ssize_t const written = write(status >= 0 ? status : exec_status[1], &error, sizeof(error));
     (void)written;
     _exit(127);
   }
