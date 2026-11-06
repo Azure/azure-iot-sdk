@@ -452,6 +452,9 @@ is valid only during the callback. Names below omit the `AZ_IOT_SU_EVENT_` prefi
   `UPSTREAM_UNAVAILABLE` without `Retry-After`: it ends at once with `OPERATION_ABANDONED`
   (`reason` `AZ_IOT_ERR_DPS`), as the service asks, and the next scheduled check tries again. A
   check held before registration releases it.
+- **Stale agent info** (`400004`, `OUTDATED_AGENT_INFO`, `UNKNOWN_AGENT_INFO_VERSION`) on a check
+  is answered at once with a full check, without cached ETags. Received again for a full check, or
+  for a report (which carries no agent info), the operation is abandoned (`OPERATION_ABANDONED`).
 - **A failed update** offered again is retried after 1 h, doubling up to 24 h, with jitter. The wait
   survives a restart when persistence is set.
 - **A new update while one runs** replaces it until its first `install_fn` call: an update still

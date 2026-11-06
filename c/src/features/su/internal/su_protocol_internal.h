@@ -230,7 +230,8 @@ extern "C"
     /* The update service cannot serve this device (not linked, or no access to
      * its namespace). Needs operator action; carry on, do not retry. */
     AZ_IOT_SU_ERROR_ACTION_PROCEED,
-    /* Our agentInfo is stale or unknown: resend it in full and retry. */
+    /* Our agentInfo is stale or unknown: resend it in full and retry. Fetches
+     * only: a report carries no agentInfo. */
     AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO,
     /* Throttled: wait for the advertised delay, then retry. */
     AZ_IOT_SU_ERROR_ACTION_RETRY_AFTER,
@@ -304,7 +305,8 @@ extern "C"
    * @param operation     The operation that failed. Required because one
    *                      numeric code covers two conditions needing opposite
    *                      handling, and only the operation separates them when
-   *                      the string code is absent.
+   *                      the string code is absent. The agentInfo resend family
+   *                      is FATAL on AZ_IOT_SU_OP_REPORT_STATUS.
    */
   az_iot_su_error_action az_iot_su__classify_error(
       const char* error_code,

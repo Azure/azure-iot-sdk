@@ -1137,7 +1137,9 @@ az_iot_su_error_action az_iot_su__classify_error(
     if (strcmp(error_code, "OUTDATED_AGENT_INFO") == 0
         || strcmp(error_code, "UNKNOWN_AGENT_INFO_VERSION") == 0)
     {
-      return AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO;
+      /* A report carries no agentInfo, so resending it cannot correct this. */
+      return (operation == AZ_IOT_SU_OP_REPORT_STATUS) ? AZ_IOT_SU_ERROR_ACTION_FATAL
+                                                       : AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO;
     }
     /* Per the update service: an unavailable upstream is retried after its
      * Retry-After, else at the next scheduled check, so an outage does not turn
@@ -1218,10 +1220,12 @@ az_iot_su_error_action az_iot_su__classify_error(
   switch (status)
   {
     case SU_ERROR_STATUS_BAD_REQUEST:
-      /* One 400 IS recoverable, which its status does not say: the agentInfo
-       * resend family shares that code. Every other 400 is a malformed
-       * request. */
-      return (numeric_code == AZ_IOT_SU_ERR_AGENT_INFO_RESEND_REQUIRED)
+      /* One 400 IS recoverable on a fetch, which its status does not say: the
+       * agentInfo resend family shares that code. A report carries no
+       * agentInfo, and DPS also answers 400004 for an invalid argument, so on
+       * a report it is a malformed request like every other 400. */
+      return (numeric_code == AZ_IOT_SU_ERR_AGENT_INFO_RESEND_REQUIRED
+              && operation != AZ_IOT_SU_OP_REPORT_STATUS)
           ? AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO
           : AZ_IOT_SU_ERROR_ACTION_FATAL;
 
