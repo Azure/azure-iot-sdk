@@ -24,6 +24,11 @@
 #include "support/e2e_process.h"
 #include "support/test_env.h"
 
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 #define START_TIMEOUT_MS 10000 /* generous: a loaded CI runner */
 #define ENVIRONMENT_NAME "AZ_IOT_E2E_PROCESS_TEST_VALUE"
 
@@ -172,6 +177,33 @@ static void stop_kills_a_child_that_ignores_the_request(void** state)
 #endif
 }
 
+#ifndef _WIN32
+/** @brief With stdout and stderr closed, pipe() returns 1 and 2: the child must still be captured.
+ */
+static void output_is_captured_when_our_stdout_and_stderr_are_closed(void** state)
+{
+  (void)state;
+  pid_t const pid = fork(); // Closing them here would silence cmocka.
+  assert_true(pid >= 0);
+  if (pid == 0)
+  {
+    (void)close(STDOUT_FILENO);
+    (void)close(STDERR_FILENO);
+    const char* const arguments[] = { AZ_IOT_E2E_PROCESS_TEST_CHILD, "print", NULL };
+    bool const captured = az_iot_e2e_process_start(&s_process, arguments, NULL, NULL)
+        && az_iot_e2e_process_wait_for_exit(&s_process, START_TIMEOUT_MS, NULL)
+        && az_iot_e2e_process_has_printed(&s_process, "last line")
+        && az_iot_e2e_process_has_printed(&s_process, "line on stderr");
+    (void)az_iot_e2e_process_stop(&s_process, 0);
+    _exit(captured ? 0 : 1);
+  }
+  int status = 0;
+  assert_int_equal(waitpid(pid, &status, 0), pid);
+  assert_true(WIFEXITED(status));
+  assert_int_equal(WEXITSTATUS(status), 0);
+}
+#endif
+
 static void waiting_ends_when_the_child_exits_without_printing(void** state)
 {
   (void)state;
@@ -230,6 +262,9 @@ int main(void)
     cmocka_unit_test_teardown(stop_kills_a_child_that_ignores_the_request, teardown),
     cmocka_unit_test_teardown(waiting_ends_when_the_child_exits_without_printing, teardown),
     cmocka_unit_test_teardown(stop_ends_what_an_exited_shell_left_running, teardown),
+#ifndef _WIN32
+    cmocka_unit_test_teardown(output_is_captured_when_our_stdout_and_stderr_are_closed, teardown),
+#endif
   };
   return cmocka_run_group_tests_name("e2e_process", tests, NULL, NULL);
 }
