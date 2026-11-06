@@ -8,7 +8,10 @@
  * (samples/common/sample_tpm_sim.c): an individual enrollment for a new EK,
  * registration over HTTPS with az_iot_dps_tpm_client, then the assigned mqttv3
  * hub with SAS tokens the simulated TPM signs, and one telemetry message.
- * The enrollment, registration and device are deleted afterwards.
+ * The device is then deleted from the hub: the hub refuses the identity, and
+ * registering again (which re-creates the device and imports a new key) lets
+ * the device send again. The enrollment, registration and device are deleted
+ * afterwards.
  *
  * Environment: AZ_IOT_DPS_ID_SCOPE, IOT_DPS_CONNECTION_STRING,
  * IOTHUB_CONNECTION_STRING, IOTHUB_EVENTHUB_CONNECTION_STRING; optional
@@ -46,6 +49,11 @@
 #define E2E_TPM_TIMEOUT_MS 90000u
 #define E2E_TPM_TOKEN_LIFETIME_S 3600u
 #define E2E_TPM_TICK_MS 50u
+/** @brief Hub retries after a refusal of the identity, and the delay between them. */
+#define E2E_TPM_REFUSAL_RETRIES 3u
+#define E2E_TPM_REFUSAL_RETRY_DELAY_MS 5000u
+/** @brief How long the hub may keep accepting a deleted device. */
+#define E2E_TPM_DELETE_PROPAGATION_MS 120000u
 
 static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
@@ -59,6 +67,7 @@ typedef struct
   bool token_failed; /**< Signing or handing over a token failed. */
   az_iot_connection_state hub_state;
   az_iot_result hub_reason;
+  bool identity_refused; /**< FAULTED after the hub refused the identity. */
   bool sent;
   az_iot_result send_status;
 } e2e_tpm_ctx;
@@ -146,6 +155,11 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   {
     ctx->hub_state = event->state;
     ctx->hub_reason = event->reason;
+    if (event->state == AZ_IOT_CONN_STATE_FAULTED && event->recovery != NULL
+        && event->recovery->classification == AZ_IOT_CONN_FAILURE_IDENTITY)
+    {
+      ctx->identity_refused = true;
+    }
     fprintf(
         stderr,
         "[e2e_tpm] hub %s (%s)\n",
@@ -161,7 +175,132 @@ static void on_sent(az_iot_result status, void* user_ctx)
   ctx->send_status = status;
 }
 
-static void test_dps_tpm_registration_and_hub_sas(void** state)
+/**
+ * @brief Registers @p dps (initialized from @p dps_opts) over HTTPS.
+ *
+ * @param[out] out_assignment The assignment, valid until @p dps is initialized again.
+ */
+static az_iot_result register_tpm_device(
+    az_iot_dps_tpm_client* dps,
+    const az_iot_dps_tpm_client_options* dps_opts,
+    const char* endpoint,
+    const az_iot_dps_tpm_assignment** out_assignment)
+{
+  static e2e_https_response response;
+  az_iot_result r = az_iot_dps_tpm_client_init(dps, dps_opts);
+  if (r == AZ_IOT_OK)
+  {
+    uint64_t registration_start_ms = sample_now_ms();
+    r = e2e_dps_tpm_register(
+        dps,
+        endpoint != NULL ? endpoint : E2E_TPM_DEFAULT_ENDPOINT,
+        https_send,
+        NULL,
+        (uint64_t)E2E_DPS_PROVISIONING_TIMEOUT_S * 1000u,
+        &response);
+    fprintf(
+        stderr,
+        "[e2e_tpm] DPS registration: %s after %lus (budget %ds)\n",
+        az_iot_result_to_string(r),
+        (unsigned long)((sample_now_ms() - registration_start_ms) / 1000u),
+        E2E_DPS_PROVISIONING_TIMEOUT_S);
+  }
+  *out_assignment = r == AZ_IOT_OK ? az_iot_dps_tpm_client_get_assignment(dps) : NULL;
+  if (*out_assignment == NULL)
+  {
+    return r != AZ_IOT_OK ? r : AZ_IOT_ERR_INTERNAL;
+  }
+  fprintf(
+      stderr,
+      "[e2e_tpm] assigned to %s as %s\n",
+      (*out_assignment)->assigned_hub,
+      (*out_assignment)->device_id);
+  return AZ_IOT_OK;
+}
+
+/**
+ * @brief Connects to the hub in @p a with TPM-signed SAS tokens, sends one telemetry message,
+ * then closes and deinitializes the client.
+ *
+ * @return AZ_IOT_OK when sent; AZ_IOT_ERR_IDENTITY_REJECTED when the hub refused the identity
+ * past its retries; another error otherwise.
+ */
+static az_iot_result connect_and_send_telemetry(
+    e2e_tpm_ctx* ctx,
+    const az_iot_dps_tpm_assignment* a,
+    const char* ca)
+{
+  ctx->token_pending = false;
+  ctx->hub_state = AZ_IOT_CONN_STATE_IDLE;
+  ctx->hub_reason = AZ_IOT_OK;
+  ctx->identity_refused = false;
+  ctx->sent = false;
+  az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.iothub_hostname = a->assigned_hub;
+  opts.device_id = a->device_id;
+  opts.connection_profile = a->connection_profile;
+  opts.hub_auth.sas.on_sas_token_required = on_token_required;
+  opts.hub_auth.sas.user_ctx = ctx;
+  /* As in the dps_tpm sample: retry a refusal briefly, then fault so the device registers again. */
+  opts.identity_recovery.policy.initial_delay_ms = E2E_TPM_REFUSAL_RETRY_DELAY_MS;
+  opts.identity_recovery.policy.max_delay_ms = E2E_TPM_REFUSAL_RETRY_DELAY_MS;
+  opts.identity_recovery.policy.max_attempts = E2E_TPM_REFUSAL_RETRIES;
+  static uint8_t sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(0, AZ_IOT_SAS_TOKEN_SIZE(256))];
+  opts.sas_buffer.buffer = sas_buffer;
+  opts.sas_buffer.size = sizeof(sas_buffer);
+  opts.trusted_ca.path = ca;
+  opts.workspace = g_connection_workspace;
+  opts.workspace_size = sizeof(g_connection_workspace);
+  az_iot_connection_client client = { 0 };
+  az_iot_mqttv3_telemetry_client telemetry = { 0 };
+  uint8_t* mqtt_workspace = e2e_use_mqtt_adapter(&opts);
+  bool client_ok = mqtt_workspace != NULL
+      && az_iot_connection_client_init(&client, &opts) == AZ_IOT_OK
+      && az_iot_connection_client_add_state_observer(&client, on_conn_state, ctx) == AZ_IOT_OK
+      && az_iot_mqttv3_telemetry_client_init(&telemetry, &client) == AZ_IOT_OK
+      && az_iot_connection_client_open(&client) == AZ_IOT_OK;
+
+  uint64_t deadline = sample_now_ms() + E2E_TPM_TIMEOUT_MS;
+  while (client_ok && !ctx->token_failed && ctx->hub_state != AZ_IOT_CONN_STATE_CONNECTED
+         && ctx->hub_state != AZ_IOT_CONN_STATE_FAULTED && sample_now_ms() < deadline)
+  {
+    (void)az_iot_connection_client_do_work(&client, E2E_TPM_TICK_MS);
+    issue_token(&client, ctx);
+  }
+  if (ctx->hub_state == AZ_IOT_CONN_STATE_CONNECTED)
+  {
+    static const uint8_t payload[] = "{\"e2e\":\"dps_tpm\"}";
+    az_iot_telemetry_message msg = { 0 };
+    msg.payload = payload;
+    msg.payload_len = sizeof(payload) - 1;
+    if (az_iot_mqttv3_telemetry_client_send(&telemetry, &msg, on_sent, ctx) == AZ_IOT_OK)
+    {
+      deadline = sample_now_ms() + E2E_TPM_TIMEOUT_MS;
+      while (!ctx->sent && sample_now_ms() < deadline)
+      {
+        (void)az_iot_connection_client_do_work(&client, E2E_TPM_TICK_MS);
+      }
+    }
+  }
+  az_iot_result result = !client_ok  ? AZ_IOT_ERR_INTERNAL
+      : ctx->sent                    ? ctx->send_status
+      : ctx->identity_refused        ? AZ_IOT_ERR_IDENTITY_REJECTED
+      : ctx->hub_reason != AZ_IOT_OK ? ctx->hub_reason
+                                     : AZ_IOT_ERR_TIMEOUT;
+  az_iot_connection_client_close(&client);
+  deadline = sample_now_ms() + 5000u;
+  while (ctx->hub_state != AZ_IOT_CONN_STATE_IDLE && sample_now_ms() < deadline)
+  {
+    (void)az_iot_connection_client_do_work(&client, E2E_TPM_TICK_MS);
+  }
+  az_iot_mqttv3_telemetry_client_deinit(&telemetry);
+  az_iot_connection_client_deinit(&client);
+  free(mqtt_workspace);
+  fprintf(stderr, "[e2e_tpm] hub session: %s\n", az_iot_result_to_string(result));
+  return result;
+}
+
+static void test_dps_tpm_registration_hub_sas_and_reregistration(void** state)
 {
   (void)state;
   char* id_scope = az_iot_test_env_dup("AZ_IOT_DPS_ID_SCOPE");
@@ -201,7 +340,6 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
     fail_msg("creating the TPM enrollment for %s failed", reg_id);
   }
 
-  /* Registration over HTTPS. */
   az_iot_dps_tpm_client_options dps_opts = az_iot_dps_tpm_client_options_default();
   dps_opts.id_scope = id_scope;
   dps_opts.registration_id = reg_id;
@@ -212,92 +350,46 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
   dps_opts.tpm = sample_tpm_sim_ops(ctx.tpm);
   /* From here on nothing asserts until cleanup has run. */
   az_iot_dps_tpm_client dps;
-  static e2e_https_response response;
-  az_iot_result reg = az_iot_dps_tpm_client_init(&dps, &dps_opts);
+  const az_iot_dps_tpm_assignment* a = NULL;
+  char device_id[AZ_IOT_DPS_TPM_ID_MAX + 1] = { 0 };
+  az_iot_result first_sent = AZ_IOT_ERR_INTERNAL;
+  az_iot_result refused = AZ_IOT_ERR_INTERNAL;
+  az_iot_result reregistered = AZ_IOT_ERR_INTERNAL;
+  az_iot_result second_sent = AZ_IOT_ERR_INTERNAL;
+  az_iot_result reg = register_tpm_device(&dps, &dps_opts, endpoint, &a);
+  bool mqttv3 = reg == AZ_IOT_OK && a->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
+  bool hub_key = reg == AZ_IOT_OK && a->hub_key_imported;
   if (reg == AZ_IOT_OK)
   {
-    uint64_t registration_start_ms = sample_now_ms();
-    reg = e2e_dps_tpm_register(
-        &dps,
-        endpoint != NULL ? endpoint : E2E_TPM_DEFAULT_ENDPOINT,
-        https_send,
-        NULL,
-        (uint64_t)E2E_DPS_PROVISIONING_TIMEOUT_S * 1000u,
-        &response);
-    fprintf(
-        stderr,
-        "[e2e_tpm] DPS registration: %s after %lus (budget %ds)\n",
-        az_iot_result_to_string(reg),
-        (unsigned long)((sample_now_ms() - registration_start_ms) / 1000u),
-        E2E_DPS_PROVISIONING_TIMEOUT_S);
-  }
-  const az_iot_dps_tpm_assignment* a
-      = reg == AZ_IOT_OK ? az_iot_dps_tpm_client_get_assignment(&dps) : NULL;
-  bool assigned = reg == AZ_IOT_OK && a != NULL;
-  bool sent_ok = false;
-  bool client_ok = false;
-  char device_id[AZ_IOT_DPS_TPM_ID_MAX + 1] = { 0 };
-  if (assigned)
-  {
-    fprintf(stderr, "[e2e_tpm] assigned to %s as %s\n", a->assigned_hub, a->device_id);
     (void)sample_string_copy(device_id, sizeof(device_id), a->device_id);
   }
-
-  /* The assigned hub with TPM-signed SAS tokens. */
-  if (assigned && a->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3 && a->hub_key_imported)
+  if (mqttv3 && hub_key)
   {
-    az_iot_connection_client_options opts = az_iot_connection_client_options_default();
-    opts.iothub_hostname = a->assigned_hub;
-    opts.device_id = a->device_id;
-    opts.connection_profile = a->connection_profile;
-    opts.hub_auth.sas.on_sas_token_required = on_token_required;
-    opts.hub_auth.sas.user_ctx = &ctx;
-    static uint8_t sas_buffer[AZ_IOT_SAS_BUFFER_SIZE(0, AZ_IOT_SAS_TOKEN_SIZE(256))];
-    opts.sas_buffer.buffer = sas_buffer;
-    opts.sas_buffer.size = sizeof(sas_buffer);
-    opts.trusted_ca.path = ca;
-    opts.workspace = g_connection_workspace;
-    opts.workspace_size = sizeof(g_connection_workspace);
-    az_iot_connection_client client = { 0 };
-    az_iot_mqttv3_telemetry_client telemetry = { 0 };
-    uint8_t* mqtt_workspace = e2e_use_mqtt_adapter(&opts);
-    client_ok = mqtt_workspace != NULL && az_iot_connection_client_init(&client, &opts) == AZ_IOT_OK
-        && az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) == AZ_IOT_OK
-        && az_iot_mqttv3_telemetry_client_init(&telemetry, &client) == AZ_IOT_OK
-        && az_iot_connection_client_open(&client) == AZ_IOT_OK;
+    first_sent = connect_and_send_telemetry(&ctx, a, ca);
+  }
 
-    uint64_t deadline = sample_now_ms() + E2E_TPM_TIMEOUT_MS;
-    while (client_ok && !ctx.token_failed && ctx.hub_state != AZ_IOT_CONN_STATE_CONNECTED
-           && ctx.hub_state != AZ_IOT_CONN_STATE_FAULTED && sample_now_ms() < deadline)
+  /* Delete the device: the hub refuses the identity once the deletion reaches it. */
+  bool device_deleted_on_hub
+      = first_sent == AZ_IOT_OK && az_iot_e2e_service_device_delete(svc, device_id);
+  uint64_t deadline = sample_now_ms() + E2E_TPM_DELETE_PROPAGATION_MS;
+  while (device_deleted_on_hub && refused != AZ_IOT_ERR_IDENTITY_REJECTED && !ctx.token_failed
+         && sample_now_ms() < deadline)
+  {
+    refused = connect_and_send_telemetry(&ctx, a, ca);
+    if (refused != AZ_IOT_ERR_IDENTITY_REJECTED)
     {
-      (void)az_iot_connection_client_do_work(&client, E2E_TPM_TICK_MS);
-      issue_token(&client, &ctx);
+      sample_sleep_ms((long)E2E_TPM_REFUSAL_RETRY_DELAY_MS);
     }
-    if (ctx.hub_state == AZ_IOT_CONN_STATE_CONNECTED)
-    {
-      static const uint8_t payload[] = "{\"e2e\":\"dps_tpm\"}";
-      az_iot_telemetry_message msg = { 0 };
-      msg.payload = payload;
-      msg.payload_len = sizeof(payload) - 1;
-      if (az_iot_mqttv3_telemetry_client_send(&telemetry, &msg, on_sent, &ctx) == AZ_IOT_OK)
-      {
-        deadline = sample_now_ms() + E2E_TPM_TIMEOUT_MS;
-        while (!ctx.sent && sample_now_ms() < deadline)
-        {
-          (void)az_iot_connection_client_do_work(&client, E2E_TPM_TICK_MS);
-        }
-      }
-      sent_ok = ctx.sent && ctx.send_status == AZ_IOT_OK;
-    }
-    az_iot_connection_client_close(&client);
-    deadline = sample_now_ms() + 5000u;
-    while (ctx.hub_state != AZ_IOT_CONN_STATE_IDLE && sample_now_ms() < deadline)
-    {
-      (void)az_iot_connection_client_do_work(&client, E2E_TPM_TICK_MS);
-    }
-    az_iot_mqttv3_telemetry_client_deinit(&telemetry);
-    az_iot_connection_client_deinit(&client);
-    free(mqtt_workspace);
+  }
+
+  /* Registering again re-creates the device and imports a new key. */
+  if (refused == AZ_IOT_ERR_IDENTITY_REJECTED)
+  {
+    reregistered = register_tpm_device(&dps, &dps_opts, endpoint, &a);
+  }
+  if (reregistered == AZ_IOT_OK)
+  {
+    second_sent = connect_and_send_telemetry(&ctx, a, ca);
   }
 
   /* Clean up before asserting, so a failure leaves nothing behind. */
@@ -307,8 +399,6 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
   bool device_deleted
       = az_iot_e2e_service_device_delete(svc, device_id[0] != '\0' ? device_id : reg_id);
   bool cleaned = enrollment_deleted && device_deleted;
-  bool mqttv3 = assigned && a->connection_profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
-  bool hub_key = assigned && a->hub_key_imported;
   az_iot_e2e_service_destroy(svc);
   sample_tpm_sim_destroy(ctx.tpm);
   free(id_scope);
@@ -316,12 +406,15 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
   free(ca);
 
   assert_int_equal(reg, AZ_IOT_OK);
-  assert_true(client_ok);
-  assert_false(ctx.token_failed);
   assert_true(mqttv3);
   assert_true(hub_key);
+  assert_false(ctx.token_failed);
   assert_true(ctx.tokens_issued > 0);
-  assert_true(sent_ok);
+  assert_int_equal(first_sent, AZ_IOT_OK);
+  assert_true(device_deleted_on_hub);
+  assert_int_equal(refused, AZ_IOT_ERR_IDENTITY_REJECTED);
+  assert_int_equal(reregistered, AZ_IOT_OK);
+  assert_int_equal(second_sent, AZ_IOT_OK);
   assert_true(cleaned);
 }
 
@@ -329,7 +422,7 @@ int main(void)
 {
   e2e_install_log_sink();
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(test_dps_tpm_registration_and_hub_sas),
+    cmocka_unit_test(test_dps_tpm_registration_hub_sas_and_reregistration),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

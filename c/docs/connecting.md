@@ -553,8 +553,10 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   the registration requests and parses the responses; the application sends them over HTTPS and
   runs the TPM (import the DPS key, HMAC-SHA256). Then connect directly to the
   assigned hub (`iothub_hostname`, `device_id`, `connection_profile` from the assignment) and sign hub tokens
-  with the TPM key from `on_sas_token_required`. The connection client does not re-provision such a device; on
-  `AZ_IOT_ERR_IDENTITY_REJECTED`, register again. See
+  with the TPM key from `on_sas_token_required`. The connection client does not re-provision such a device
+  (its DPS session is MQTT). When the hub refuses the identity (`FAULTED` with
+  `AZ_IOT_CONN_FAILURE_IDENTITY` once `identity_recovery` gives up): `close()`, `deinit()`,
+  register again with the TPM, then `init()` with the new assignment and `open()`. See
   [`dps_tpm`](../samples/authentication/dps_tpm/README.md).
 
 ## Crypto backend

@@ -31,6 +31,14 @@ Two TPM backends implement `az_iot_dps_tpm_ops`:
 - The sample then connects `az_iot_connection_client` directly to the assigned hub. Hub SAS tokens
   come from `on_sas_token_required`, signed by the TPM in `sign_token_with_tpm()` as in
   [`user_provided_sas_token`](../user_provided_sas_token/README.md).
+- Re-registration when the hub refuses the identity (the device was disabled or deleted, its key
+  revoked, or its assignment changed). The connection client cannot re-provision a TPM device, as
+  its DPS session is MQTT. The sample retries the hub briefly (`identity_recovery.policy`: a newly
+  assigned hub may refuse the device for a few seconds), and on the `FAULTED` event with
+  `AZ_IOT_CONN_FAILURE_IDENTITY` closes and deinitializes the client, registers again (which
+  imports a new hub key into the TPM) and connects to the new assignment, in
+  `connect_and_send_telemetry()` and `main()`. It registers at most `SAMPLE_MAX_REGISTRATIONS`
+  times per run.
 
 ## Service requirements
 
