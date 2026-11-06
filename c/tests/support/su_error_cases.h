@@ -324,12 +324,42 @@ typedef struct
     SU_ERROR_NUMERIC,                                                                              \
     "",                                                                                            \
     0)                                                                                             \
+  SU_NAMED_SHAPES(                                                                                 \
+      X,                                                                                           \
+      UNKNOWN_AGENT_INFO_VERSION,                                                                  \
+      report,                                                                                      \
+      AZ_IOT_SU_OP_REPORT_STATUS,                                                                  \
+      400,                                                                                         \
+      AZ_IOT_SU_ERROR_ACTION_FATAL,                                                                \
+      AZ_IOT_SU_ERR_SERVER_ERROR,                                                                  \
+      "",                                                                                          \
+      0)                                                                                           \
+  SU_NAMED_SHAPES(                                                                                 \
+      X,                                                                                           \
+      OUTDATED_AGENT_INFO,                                                                         \
+      report,                                                                                      \
+      AZ_IOT_SU_OP_REPORT_STATUS,                                                                  \
+      400,                                                                                         \
+      AZ_IOT_SU_ERROR_ACTION_FATAL,                                                                \
+      AZ_IOT_SU_ERR_SERVER_ERROR,                                                                  \
+      "",                                                                                          \
+      0)                                                                                           \
+  X(numeric_resend_report,                                                                         \
+    AZ_IOT_SU_OP_REPORT_STATUS,                                                                    \
+    "",                                                                                            \
+    503,                                                                                           \
+    AZ_IOT_SU_ERR_AGENT_INFO_RESEND_REQUIRED,                                                      \
+    AZ_IOT_SU_ERROR_ACTION_FATAL,                                                                  \
+    SU_ERROR_NUMERIC,                                                                              \
+    "",                                                                                            \
+    0)                                                                                             \
   SU_FALLBACK_ROUTE(X, regular, AZ_IOT_SU_OP_GET_UPDATE, AZ_IOT_SU_ERROR_ACTION_PROCEED)           \
   SU_FALLBACK_ROUTE(                                                                               \
       X, onboarding, AZ_IOT_SU_OP_GET_ONBOARDING_UPDATE, AZ_IOT_SU_ERROR_ACTION_PROCEED)           \
   SU_FALLBACK_ROUTE(X, report, AZ_IOT_SU_OP_REPORT_STATUS, AZ_IOT_SU_ERROR_ACTION_RECHECK)
 
-/* A report has no agentInfo fields; corrective resends apply only to fetches. */
+/* A report has no agentInfo fields; corrective resends apply only to fetches,
+ * and the resend family is fatal on a report. */
 
 #define SU_DEFINE_ERROR_CASE(name, op, code, status, numeric, action, shape, query, delay) \
   static const su_error_case name = { op, code, status, numeric, action, shape, query, delay };
