@@ -480,6 +480,13 @@ static az_iot_su_error_action handle_failure(
   switch (action)
   {
     case AZ_IOT_SU_ERROR_ACTION_RESEND_AGENT_INFO:
+      /* Without cached ETags the rejected request was already a full one:
+       * resending it unchanged would repeat at pump frequency. */
+      if (c->agent_info_etag[0] == '\0' && c->service_config_etag[0] == '\0')
+      {
+        action = AZ_IOT_SU_ERROR_ACTION_FATAL;
+        break;
+      }
       /* Our cached view is behind the service. Dropping both ETags makes the
        * next request a full one, which is what the service is asking for. */
       c->agent_info_etag[0] = '\0';

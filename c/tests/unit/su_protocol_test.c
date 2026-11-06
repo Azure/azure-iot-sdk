@@ -1235,6 +1235,25 @@ static void the_resend_family_is_recoverable_from_the_numeric_code_alone(void** 
       AZ_IOT_SU_ERROR_ACTION_FATAL);
 }
 
+/* A report carries no agentInfo, so resending it cannot satisfy the resend
+ * family: retrying it would repeat at pump frequency. */
+static void the_resend_family_is_fatal_on_a_report(void** state)
+{
+  (void)state;
+  assert_int_equal(
+      az_iot_su__classify_error(NULL, 400004, AZ_IOT_SU_OP_REPORT_STATUS),
+      AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_su__classify_error("", 400004, AZ_IOT_SU_OP_REPORT_STATUS),
+      AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_su__classify_error("OUTDATED_AGENT_INFO", 400004, AZ_IOT_SU_OP_REPORT_STATUS),
+      AZ_IOT_SU_ERROR_ACTION_FATAL);
+  assert_int_equal(
+      az_iot_su__classify_error("UNKNOWN_AGENT_INFO_VERSION", 0, AZ_IOT_SU_OP_REPORT_STATUS),
+      AZ_IOT_SU_ERROR_ACTION_FATAL);
+}
+
 /* An untyped 409000 is never a delivered report. On a fetch it proceeds (the
  * update account must not block provisioning); on a report it is a conflict,
  * answered by checking again. */
@@ -1631,6 +1650,7 @@ int main(void)
     cmocka_unit_test(documented_codes_keep_their_actions_without_a_string_code),
     cmocka_unit_test(an_undocumented_code_is_classified_by_its_status_class),
     cmocka_unit_test(the_resend_family_is_recoverable_from_the_numeric_code_alone),
+    cmocka_unit_test(the_resend_family_is_fatal_on_a_report),
     cmocka_unit_test(the_shared_conflict_code_is_split_by_operation),
     cmocka_unit_test(transient_numeric_codes_are_retried),
     cmocka_unit_test(unknown_and_absent_signals_are_fatal),
