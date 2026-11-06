@@ -31,7 +31,7 @@
 #                 builds the native e2e tests, gets its test-config, materializes
 #                 the device X.509 material to files, and runs its group.
 #      coverage : merges the Linux groups' tracefiles into coverage-trace-e2e.
-#      esp32-qemu: the ESP32 IoT Hub sample in QEMU (esp32, esp32c3), always on
+#      esp32-qemu: the ESP32 IoT Hub sample in QEMU (esp32, esp32c3, esp32s3), always on
 #                 the shared environment (see the job).
 #   3. teardown : always() deletes the shared resource group (via the reusable
 #                 destroy-e2e-resources step). It recomputes the group name from
@@ -580,11 +580,12 @@ jobs:
   # coverage, and merging it would understate coverage for an unrelated reason.
   # The ESP32 IoT Hub sample (samples/unified/esp32) in QEMU: the firmware is the
   # device, az_iot_tests_e2e_esp32_qemu the service (eng/esp-idf-qemu-e2e.sh).
-  # esp32 keeps its key in flash; esp32c3 in the Digital Signature peripheral,
-  # its key burned into an emulated eFuse. Always on the shared environment, on
-  # push and nightly too: the per-run enrollments' RSA-4096 keys exceed the DS
-  # peripheral's 3072 bits, and the shared group CA issues RSA-2048. Device
-  # index 12 (esp32) and 13 (esp32c3), after the test legs' 0..11.
+  # esp32 keeps its key in flash; esp32c3 and esp32s3 in the Digital Signature
+  # peripheral, its key burned into an emulated eFuse. Always on the shared
+  # environment, on push and nightly too: the per-run enrollments' RSA-4096 keys
+  # exceed the esp32c3 DS peripheral's 3072 bits, and the shared group CA issues
+  # RSA-2048. Device index 12 (esp32), 13 (esp32c3) and 14 (esp32s3), after the
+  # test legs' 0..11.
   esp32-qemu:
     name: esp32 qemu / ${{ matrix.target }}
     needs: changes
@@ -602,6 +603,8 @@ jobs:
             device-index: 12
           - target: esp32c3
             device-index: 13
+          - target: esp32s3
+            device-index: 14
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
