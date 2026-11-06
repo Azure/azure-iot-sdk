@@ -44,7 +44,7 @@
 #
 # Shared environment (temporary, opt-in)
 # --------------------------------------
-# When the repository variable E2E_SHARED_ID_SCOPE is set, PULL REQUEST runs skip
+# When the repository variable E2E_MQTTV3_SHARED_ID_SCOPE is set, PULL REQUEST runs skip
 # setup/teardown and use a long-lived IoT Hub + DPS instead. Each leg issues its
 # own device certificate from the DPS X.509 enrollment group's CA, and takes the
 # DPS symmetric-key group's key for the SAS suite (c/eng/e2e-shared-device.ps1),
@@ -54,6 +54,11 @@
 # (its enrollment and device cleanup); the test job never logs in to Azure. Same
 # tests. Push and nightly runs always provision. Unset the variable to return to
 # per-run provisioning.
+#
+# This is the mqttv3 environment (E2E_MQTTV3_SHARED_*): a plain hub and DPS with
+# no ADR link or certificate policy, as per-run provisioning creates. Nothing
+# here needs certificate management; ci-c-e2e-csr has its own environment
+# (E2E_CSR_SHARED_*), so neither workflow depends on the other's.
 
 name: ci-c-e2e
 
@@ -91,7 +96,7 @@ env:
   E2E_RESOURCE_GROUP: CSDKE2EFast-${{ github.run_id }}-${{ github.run_attempt }}
   # 'true' when this run uses the shared environment (see header). Job-level
   # `if:` cannot read `env`, so the setup and teardown jobs repeat the expression.
-  E2E_SHARED: ${{ vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request' }}
+  E2E_SHARED: ${{ vars.E2E_MQTTV3_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request' }}
 
 jobs:
   # On pull requests, whether the e2e legs run; every other event runs them.
@@ -140,7 +145,7 @@ jobs:
       id-token: write   # azure/login OIDC
     name: setup (provision)
     needs: changes
-    if: ${{ needs.changes.outputs.run == 'true' && !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
+    if: ${{ needs.changes.outputs.run == 'true' && !(vars.E2E_MQTTV3_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -361,13 +366,14 @@ jobs:
         if: env.E2E_SHARED == 'true'
         shell: pwsh
         env:
-          E2E_SHARED_GROUP_CA: ${{ secrets.E2E_SHARED_GROUP_CA }}
-          E2E_SHARED_IOTHUB_CS: ${{ secrets.E2E_SHARED_IOTHUB_CS }}
-          E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
-          E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
-          E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
-          E2E_SHARED_DPS_CS: ${{ secrets.E2E_SHARED_DPS_CS }}
-          E2E_SHARED_IOTHUB_REGISTRY_CS: ${{ secrets.E2E_SHARED_IOTHUB_REGISTRY_CS }}
+          E2E_MQTTV3_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV3_SHARED_GROUP_CA }}
+          E2E_MQTTV3_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV3_SHARED_IOTHUB_CS }}
+          E2E_MQTTV3_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV3_SHARED_EVENTHUB_CS }}
+          E2E_MQTTV3_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV3_SHARED_ID_SCOPE }}
+          E2E_MQTTV3_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV3_SHARED_DPS_HOST }}
+          E2E_MQTTV3_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_MQTTV3_SHARED_SAS_GROUP_KEY }}
+          E2E_MQTTV3_SHARED_DPS_CS: ${{ secrets.E2E_MQTTV3_SHARED_DPS_CS }}
+          E2E_MQTTV3_SHARED_IOTHUB_REGISTRY_CS: ${{ secrets.E2E_MQTTV3_SHARED_IOTHUB_REGISTRY_CS }}
           E2E_RUN_ID: ${{ github.run_id }}
           E2E_RUN_ATTEMPT: ${{ github.run_attempt }}
         # Spread jobs over consumer groups e2e-0..e2e-9: Event Hubs allows 5
@@ -612,13 +618,14 @@ jobs:
       - name: Issue a device on the shared environment
         shell: pwsh
         env:
-          E2E_SHARED_GROUP_CA: ${{ secrets.E2E_SHARED_GROUP_CA }}
-          E2E_SHARED_IOTHUB_CS: ${{ secrets.E2E_SHARED_IOTHUB_CS }}
-          E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
-          E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
-          E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
-          E2E_SHARED_DPS_CS: ${{ secrets.E2E_SHARED_DPS_CS }}
-          E2E_SHARED_IOTHUB_REGISTRY_CS: ${{ secrets.E2E_SHARED_IOTHUB_REGISTRY_CS }}
+          E2E_MQTTV3_SHARED_GROUP_CA: ${{ secrets.E2E_MQTTV3_SHARED_GROUP_CA }}
+          E2E_MQTTV3_SHARED_IOTHUB_CS: ${{ secrets.E2E_MQTTV3_SHARED_IOTHUB_CS }}
+          E2E_MQTTV3_SHARED_EVENTHUB_CS: ${{ secrets.E2E_MQTTV3_SHARED_EVENTHUB_CS }}
+          E2E_MQTTV3_SHARED_ID_SCOPE: ${{ vars.E2E_MQTTV3_SHARED_ID_SCOPE }}
+          E2E_MQTTV3_SHARED_DPS_HOST: ${{ vars.E2E_MQTTV3_SHARED_DPS_HOST }}
+          E2E_MQTTV3_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_MQTTV3_SHARED_SAS_GROUP_KEY }}
+          E2E_MQTTV3_SHARED_DPS_CS: ${{ secrets.E2E_MQTTV3_SHARED_DPS_CS }}
+          E2E_MQTTV3_SHARED_IOTHUB_REGISTRY_CS: ${{ secrets.E2E_MQTTV3_SHARED_IOTHUB_REGISTRY_CS }}
           E2E_RUN_ID: ${{ github.run_id }}
           E2E_RUN_ATTEMPT: ${{ github.run_attempt }}
           E2E_DEVICE_INDEX: ${{ matrix.device-index }}
@@ -640,6 +647,7 @@ jobs:
           @(
             "E2E_ESP32_DEVICE_ID=$regId"
             "IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE"
+            if ($env:IOT_DPS_GLOBAL_ENDPOINT) { "IOT_DPS_GLOBAL_ENDPOINT=$env:IOT_DPS_GLOBAL_ENDPOINT" }
             "IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING"
             "IOTHUB_EVENTHUB_CONNECTION_STRING=$env:IOTHUB_EVENTHUB_CONNECTION_STRING"
             "IOTHUB_EVENTHUB_CONSUMER_GROUP=$env:IOTHUB_EVENTHUB_CONSUMER_GROUP"
@@ -713,7 +721,7 @@ jobs:
     # `env` (not from `needs.setup.outputs`), so a cancelled setup still gets torn
     # down; the destroy action no-ops when the group was never created. Skipped in
     # shared mode: the shared group outlives the run.
-    if: ${{ always() && needs.changes.outputs.run == 'true' && !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
+    if: ${{ always() && needs.changes.outputs.run == 'true' && !(vars.E2E_MQTTV3_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
