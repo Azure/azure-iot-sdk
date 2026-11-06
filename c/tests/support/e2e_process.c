@@ -675,24 +675,33 @@ bool az_iot_e2e_process_wait_for_exit(az_iot_e2e_process* process, int timeout_m
   return process->exited;
 }
 
+/**
+ * @brief Whether the child exited and its output closed (what it started holds the pipe too),
+ * from fresh state: its exit first, then its output to the end.
+ */
+static bool has_finished(az_iot_e2e_process* process)
+{
+  bool const exited = poll_exit(process);
+  az_iot_e2e_process_read_output(process);
+  return exited && process->output_ended;
+}
+
 bool az_iot_e2e_process_stop(az_iot_e2e_process* process, int grace_ms)
 {
   if (!process->running)
   {
     return true;
   }
-  // Done when the child exited and its output closed: what it started holds the pipe too.
-  az_iot_e2e_process_read_output(process);
-  if (!(poll_exit(process) && process->output_ended) && ask_to_stop(process))
+  if (!has_finished(process))
   {
-    int64_t const end = now_ms() + grace_ms;
-    while (!(poll_exit(process) && process->output_ended) && now_ms() < end)
+    // Not asked (e.g. the group just ended): no grace, but the state is checked again below.
+    int64_t const end = now_ms() + (ask_to_stop(process) ? grace_ms : 0);
+    while (now_ms() < end && !has_finished(process))
     {
       sleep_ms(TICK_MS);
-      az_iot_e2e_process_read_output(process);
     }
   }
-  bool const graceful = process->exited && process->output_ended;
+  bool const graceful = has_finished(process);
   kill_and_wait(process); // Also what the child started and left running.
   az_iot_e2e_process_read_output(process);
   release(process);

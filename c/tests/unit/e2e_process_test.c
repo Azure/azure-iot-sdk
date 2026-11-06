@@ -180,6 +180,7 @@ static void waiting_ends_when_the_child_exits_without_printing(void** state)
   assert_false(
       az_iot_e2e_process_wait_for_output(&s_process, "never printed", 60 * 1000, NULL, NULL));
   assert_true(time(NULL) - start < 30);
+  assert_true(az_iot_e2e_process_stop(&s_process, 0)); // It ended by itself: nothing was forced.
 }
 
 int main(void)
