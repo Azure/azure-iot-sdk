@@ -157,6 +157,10 @@ typedef struct
   bool clean_start;
   uint32_t session_expiry_interval;
   uint16_t receive_maximum;
+  /**
+   * @brief 0: none. A received packet over it ends the session with
+   * AZ_MQTT_ERROR_PACKET_TOO_LARGE, after a DISCONNECT with Packet too large.
+   */
   uint32_t maximum_packet_size;
   uint16_t topic_alias_maximum;
   bool request_response_information;

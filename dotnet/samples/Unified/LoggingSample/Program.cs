@@ -5,6 +5,7 @@ using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using SetupSampleDevice;
 using System.Diagnostics;
@@ -88,7 +89,7 @@ internal class Program
             }
 
             using CancellationTokenSource disconnectCts = new(TimeSpan.FromSeconds(10));
-            await connectionClient.DisconnectAsync(disconnectCts.Token);
+            await connectionClient.DisconnectAsync(null, disconnectCts.Token);
         }
         finally
         {

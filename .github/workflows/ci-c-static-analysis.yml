@@ -8,7 +8,7 @@ name: ci-c-static-analysis
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, 'releases/public-preview' ]
   # No workflow-level `paths:` filter, same as ci-c.yml: a workflow that never triggers reports
   # no check, which would block a required check. The `changes` job below skips work instead.
   pull_request:
@@ -69,8 +69,8 @@ jobs:
 
       - name: Install deps
         # Every optional component whose dependencies the runner can provide is configured, so
-        # its sources are analyzed: libssl (Paho TLS, key custody, software updates OpenSSL
-        # crypto, managed certificate provider), libcurl (file upload sample), mbedTLS below.
+        # its sources are analyzed: libssl (Paho TLS, key custody, OpenSSL crypto,
+        # managed certificate provider), libcurl (file upload sample), mbedTLS below.
         run: |
           sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev
           pipx install "clang-tidy==${CLANG_TIDY_VERSION}"
@@ -88,7 +88,6 @@ jobs:
           -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbedtls"
           -DAZ_IOT_BUILD_TESTS=OFF
           -DAZ_IOT_WITH_PAHO=ON
-          -DAZ_IOT_WITH_RUST_MQTT=ON
 
       - name: clang-tidy
         run: bash eng/clang-tidy.sh build/clang-tidy
@@ -119,14 +118,13 @@ jobs:
           -DAZ_IOT_ENABLE_MSVC_ANALYZE=ON
           -DAZ_IOT_BUILD_TESTS=OFF
           -DAZ_IOT_WITH_PAHO=ON
-          -DAZ_IOT_WITH_RUST_MQTT=ON
 
       - name: Check the analyzed targets
         # Optional adapters are skipped silently when a dependency is missing; fail instead.
         run: |
           targets="$(cmake --build build/msvc-analyze --target help)"
-          for t in az_iot_core az_iot_mqttv3 az_iot_mqttv5 az_iot_adapter_paho \
-                   az_iot_adapter_rust_mqtt az_iot_crypto_openssl \
+          for t in az_iot_core az_iot_mqttv3 az_iot_adapter_paho \
+                   az_iot_crypto_openssl \
                    az_iot_certificate_provider_managed; do
             grep -q "^${t}:" <<<"$targets" || { echo "::error::target ${t} not configured"; exit 1; }
           done
@@ -134,3 +132,29 @@ jobs:
       - name: Build with /analyze
         # -k 0: report every failing file, not just the first.
         run: cmake --build build/msvc-analyze -- -k 0
+
+  # Single stable check name for rulesets to require: reports on every run and
+  # fails when any job failed or was cancelled (skipped jobs pass).
+  gate:
+    name: ci-c-static-analysis-gate
+    needs: [ changes, clang-tidy, msvc-analyze ]
+    if: always()
+    runs-on: ubuntu-24.04
+    # No checkout: the workflow default working-directory c/ would not exist.
+    defaults:
+      run:
+        working-directory: .
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check every job's result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$RESULTS"
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<< "$RESULTS")
+          if [ -n "$failed" ]; then
+            echo "::error::ci-c-static-analysis-gate: failed or cancelled: $failed"
+            exit 1
+          fi

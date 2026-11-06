@@ -70,7 +70,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       stderr,
       "[dps_csr] %s: %s (%s)\n",
       is_dps ? "dps" : "hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
 
   /* Transport codes are adapter-defined, so they are not printed. */
@@ -165,11 +165,7 @@ static void pump(az_iot_connection_client* client)
 {
   uint64_t start = sample_now_ms();
   (void)az_iot_connection_client_do_work(client, SAMPLE_TICK_MS);
-  uint64_t spent = sample_now_ms() - start;
-  if (spent < SAMPLE_TICK_MS)
-  {
-    sample_sleep_ms((long)(SAMPLE_TICK_MS - spent));
-  }
+  sample_sleep_until_tick_end(start, SAMPLE_TICK_MS);
 }
 
 int main(void)
@@ -184,16 +180,15 @@ int main(void)
   }
 
   /* Every string cleanup frees is assigned before the first goto. */
-  char* op_key = sample_env_dup("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
-  char* op_cert = sample_env_dup("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
-  char* registration_payload = sample_env_dup("AZ_IOT_DPS_REGISTRATION_PAYLOAD", NULL);
+  char* op_key = sample_env_copy("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
+  char* op_cert = sample_env_copy("AZ_IOT_OPERATIONAL_CERT", "operational_cert.pem");
+  char* registration_payload = sample_env_copy("AZ_IOT_DPS_REGISTRATION_PAYLOAD", NULL);
 
   int rc = 1;
   sample_context ctx = { 0 };
   ctx.operational_cert_path = op_cert;
   az_iot_certificate_provider_managed provider = { 0 };
   az_iot_connection_client connection_client = { 0 };
-  az_iot_mqtt_factory* factory_v3 = NULL;
   az_iot_mqttv3_telemetry_client telemetry = { 0 };
   bool telemetry_initialized = false;
 
@@ -219,7 +214,11 @@ int main(void)
     goto cleanup;
   }
 
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.workspace = connection_workspace;
+  opts.workspace_size = sizeof(connection_workspace);
   opts.dps.id_scope = config.id_scope;
   opts.dps.registration_id = config.reg_id;
   opts.dps.global_endpoint = config.dps_global_endpoint; /* NULL: the global default */
@@ -239,11 +238,18 @@ int main(void)
         = az_span_create(registration_body_buf, sizeof(registration_body_buf));
   }
 
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
 #if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory_v3 = az_iot_paho_factory_create_v3_1_1();
+  opts.mqtt_adapter = az_iot_paho_get_adapter();
 #elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
+  opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
 #endif
+  opts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  opts.mqtt_workspace = mqtt_workspace;
+  opts.mqtt_workspace_size = sizeof(mqtt_workspace);
+
   if (az_iot_connection_client_init(&connection_client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &ctx)
           != AZ_IOT_OK
@@ -252,9 +258,6 @@ int main(void)
           != AZ_IOT_OK
       || az_iot_connection_client_set_registration_payload_callback(
              &connection_client, on_registration_payload, &ctx)
-          != AZ_IOT_OK
-      /* DPS and MQTTv3 IoT Hub both use MQTT 3.1.1. */
-      || az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v3)
           != AZ_IOT_OK)
   {
     fprintf(stderr, "[dps_csr] connection client setup failed\n");
@@ -369,11 +372,6 @@ cleanup:
     az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   }
   az_iot_connection_client_deinit(&connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory_v3);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory_v3);
-#endif
   az_iot_certificate_provider_managed_deinit(&provider);
   free(op_key);
   free(op_cert);

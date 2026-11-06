@@ -31,18 +31,13 @@
 #include <azure/core/az_base64.h>
 
 /* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-#include "azure/iot/adapters/az_iot_adapter_paho.h"
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
-#else
-#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
-#endif
+#include "e2e_mqtt_adapter.h"
 #include "azure/iot/az_iot.h"
 #include "az_iot_crypto_openssl.h"
 #include "az_iot_e2e_service.h"
+#include "e2e_connect_clock.h"
 #include "e2e_log.h"
-#include "sample_dps_tpm.h"
+#include "e2e_dps_tpm.h"
 #include "sample_tpm_sim.h"
 #include "sample_utils.h"
 #include "support/test_env.h"
@@ -51,6 +46,8 @@
 #define E2E_TPM_TIMEOUT_MS 90000u
 #define E2E_TPM_TOKEN_LIFETIME_S 3600u
 #define E2E_TPM_TICK_MS 50u
+
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
 typedef struct
 {
@@ -66,15 +63,15 @@ typedef struct
   az_iot_result send_status;
 } e2e_tpm_ctx;
 
-/** @brief sample_https_send over the harness's TLS transport. */
+/** @brief e2e_https_send over the harness's TLS transport. */
 static bool https_send(
     void* ctx,
     const char* host,
     const az_iot_dps_tpm_request* request,
-    sample_https_response* response)
+    e2e_https_response* response)
 {
   (void)ctx;
-  static char body[SAMPLE_DPS_TPM_RESPONSE_MAX + 1];
+  static char body[E2E_DPS_TPM_RESPONSE_MAX + 1];
   int status = 0;
   size_t len = 0;
   unsigned retry_after = 0;
@@ -104,8 +101,8 @@ static bool https_send(
 static void on_token_required(const az_iot_sas_token_request* request, void* user_ctx)
 {
   e2e_tpm_ctx* ctx = (e2e_tpm_ctx*)user_ctx;
-  if (sample_copy_str(ctx->resource_uri, sizeof(ctx->resource_uri), request->resource_uri)
-      && sample_copy_str(ctx->key_name, sizeof(ctx->key_name), request->key_name))
+  if (sample_string_copy(ctx->resource_uri, sizeof(ctx->resource_uri), request->resource_uri)
+      && sample_string_copy(ctx->key_name, sizeof(ctx->key_name), request->key_name))
   {
     ctx->token_pending = true;
   }
@@ -120,7 +117,7 @@ static void issue_token(az_iot_connection_client* client, e2e_tpm_ctx* ctx)
   ctx->token_pending = false;
   char token[AZ_IOT_SAS_TOKEN_SIZE(256)];
   size_t len = 0;
-  if (sample_dps_tpm_sign_token(
+  if (e2e_dps_tpm_sign_token(
           ctx->tpm,
           ctx->resource_uri,
           ctx->key_name,
@@ -152,7 +149,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
     fprintf(
         stderr,
         "[e2e_tpm] hub %s (%s)\n",
-        sample_connection_state_name(event->state),
+        az_iot_connection_state_to_string(event->state),
         az_iot_result_to_string(event->reason));
   }
 }
@@ -215,17 +212,24 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
   dps_opts.tpm = sample_tpm_sim_ops(ctx.tpm);
   /* From here on nothing asserts until cleanup has run. */
   az_iot_dps_tpm_client dps;
-  static sample_https_response response;
+  static e2e_https_response response;
   az_iot_result reg = az_iot_dps_tpm_client_init(&dps, &dps_opts);
   if (reg == AZ_IOT_OK)
   {
-    reg = sample_dps_tpm_register(
+    uint64_t registration_start_ms = sample_now_ms();
+    reg = e2e_dps_tpm_register(
         &dps,
         endpoint != NULL ? endpoint : E2E_TPM_DEFAULT_ENDPOINT,
         https_send,
         NULL,
-        E2E_TPM_TIMEOUT_MS,
+        (uint64_t)E2E_DPS_PROVISIONING_TIMEOUT_S * 1000u,
         &response);
+    fprintf(
+        stderr,
+        "[e2e_tpm] DPS registration: %s after %lus (budget %ds)\n",
+        az_iot_result_to_string(reg),
+        (unsigned long)((sample_now_ms() - registration_start_ms) / 1000u),
+        E2E_DPS_PROVISIONING_TIMEOUT_S);
   }
   const az_iot_dps_tpm_assignment* a
       = reg == AZ_IOT_OK ? az_iot_dps_tpm_client_get_assignment(&dps) : NULL;
@@ -236,7 +240,7 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
   if (assigned)
   {
     fprintf(stderr, "[e2e_tpm] assigned to %s as %s\n", a->assigned_hub, a->device_id);
-    (void)sample_copy_str(device_id, sizeof(device_id), a->device_id);
+    (void)sample_string_copy(device_id, sizeof(device_id), a->device_id);
   }
 
   /* The assigned hub with TPM-signed SAS tokens. */
@@ -252,16 +256,13 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
     opts.sas_buffer.buffer = sas_buffer;
     opts.sas_buffer.size = sizeof(sas_buffer);
     opts.trusted_ca.path = ca;
+    opts.workspace = g_connection_workspace;
+    opts.workspace_size = sizeof(g_connection_workspace);
     az_iot_connection_client client = { 0 };
     az_iot_mqttv3_telemetry_client telemetry = { 0 };
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-    az_iot_mqtt_factory* factory = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-    az_iot_mqtt_factory* factory = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-    client_ok = factory != NULL && az_iot_connection_client_init(&client, &opts) == AZ_IOT_OK
+    uint8_t* mqtt_workspace = e2e_use_mqtt_adapter(&opts);
+    client_ok = mqtt_workspace != NULL && az_iot_connection_client_init(&client, &opts) == AZ_IOT_OK
         && az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) == AZ_IOT_OK
-        && az_iot_connection_client_register_mqtt_factory(&client, factory) == AZ_IOT_OK
         && az_iot_mqttv3_telemetry_client_init(&telemetry, &client) == AZ_IOT_OK
         && az_iot_connection_client_open(&client) == AZ_IOT_OK;
 
@@ -296,11 +297,7 @@ static void test_dps_tpm_registration_and_hub_sas(void** state)
     }
     az_iot_mqttv3_telemetry_client_deinit(&telemetry);
     az_iot_connection_client_deinit(&client);
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-    az_iot_paho_factory_destroy(factory);
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-    az_iot_az_mqtt_factory_destroy(factory);
-#endif
+    free(mqtt_workspace);
   }
 
   /* Clean up before asserting, so a failure leaves nothing behind. */

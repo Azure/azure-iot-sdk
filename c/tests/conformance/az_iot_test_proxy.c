@@ -1212,165 +1212,6 @@ static int proxy_packet_id(const uint8_t* pkt, size_t len, uint8_t out[2])
  * copied (a Will is reported by topic and length only; credentials by length
  * and digest only). --- */
 
-/* Read an MQTT variable byte integer at *at. Returns 0 on a truncated or
- * over-long encoding, which ends decoding of the packet. */
-static int proxy_mqtt_varint(const uint8_t* p, size_t len, size_t* at, uint32_t* out)
-{
-  uint32_t value = 0;
-  uint32_t multiplier = 1;
-  for (int i = 0; i < 4; ++i)
-  {
-    if (*at >= len)
-    {
-      return 0;
-    }
-    uint8_t b = p[(*at)++];
-    value += (uint32_t)(b & 0x7Fu) * multiplier;
-    if ((b & 0x80u) == 0)
-    {
-      *out = value;
-      return 1;
-    }
-    multiplier *= 128u;
-  }
-  return 0;
-}
-
-/* Length in bytes of the value of MQTT 5 property `id` starting at *at, so an
- * unrecognised property between two that matter does not end the scan. Returns
- * 0 when the property cannot be spanned -- an id this table does not know, or a
- * length that runs past the packet -- and the caller stops there rather than
- * reading whatever follows as a property id. */
-static int proxy_mqtt_skip_property(const uint8_t* p, size_t len, size_t* at, uint8_t id)
-{
-  size_t fixed = 0;
-  switch (id)
-  {
-    case 0x01u: /* payload format indicator */
-    case 0x17u: /* request problem information */
-    case 0x19u: /* request response information */
-    case 0x24u: /* maximum QoS */
-    case 0x25u: /* retain available */
-    case 0x28u: /* wildcard subscription available */
-    case 0x29u: /* subscription identifier available */
-    case 0x2Au: /* shared subscription available */
-      fixed = 1;
-      break;
-    case 0x13u: /* server keep alive */
-    case 0x21u: /* receive maximum */
-    case 0x22u: /* topic alias maximum */
-    case 0x23u: /* topic alias */
-      fixed = 2;
-      break;
-    case 0x02u: /* message expiry interval */
-    case 0x11u: /* session expiry interval */
-    case 0x18u: /* will delay interval */
-    case 0x27u: /* maximum packet size */
-      fixed = 4;
-      break;
-    case 0x0Bu: /* subscription identifier (variable byte integer) */
-    {
-      uint32_t ignored = 0;
-      return proxy_mqtt_varint(p, len, at, &ignored);
-    }
-    case 0x26u: /* user property: two length-prefixed strings */
-    {
-      for (int i = 0; i < 2; ++i)
-      {
-        if (*at + 2 > len)
-        {
-          return 0;
-        }
-        size_t n = ((size_t)p[*at] << 8) | (size_t)p[*at + 1];
-        *at += 2;
-        if (*at + n > len)
-        {
-          return 0;
-        }
-        *at += n;
-      }
-      return 1;
-    }
-    case 0x03u: /* content type */
-    case 0x08u: /* response topic */
-    case 0x09u: /* correlation data (binary, same framing) */
-    case 0x12u: /* assigned client identifier */
-    case 0x15u: /* authentication method */
-    case 0x16u: /* authentication data (binary) */
-    case 0x1Au: /* response information */
-    case 0x1Cu: /* server reference */
-    case 0x1Fu: /* reason string */
-    {
-      if (*at + 2 > len)
-      {
-        return 0;
-      }
-      size_t n = ((size_t)p[*at] << 8) | (size_t)p[*at + 1];
-      *at += 2;
-      if (*at + n > len)
-      {
-        return 0;
-      }
-      *at += n;
-      return 1;
-    }
-    default:
-      return 0;
-  }
-  if (*at + fixed > len)
-  {
-    return 0;
-  }
-  *at += fixed;
-  return 1;
-}
-
-static uint32_t proxy_be32(const uint8_t* p)
-{
-  return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
-}
-
-/* Walk one MQTT 5 property block, recording the one property the caller cares
- * about (`want`) and stepping over everything else. `*at` is left just past the
- * block when the whole block was spanned. */
-static void proxy_mqtt_scan_properties(
-    const uint8_t* p,
-    size_t len,
-    size_t* at,
-    uint8_t want,
-    int* out_present,
-    uint32_t* out_value)
-{
-  uint32_t props_len = 0;
-  if (!proxy_mqtt_varint(p, len, at, &props_len))
-  {
-    *at = len; /* undecodable: nothing after this can be trusted either */
-    return;
-  }
-  size_t end = *at + (size_t)props_len;
-  if (end > len)
-  {
-    *at = len;
-    return;
-  }
-  size_t cur = *at;
-  while (cur < end)
-  {
-    uint8_t id = p[cur++];
-    size_t value_at = cur;
-    if (!proxy_mqtt_skip_property(p, end, &cur, id))
-    {
-      break;
-    }
-    if (id == want && value_at + 4 <= end)
-    {
-      *out_present = 1;
-      *out_value = proxy_be32(p + value_at);
-    }
-  }
-  *at = end;
-}
-
 /* Decode the client's CONNECT into `out`. Silently leaves `out->seen` at 0 for
  * anything that does not decode: this is observation, not validation. */
 uint64_t az_iot_test_proxy_digest(const void* bytes, size_t len)
@@ -1447,12 +1288,6 @@ static void proxy_decode_connect(
   f.will_qos = (uint8_t)((flags >> 3) & 0x03u);
   f.will_retain = (flags & 0x20u) ? 1 : 0;
 
-  if (level >= 5)
-  {
-    proxy_mqtt_scan_properties(
-        pkt, len, &at, 0x11u, &f.has_session_expiry, &f.session_expiry_seconds);
-  }
-
   /* client identifier */
   if (at + 2 > len)
   {
@@ -1463,10 +1298,6 @@ static void proxy_decode_connect(
 
   if (f.will_flag)
   {
-    if (level >= 5)
-    {
-      proxy_mqtt_scan_properties(pkt, len, &at, 0x18u, &f.has_will_delay, &f.will_delay_seconds);
-    }
     if (at + 2 > len)
     {
       return;
@@ -1544,8 +1375,7 @@ static void proxy_observe_c2b(struct az_iot_test_proxy* m, const uint8_t* pkt, s
   {
     return;
   }
-  /* An empty body is a DISCONNECT with no reason code, which MQTT 5 defines as
-   * Normal Disconnection and 3.1.1 has no way to qualify at all. */
+  /* An empty body, as every 3.1.1 DISCONNECT has, reads as 0. */
   uint8_t reason = (total > hdr) ? pkt[hdr] : 0u;
   proxy_lock(&m->lock);
   m->have_client_disconnect = 1;
@@ -2519,6 +2349,13 @@ int az_iot_test_proxy_enable_tls(az_iot_test_proxy* m, const az_iot_test_proxy_t
      * certificate is deliberately not examined. See the header. */
     SSL_CTX_set_verify(
         ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, proxy_accept_any_cert_cb);
+    /* No resumption: every connect must sign a CertificateVerify again. */
+    SSL_CTX_set_session_cache_mode(ctx, SSL_SESS_CACHE_OFF);
+    SSL_CTX_set_options(ctx, SSL_OP_NO_TICKET);
+    if (SSL_CTX_set_num_tickets(ctx, 0) != 1)
+    {
+      goto done;
+    }
   }
 
   if (SSL_CTX_use_PrivateKey(ctx, leaf_key) != 1)

@@ -42,7 +42,7 @@ void e2e_sas_config_load(e2e_sas_config* cfg);
 /** @brief Frees what e2e_sas_config_load() copied. */
 void e2e_sas_config_free(e2e_sas_config* cfg);
 
-/** @brief Sets DPS, trust, crypto, sas_buffer and dps_auth (group key) in
+/** @brief Sets DPS, trust, crypto, sas_buffer, workspace and dps_auth (group key) in
  * @p copts. @p cfg must outlive the client. */
 void e2e_sas_apply_dps(const e2e_sas_config* cfg, az_iot_connection_client_options* copts);
 

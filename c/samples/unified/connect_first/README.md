@@ -5,14 +5,13 @@
 
 [`unified/telemetry`](../telemetry/README.md), built the conservative way: the connection is
 opened with **no** feature client attached. Once `CONNECTED`, the sample reads the assigned
-generation with `az_iot_connection_client_get_hub_profile()` and builds the matching telemetry
-client. Nothing is assumed, so the first connect never has to be redone.
+profile with `az_iot_connection_client_get_hub_profile()` and builds the matching telemetry
+client. Nothing is assumed before the hub is reached.
 
 ## Sample features
 
-- Hub generations: mqttv3 (MQTT 3.1.1) and mqttv5 (MQTT 5), whichever DPS assigns, including after the device is moved to a hub of the other generation.
+- Hub: mqttv3 (MQTT 3.1.1).
 - The cost: a client built after `CONNECTED` subscribes only then, so on the first connect `CONNECTED` does not say its subscriptions were granted. Telemetry has none, which is why it is the feature used here.
-- Once built, the client pins its generation. If the device is later moved to the other generation, the sample destroys the client, reopens with none attached, and builds again once `CONNECTED`.
 - Platforms: Linux and Windows.
 
 ## Service requirements
@@ -20,7 +19,6 @@ client. Nothing is assumed, so the first connect never has to be redone.
 - An Azure IoT Hub Device Provisioning Service (DPS) instance linked to an IoT Hub.
 - An X.509 enrollment (individual or group) for the device. For an mqttv3 hub,
   [Quickstart: Provision an X.509 certificate simulated device](https://learn.microsoft.com/azure/iot-dps/quick-create-simulated-device-x509) walks through the setup.
-- To exercise mqttv5, the device's enrollment must assign it to an mqttv5 IoT Hub.
 
 ## Configure
 
@@ -89,9 +87,6 @@ The sample prints a summary line at the end; SDK warnings and errors go to stder
 Sent 11 message(s), 0 failed.
 ```
 
-After a move to the other generation it first prints
-`DPS assigned MQTTv5 (MQTT v5); reopening without a telemetry client.`
-
 ## Troubleshooting
 
 | Symptom | Likely cause |
@@ -99,14 +94,13 @@ After a move to the other generation it first prints
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. DPS verdicts are retried until the sample's run time ends. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
-| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK version does not know. |
+| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK does not support. |
 
 ## Where to look in `main.c`
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
-| Read the assigned generation once connected | `az_iot_connection_client_get_hub_profile()` |
+| MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
+| Read the assigned profile once connected | `az_iot_connection_client_get_hub_profile()` |
 | Build the matching client | `telemetry_build()` |
-| Handle a later move | `on_conn_state()` → `sample_event_is_profile_mismatch()`, then `telemetry_destroy()` and reopen |
-| Send | `az_iot_mqttv3_telemetry_client_send()` / `az_iot_mqttv5_telemetry_client_send()`, `on_send_done()` |
+| Send | `az_iot_mqttv3_telemetry_client_send()`, `on_send_done()` |

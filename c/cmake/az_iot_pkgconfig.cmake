@@ -67,7 +67,7 @@ function(_az_iot_pc_deps tgt openssl_req)
             list(APPEND _requires_private libssl)
         elseif(_item STREQUAL "OpenSSL::Crypto")
             list(APPEND _requires_private "libcrypto${openssl_req}")
-        elseif(_item MATCHES "^az_mqtt(v3|v5|_core)$")
+        elseif(_item MATCHES "^az_mqtt(v3|_core)$")
             # Bundled az_mqtt (deps/az_mqtt) libraries: link them and their own dependencies.
             list(APPEND _libs_private "-l${_item}")
             get_target_property(_az_mqtt_deps ${_item} LINK_LIBRARIES)
@@ -151,12 +151,10 @@ else()
 endif()
 
 set(_az_iot_pc_descriptions
-    core                          "core: connection client and software updates"
+    core                          "core: connection client"
     mqttv3                        "IoT Hub mqttv3 clients"
-    mqttv5                        "IoT Hub mqttv5 clients"
     adapter_paho                  "Eclipse Paho MQTT adapter"
     adapter_az_mqtt               "az_mqtt MQTT adapter"
-    adapter_rust_mqtt             "Rust MQTT adapter"
     crypto_openssl                "OpenSSL crypto backend"
     crypto_mbedtls                "mbedTLS crypto backend"
     certificate_provider_managed  "OpenSSL managed certificate provider"

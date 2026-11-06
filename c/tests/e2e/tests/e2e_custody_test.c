@@ -37,16 +37,11 @@
 #include <time.h>
 
 /* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-#include "azure/iot/adapters/az_iot_adapter_paho.h"
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-#include "azure/iot/adapters/az_iot_adapter_az_mqtt.h"
-#else
-#error "Define AZ_IOT_E2E_ADAPTER_PAHO or AZ_IOT_E2E_ADAPTER_AZ_MQTT"
-#endif
+#include "e2e_mqtt_adapter.h"
 #include "azure/iot/az_iot.h"
 
 #include "az_iot_e2e_service.h"
+#include "e2e_connect_clock.h"
 #include "e2e_log.h"
 
 #define E2E_CONNECT_TIMEOUT_S 90
@@ -80,8 +75,7 @@ typedef struct
   custody_config config;
   custody_provider provider;
   az_iot_connection_client conn;
-  az_iot_mqtt_factory* factory_v3;
-  az_iot_mqtt_factory* factory_v5;
+  uint8_t* mqtt_workspace; /* Heap; freed after deinit(). */
   az_iot_connection_state conn_state;
   bool conn_ok;
   az_iot_e2e_service* service;
@@ -92,6 +86,7 @@ typedef struct
 } custody_fixture;
 
 static custody_fixture g_fixture;
+static uint8_t g_connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
 
 static char* str_dup(const char* value)
 {
@@ -213,11 +208,19 @@ static int device_connect(custody_fixture* fx)
   copts.dps.id_scope = fx->config.id_scope;
   copts.dps.registration_id = fx->config.reg_id;
   copts.certificate_provider = &fx->provider.base;
+  copts.workspace = g_connection_workspace;
+  copts.workspace_size = sizeof(g_connection_workspace);
   if (fx->config.global_endpoint != NULL)
   {
     copts.dps.global_endpoint = fx->config.global_endpoint;
   }
 
+  fx->mqtt_workspace = e2e_use_mqtt_adapter(&copts);
+  if (fx->mqtt_workspace == NULL)
+  {
+    fprintf(stderr, "[e2e-custody] no memory for the MQTT workspace\n");
+    return 1;
+  }
   if (az_iot_connection_client_init(&fx->conn, &copts) != AZ_IOT_OK)
   {
     fprintf(stderr, "[e2e-custody] connection client init failed\n");
@@ -226,20 +229,6 @@ static int device_connect(custody_fixture* fx)
   fx->conn_ok = true;
   az_iot_connection_client_add_state_observer(&fx->conn, on_conn_state, fx);
 
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  fx->factory_v3 = az_iot_paho_factory_create_v3_1_1();
-  fx->factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  fx->factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-  fx->factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory_v3) != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&fx->conn, fx->factory_v5) != AZ_IOT_OK)
-  {
-    fprintf(stderr, "[e2e-custody] MQTT factory registration failed\n");
-    return 1;
-  }
-
   az_iot_result open_rc = az_iot_connection_client_open(&fx->conn);
   if (open_rc != AZ_IOT_OK)
   {
@@ -247,9 +236,10 @@ static int device_connect(custody_fixture* fx)
     return 1;
   }
 
-  time_t start = time(NULL);
+  e2e_connect_clock clock;
+  e2e_connect_clock_start(&clock);
   while (fx->conn_state != AZ_IOT_CONN_STATE_CONNECTED
-         && (time(NULL) - start) < E2E_CONNECT_TIMEOUT_S)
+         && e2e_connect_clock_running(&clock, &fx->conn, E2E_CONNECT_TIMEOUT_S))
   {
     (void)az_iot_connection_client_do_work(&fx->conn, 50);
     if (fx->conn_state == AZ_IOT_CONN_STATE_FAULTED)
@@ -257,6 +247,7 @@ static int device_connect(custody_fixture* fx)
       break;
     }
   }
+  e2e_connect_clock_log(&clock, "custody device");
   if (fx->conn_state != AZ_IOT_CONN_STATE_CONNECTED)
   {
     fprintf(
@@ -283,15 +274,8 @@ static void device_disconnect(custody_fixture* fx)
     az_iot_connection_client_deinit(&fx->conn);
     fx->conn_ok = false;
   }
-#if defined(AZ_IOT_E2E_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(fx->factory_v3);
-  az_iot_paho_factory_destroy(fx->factory_v5);
-#elif defined(AZ_IOT_E2E_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(fx->factory_v3);
-  az_iot_az_mqtt_factory_destroy(fx->factory_v5);
-#endif
-  fx->factory_v3 = NULL;
-  fx->factory_v5 = NULL;
+  free(fx->mqtt_workspace);
+  fx->mqtt_workspace = NULL;
   free(fx->config.id_scope);
   free(fx->config.reg_id);
   free(fx->config.cert);
@@ -379,7 +363,7 @@ static void telemetry_flows_over_the_token_authenticated_connection(void** state
    * whose reason was discarded is what this test did before, and a transient
    * open failure was indistinguishable from a custody fault. Mirrors
    * e2e_scenarios_test.c. */
-  bool watching = az_iot_e2e_service_telemetry_watch_begin(g_fixture.service);
+  bool watching = az_iot_e2e_service_telemetry_watch_begin(g_fixture.service, needle);
   for (time_t connect_start = time(NULL);
        !watching && (time(NULL) - connect_start) < E2E_CONNECT_TIMEOUT_S;)
   {
@@ -387,7 +371,7 @@ static void telemetry_flows_over_the_token_authenticated_connection(void** state
     {
       (void)az_iot_connection_client_do_work(&g_fixture.conn, E2E_PUMP_MS);
     }
-    watching = az_iot_e2e_service_telemetry_watch_begin(g_fixture.service);
+    watching = az_iot_e2e_service_telemetry_watch_begin(g_fixture.service, needle);
   }
   if (!watching)
   {
@@ -452,9 +436,10 @@ static void a_reconnect_resolves_the_token_key_again(void** state)
   assert_int_equal(g_fixture.conn_state, AZ_IOT_CONN_STATE_IDLE);
 
   assert_int_equal(az_iot_connection_client_open(&g_fixture.conn), AZ_IOT_OK);
-  time_t start = time(NULL);
+  e2e_connect_clock clock;
+  e2e_connect_clock_start(&clock);
   while (g_fixture.conn_state != AZ_IOT_CONN_STATE_CONNECTED
-         && (time(NULL) - start) < E2E_CONNECT_TIMEOUT_S)
+         && e2e_connect_clock_running(&clock, &g_fixture.conn, E2E_CONNECT_TIMEOUT_S))
   {
     (void)az_iot_connection_client_do_work(&g_fixture.conn, 50);
     if (g_fixture.conn_state == AZ_IOT_CONN_STATE_FAULTED)
@@ -462,6 +447,7 @@ static void a_reconnect_resolves_the_token_key_again(void** state)
       break;
     }
   }
+  e2e_connect_clock_log(&clock, "custody device");
   assert_int_equal(g_fixture.conn_state, AZ_IOT_CONN_STATE_CONNECTED);
   assert_true(g_fixture.provider.load_calls > loads_before);
 }

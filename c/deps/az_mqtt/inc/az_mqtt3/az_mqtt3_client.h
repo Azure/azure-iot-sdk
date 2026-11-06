@@ -268,7 +268,8 @@ AZ_NODISCARD az_result az_mqtt3_client_process_loop(az_mqtt3_client* client, int
  * @retval AZ_MQTT_ERROR_FLOW_CONTROL No free in-flight entry, or (QoS 1/2) an earlier PUBLISH
  *         still awaits its resend after a resume.
  * @retval AZ_MQTT_ERROR_OUT_OF_STORAGE, AZ_MQTT_ERROR_INVALID_CONFIG See inflight_message_buffer.
- * @retval AZ_ERROR_ARG Topic empty, with a wildcard ('+', '#') or not valid UTF-8.
+ * @retval AZ_ERROR_ARG Topic empty, with a wildcard ('+', '#') or not valid UTF-8, or a QoS
+ *         over 2.
  */
 AZ_NODISCARD az_result az_mqtt3_client_publish(
     az_mqtt3_client* client,
@@ -280,7 +281,7 @@ AZ_NODISCARD az_result az_mqtt3_client_publish(
  * @param[out] out_packet_id  Packet ID assigned. Can be NULL.
  * @retval AZ_MQTT_ERROR_FLOW_CONTROL No free in-flight entry.
  * @retval AZ_ERROR_ARG No or over 65,535 Topic Filters, or one empty, with a misplaced wildcard or
- *         not valid UTF-8.
+ *         not valid UTF-8, or a QoS over 2.
  */
 AZ_NODISCARD az_result az_mqtt3_client_subscribe(
     az_mqtt3_client* client,

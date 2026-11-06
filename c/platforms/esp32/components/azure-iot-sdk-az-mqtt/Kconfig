@@ -1,0 +1,34 @@
+menu "Azure IoT SDK az_mqtt adapter"
+
+    # The adapter builds MQTT 3.1.1 clients.
+    config AZ_IOT_AZ_MQTT_ADAPTER
+        bool
+        default y
+        select AZ_MQTT_ENABLE_MQTTV3
+
+    config AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE
+        int "Largest outgoing MQTT packet (bytes)"
+        range 1024 268435455
+        default 8192
+        help
+            az_iot_mqtt_limits.send_buffer_size of the samples, which also size their
+            message store for one copy for QoS 1 redelivery. Must hold the largest
+            telemetry message.
+
+    config AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE
+        int "Largest incoming MQTT packet (bytes)"
+        range 1024 268435455
+        default 12288
+        help
+            az_iot_mqtt_limits.receive_buffer_size of the samples. Each client holds it
+            twice (packet and inbound strings). Must hold the largest incoming message
+            (a twin document, say) plus its topic and envelope.
+
+    config AZ_IOT_AZ_MQTT_INFLIGHT_MAX
+        int "Requests in flight at once"
+        range 1 32767
+        default 8
+        help
+            az_iot_mqtt_limits.max_in_flight_messages of the samples.
+
+endmenu

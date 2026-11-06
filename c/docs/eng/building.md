@@ -10,19 +10,20 @@ conformance suite. For a first build, see the [samples overview](../../samples/R
 
 ```
 inc/azure/iot/      public headers
-src/                core, mqttv3 and mqttv5 feature clients, software updates
-adapters/           MQTT adapters (Paho, az_mqtt, Rust shell), OpenSSL certificate provider,
-                    crypto backends (OpenSSL, mbedTLS), software updates platform adapters
+src/                core and mqttv3 feature clients
+adapters/           MQTT adapters (Paho, az_mqtt), OpenSSL certificate provider,
+                    crypto backends (OpenSSL, mbedTLS)
 samples/            samples, one README each
 tests/              unit, conformance, end-to-end and install tests
+platforms/esp32/    ESP-IDF components
 platforms/yocto/    Yocto layer
 docs/               customer documentation; docs/eng for engineering documentation
 cmake/, eng/        build helpers and CI scripts
 ```
 
-`src/sources.cmake` lists the library sources. `src/CMakeLists.txt` and the ESP-IDF
-component of the [ESP32 sample](../../samples/software_update/esp32/README.md#ci-builds)
-both include it, so a source added there is built by both.
+`src/sources.cmake` lists the library sources. `src/CMakeLists.txt` and the
+[ESP-IDF component](../../platforms/esp32/README.md) `azure-iot-sdk` both include it, so a
+source added there is built by both.
 
 ## Install and consume
 
@@ -40,15 +41,15 @@ find_package(azure-iot-sdk CONFIG REQUIRED COMPONENTS mqttv3 adapter_paho)
 target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
 ```
 
-- Components: `core`, `mqttv3`, `mqttv5`, and each adapter built (`adapter_paho`,
-  `adapter_az_mqtt`, `adapter_rust_mqtt`, `crypto_openssl`, `crypto_mbedtls`,
+- Components: `core`, `mqttv3`, and each adapter built (`adapter_paho`,
+  `adapter_az_mqtt`, `crypto_openssl`, `crypto_mbedtls`,
   `certificate_provider_managed`). An MQTT adapter's header is installed only with the adapter.
 - azure-sdk-for-c ships in the package (headers under `include/azure-sdk-for-c`);
   Paho installs its own `eclipse-paho-mqtt-c` package into the same prefix.
 - OpenSSL, and mbedTLS for `crypto_mbedtls`, must be findable by the consumer.
 - MSVC: the libraries use the static CRT; set
   `CMAKE_MSVC_RUNTIME_LIBRARY` to `MultiThreaded$<$<CONFIG:Debug>:Debug>`.
-- `-DBUILD_SHARED_LIBS=ON` builds `core`, `mqttv3` and `mqttv5` as shared
+- `-DBUILD_SHARED_LIBS=ON` builds `core` and `mqttv3` as shared
   libraries. There is no ABI guarantee between releases: rebuild the application
   whenever the library is updated ([struct_versioning.md](../../docs/struct_versioning.md)).
 
@@ -85,6 +86,9 @@ without (`paho`, `az_mqtt`, `rust_mqtt`, `openssl`, `mbedtls`, `curl`). It check
 target's sources, include directories, definitions, link inputs and target dependencies (CMake File
 API), the headers compiled in (Ninja), the binaries' needed libraries and symbols, fetched copies
 under `_deps/`, and optionally an install prefix. CI runs it on every build leg.
+`rust_mqtt` remains a forbidden-dependency pattern to guard against reintroducing the removed
+adapter. Every PR and main build runs the install matrix, which checks that the build and package
+contain no Rust MQTT adapter artifacts and that requesting its CMake component fails.
 
 ```sh
 cmake -DBUILD_DIR=build/x -DMODE=prepare -P eng/check-dependencies.cmake   # before configuring
@@ -123,6 +127,14 @@ MSVC (`/GS`, `/DYNAMICBASE`, `/NXCOMPAT` and `/HIGHENTROPYVA` are already on by 
 | `/sdl` | Security-relevant warnings are errors | First-party targets only |
 
 Each flag is probed first and skipped if the toolchain does not support it.
+
+Also on MSVC, independent of `AZ_IOT_ENABLE_HARDENING` (top-level [CMakeLists.txt](../../CMakeLists.txt),
+[cmake/compiler_warnings.cmake](../../cmake/compiler_warnings.cmake)), as BinSkim requires:
+
+| Flag | Effect | When |
+|---|---|---|
+| `/INCREMENTAL:NO`, `/OPT:REF`, `/OPT:ICF` | No incremental linking; unreferenced code removed, identical COMDATs folded | All but `Debug` |
+| `/W3` | Warning level for the fetched dependencies (azure-sdk-for-c, Paho), which otherwise build at `/W1`; first-party targets use `/W4` | Always |
 
 **Scope.** The flags apply to the SDK, its samples and tests, and the dependencies it
 fetches (azure-sdk-for-c, Paho), except `/sdl`, which the dependencies do not build
@@ -171,6 +183,23 @@ Flow Guard, ASLR or DEP, and, on x64, high entropy VA or CET compatibility. CI r
 gcc and clang, static and shared (`hardening-linux` in `ci-c.yml`), and on MSVC, static
 and shared (`hardening-windows`).
 
+## GA scope
+
+`main` carries the GA features only; software updates and the MQTT 5 hub clients live on
+`releases/public-preview`. [`eng/check-ga-scope.sh`](../../eng/check-ga-scope.sh) fails, listing
+`file:line`, when tracked content in `c/`, the C workflows or the C instructions names a non-GA
+feature, file names included. Its allowlists, each entry with its reason, keep the preview-only
+workflows that must stay on `main` for `workflow_dispatch`, the DPS connection profile value
+that `main` rejects and its test, and, for MQTT 5 only, the vendored `deps/az_mqtt`, whose MQTT 5
+client the SDK builds without (CMake and ESP-IDF). CI runs it in the `conventions` job of `ci-c.yml`, on every pull request that touches what it scans;
+`releases/public-preview` reverts it together with the removals.
+
+```sh
+bash eng/check-ga-scope.sh                       # every category
+bash eng/check-ga-scope.sh --only su             # one category (see the script header)
+bash eng/check-ga-scope.sh --self-test
+```
+
 ## Race detection
 
 Tests that start threads are registered with `az_iot_add_cmocka_test(<name> RACE ...)`, which
@@ -181,8 +210,15 @@ runs each of them under valgrind's helgrind or DRD:
 bash eng/run-race-detectors.sh helgrind   # or drd; optional second argument: build directory
 ```
 
+Tests run in parallel, `AZ_IOT_RACE_JOBS` (default: CPU count) at a time; valgrind runs a
+process's threads one at a time, so each process uses one CPU. Tests also labelled `shardable`
+(the Paho conformance suites) are split into `AZ_IOT_RACE_SHARDS` (default 4) processes through
+`AZ_IOT_TEST_SHARD=<index>/<count>` ([`tests/support/test_shard.h`](../../tests/support/test_shard.h)),
+which runs every `<count>`-th test of the executable starting at `<index>`.
+`AZ_IOT_RACE_SHARDS=1 AZ_IOT_RACE_JOBS=1` runs one whole test at a time.
+
 A test fails on any reported error, on its own failure, or when valgrind ends without an
-`ERROR SUMMARY`. Logs are written to `<build-dir>/race-logs/<tool>/`. Each log lists every
+`ERROR SUMMARY`. Logs are written to `<build-dir>/race-logs/<tool>/`, one per process. Each log lists every
 suppression used (`-s`). Suppressions live in `eng/sanitizers/{helgrind,drd}.supp`. They may
 name third-party code only, and each needs a comment giving its upstream reference;
 [`eng/check-race-suppressions.sh`](../../eng/check-race-suppressions.sh) enforces this.
@@ -191,7 +227,8 @@ over all tests (below).
 
 With `-DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON` the real-stack tests are labelled `race` too: the Paho
 conformance suites, `az_iot_reconnect_integration` and `az_iot_paho_teardown_race`. They need the
-broker described under the conformance suite below. The tools slow them ~10-50x, so set
+broker described under the conformance suite below. `az_iot_paho_publish_write_error` (POSIX, bundled Paho) is
+labelled `race` too and needs no broker: it is its own server. The tools slow them ~10-50x, so set
 `AZ_IOT_TEST_TIMEOUT_SCALE` (1-100, default 1): it multiplies their wait budgets and nothing else.
 CI sets 30. Paho 1.3.16 reads and writes some thread flags and thread ids without its own lock;
 the entries in `drd.supp` and `helgrind.supp` cover those frames only.
@@ -223,8 +260,8 @@ SDK code (TSan matches patterns as substrings). The script enforces this.
 ## MQTT adapter conformance suite
 
 [`tests/conformance/`](../../tests/conformance/) is a reusable test suite that drives an MQTT
-adapter only through the `az_iot_mqtt_iface` interface. `az_iot_conformance_paho_v3` and
-`az_iot_conformance_paho_v5` run it against the bundled Paho adapter. To run it against your own
+adapter only through the `az_iot_mqtt_iface` interface. `az_iot_conformance_paho_v3` runs it
+against the bundled Paho adapter. To run it against your own
 adapter, see [Bring your own MQTT client](../how_to_byo_mqtt_client.md).
 
 It needs a reachable MQTT broker:
@@ -235,7 +272,7 @@ export AZ_IOT_MQTT_BROKER_PORT=1883
 export AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1   # no PKCS#11 token: see below
 cmake --preset linux-gcc-debug
 cmake --build --preset linux-gcc-debug --target az_iot_tests_conformance_capability \
-    az_iot_conformance_paho_v3 az_iot_conformance_paho_v5 az_iot_conformance_paho_sign_negative
+    az_iot_conformance_paho_v3 az_iot_conformance_paho_sign_negative
 ctest --preset linux-gcc-debug --output-on-failure -R conformance
 ```
 

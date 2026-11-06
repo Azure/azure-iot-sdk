@@ -3,10 +3,10 @@
 
 using Microsoft.Azure.Iot.Device.Events;
 using Microsoft.Azure.Iot.Device.Exceptions;
-using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 using System.Diagnostics;
 using System.Globalization;
 
@@ -35,7 +35,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         /// An event that executes whenever this device receives a cloud-to-device message from IoT hub.
         /// </summary>
         /// <remarks>
-        /// Every handler is invoked and awaited in the order it was added. The message is acknowledged only if no handler throws.
+        /// Every handler is invoked and awaited in the order it was added. The connection layer acknowledges the MQTT
+        /// message before dispatching it, independently of whether a handler completes successfully.
         /// </remarks>
         /// <exception cref="InvalidOperationException">Thrown when adding a handler if the connection client opted out of cloud-to-device messages (see <see cref="ConnectionClientOptions.EnableCloudToDeviceMessages"/>).</exception>
         public event Func<CloudToDeviceTelemetry, Task>? CloudToDeviceTelemetryReceivedAsync
@@ -130,8 +131,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                 mqttMessage.Topic += $"&{Uri.EscapeDataString(customUserPropertyKey)}={Uri.EscapeDataString(message.UserProperties[customUserPropertyKey])}";
             }
 
-            // Puback is checked for non-success cases under this layer, so no need to check it here as well
+            // The connection client returns the PUBACK as-is, so a rejected request must be surfaced here.
             MqttPublishAck puback = await _connection.PublishAsync(mqttMessage, cancellationToken);
+            MqttAckValidator.ThrowIfPubackHasErrorCode(puback);
         }
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
@@ -203,8 +205,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                     }
 
                     await _cloudToDeviceTelemetryReceived.InvokeAsync(receivedCloudToDeviceMessage);
-
-                    await args.AcknowledgeAsync(CancellationToken.None);
                 }
             }
         }

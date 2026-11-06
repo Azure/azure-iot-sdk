@@ -17,6 +17,6 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
 
         public string Topic { get; set; }
 
-        public MqttQualityOfServiceLevel QualityOfServiceLevel { get; set; }
+        public MqttQualityOfServiceLevel QualityOfServiceLevel { get; set; } = MqttQualityOfServiceLevel.AtLeastOnce;
     }
 }

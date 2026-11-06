@@ -10,8 +10,10 @@
 # profile: default             sdkconfig.defaults
 #          secure              + sdkconfig.secure
 #          secure_<overlay>    + sdkconfig.secure + sdkconfig.secure_<overlay>
+#          <overlay>           + sdkconfig.<overlay> (e.g. qemu)
 # Secure profiles are signed with a key generated for this build only: the
-# images are build checks and must never be flashed.
+# images are build checks and must never be flashed. SDKCONFIG_EXTRA names one
+# more defaults file, applied last (e.g. the e2e device's DPS settings).
 set -euo pipefail
 
 if [ $# -lt 3 ]; then
@@ -26,7 +28,7 @@ root=${4:-${RUNNER_TEMP:-/tmp}/esp-idf-build}
 # Absolute: idf.py -C resolves relative paths from the sample directory.
 mkdir -p "$root"
 root=$(cd "$root" && pwd)
-# Name from the sample's last two path components, e.g. software_update-esp32.
+# Name from the sample's last two path components, e.g. unified-esp32.
 sample_name="$(basename "$(dirname "$sample")")-$(basename "$sample")"
 name="${sample_name}-${target}-${profile}"
 work="${root}/${name}"
@@ -56,10 +58,18 @@ case "$profile" in
     defaults="${defaults};${work}/signing_key.cfg"
     ;;
   *)
-    echo "unknown profile: $profile" >&2
-    exit 2
+    # Any other profile is the overlay sdkconfig.<profile> (e.g. qemu).
+    if [ ! -f "${sample}/sdkconfig.${profile}" ]; then
+      echo "unknown profile: $profile (no ${sample}/sdkconfig.${profile})" >&2
+      exit 2
+    fi
+    defaults="${defaults};${sample}/sdkconfig.${profile}"
     ;;
 esac
+
+if [ -n "${SDKCONFIG_EXTRA:-}" ]; then
+  defaults="${defaults};$(cd "$(dirname "$SDKCONFIG_EXTRA")" && pwd)/$(basename "$SDKCONFIG_EXTRA")"
+fi
 
 log="${work}/build.log"
 echo "Building ${sample_name} for ${target} (${profile}) in ${build}"

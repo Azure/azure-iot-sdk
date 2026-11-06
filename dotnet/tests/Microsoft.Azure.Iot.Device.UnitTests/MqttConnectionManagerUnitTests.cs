@@ -18,6 +18,133 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         private static readonly TimeSpan s_testTimeout = TimeSpan.FromSeconds(60);
 
+        [Theory]
+        [InlineData(0u, 0u, false)]
+        [InlineData(0u, 0u, true)]
+        [InlineData(3600u, 3600u, false)]
+        [InlineData(3600u, 3600u, true)]
+        [InlineData(3600u, 0u, true)]
+        [InlineData(0u, 3600u, true)]
+        public async Task DisconnectExpiryRespectsLaterUnderlyingConnectHandlers(
+            uint proposedExpiry, uint actualExpiry, bool desireReconnection)
+        {
+            using MockConnectionMqttClient mqttClient = new() { RaiseDisconnectCallbackOnClientDisconnect = false };
+            using MqttConnectionManager connectionManager = new(mqttClient, TimeSpan.FromSeconds(30), new RecordingRetryPolicy());
+            mqttClient.ConnectingAsync += (packet, _) => Task.FromResult(new MqttConnect()
+            {
+                HostName = packet.HostName,
+                ProtocolVersion = MqttProtocolVersion.V500,
+                SessionExpiryInterval = actualExpiry,
+            });
+            mqttClient.OnConnect = packet =>
+            {
+                Assert.Equal(actualExpiry, packet.SessionExpiryInterval);
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+            await connectionManager.ConnectAsync(new MqttConnect()
+            {
+                HostName = "some-hub.azure-devices.net",
+                ProtocolVersion = MqttProtocolVersion.V500,
+                SessionExpiryInterval = proposedExpiry,
+            }, TestContext.Current.CancellationToken);
+            MqttDisconnect options = new() { ReasonString = "test shutdown" };
+
+            await connectionManager.DisconnectAsync(desireReconnection, options, TestContext.Current.CancellationToken);
+
+            MqttDisconnect sentDisconnect = Assert.Single(mqttClient.DisconnectRequests);
+            Assert.Equal(actualExpiry == 0 ? 0u : 3600u, sentDisconnect.SessionExpiryInterval);
+            Assert.Equal(options.Reason, sentDisconnect.Reason);
+            Assert.Equal(options.ReasonString, sentDisconnect.ReasonString);
+            Assert.Same(options.UserProperties, sentDisconnect.UserProperties);
+            Assert.Equal(3600u, options.SessionExpiryInterval);
+        }
+
+        [Theory]
+        [InlineData("unknown/topic", MqttQualityOfServiceLevel.AtMostOnce, 0)]
+        [InlineData("unknown/topic", MqttQualityOfServiceLevel.AtLeastOnce, 1)]
+        [InlineData("unknown/topic", MqttQualityOfServiceLevel.ExactlyOnce, 1)]
+        [InlineData("$dps/registrations/res/200/?$rid=1", MqttQualityOfServiceLevel.AtLeastOnce, 1)]
+        [InlineData("$iothub/credentials/res/200/?$rid=1", MqttQualityOfServiceLevel.AtLeastOnce, 1)]
+        [InlineData("devices/device/messages/devicebound/", MqttQualityOfServiceLevel.AtLeastOnce, 1)]
+        public async Task ReceivedPublishesAreAcknowledgedWithoutReceiveHandlers(
+            string topic, MqttQualityOfServiceLevel qos, int expectedAcknowledgements)
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            using MqttConnectionManager connectionManager = new(mqttClient, TimeSpan.FromSeconds(30), new RecordingRetryPolicy());
+            MockMqttPublishReceivedEventArgs args = new()
+            {
+                Publish = new() { Topic = topic, QualityOfServiceLevel = qos },
+            };
+
+            await mqttClient.SimulatePublishReceivedEventAsync(args);
+
+            Assert.Equal(expectedAcknowledgements, args.AcknowledgeCount);
+        }
+
+        [Fact]
+        public async Task PublishIsAcknowledgedBeforeReceiveHandlersEvenWhenTheyFail()
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            using MqttConnectionManager connectionManager = new(mqttClient, TimeSpan.FromSeconds(30), new RecordingRetryPolicy());
+            MockMqttPublishReceivedEventArgs args = new()
+            {
+                Publish = new() { Topic = "unknown/topic", QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+            };
+            TaskCompletionSource handlerStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource releaseHandler = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            bool laterHandlerRan = false;
+            connectionManager.PublishReceivedAsync += async _ =>
+            {
+                handlerStarted.TrySetResult();
+                await releaseHandler.Task;
+                throw new InvalidOperationException("Handler failed.");
+            };
+            connectionManager.PublishReceivedAsync += _ =>
+            {
+                laterHandlerRan = true;
+                return Task.CompletedTask;
+            };
+
+            Task receiveTask = mqttClient.SimulatePublishReceivedEventAsync(args);
+            try
+            {
+                await handlerStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+                Assert.Equal(1, args.AcknowledgeCount);
+                Assert.False(receiveTask.IsCompleted);
+            }
+            finally
+            {
+                releaseHandler.TrySetResult();
+                await receiveTask.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            }
+
+            Assert.True(laterHandlerRan);
+            Assert.Equal(1, args.AcknowledgeCount);
+        }
+
+        [Fact]
+        public async Task AcknowledgementFailureDoesNotPreventPublishDelivery()
+        {
+            using MockConnectionMqttClient mqttClient = new();
+            using MqttConnectionManager connectionManager = new(mqttClient, TimeSpan.FromSeconds(30), new RecordingRetryPolicy());
+            MockMqttPublishReceivedEventArgs args = new()
+            {
+                Publish = new() { Topic = "unknown/topic", QualityOfServiceLevel = MqttQualityOfServiceLevel.AtLeastOnce },
+                AcknowledgeFails = true,
+            };
+            MqttPublishReceivedEventArgs? received = null;
+            connectionManager.PublishReceivedAsync += publish =>
+            {
+                received = publish;
+                return Task.CompletedTask;
+            };
+
+            await mqttClient.SimulatePublishReceivedEventAsync(args);
+
+            Assert.Same(args, received);
+            Assert.Equal(1, args.AcknowledgeCount);
+        }
+
         [Fact]
         public async Task InitialConnectRetriesDoNotStartSecondReconnectionLoop()
         {

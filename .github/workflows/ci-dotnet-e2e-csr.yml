@@ -11,7 +11,7 @@ on:
       - '!dotnet/**/*.md'
       - 'common/**'
       - '!common/**/*.md'
-      - '.github/workflows/ci-dotnet-cert-management.yml'
+      - '.github/workflows/ci-dotnet-e2e-csr.yml'
   push:
     branches: [ main ]
     paths:
@@ -19,7 +19,7 @@ on:
       - '!dotnet/**/*.md'
       - 'common/**'
       - '!common/**/*.md'
-      - '.github/workflows/ci-dotnet-cert-management.yml'
+      - '.github/workflows/ci-dotnet-e2e-csr.yml'
   schedule:
     - cron: '0 11 * * *'  # Nightly at 4am PST
 

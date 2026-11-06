@@ -13,7 +13,7 @@
  * the hub with a new token.
  * Takes individual enrollment keys, or enrollment-group keys from which the
  * device keys are derived. Sends one telemetry message on
- * whichever hub generation DPS assigned; a hub that does not accept SAS fails
+ * the hub DPS assigned; a hub that does not accept SAS fails
  * the connect with AZ_IOT_ERR_IDENTITY_REJECTED.
  */
 #include <stdbool.h>
@@ -112,7 +112,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
       stderr,
       "[dps_sas_key] %s: %s (%s), credential: %s%s\n",
       event->scope == AZ_IOT_CONN_SCOPE_DPS ? "dps" : "hub",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason),
       auth_source_name(event->auth_source),
       event->is_credential_renewal ? " (token renewal)" : "");
@@ -149,38 +149,33 @@ static void pump(az_iot_connection_client* client)
 {
   uint64_t start = sample_now_ms();
   (void)az_iot_connection_client_do_work(client, SAMPLE_TICK_MS);
-  uint64_t spent = sample_now_ms() - start;
-  if (spent < SAMPLE_TICK_MS)
-  {
-    sample_sleep_ms((long)(SAMPLE_TICK_MS - spent));
-  }
+  sample_sleep_until_tick_end(start, SAMPLE_TICK_MS);
 }
 
-/** @brief Sends one message on the generation DPS assigned. */
+/** @brief Sends one message on the hub DPS assigned. */
 static az_iot_result send_telemetry(az_iot_connection_client* client, sample_context* ctx)
 {
-  az_iot_connection_profile profile = AZ_IOT_CONNECTION_PROFILE_UNKNOWN;
-  az_iot_result r = sample_get_hub_profile(client, &profile);
+  az_iot_hub_profile hub_profile;
+  az_iot_result r = az_iot_connection_client_get_hub_profile(client, &hub_profile);
   if (r != AZ_IOT_OK)
   {
+    printf("Hub profile not available: %s\n", az_iot_result_to_string(r));
     return r;
   }
+  az_iot_connection_profile profile = hub_profile.connection_profile;
+  printf("Hub profile: %s\n", az_iot_connection_profile_to_string(profile));
   static const uint8_t payload[] = "{\"auth\":\"sas-key\"}";
   az_iot_telemetry_message msg = { 0 };
   msg.payload = payload;
   msg.payload_len = sizeof(payload) - 1;
 
   az_iot_mqttv3_telemetry_client mqttv3 = { 0 };
-  az_iot_mqttv5_telemetry_client mqttv5 = { 0 };
-  bool v5 = profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
-  r = v5 ? az_iot_mqttv5_telemetry_client_init(&mqttv5, client)
-         : az_iot_mqttv3_telemetry_client_init(&mqttv3, client);
+  r = az_iot_mqttv3_telemetry_client_init(&mqttv3, client);
   if (r != AZ_IOT_OK)
   {
     return r;
   }
-  r = v5 ? az_iot_mqttv5_telemetry_client_send(&mqttv5, &msg, on_send_done, ctx)
-         : az_iot_mqttv3_telemetry_client_send(&mqttv3, &msg, on_send_done, ctx);
+  r = az_iot_mqttv3_telemetry_client_send(&mqttv3, &msg, on_send_done, ctx);
   uint64_t deadline = sample_now_ms() + SAMPLE_SEND_TIMEOUT_MS;
   while (r == AZ_IOT_OK && !ctx->send_done && !ctx->failed && sample_now_ms() < deadline)
   {
@@ -190,31 +185,24 @@ static az_iot_result send_telemetry(az_iot_connection_client* client, sample_con
   {
     r = ctx->send_done ? ctx->send_status : AZ_IOT_ERR_TIMEOUT;
   }
-  if (v5)
-  {
-    az_iot_mqttv5_telemetry_client_deinit(&mqttv5);
-  }
-  else
-  {
-    az_iot_mqttv3_telemetry_client_deinit(&mqttv3);
-  }
+  az_iot_mqttv3_telemetry_client_deinit(&mqttv3);
   return r;
 }
 
 int main(void)
 {
-  az_iot_log_sink log = az_iot_log_stderr_sink(AZ_IOT_LOG_LEVEL_INFO);
+  az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sas_config config = {
-    .id_scope = sample_env_dup("AZ_IOT_DPS_ID_SCOPE", NULL),
-    .reg_id = sample_env_dup("AZ_IOT_DPS_REGISTRATION_ID", NULL),
-    .key = sample_env_dup("AZ_IOT_DPS_SYMMETRIC_KEY", NULL),
-    .group_key = sample_env_dup("AZ_IOT_DPS_ENROLLMENT_GROUP_KEY", NULL),
-    .secondary_key = sample_env_dup("AZ_IOT_DPS_SECONDARY_KEY", NULL),
-    .renewal_percent = sample_env_dup("AZ_IOT_SAS_TOKEN_RENEWAL_PERCENT", NULL),
-    .ca = sample_env_dup("AZ_IOT_TRUSTED_CA", NULL),
-    .endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL),
+    .id_scope = sample_env_copy("AZ_IOT_DPS_ID_SCOPE", NULL),
+    .reg_id = sample_env_copy("AZ_IOT_DPS_REGISTRATION_ID", NULL),
+    .key = sample_env_copy("AZ_IOT_DPS_SYMMETRIC_KEY", NULL),
+    .group_key = sample_env_copy("AZ_IOT_DPS_ENROLLMENT_GROUP_KEY", NULL),
+    .secondary_key = sample_env_copy("AZ_IOT_DPS_SECONDARY_KEY", NULL),
+    .renewal_percent = sample_env_copy("AZ_IOT_SAS_TOKEN_RENEWAL_PERCENT", NULL),
+    .ca = sample_env_copy("AZ_IOT_TRUSTED_CA", NULL),
+    .endpoint = sample_env_copy("AZ_IOT_DPS_GLOBAL_ENDPOINT", NULL),
   };
   if (!is_set(config.id_scope) || !is_set(config.reg_id)
       || is_set(config.key) == is_set(config.group_key))
@@ -230,8 +218,6 @@ int main(void)
   int rc = 1;
   sample_context ctx = { 0 };
   az_iot_connection_client client = { 0 };
-  az_iot_mqtt_factory* factory_v3 = NULL;
-  az_iot_mqtt_factory* factory_v5 = NULL;
 
   /* Same keys for both roles: DPS creates the hub identity with the same
    * (derived) keys. No certificate_provider: nothing uses X.509. */
@@ -254,7 +240,11 @@ int main(void)
     sas.sas.renewal_percent = (uint8_t)pct;
   }
 
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.workspace = connection_workspace;
+  opts.workspace_size = sizeof(connection_workspace);
   opts.device_id = config.reg_id;
   opts.dps.id_scope = config.id_scope;
   opts.dps.registration_id = config.reg_id;
@@ -273,18 +263,20 @@ int main(void)
   opts.sas_buffer.size = sizeof(sas_buffer);
   opts.trusted_ca.path = config.ca;
 
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
 #if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory_v3 = az_iot_paho_factory_create_v3_1_1();
-  factory_v5 = az_iot_paho_factory_create_v5();
+  opts.mqtt_adapter = az_iot_paho_get_adapter();
 #elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-  factory_v5 = az_iot_az_mqtt_factory_create_v5();
+  opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
 #endif
+  opts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  opts.mqtt_workspace = mqtt_workspace;
+  opts.mqtt_workspace_size = sizeof(mqtt_workspace);
+
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
-      /* v3.1.1 serves DPS and an mqttv3 hub; v5 serves an mqttv5 hub. */
-      || az_iot_connection_client_register_mqtt_factory(&client, factory_v3) != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&client, factory_v5) != AZ_IOT_OK
       || az_iot_connection_client_open(&client) != AZ_IOT_OK)
   {
     fprintf(stderr, "[dps_sas_key] connection client setup failed\n");
@@ -319,13 +311,6 @@ int main(void)
 
 cleanup:
   az_iot_connection_client_deinit(&client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory_v3);
-  az_iot_paho_factory_destroy(factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory_v3);
-  az_iot_az_mqtt_factory_destroy(factory_v5);
-#endif
   config_release(&config);
   return rc;
 }

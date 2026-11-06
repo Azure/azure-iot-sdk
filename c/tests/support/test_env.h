@@ -6,6 +6,9 @@
 #ifndef AZ_IOT_TEST_ENV_H
 #define AZ_IOT_TEST_ENV_H
 
+#include <stdbool.h>
+#include <stdio.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -76,6 +79,73 @@ static inline const char* az_iot_test_env(const char* name)
 }
 
 #endif /* _WIN32 */
+
+/** @brief Copies @p value to @p out; false when it does not fit in @p size bytes. */
+static inline bool az_iot_test_copy_string(char* out, size_t size, const char* value)
+{
+  size_t const len = strlen(value);
+  if (len >= size)
+  {
+    return false;
+  }
+  memcpy(out, value, len + 1);
+  return true;
+}
+
+/**
+ * @brief Writes the temporary directory to @p out: TMPDIR, TEMP or TMP, the first set, else
+ * "/tmp" (POSIX) or "." (Windows).
+ *
+ * @details Allocates nothing, so suites that count allocations can call it.
+ *
+ * @return true when it fits in @p size bytes.
+ */
+static inline bool az_iot_test_temp_dir(char* out, size_t size)
+{
+  static const char* const names[] = { "TMPDIR", "TEMP", "TMP" };
+  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+  {
+#ifdef _WIN32
+    size_t needed = 0; // with the terminator; 0 when unset, 1 when empty
+    errno_t const rc = getenv_s(&needed, out, size, names[i]);
+    if (needed > 1)
+    {
+      return rc == 0;
+    }
+#else
+    const char* value = az_iot_test_env(names[i]);
+    if (value != NULL)
+    {
+      return az_iot_test_copy_string(out, size, value);
+    }
+#endif
+  }
+#ifdef _WIN32
+  return az_iot_test_copy_string(out, size, ".");
+#else
+  return az_iot_test_copy_string(out, size, "/tmp");
+#endif
+}
+
+/**
+ * @brief Writes "<temporary directory>/<name>" to @p out (see az_iot_test_temp_dir()).
+ *
+ * @details Allocates nothing.
+ *
+ * @return true when the whole path fits in @p size bytes.
+ */
+static inline bool az_iot_test_temp_path(char* out, size_t size, const char* name)
+{
+  size_t len = 0;
+  int written = 0;
+  if (!az_iot_test_temp_dir(out, size))
+  {
+    return false;
+  }
+  len = strlen(out);
+  written = snprintf(out + len, size - len, "/%s", name);
+  return written > 0 && (size_t)written < size - len;
+}
 
 /**
  * @brief Multiplier for test wait budgets, from AZ_IOT_TEST_TIMEOUT_SCALE (1..100).

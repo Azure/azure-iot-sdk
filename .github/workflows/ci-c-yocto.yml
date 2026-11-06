@@ -20,7 +20,7 @@ name: ci-c-yocto
 
 on:
   push:
-    branches: [ main, 'dev/c' ]
+    branches: [ main, 'dev/c', 'releases/public-preview' ]
   pull_request:
   schedule:
     - cron: '17 4 * * 1,4'
@@ -142,7 +142,7 @@ jobs:
           test -f "$pkgs/azure-iot-sdk-dev/usr/include/azure/iot/az_iot.h"
           test -f "$pkgs/azure-iot-sdk-dev/usr/include/azure-sdk-for-c/azure/core/az_span.h"
           test -f "$pkgs/azure-iot-sdk-dev/usr/lib/cmake/azure-iot-sdk/azure-iot-sdk-config.cmake"
-          for c in core mqttv3 mqttv5 adapter_paho crypto_openssl certificate_provider_managed; do
+          for c in core mqttv3 adapter_paho crypto_openssl certificate_provider_managed; do
             test -f "$pkgs/azure-iot-sdk-dev/usr/lib/pkgconfig/azure-iot-sdk-$c.pc"
           done
           test -f "$pkgs/azure-iot-sdk-staticdev/usr/lib/libaz_iot_core.a"
@@ -157,7 +157,7 @@ jobs:
           sysroot="${work[0]}/recipe-sysroot"
           bins=("${work[0]}"/image/usr/bin/pkg_config_test_*)
           # One per default component, plus the combined link.
-          test "${#bins[@]}" -eq 7
+          test "${#bins[@]}" -eq 6
           for b in "${bins[@]}"; do
             echo "running ${b##*/}"
             "$sysroot/lib/ld-linux-x86-64.so.2" --library-path "$sysroot/lib:$sysroot/usr/lib" "$b"
@@ -180,3 +180,25 @@ jobs:
         with:
           path: ${{ runner.temp }}/yocto-sstate
           key: ${{ env.SSTATE_CACHE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
+
+  # Single stable check name for rulesets to require: reports on every run and
+  # fails when any job failed or was cancelled (skipped jobs pass).
+  gate:
+    name: ci-c-yocto-gate
+    needs: [ changes, bitbake ]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check every job's result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$RESULTS"
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<< "$RESULTS")
+          if [ -n "$failed" ]; then
+            echo "::error::ci-c-yocto-gate: failed or cancelled: $failed"
+            exit 1
+          fi

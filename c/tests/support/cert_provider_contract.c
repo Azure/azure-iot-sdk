@@ -23,6 +23,7 @@
 #include <openssl/x509.h>
 
 #include "azure/iot/az_iot_connection_client.h"
+#include "test_x509.h"
 
 #define CSR_SUBJECT "az-iot-contract-device"
 
@@ -93,12 +94,7 @@ static void make_ca(void)
   assert_non_null(X509_gmtime_adj(X509_getm_notBefore(g_ca), 0));
   assert_non_null(X509_gmtime_adj(X509_getm_notAfter(g_ca), 3600));
   assert_int_equal(1, X509_set_pubkey(g_ca, g_ca_key));
-  X509_NAME* name = X509_get_subject_name(g_ca);
-  assert_int_equal(
-      1,
-      X509_NAME_add_entry_by_txt(
-          name, "CN", MBSTRING_UTF8, (const unsigned char*)"az-iot-contract-ca", -1, -1, 0));
-  assert_int_equal(1, X509_set_issuer_name(g_ca, name));
+  assert_int_equal(1, test_x509_set_self_signed_name(g_ca, "az-iot-contract-ca"));
   assert_true(X509_sign(g_ca, g_ca_key, EVP_sha256()) > 0);
 }
 
@@ -216,7 +212,7 @@ static X509* check_material(az_iot_certificate_provider* p, const az_iot_certifi
   }
   if (!m->client_key_pem && !m->client_key_path)
   {
-    assert_true(m->client_key_uri != NULL || has_sign);
+    assert_true(m->client_key_uri != NULL || m->client_key_psa_id != 0 || has_sign);
   }
   if (has_sign)
   {
@@ -299,11 +295,10 @@ static EVP_PKEY* csr_key(az_iot_certificate_provider* p, const char* subject)
   EVP_PKEY* k = X509_REQ_get_pubkey(req);
   assert_non_null(k);
   assert_int_equal(1, X509_REQ_verify(req, k));
-  char cn[128] = { 0 };
-  assert_true(
-      X509_NAME_get_text_by_NID(X509_REQ_get_subject_name(req), NID_commonName, cn, sizeof(cn))
-      > 0);
-  assert_string_equal(subject, cn);
+  char* common_name = test_x509_request_common_name(req);
+  assert_non_null(common_name);
+  assert_string_equal(subject, common_name);
+  OPENSSL_free(common_name);
   X509_REQ_free(req);
   return k;
 }

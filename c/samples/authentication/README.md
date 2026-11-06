@@ -9,10 +9,10 @@ README. Design background: [certificate-management.md](../../docs/eng/certificat
 
 | Scenario | Sample | Provider |
 | --- | --- | --- |
-| X.509 certificate and key from files (development) | every [`unified/`](../unified/) and [`mqttv5/`](../mqttv5/) sample | `az_iot_certificate_provider_pem` |
+| X.509 certificate and key from files (development) | every [`unified/`](../unified/) sample | `az_iot_certificate_provider_pem` |
 | DPS issues an operational certificate from a CSR | [`dps_csr_managed`](dps_csr_managed/README.md) | managed (OpenSSL) |
 | Same, saving the assignment to skip DPS on restart | [`dps_persist_assignment`](dps_persist_assignment/README.md) | managed (OpenSSL) |
-| Same, with the CSR built by application code | [`custom_certificate_provider`](custom_certificate_provider/README.md) | `sample_cert_provider` (in `samples/common`) |
+| Same, with the CSR built by application code | [`custom_certificate_provider`](custom_certificate_provider/README.md) | `sample_cert_provider` (in the sample's folder) |
 | Renew the operational certificate over an mqttv3 hub | [`hub_renew`](hub_renew/README.md) | managed (OpenSSL) |
 | Key in a PKCS#11 token or TPM, named by a URI | [`hsm_pkcs11`](hsm_pkcs11/README.md) | your own; returns a key reference |
 | Key reachable only through "sign these bytes" | [`hsm_sign_callback`](hsm_sign_callback/README.md) | your own; implements `sign()` |
@@ -44,11 +44,10 @@ certificate DPS issues is used next. Configuring only X.509, or only SAS, uses t
 | DPS | Hub | Service | Sample |
 | --- | --- | --- | --- |
 | SAS | SAS, mqttv3 | Supported | `dps_sas_key`, `user_provided_sas_token` |
-| SAS | DPS-issued X.509, mqttv3 or mqttv5 | Supported (certificate management preview) | `dps_sas_key_issued_cert` |
-| X.509 | DPS-issued X.509, mqttv3 or mqttv5 | Supported (certificate management preview) | `dps_csr_managed` |
-| X.509 | X.509 | Supported | `unified/`, `mqttv5/` samples |
+| SAS | DPS-issued X.509, mqttv3 | Supported (certificate management preview) | `dps_sas_key_issued_cert` |
+| X.509 | DPS-issued X.509, mqttv3 | Supported (certificate management preview) | `dps_csr_managed` |
+| X.509 | X.509 | Supported | `unified/` samples |
 | X.509 | SAS | Not provisioned by DPS | Expressible; no sample |
-| SAS | SAS, mqttv5 | Not supported by the service yet | Designed for; the token request carries the hub generation. Until then, a rejection is `AZ_IOT_ERR_IDENTITY_REJECTED` |
 | TPM attestation | SAS signed by the TPM, mqttv3 | Supported over HTTPS and AMQP, not MQTT; the sample uses HTTPS | `dps_tpm` |
 
 ## Which non-extractable key route applies

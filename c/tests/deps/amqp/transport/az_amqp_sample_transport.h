@@ -35,13 +35,13 @@
  * @brief Caller-allocated backing storage for the sample transport. Fields are adapter-managed.
  *
  * @details `void*` is used for the TLS handles so this header pulls in neither OpenSSL nor Schannel
- * types: on Windows the handles hold Schannel `CredHandle`/`CtxtHandle` state, on Linux an OpenSSL
- * `SSL_CTX*`/`SSL*`.
+ * types: on Windows `tls_session` holds the connection's Schannel state (credential, security
+ * context and buffers), on Linux an OpenSSL `SSL*` with its `SSL_CTX*` in `tls_context`.
  */
 typedef struct
 {
-  void* tls_context; ///< Schannel credential / OpenSSL SSL_CTX. Adapter-managed.
-  void* tls_session; ///< Schannel security context / OpenSSL SSL. Adapter-managed.
+  void* tls_context; ///< OpenSSL SSL_CTX; unused with Schannel. Adapter-managed.
+  void* tls_session; ///< Schannel connection state / OpenSSL SSL. Adapter-managed.
   int64_t file_descriptor; ///< The connected socket (a SOCKET on Windows). Adapter-managed.
   az_amqp_transport_options options; ///< The connection parameters. Adapter-managed.
   int phase; ///< Internal connect/handshake progress. Adapter-managed.

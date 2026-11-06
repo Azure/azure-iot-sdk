@@ -108,6 +108,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             Assert.NotNull(dpsConnect);
             Assert.Contains("api-version=2026-11-02-preview", dpsConnect.Username);
+            Assert.Equal($"wss://{GlobalDeviceEndpoint}:443/$iothub/websocket", dpsConnect.WebsocketUri);
             Assert.Equal(authentication.PrimaryClientCertificate.Thumbprint, dpsConnect.ClientCertificate?.Thumbprint);
 
             // The hub connection presents the DPS-issued certificate rather than the boot certificate.

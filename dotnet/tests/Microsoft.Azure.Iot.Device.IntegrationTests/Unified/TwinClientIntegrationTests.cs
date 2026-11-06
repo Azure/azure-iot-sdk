@@ -6,11 +6,52 @@ using Microsoft.Azure.Iot.Device.Unified.Twin;
 using System.Text.Json.Nodes;
 using Xunit;
 using Microsoft.Azure.Devices;
+using EnrollmentTwinState = Microsoft.Azure.Devices.Provisioning.Service.TwinState;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
     public class TwinClientIntegrationTests
     {
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task TestTwinStartsWithTheInitialTwinFromTheDpsEnrollment()
+        {
+            string expectedDesiredPropertyKey = "initial" + Guid.NewGuid().ToString("N");
+            string expectedDesiredPropertyValue = Guid.NewGuid().ToString();
+            Microsoft.Azure.Devices.Shared.TwinCollection initialDesiredProperties = new();
+            initialDesiredProperties[expectedDesiredPropertyKey] = expectedDesiredPropertyValue;
+
+            TwinClient? createdTwinClient = null;
+            TaskCompletionSource<TwinPushReceivedEventArgs> twinPushReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
+                cancellationToken: TestContext.Current.CancellationToken,
+                initialTwinState: new EnrollmentTwinState(null, initialDesiredProperties),
+                beforeConnect: connectionClient =>
+                {
+                    // Constructed before provisioning, as recommended, so that the twin push raised upon connecting is not missed.
+                    createdTwinClient = new TwinClient(connectionClient);
+                    createdTwinClient.TwinPushReceived += args =>
+                    {
+                        if (args.Desired != null)
+                        {
+                            twinPushReceived.TrySetResult(args);
+                        }
+                    };
+                });
+
+            // Declared in this order so that the test device context is disposed before the twin client.
+            using TwinClient twinClient = createdTwinClient!;
+            await using (testDeviceContext)
+            {
+                // The twin client adopts the initial twin without the application asking for it.
+                TwinPushReceivedEventArgs push = await twinPushReceived.Task.WaitAsync(TestContext.Current.CancellationToken);
+                Assert.Equal(expectedDesiredPropertyValue, (string)push.Desired!.Properties[expectedDesiredPropertyKey]!);
+
+                TwinState twinState = twinClient.GetTwinState();
+                Assert.Equal(push.Desired.PropertiesVersion, twinState.DesiredVersion);
+                Assert.Equal(expectedDesiredPropertyValue, (string)twinState.Desired[expectedDesiredPropertyKey]!);
+            }
+        }
+
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestTwin()
         {
@@ -69,6 +110,45 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             twin = await registryManager.GetTwinAsync(deviceId, TestContext.Current.CancellationToken);
             Assert.True(twin.Properties.Reported.Contains(expectedReportedPropertyKey));
             Assert.Equal(expectedReportedPropertyValue, (string)twin.Properties.Reported[expectedReportedPropertyKey]);
+
+            // Queue two patches without awaiting them. The SDK may combine them into one send, so wait until IoT hub applied both.
+            string firstEnqueuedKey = Guid.NewGuid().ToString();
+            string secondEnqueuedKey = Guid.NewGuid().ToString();
+            HashSet<string> appliedEnqueuedKeys = new();
+            TaskCompletionSource enqueuedPatchesApplied = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            twinClient.ReportedPatchCompleted += (args) =>
+            {
+                if (args.Response?.Result != Result.Ok)
+                {
+                    enqueuedPatchesApplied.TrySetException(new InvalidOperationException(
+                        $"IoT hub didn't apply the reported properties patch {args.Patch.ToJsonString()}: {args.Response?.Result.ToString() ?? args.Error?.Message}"));
+                    return;
+                }
+
+                lock (appliedEnqueuedKeys)
+                {
+                    appliedEnqueuedKeys.UnionWith(args.Patch.Select(property => property.Key));
+                    if (appliedEnqueuedKeys.Contains(firstEnqueuedKey) && appliedEnqueuedKeys.Contains(secondEnqueuedKey))
+                    {
+                        enqueuedPatchesApplied.TrySetResult();
+                    }
+                }
+            };
+
+            twinClient.EnqueueReportedPropertiesUpdate(new JsonObject() { [firstEnqueuedKey] = "first" });
+            twinClient.EnqueueReportedPropertiesUpdate(new JsonObject() { [secondEnqueuedKey] = "second" });
+            await enqueuedPatchesApplied.Task.WaitAsync(TestContext.Current.CancellationToken);
+
+            twin = await registryManager.GetTwinAsync(deviceId, TestContext.Current.CancellationToken);
+            Assert.Equal("first", (string)twin.Properties.Reported[firstEnqueuedKey]);
+            Assert.Equal("second", (string)twin.Properties.Reported[secondEnqueuedKey]);
+
+            // The device's copy of its reported properties includes the applied patches, and none are left pending.
+            TwinState twinState = twinClient.GetTwinState();
+            Assert.Empty(twinState.PendingReportedPatches);
+            Assert.Equal("first", (string)twinState.Reported[firstEnqueuedKey]!);
+            Assert.Equal("second", (string)twinState.Reported[secondEnqueuedKey]!);
+            Assert.Equal((ulong)twin.Properties.Reported.Version, twinState.ReportedVersion);
 
             await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
         }

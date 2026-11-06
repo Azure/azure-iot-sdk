@@ -25,11 +25,9 @@
  *    AZ_IOT_CONNECTION_PROFILE_MQTT_V3), the application connects
  *    az_iot_connection_client directly to the assigned hub and signs hub SAS
  *    tokens with the TPM key from az_iot_auth::sas::on_sas_token_required.
- *    mqttv5 hubs do not accept SAS; they need an X.509 certificate, which DPS
- *    does not document issuing (az_iot_dps_tpm_client_options::csr) under TPM
- *    attestation. An mqttv5 assignment is still reported as assigned, since the
- *    registration succeeded: without issued_certificate_chain, the application
- *    must hold its own X.509 credential for the hub.
+ *    An assignment to any other profile is still reported as assigned, with
+ *    connection_profile AZ_IOT_CONNECTION_PROFILE_UNKNOWN, since the
+ *    registration succeeded; az_iot_connection_client does not connect to it.
  *
  * Send each request to the DPS endpoint (`global.azure-devices-provisioning.net`
  * unless the enrollment says otherwise) with headers `Accept: application/json`,
@@ -171,7 +169,7 @@ extern "C"
     /** JSON object sent as the registration `payload`. NULL: none. */
     const char* payload;
     /** Canonical padded base64 DER certificate signing request sent as `csr`, for a hub that
-     * takes X.509 only (mqttv5). NULL: none. Needs DPS support for certificate
+     * takes X.509 only. NULL: none. Needs DPS support for certificate
      * issuance under TPM attestation. */
     const char* csr;
     /** NULL selects AZ_IOT_DPS_TPM_DEFAULT_API_VERSION. */
@@ -208,8 +206,8 @@ extern "C"
     const char* assigned_hub;
     const char* device_id; /**< Device ID: az_iot_connection_client_options::device_id. */
     /** az_iot_connection_client_options::connection_profile. Absent, null or
-     * `classic`: MQTT_V3; `mqttV5`: MQTT_V5; other strings: UNKNOWN. Any
-     * other JSON value makes the response malformed. */
+     * `classic`: MQTT_V3; other strings: UNKNOWN. Any other JSON value makes
+     * the response malformed. */
     az_iot_connection_profile connection_profile;
     /** `connectionProfile` as sent, JSON-decoded; `classic` when absent or
      * null. At most AZ_IOT_CONNECTION_PROFILE_RAW_BUF - 1 characters. A

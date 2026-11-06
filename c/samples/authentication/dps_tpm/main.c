@@ -11,8 +11,9 @@
  * DPS takes TPM attestation over HTTPS or AMQP, not MQTT. This sample runs
  * az_iot_dps_tpm_client over libcurl (HTTPS); the hub connection is then a direct
  * az_iot_connection_client connection. The TPM is simulated in software
- * (samples/common/sample_tpm_sim.c) so the sample runs anywhere: replace it
- * with your TSS for a real TPM.
+ * (samples/common/sample_tpm_sim.c) so the sample runs anywhere; built with
+ * AZ_IOT_SAMPLE_TPM_TSS (target az_iot_sample_auth_dps_tpm_tss) it is a real
+ * or simulated TPM 2.0 through tpm2-tss ESAPI (samples/common/sample_tpm_tss.c).
  *
  * Run with `--enrollment` first to print the registration ID and endorsement
  * key for a DPS individual enrollment with TPM attestation.
@@ -40,9 +41,26 @@
 #include "azure/iot/az_iot.h"
 #include "az_iot_crypto_openssl.h"
 
-#include "sample_dps_tpm.h"
-#include "sample_tpm_sim.h"
 #include "sample_utils.h"
+
+/* The TPM backend this build of the sample uses (see samples/authentication/CMakeLists.txt). */
+#if defined(AZ_IOT_SAMPLE_TPM_TSS)
+#include "sample_tpm_tss.h"
+typedef sample_tpm_tss sample_tpm;
+#define sample_tpm_ek_public sample_tpm_tss_ek_public
+#define sample_tpm_srk_public sample_tpm_tss_srk_public
+#define sample_tpm_ops sample_tpm_tss_ops
+#define sample_tpm_hmac sample_tpm_tss_hmac
+#define sample_tpm_destroy sample_tpm_tss_destroy
+#else
+#include "sample_tpm_sim.h"
+typedef sample_tpm_sim sample_tpm;
+#define sample_tpm_ek_public sample_tpm_sim_ek_public
+#define sample_tpm_srk_public sample_tpm_sim_srk_public
+#define sample_tpm_ops sample_tpm_sim_ops
+#define sample_tpm_hmac sample_tpm_sim_hmac
+#define sample_tpm_destroy sample_tpm_sim_destroy
+#endif
 
 /** @brief Lifetime of each hub token, in seconds. */
 #define SAMPLE_TOKEN_LIFETIME_S 3600u
@@ -50,6 +68,20 @@
 #define SAMPLE_CONNECT_TIMEOUT_MS 60000u
 #define SAMPLE_TICK_MS 50u
 #define SAMPLE_DEFAULT_ENDPOINT "global.azure-devices-provisioning.net"
+/** @brief Response bytes kept per DPS request. */
+#define SAMPLE_RESPONSE_MAX 8192
+/** @brief Longest resource URI signed here: a hub host, `%2Fdevices%2F` and a
+ * fully percent-encoded device ID (the DPS registration URI is shorter). */
+#define SAMPLE_URI_MAX (AZ_IOT_DPS_TPM_HOST_MAX + 13u + 3u * AZ_IOT_DPS_TPM_ID_MAX)
+
+/** @brief A response to one DPS request. */
+typedef struct
+{
+  uint16_t status; /**< HTTP status. */
+  char body[SAMPLE_RESPONSE_MAX]; /**< Body; not terminated. */
+  size_t body_len; /**< Bytes in body. */
+  uint32_t retry_after_seconds; /**< Retry-After; 0 when absent. */
+} https_response;
 
 /** @brief A hub token request, copied out of the callback. */
 typedef struct
@@ -61,7 +93,7 @@ typedef struct
 
 typedef struct
 {
-  sample_tpm_sim* tpm;
+  sample_tpm* tpm;
   token_request request;
   az_iot_connection_state hub_state;
   bool failed;
@@ -74,7 +106,7 @@ typedef struct
 
 static size_t on_body(char* data, size_t size, size_t count, void* user)
 {
-  sample_https_response* r = (sample_https_response*)user;
+  https_response* r = (https_response*)user;
   size_t n = size * count;
   if (n > sizeof(r->body) - r->body_len)
   {
@@ -139,7 +171,7 @@ static bool parse_retry_after(const char* p, size_t len, uint32_t* out)
 
 static size_t on_header(char* data, size_t size, size_t count, void* user)
 {
-  sample_https_response* r = (sample_https_response*)user;
+  https_response* r = (https_response*)user;
   size_t n = size * count;
   static const char name[] = "retry-after:";
   uint32_t seconds = 0;
@@ -163,13 +195,14 @@ static bool add_header(struct curl_slist** list, const char* line)
   return true;
 }
 
+/** @brief Sends @p request to `https://<host><request->path>` with the headers
+ * it needs. @return false when no response was received. */
 static bool https_send(
-    void* ctx,
+    const char* ca,
     const char* host,
     const az_iot_dps_tpm_request* request,
-    sample_https_response* response)
+    https_response* response)
 {
-  const char* ca = (const char*)ctx;
   char url[1024];
   int n = snprintf(url, sizeof(url), "https://%s%s", host, request->path);
   if (n < 0 || (size_t)n >= sizeof(url))
@@ -228,13 +261,114 @@ static bool https_send(
   return rc == CURLE_OK;
 }
 
+/* ---- DPS TPM registration -------------------------------------------------- */
+
+/**
+ * @brief Registers until assigned or failed, waiting as DPS asks between
+ * requests: az_iot_dps_tpm_client_get_request() builds each request,
+ * az_iot_dps_tpm_client_handle_response() consumes its response.
+ *
+ * @return AZ_IOT_OK when assigned; AZ_IOT_ERR_TIMEOUT after @p timeout_ms;
+ * AZ_IOT_ERR_NOT_CONNECTED when HTTPS fails; the client's error otherwise.
+ */
+static az_iot_result register_with_dps(
+    az_iot_dps_tpm_client* dps,
+    const char* host,
+    const char* ca,
+    uint64_t timeout_ms,
+    https_response* response)
+{
+  static char buffer[AZ_IOT_DPS_TPM_REQUEST_BUFFER_SIZE + 4096]; /* room for a CSR and payload */
+  uint64_t deadline = sample_now_ms() + timeout_ms;
+  while (sample_now_ms() < deadline)
+  {
+    az_iot_dps_tpm_request request;
+    az_iot_result r = az_iot_dps_tpm_client_get_request(
+        dps, (uint64_t)time(NULL), buffer, sizeof(buffer), &request);
+    if (r != AZ_IOT_OK)
+    {
+      return r;
+    }
+    memset(response, 0, sizeof(*response));
+    if (!https_send(ca, host, &request, response))
+    {
+      return AZ_IOT_ERR_NOT_CONNECTED;
+    }
+    fprintf(stderr, "[dps_tpm] %s %s -> %u\n", request.method, request.path, response->status);
+
+    az_iot_dps_tpm_next next;
+    r = az_iot_dps_tpm_client_handle_response(
+        dps,
+        response->status,
+        az_span_create((uint8_t*)response->body, (int32_t)response->body_len),
+        response->retry_after_seconds,
+        &next);
+    if (r != AZ_IOT_OK)
+    {
+      uint16_t status = 0;
+      int32_t code = 0;
+      az_iot_dps_tpm_client_get_error(dps, &status, &code);
+      fprintf(
+          stderr,
+          "[dps_tpm] registration failed: %s (HTTP %u, errorCode %ld)\n",
+          az_iot_result_to_string(r),
+          status,
+          (long)code);
+      return r;
+    }
+    if (next.assigned)
+    {
+      return AZ_IOT_OK;
+    }
+    /* Wait as asked, but not past the deadline. */
+    uint64_t now = sample_now_ms();
+    uint64_t wait_ms = (uint64_t)next.retry_after_seconds * 1000u;
+    uint64_t left_ms = deadline > now ? deadline - now : 0;
+    sample_sleep_ms((long)(wait_ms < left_ms ? wait_ms : left_ms));
+  }
+  return AZ_IOT_ERR_TIMEOUT;
+}
+
+/**
+ * @brief A SAS token for @p resource_uri and @p key_name, signed by the TPM's
+ * imported key: az_iot_sas_token_string_to_sign(), TPM HMAC, then
+ * az_iot_sas_token_from_signature().
+ *
+ * @return AZ_IOT_OK; AZ_IOT_ERR_NOT_ENOUGH_SPACE; AZ_IOT_ERR_INTERNAL when the TPM fails.
+ */
+static az_iot_result sign_token_with_tpm(
+    sample_tpm* tpm,
+    const char* resource_uri,
+    const char* key_name,
+    uint64_t expiry_unix_seconds,
+    char* out,
+    size_t out_size,
+    size_t* out_len)
+{
+  char to_sign[AZ_IOT_SAS_STRING_TO_SIGN_SIZE(SAMPLE_URI_MAX)];
+  size_t to_sign_len = 0;
+  az_iot_result r = az_iot_sas_token_string_to_sign(
+      resource_uri, expiry_unix_seconds, to_sign, sizeof(to_sign), &to_sign_len);
+  if (r != AZ_IOT_OK)
+  {
+    return r;
+  }
+  uint8_t mac[AZ_IOT_SHA256_SIZE];
+  r = sample_tpm_hmac(tpm, (const uint8_t*)to_sign, to_sign_len, mac)
+      ? az_iot_sas_token_from_signature(
+            resource_uri, key_name, expiry_unix_seconds, mac, out, out_size, out_len)
+      : AZ_IOT_ERR_INTERNAL;
+  OPENSSL_cleanse(mac, sizeof(mac));
+  return r;
+}
+
 /* ---- Hub connection -------------------------------------------------------- */
 
 static void on_token_required(const az_iot_sas_token_request* request, void* user_ctx)
 {
   token_request* p = &((sample_context*)user_ctx)->request;
-  if (!sample_copy_str(p->resource_uri, sizeof(p->resource_uri), request->resource_uri)
-      || !sample_copy_str(p->key_name, sizeof(p->key_name), request->key_name))
+  if (!sample_string_copy(p->resource_uri, sizeof(p->resource_uri), request->resource_uri)
+      || !sample_string_copy(p->key_name, sizeof(p->key_name), request->key_name))
   {
     fprintf(stderr, "[dps_tpm] token request too long for this sample\n");
     return;
@@ -252,7 +386,7 @@ static void issue_token(az_iot_connection_client* client, sample_context* ctx)
   ctx->request.pending = false;
   char token[AZ_IOT_SAS_TOKEN_SIZE(256)];
   size_t len = 0;
-  az_iot_result r = sample_dps_tpm_sign_token(
+  az_iot_result r = sign_token_with_tpm(
       ctx->tpm,
       ctx->request.resource_uri,
       ctx->request.key_name,
@@ -279,7 +413,7 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
   fprintf(
       stderr,
       "[dps_tpm] hub: %s (%s)\n",
-      sample_connection_state_name(event->state),
+      az_iot_connection_state_to_string(event->state),
       az_iot_result_to_string(event->reason));
   ctx->hub_state = event->state;
   if (event->reason != AZ_IOT_OK
@@ -299,11 +433,11 @@ static void on_sent(az_iot_result status, void* user_ctx)
 }
 
 /** @brief Prints what a DPS individual enrollment with TPM attestation needs. */
-static int print_enrollment(sample_tpm_sim* tpm, const char* reg_id)
+static int print_enrollment(sample_tpm* tpm, const char* reg_id)
 {
   const uint8_t* ek = NULL;
   size_t ek_len = 0;
-  sample_tpm_sim_ek_public(tpm, &ek, &ek_len);
+  sample_tpm_ek_public(tpm, &ek, &ek_len);
   char ek_b64[1024];
   int32_t written = 0;
   if (az_result_failed(az_base64_encode(
@@ -324,38 +458,82 @@ static int print_enrollment(sample_tpm_sim* tpm, const char* reg_id)
   return 0;
 }
 
+/**
+ * @brief Opens the TPM. The simulator keeps its keys in AZ_IOT_TPM_SIM_STATE
+ * (default: the current directory). tpm2-tss connects through AZ_IOT_TPM_TCTI
+ * (default: the tpm2-tss default) and persists the DPS key at the hex handle
+ * AZ_IOT_TPM_HMAC_KEY_HANDLE (default SAMPLE_TPM_TSS_DEFAULT_HMAC_KEY_HANDLE).
+ */
+static sample_tpm* open_tpm(void)
+{
+#if defined(AZ_IOT_SAMPLE_TPM_TSS)
+  char* tcti = sample_env_copy("AZ_IOT_TPM_TCTI", NULL);
+  char* handle_text = sample_env_copy("AZ_IOT_TPM_HMAC_KEY_HANDLE", NULL);
+  unsigned long handle = SAMPLE_TPM_TSS_DEFAULT_HMAC_KEY_HANDLE;
+  if (handle_text != NULL)
+  {
+    char* end = NULL;
+    handle = strtoul(handle_text, &end, 16);
+    if (*end != '\0' || handle > UINT32_MAX)
+    {
+      handle = 0; /* refused by sample_tpm_tss_create() */
+    }
+  }
+  sample_tpm* tpm = sample_tpm_tss_create(tcti, (uint32_t)handle);
+  if (tpm == NULL)
+  {
+    fprintf(
+        stderr,
+        "[dps_tpm] could not open the TPM (TCTI %s, key handle %s)\n",
+        tcti != NULL ? tcti : "default",
+        handle_text != NULL ? handle_text : "default");
+  }
+  free(tcti);
+  free(handle_text);
+#else
+  char* state_dir = sample_env_copy("AZ_IOT_TPM_SIM_STATE", ".");
+  sample_tpm* tpm = state_dir != NULL ? sample_tpm_sim_create(state_dir) : NULL;
+  if (tpm == NULL)
+  {
+    fprintf(
+        stderr,
+        "[dps_tpm] could not create the simulated TPM in %s\n",
+        state_dir != NULL ? state_dir : ".");
+  }
+  free(state_dir);
+#endif
+  return tpm;
+}
+
 int main(int argc, char** argv)
 {
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
-  char* id_scope = sample_env_dup("AZ_IOT_DPS_ID_SCOPE", NULL);
-  char* state_dir = sample_env_dup("AZ_IOT_TPM_SIM_STATE", ".");
-  char* endpoint = sample_env_dup("AZ_IOT_DPS_GLOBAL_ENDPOINT", SAMPLE_DEFAULT_ENDPOINT);
-  char* reg_id_env = sample_env_dup("AZ_IOT_DPS_REGISTRATION_ID", NULL);
-  char* ca = sample_env_dup("AZ_IOT_TRUSTED_CA", NULL);
+  char* id_scope = sample_env_copy("AZ_IOT_DPS_ID_SCOPE", NULL);
+  char* endpoint = sample_env_copy("AZ_IOT_DPS_GLOBAL_ENDPOINT", SAMPLE_DEFAULT_ENDPOINT);
+  char* reg_id_env = sample_env_copy("AZ_IOT_DPS_REGISTRATION_ID", NULL);
+  char* ca = sample_env_copy("AZ_IOT_TRUSTED_CA", NULL);
   bool enrollment_only = argc > 1 && strcmp(argv[1], "--enrollment") == 0;
   int rc = 1;
   sample_context ctx = { 0 };
   az_iot_connection_client client = { 0 };
   az_iot_mqttv3_telemetry_client telemetry = { 0 };
-  az_iot_mqtt_factory* factory = NULL;
-  static sample_https_response response;
+  static https_response response;
 
-  ctx.tpm = sample_tpm_sim_create(state_dir);
+  ctx.tpm = open_tpm();
   if (ctx.tpm == NULL)
   {
-    fprintf(stderr, "[dps_tpm] could not create the simulated TPM in %s\n", state_dir);
     goto cleanup;
   }
   const uint8_t *ek, *srk;
   size_t ek_len, srk_len;
-  sample_tpm_sim_ek_public(ctx.tpm, &ek, &ek_len);
-  sample_tpm_sim_srk_public(ctx.tpm, &srk, &srk_len);
+  sample_tpm_ek_public(ctx.tpm, &ek, &ek_len);
+  sample_tpm_srk_public(ctx.tpm, &srk, &srk_len);
   char reg_id[AZ_IOT_DPS_TPM_ID_MAX + 1]; /* also fits AZ_IOT_DPS_TPM_REGISTRATION_ID_SIZE */
   if (reg_id_env != NULL)
   {
-    if (!sample_copy_str(reg_id, sizeof(reg_id), reg_id_env))
+    if (!sample_string_copy(reg_id, sizeof(reg_id), reg_id_env))
     {
       goto cleanup;
     }
@@ -385,14 +563,13 @@ int main(int argc, char** argv)
   dps_opts.endorsement_key_len = ek_len;
   dps_opts.storage_root_key = srk;
   dps_opts.storage_root_key_len = srk_len;
-  dps_opts.tpm = sample_tpm_sim_ops(ctx.tpm);
+  dps_opts.tpm = sample_tpm_ops(ctx.tpm);
   az_iot_dps_tpm_client dps;
   curl_global_init(CURL_GLOBAL_DEFAULT);
   az_iot_result r = az_iot_dps_tpm_client_init(&dps, &dps_opts);
   if (r == AZ_IOT_OK)
   {
-    r = sample_dps_tpm_register(
-        &dps, endpoint, https_send, ca, SAMPLE_REGISTER_TIMEOUT_MS, &response);
+    r = register_with_dps(&dps, endpoint, ca, SAMPLE_REGISTER_TIMEOUT_MS, &response);
   }
   curl_global_cleanup();
   const az_iot_dps_tpm_assignment* a = az_iot_dps_tpm_client_get_assignment(&dps);
@@ -414,7 +591,11 @@ int main(int argc, char** argv)
   az_iot_auth hub_auth = { 0 };
   hub_auth.sas.on_sas_token_required = on_token_required;
   hub_auth.sas.user_ctx = &ctx;
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+  opts.workspace = connection_workspace;
+  opts.workspace_size = sizeof(connection_workspace);
   opts.iothub_hostname = a->assigned_hub;
   opts.device_id = a->device_id;
   opts.connection_profile = a->connection_profile;
@@ -424,14 +605,20 @@ int main(int argc, char** argv)
   opts.sas_buffer.size = sizeof(sas_buffer);
   opts.trusted_ca.path = ca;
 
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
 #if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory = az_iot_paho_factory_create_v3_1_1();
+  opts.mqtt_adapter = az_iot_paho_get_adapter();
 #elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory = az_iot_az_mqtt_factory_create_v3_1_1();
+  opts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
 #endif
+  opts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  opts.mqtt_workspace = mqtt_workspace;
+  opts.mqtt_workspace_size = sizeof(mqtt_workspace);
+
   if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK
       || az_iot_connection_client_add_state_observer(&client, on_conn_state, &ctx) != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(&client, factory) != AZ_IOT_OK
       || az_iot_mqttv3_telemetry_client_init(&telemetry, &client) != AZ_IOT_OK
       || az_iot_connection_client_open(&client) != AZ_IOT_OK)
   {
@@ -479,14 +666,8 @@ int main(int argc, char** argv)
 cleanup:
   az_iot_mqttv3_telemetry_client_deinit(&telemetry);
   az_iot_connection_client_deinit(&client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory);
-#endif
-  sample_tpm_sim_destroy(ctx.tpm);
+  sample_tpm_destroy(ctx.tpm);
   free(id_scope);
-  free(state_dir);
   free(endpoint);
   free(reg_id_env);
   free(ca);

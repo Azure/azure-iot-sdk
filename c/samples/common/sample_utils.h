@@ -1,3 +1,7 @@
+// Copyright (c) Microsoft. All rights reserved.
+// Licensed under the MIT license. See LICENSE file in the project root for full license
+// information.
+
 #ifndef SAMPLE_UTILS_H
 #define SAMPLE_UTILS_H
 
@@ -24,6 +28,66 @@ typedef struct sample_config
 } sample_config;
 
 /**
+ * @name MQTT client limits of the samples
+ * @brief az_iot_connection_client_options::mqtt_limits of every sample, and the workspace that
+ * holds one MQTT client of those limits. Paho sizes its own buffers and only checks the limits.
+ *
+ * - Send 8 KiB: CONNECT with a SAS token, a DPS request with a CSR, telemetry, twin patches and
+ *   method responses of the samples.
+ * - Receive 132 KiB: a 128 KB direct method payload with its topic and properties. Also holds a
+ *   full twin, a 64 KB cloud-to-device message and a DPS response with an issued chain.
+ * - 8 QoS 1 exchanges in flight.
+ * - Message store 16 KiB: unacknowledged messages kept for the resumed hub session, one of full
+ *   size or many of the samples' size.
+ * - Connect strings 4 KiB: host, client ID, user name, SAS token, TLS file paths or key URI, proxy
+ *   and WebSocket path.
+ * @{
+ */
+#define SAMPLE_MQTT_SEND_BUFFER_SIZE ((size_t)8u * 1024u)
+#define SAMPLE_MQTT_RECEIVE_BUFFER_SIZE ((size_t)132u * 1024u)
+#define SAMPLE_MQTT_MAX_IN_FLIGHT_MESSAGES 8u
+#define SAMPLE_MQTT_MESSAGE_STORE_SIZE ((size_t)16u * 1024u)
+#define SAMPLE_MQTT_CONNECT_STRINGS_SIZE ((size_t)4u * 1024u)
+/** @brief Bound of az_mqtt's TLS state: Schannel on Windows (about 197 KB), else OpenSSL or
+ * mbedTLS (under 5 KB). */
+#if defined(_WIN32)
+#define SAMPLE_MQTT_TLS_STATE_SIZE ((size_t)256u * 1024u)
+#else
+#define SAMPLE_MQTT_TLS_STATE_SIZE ((size_t)8u * 1024u)
+#endif
+
+/** @brief The limits above, for az_iot_connection_client_options::mqtt_limits. */
+#define SAMPLE_MQTT_LIMITS                                                    \
+  ((az_iot_mqtt_limits){                                                      \
+      .send_buffer_size = SAMPLE_MQTT_SEND_BUFFER_SIZE,                       \
+      .receive_buffer_size = SAMPLE_MQTT_RECEIVE_BUFFER_SIZE,                 \
+      .max_in_flight_messages = (uint16_t)SAMPLE_MQTT_MAX_IN_FLIGHT_MESSAGES, \
+      .message_store_size = SAMPLE_MQTT_MESSAGE_STORE_SIZE,                   \
+      .connect_strings_size = SAMPLE_MQTT_CONNECT_STRINGS_SIZE,               \
+  })
+
+/** @brief Largest payload a sample sends back from inbound data, such as a method echo: the send
+ * buffer less room for the topic and packet header. A sample answers a larger one with status 413
+ * (Paho builds too, so both behave alike). */
+#define SAMPLE_MQTT_ECHO_PAYLOAD_MAX (SAMPLE_MQTT_SEND_BUFFER_SIZE - 256u)
+
+/** @brief Bytes of a static workspace for one MQTT client of #SAMPLE_MQTT_LIMITS, for the
+ * adapter this build of the sample uses. */
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+#define SAMPLE_MQTT_WORKSPACE_SIZE AZ_IOT_PAHO_WORKSPACE_SIZE
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+#define SAMPLE_MQTT_WORKSPACE_SIZE        \
+  AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(          \
+      SAMPLE_MQTT_SEND_BUFFER_SIZE,       \
+      SAMPLE_MQTT_RECEIVE_BUFFER_SIZE,    \
+      SAMPLE_MQTT_MAX_IN_FLIGHT_MESSAGES, \
+      SAMPLE_MQTT_MESSAGE_STORE_SIZE,     \
+      SAMPLE_MQTT_CONNECT_STRINGS_SIZE,   \
+      SAMPLE_MQTT_TLS_STATE_SIZE)
+#endif
+/** @} */
+
+/**
  * @brief Log sink for samples. With AZ_IOT_SAMPLE_LOG_TO_FILE set (any
  * non-empty value), a rotating file sink writing AZ_IOT_LOG_FILE_DEFAULT_NAME in
  * the working directory (see az_iot_log_file_sink_open()); otherwise stderr.
@@ -44,7 +108,7 @@ void sample_config_release(sample_config* config);
 // Returns a heap copy of environment variable `name`, or a heap copy of
 // `fallback` when the variable is unset/empty (fallback may be NULL). Caller
 // frees with free(). Avoids getenv()/strdup() to stay clean under MSVC /WX.
-char* sample_env_dup(const char* name, const char* fallback);
+char* sample_env_copy(const char* name, const char* fallback);
 
 /**
  * @brief Copy @p src into @p dst, NUL included. Portable stand-in for C11
@@ -55,7 +119,7 @@ char* sample_env_dup(const char* name, const char* fallback);
  * @param[in] src       NUL-terminated source.
  * @return true if copied; false if @p src does not fit.
  */
-bool sample_copy_str(char* dst, size_t dst_size, const char* src);
+bool sample_string_copy(char* dst, size_t dst_size, const char* src);
 
 /**
  * @brief Read environment variable @p name, or @p fallback when unset/empty,
@@ -68,7 +132,16 @@ bool sample_copy_str(char* dst, size_t dst_size, const char* src);
  * @return true if copied; false when unset with no fallback, out of memory or
  * too long.
  */
-bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
+bool sample_env_copy_to_buffer(const char* name, const char* fallback, char* dst, size_t dst_size);
+
+/**
+ * @brief Whether @p name, a decoded manifest file id, can name a file in a directory without
+ * leaving it: not empty, `.` or `..`, and free of `/`, `\\`, `:` and NUL.
+ *
+ * @param[in] name Name to check.
+ * @return true when @p name is a single, plain file name.
+ */
+bool sample_is_plain_file_name(az_span name);
 
 /**
  * @brief Open @p path for binary writing with owner-only access (0600) on
@@ -81,7 +154,29 @@ bool sample_env_to_buffer(const char* name, const char* fallback, char* dst, siz
  * @return Stream to close with fclose(), or NULL on failure (with @p replace,
  * including when @p path cannot be removed).
  */
-FILE* sample_fopen_private(const char* path, bool replace);
+FILE* sample_file_open_private(const char* path, bool replace);
+
+/**
+ * @brief Create @p path for binary writing with owner-only access (0600) on
+ * POSIX. Fails when @p path exists, so nothing already there is replaced or
+ * written through.
+ *
+ * @param[in] path File to create.
+ * @return Stream to close with fclose(), or NULL on failure.
+ */
+FILE* sample_file_create_private(const char* path);
+
+/**
+ * @brief Create a new file, named @p path plus a unique suffix, for binary
+ * writing with owner-only access (0600) on POSIX. Nothing already there is
+ * replaced or written through. Being in @p path's directory, it can then
+ * replace @p path through sample_file_replace().
+ *
+ * @param[in]  path             Name the new file's name starts with.
+ * @param[out] out_unique_path  The new file's name, to free(); NULL on failure.
+ * @return Stream to close with fclose(), or NULL on failure.
+ */
+FILE* sample_file_create_private_unique(const char* path, char** out_unique_path);
 
 /**
  * @brief Open @p path for binary reading; on POSIX only a regular file, not
@@ -90,7 +185,118 @@ FILE* sample_fopen_private(const char* path, bool replace);
  * @param[in] path File to read.
  * @return Stream to close with fclose(), or NULL on failure.
  */
-FILE* sample_fopen_read_nofollow(const char* path);
+FILE* sample_file_open_read_no_follow(const char* path);
+
+/**
+ * @brief Open the existing file @p path for binary writing, emptied. The file itself is kept, with
+ * its mode and any lock held on it; nothing is created. On POSIX only a regular file, not through a
+ * symbolic link, is opened.
+ *
+ * @param[in] path File to rewrite.
+ * @return Stream to close with fclose(), or NULL on failure.
+ */
+FILE* sample_file_rewrite_existing_no_follow(const char* path);
+
+/**
+ * @brief Flush @p file's buffered writes and the operating system's cache to
+ * storage, so they survive a power loss.
+ *
+ * @param[in] file Stream open for writing.
+ * @return true on success.
+ */
+bool sample_file_flush_to_storage(FILE* file);
+
+/**
+ * @brief Remove @p path, then, on POSIX, sync its directory so the removal
+ * survives a power loss. Succeeds when @p path does not exist.
+ *
+ * The directory is synced also when @p path did not exist, in case an earlier
+ * removal had not reached storage. If that sync fails, a line is written to
+ * stderr and true is still returned, as in sample_file_replace(). On Windows
+ * nothing is synced. In both cases a power loss may bring the file back.
+ *
+ * @param[in] path File to remove.
+ * @return true when @p path is gone; durably only on POSIX, when the sync
+ * succeeded.
+ */
+bool sample_file_remove_durably(const char* path);
+
+/**
+ * @brief Replace @p destination_path with @p source_path in one step, durably:
+ * a reader sees the old file or the new one, never a partial one, and the
+ * replacement survives a power loss. Flush @p source_path to storage first.
+ *
+ * On POSIX the directory is synced after the rename. If that sync fails, a line
+ * is written to stderr and true is still returned, since readers already get
+ * the new file: only then may a power loss bring back the old file (never a
+ * partial one).
+ *
+ * @param[in] source_path      Complete file; renamed, so it is gone on success.
+ * @param[in] destination_path File to replace; created when absent. Same file
+ *                             system as @p source_path.
+ * @return true when the destination was replaced; false when it was left as it
+ * was.
+ */
+bool sample_file_replace(const char* source_path, const char* destination_path);
+
+/**
+ * @brief Replace @p path with a file holding @p data, atomically and durably:
+ * written to a new file from sample_file_create_private_unique(), flushed with
+ * sample_file_flush_to_storage(), then moved over @p path with
+ * sample_file_replace(). On failure that new file is removed and @p path is
+ * left as it was.
+ *
+ * @param[in] path File to replace; created (owner-only on POSIX) when absent.
+ * @param[in] data Bytes to write; may be NULL when @p size is 0.
+ * @param[in] size Number of bytes in @p data.
+ * @return true when @p path holds @p data.
+ */
+bool sample_file_write_atomically(const char* path, const void* data, size_t size);
+
+/**
+ * @brief Finish what sample_file_write_atomically() does, for contents written
+ * piece by piece: flush and close @p file, then move @p temporary_path over
+ * @p path with sample_file_replace(). When @p contents_written is false, or a
+ * step fails, @p temporary_path is removed and @p path is left as it was.
+ *
+ * @param[in] file             Stream from sample_file_create_private_unique();
+ *                             closed in all cases.
+ * @param[in] temporary_path   Its name, from the same call; freed in all cases.
+ * @param[in] path             File to replace; the @p path given to that call.
+ * @param[in] contents_written Whether every write to @p file succeeded.
+ * @return true when @p path holds what was written.
+ */
+bool sample_file_complete_atomic_write(
+    FILE* file,
+    char* temporary_path,
+    const char* path,
+    bool contents_written);
+
+/**
+ * @brief Delete @p path durably: the deletion survives a power loss. A missing
+ * file counts as deleted.
+ *
+ * On POSIX the directory is synced after the removal; if that fails, a line is
+ * written to stderr and true is still returned, since the file is already gone.
+ *
+ * @param[in] path File to delete.
+ * @return true when @p path no longer exists; false when it is still there,
+ * with errno set by remove().
+ */
+bool sample_file_delete(const char* path);
+
+/**
+ * @brief Record SIGINT (Ctrl+C) and SIGTERM instead of ending the process, so a
+ * sample's loop can stop and release its clients. Call once, from main().
+ */
+void sample_install_stop_handler(void);
+
+/**
+ * @brief Whether SIGINT or SIGTERM arrived since sample_install_stop_handler().
+ *
+ * @return true once a stop was requested.
+ */
+bool sample_is_stop_requested(void);
 
 // Milliseconds from an unspecified origin, never moving backwards. Only
 // differences are meaningful. The SDK keeps its clock internal, so a sample
@@ -102,60 +308,14 @@ uint64_t sample_now_ms(void);
 // for its do_work loop.
 void sample_sleep_ms(long ms);
 
-// Human-readable name for a connection state, for logging. Never NULL.
-const char* sample_connection_state_name(az_iot_connection_state state);
-
-/** @brief Human-readable name for a connection profile, for logging. Never NULL. */
-const char* sample_connection_profile_name(az_iot_connection_profile profile);
-
 /**
- * @brief Reads and prints the hub generation a CONNECTED client reached.
+ * @brief Sleep for what is left of a @p tick_ms tick that began at
+ * @p tick_start_ms (a sample_now_ms() value), so a do_work() loop cannot spin
+ * when do_work() returns early. Returns at once when the tick is over.
  *
- * @param[in] client Client whose hub lifecycle is CONNECTED.
- * @param[out] out_profile Resolved profile; written only on AZ_IOT_OK.
- * @return The az_iot_connection_client_get_hub_profile() result.
+ * @param[in] tick_start_ms sample_now_ms() when the tick began.
+ * @param[in] tick_ms       Tick length.
  */
-az_iot_result sample_get_hub_profile(
-    const az_iot_connection_client* client,
-    az_iot_connection_profile* out_profile);
-
-/**
- * @brief Whether @p event reports that DPS assigned the device to the other hub
- * generation than the attached feature clients were built for.
- *
- * The connection is then stopped (AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH): the
- * application destroys those clients, builds the ones for @p out_profile, and
- * calls az_iot_connection_client_close() then az_iot_connection_client_open().
- * This happens on the first connect and whenever a running device is moved to a
- * hub of the other generation.
- *
- * @param[in] event Connection state event.
- * @param[out] out_profile Assigned profile; written only when true is returned.
- * @return true on a profile mismatch, false otherwise.
- */
-bool sample_event_is_profile_mismatch(
-    const az_iot_connection_state_event* event,
-    az_iot_connection_profile* out_profile);
-
-/**
- * @brief Generation to build feature clients for before open().
- *
- * MQTTv3, which DPS assigns when it names no connectionProfile. A different
- * assignment is reported as AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH.
- *
- * @param[in] config Loaded sample configuration.
- * @return The profile to assume.
- */
-az_iot_connection_profile sample_initial_profile(const sample_config* config);
-
-/**
- * @brief Prints the service's profile value when @p event failed with
- * AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED (a generation newer than this SDK).
- *
- * The value is marked when truncated to AZ_IOT_CONNECTION_PROFILE_RAW_BUF.
- *
- * @param[in] event Connection state event; other events are ignored.
- */
-void sample_report_unsupported_profile(const az_iot_connection_state_event* event);
+void sample_sleep_until_tick_end(uint64_t tick_start_ms, uint32_t tick_ms);
 
 #endif // SAMPLE_UTILS_H

@@ -258,6 +258,37 @@ static int _parse_key(void* transport_ptr, unsigned char const* buf, size_t len)
  * @brief Build the TLS configuration and session for @p host; the socket is attached later.
  */
 /** @brief Report @p ret (an mbedTLS or PSA error); AZ_MQTT_ERROR_TRANSPORT. */
+#if MBEDTLS_VERSION_MAJOR >= 4
+/**
+ * @brief Wraps PSA key @p key_id into the client key context, taking its public key from the
+ * client certificate.
+ *
+ * mbedtls_pk_wrap_psa() exports the public key from TF-PSA-Crypto 1.1 on, which a key that
+ * cannot export it (e.g. the ESP32 Digital Signature peripheral's) refuses. It skips the export
+ * when the context already holds the public key. ESP-IDF's esp-tls does the same.
+ */
+static int _wrap_psa_key_with_certificate_public_key(
+    _tls_transport* transport,
+    mbedtls_svc_key_id_t key_id)
+{
+  mbedtls_pk_context const* cert_pk = &transport->client_cert.pk;
+  mbedtls_pk_context* key = &transport->client_key;
+  size_t const len = cert_pk->MBEDTLS_PRIVATE(pub_raw_len);
+  if (len == 0 || len > sizeof(key->MBEDTLS_PRIVATE(pub_raw)))
+  {
+    return MBEDTLS_ERR_PK_BAD_INPUT_DATA;
+  }
+  memcpy(key->MBEDTLS_PRIVATE(pub_raw), cert_pk->MBEDTLS_PRIVATE(pub_raw), len);
+  key->MBEDTLS_PRIVATE(pub_raw_len) = len;
+  int const ret = mbedtls_pk_wrap_psa(key, key_id);
+  if (ret != 0)
+  {
+    key->MBEDTLS_PRIVATE(pub_raw_len) = 0;
+  }
+  return ret;
+}
+#endif
+
 static az_result _tls_setup_failure(_tls_transport* transport, int ret)
 {
   _az_mqtt_io_layer_report(
@@ -364,7 +395,12 @@ static az_result _tls_prepare(
     else
     {
 #if MBEDTLS_VERSION_MAJOR >= 4
-      ret = mbedtls_pk_wrap_psa(&transport->client_key, (mbedtls_svc_key_id_t)tls_options->client_key_psa_id);
+      mbedtls_svc_key_id_t const key_id = (mbedtls_svc_key_id_t)tls_options->client_key_psa_id;
+      ret = mbedtls_pk_wrap_psa(&transport->client_key, key_id);
+      if (ret != 0)
+      {
+        ret = _wrap_psa_key_with_certificate_public_key(transport, key_id) == 0 ? 0 : ret;
+      }
 #elif _AZ_MQTT_MBEDTLS_PSA_KEYS
       ret = mbedtls_pk_setup_opaque(&transport->client_key, (psa_key_id_t)tls_options->client_key_psa_id);
 #else
@@ -422,13 +458,19 @@ static az_result _tls_failure(_tls_transport* transport, int ret, bool handshake
 {
   _az_mqtt_io_layer_errors const* const sink = &transport->errors;
   // A certificate whose (extended) key usage does not allow it fails as a bad certificate.
+  // A verify callback's failure (e.g. ESP-IDF's certificate bundle) comes back as
+  // X509_FATAL_ERROR, with no flags; only certificate verification returns it.
   uint32_t const flags = handshake ? mbedtls_ssl_get_verify_result(&transport->ssl) : 0;
+  bool const has_flags = flags != 0 && flags != UINT32_MAX;
   if (handshake
-      && (ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED
-          || (ret == MBEDTLS_ERR_SSL_BAD_CERTIFICATE && flags != 0 && flags != UINT32_MAX)))
+      && (ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED || ret == MBEDTLS_ERR_X509_FATAL_ERROR
+          || (ret == MBEDTLS_ERR_SSL_BAD_CERTIFICATE && has_flags)))
   {
-    _az_mqtt_io_layer_report(
-        sink, AZ_MQTT_NATIVE_ERROR_TLS_VERIFY, (int32_t)flags, AZ_MQTT_ERROR_TLS_VERIFY);
+    if (has_flags)
+    {
+      _az_mqtt_io_layer_report(
+          sink, AZ_MQTT_NATIVE_ERROR_TLS_VERIFY, (int32_t)flags, AZ_MQTT_ERROR_TLS_VERIFY);
+    }
     _az_mqtt_io_layer_report(sink, AZ_MQTT_NATIVE_ERROR_TLS, ret, AZ_MQTT_ERROR_TLS_VERIFY);
     return AZ_MQTT_ERROR_TLS_VERIFY;
   }

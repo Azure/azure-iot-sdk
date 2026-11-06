@@ -33,7 +33,7 @@ set(AZ_IOT_VERSION_FULL "${_az_iot_ver_STRING}")
 
 project(azure-iot-sdk
     VERSION ${_az_iot_ver_MAJOR}.${_az_iot_ver_MINOR}.${_az_iot_ver_PATCH}
-    DESCRIPTION "C99 client SDK for Azure IoT Hub (MQTTv3 + MQTTv5)"
+    DESCRIPTION "C99 client SDK for Azure IoT Hub (MQTTv3)"
     LANGUAGES C
 )
 
@@ -56,6 +56,18 @@ if(POLICY CMP0091)
     cmake_policy(SET CMP0091 NEW)
 endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# MSVC optimized builds: no incremental linking, unreferenced code removed and identical
+# COMDATs folded (BinSkim BA6001, BA6004, BA6005). CMake's RelWithDebInfo links /INCREMENTAL,
+# and /DEBUG turns /OPT:REF and /OPT:ICF off.
+if(MSVC)
+    foreach(_kind IN ITEMS EXE SHARED MODULE)
+        string(REGEX REPLACE "/INCREMENTAL(:YES)?( |$)" "/INCREMENTAL:NO\\2"
+            CMAKE_${_kind}_LINKER_FLAGS_RELWITHDEBINFO "${CMAKE_${_kind}_LINKER_FLAGS_RELWITHDEBINFO}")
+    endforeach()
+    unset(_kind)
+    add_link_options("$<$<NOT:$<CONFIG:Debug>>:/OPT:REF;/OPT:ICF>")
+endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
@@ -141,6 +153,8 @@ else()
         target_compile_definitions(az_posix PRIVATE _DEFAULT_SOURCE _POSIX_C_SOURCE=200809L)
     endif()
 
+    az_iot_apply_dependency_warnings(az_core az_iot_common az_iot_hub az_iot_provisioning az_win32 az_nohttp)
+
     # Treat azure-sdk-for-c headers as SYSTEM so our strict warnings don't flag
     # upstream code (e.g. legacy "func()" declarations vs -Wstrict-prototypes).
     foreach(_az_tgt IN ITEMS az_core az_iot_common az_iot_hub az_iot_provisioning az_win32 az_posix az_nohttp)
@@ -169,10 +183,6 @@ endif()
 
 if(AZ_IOT_WITH_AZ_MQTT)
     add_subdirectory(adapters/az_mqtt)
-endif()
-
-if(AZ_IOT_WITH_RUST_MQTT)
-    add_subdirectory(adapters/rust_mqtt)
 endif()
 
 if(AZ_IOT_WITH_CRYPTO_OPENSSL)

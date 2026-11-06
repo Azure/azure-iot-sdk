@@ -8,7 +8,7 @@
 #   target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
 #
 # Components are the installed library targets, named without the azure::iot::
-# prefix: core, mqttv3, mqttv5 and each adapter the build produced. Each also
+# prefix: core, mqttv3 and each adapter the build produced. Each also
 # gets a pkg-config file, azure-iot-sdk-<component>.pc (az_iot_pkgconfig.cmake).
 #
 # azure-sdk-for-c has no install rules and its types are embedded in our public
@@ -36,10 +36,8 @@ set(_az_iot_sdk_for_c_inc "${CMAKE_INSTALL_INCLUDEDIR}/azure-sdk-for-c")
 set(_az_iot_export_names
     az_iot_core                          core
     az_iot_mqttv3                        mqttv3
-    az_iot_mqttv5                        mqttv5
     az_iot_adapter_paho                  adapter_paho
     az_iot_adapter_az_mqtt               adapter_az_mqtt
-    az_iot_adapter_rust_mqtt             adapter_rust_mqtt
     az_iot_crypto_openssl                crypto_openssl
     az_iot_crypto_mbedtls                crypto_mbedtls
     az_iot_certificate_provider_managed  certificate_provider_managed
@@ -95,7 +93,7 @@ endforeach()
 
 # az_mqtt (deps/az_mqtt) libraries the az_mqtt adapter links. Exported, not components.
 set(_az_iot_az_mqtt_targets "")
-foreach(_tgt IN ITEMS az_mqtt_core az_mqttv3 az_mqttv5)
+foreach(_tgt IN ITEMS az_mqtt_core az_mqttv3)
     if(TARGET az_iot_adapter_az_mqtt AND TARGET ${_tgt})
         set_target_properties(${_tgt} PROPERTIES EXPORT_NAME ${_tgt})
         list(APPEND _az_iot_az_mqtt_targets ${_tgt})
@@ -111,7 +109,7 @@ install(TARGETS ${_az_iot_targets} ${_az_iot_sdk_for_c_targets} ${_az_iot_az_mqt
 
 # An adapter's public header ships only with the adapter.
 set(_az_iot_absent_headers)
-foreach(_adapter paho az_mqtt rust_mqtt)
+foreach(_adapter paho az_mqtt)
     if(NOT TARGET az_iot_adapter_${_adapter})
         list(APPEND _az_iot_absent_headers PATTERN "az_iot_adapter_${_adapter}.h" EXCLUDE)
     endif()
@@ -134,7 +132,6 @@ endif()
 # bare #include "<header>.h" spelling.
 set(_az_iot_adapter_inc "${CMAKE_INSTALL_INCLUDEDIR}/azure/iot/adapters")
 set(_az_iot_adapter_headers
-    az_iot_adapter_rust_mqtt             adapters/rust_mqtt/az_iot_mqtt_rust_ffi.h
     az_iot_crypto_openssl                adapters/crypto_openssl/az_iot_crypto_openssl.h
     az_iot_crypto_mbedtls                adapters/crypto_mbedtls/az_iot_crypto_mbedtls.h
     az_iot_certificate_provider_managed  adapters/cert_openssl/az_iot_certificate_provider_managed.h
@@ -222,12 +219,12 @@ configure_package_config_file(
     INSTALL_DESTINATION ${_az_iot_pkg_cmake_dir}
 )
 # Numeric only: CMake package versions have no pre-release label, so
-# X.Y.Z-<label> and X.Y.Z both report X.Y.Z. SameMinorVersion while in preview;
-# revisit (SameMajorVersion) once stable releases guarantee API compatibility.
+# X.Y.Z-<label> and X.Y.Z both report X.Y.Z. SameMajorVersion: stable releases
+# keep the API compatible within a major version.
 write_basic_package_version_file(
     "${PROJECT_BINARY_DIR}/${_az_iot_pkg}-config-version.cmake"
     VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMinorVersion
+    COMPATIBILITY SameMajorVersion
 )
 install(FILES
     "${PROJECT_BINARY_DIR}/${_az_iot_pkg}-config.cmake"

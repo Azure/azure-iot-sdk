@@ -31,15 +31,14 @@ handling; the sample only configures it. See [`main.c`](main.c).
 
 ## Sample features
 
-- Hub generation: mqttv3 only (MQTT 3.1.1). An mqttv5 assignment fails with
-  `hub connection failed: AZ_IOT_ERR_NOT_SUPPORTED`.
+- Hub: mqttv3 (MQTT 3.1.1).
 - On `2026-11-02-preview` DPS MQTT sessions, the sample registers with its
   bootstrap identity, persists the issued operational chain, connects to the
   assigned mqttv3 IoT Hub with that chain, and sends one telemetry message on the
   same connection.
 - Optional custom registration payload sent with the CSR; a payload returned by the
   allocation policy is printed.
-- Does not exercise device updates or mqttv5 hubs, and does not confirm delivery to
+- Does not exercise device updates, and does not confirm delivery to
   downstream telemetry consumers.
 
 ## Service requirements
@@ -174,11 +173,11 @@ anything else is retried until the 60 s timeout, which prints the last error per
 SDK log lines omitted:
 
 ```
-[dps_csr] dps: Connecting (AZ_IOT_OK)
-[dps_csr] dps: Connected (AZ_IOT_OK)
+[dps_csr] dps: AZ_IOT_CONN_STATE_CONNECTING (AZ_IOT_OK)
+[dps_csr] dps: AZ_IOT_CONN_STATE_CONNECTED (AZ_IOT_OK)
 [dps_csr] operational certificate issued (2 cert(s) in chain), saved to operational_cert.pem
 ...
-[dps_csr] hub: Connected (AZ_IOT_OK)
+[dps_csr] hub: AZ_IOT_CONN_STATE_CONNECTED (AZ_IOT_OK)
 [dps_csr] connected to <hub>.azure-devices.net with the operational certificate
 [dps_csr] telemetry sent with operational certificate
 ```
@@ -194,7 +193,6 @@ The chain length depends on the credential policy.
 | `provisioning failed: AZ_IOT_ERR_AUTH` | DPS refused the bootstrap certificate: it does not chain to the group's CA. |
 | Repeated `DPS code 401...` lines, then `timed out` (last dps error `AZ_IOT_ERR_DPS`) | DPS rejected the registration, e.g. the certificate CN differs from `AZ_IOT_DPS_REGISTRATION_ID` or no enrollment matches. DPS verdicts are retried, so the sample runs into the timeout. |
 | `hub connection failed: AZ_IOT_ERR_AUTH` | IoT Hub refused the operational certificate: the policy CA is not synced to the hub (`az iot adr ns credential sync`). |
-| `hub connection failed: AZ_IOT_ERR_NOT_SUPPORTED` | DPS assigned an mqttv5 hub. This sample connects to mqttv3 hubs only (MQTT 3.1.1). |
 | `open failed` immediately, after an SDK error `registration_payload must be a single well-formed JSON object` | `AZ_IOT_DPS_REGISTRATION_PAYLOAD` is not a single JSON object. |
 | `managed certificate provider init failed` | The operational key could not be loaded, generated or written at `AZ_IOT_OPERATIONAL_KEY`. |
 | `timed out` (last dps error `AZ_IOT_ERR_MQTT` or `AZ_IOT_ERR_TLS`) | DPS unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`) or server TLS failing (`AZ_IOT_TRUSTED_CA`). |

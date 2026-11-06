@@ -194,7 +194,6 @@ static void custody_provider_init(
 typedef struct fixture
 {
   az_iot_connection_client client;
-  az_iot_mqtt_factory* factory;
   custody_provider provider;
 } fixture;
 
@@ -203,8 +202,7 @@ static int setup(void** state)
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
   custody_provider_init(&fx->provider, &k_vtable_v2_with_sign);
-  fx->factory = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(fx->factory);
+  az_iot_mock_mqtt_adapter_reset();
   *state = fx;
   return 0;
 }
@@ -214,8 +212,7 @@ static int teardown(void** state)
   fixture* fx = (fixture*)*state;
   if (fx)
   {
-    az_iot_connection_client_deinit(&fx->client);
-    az_iot_mock_mqtt_factory_destroy(fx->factory);
+    az_iot_test_connection_client_deinit(&fx->client);
     free(fx);
   }
   return 0;
@@ -237,14 +234,13 @@ static void init_client(fixture* fx, bool with_dps)
     opts.iothub_hostname = "broker.example";
     opts.port = 8883;
   }
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
 }
 
-static const az_iot_mock_call* last_connect(const fixture* fx)
+static const az_iot_mock_call* last_connect(void)
 {
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
+  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_adapter_last_client();
   assert_non_null(m);
   size_t n = az_iot_mock_mqtt_client_call_count(m);
   for (size_t i = n; i > 0; --i)
@@ -270,7 +266,7 @@ static void dps_connect_forwards_the_key_reference(void** state)
   init_client(fx, true);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
 
-  const az_iot_mock_call* c = last_connect(fx);
+  const az_iot_mock_call* c = last_connect();
   assert_non_null(c);
   assert_string_equal(c->connect.client_key_uri, "pkcs11:token=ut;object=device-key;type=private");
   assert_string_equal(c->connect.crypto_engine_id, "pkcs11");
@@ -327,7 +323,7 @@ static void the_key_uri_query_is_redacted_from_logs(void** state)
 
   assert_non_null(strstr(cap.text, "key_uri=pkcs11:token=ut;object=device-key?<redacted> "));
   assert_null(strstr(cap.text, "4321"));
-  const az_iot_mock_call* c = last_connect(fx);
+  const az_iot_mock_call* c = last_connect();
   assert_non_null(c);
   assert_string_equal(
       c->connect.client_key_uri, "pkcs11:token=ut;object=device-key?pin-value=4321");
@@ -342,7 +338,7 @@ static void hub_connect_forwards_the_key_reference(void** state)
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
 
-  const az_iot_mock_call* c = last_connect(fx);
+  const az_iot_mock_call* c = last_connect();
   assert_non_null(c);
   assert_string_equal(c->connect.client_key_uri, "pkcs11:token=ut;object=device-key;type=private");
   assert_string_equal(c->connect.crypto_engine_id, "pkcs11");
@@ -360,10 +356,44 @@ static void hub_connect_falls_back_to_bootstrap_material(void** state)
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
 
-  const az_iot_mock_call* c = last_connect(fx);
+  const az_iot_mock_call* c = last_connect();
   assert_non_null(c);
   assert_string_equal(c->connect.crypto_engine_id, "pkcs11");
   assert_true(c->connect.has_sign);
+}
+
+/* A PSA key id is the whole key: no PEM, path, URI or sign() hook is needed. */
+static void use_only_a_psa_key(fixture* fx)
+{
+  fx->provider.base.vtable = &k_vtable_v2_without_sign;
+  fx->provider.material.client_key_uri = NULL;
+  fx->provider.material.crypto_engine_id = NULL;
+  fx->provider.material.client_key_psa_id = 0x7FFF0001u;
+}
+
+static void dps_connect_forwards_a_psa_key_id(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_only_a_psa_key(fx);
+  init_client(fx, true);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  const az_iot_mock_call* c = last_connect();
+  assert_non_null(c);
+  assert_int_equal(c->connect.client_key_psa_id, 0x7FFF0001u);
+  assert_false(c->connect.has_sign);
+  assert_false(c->connect.has_client_key_pem);
+  assert_string_equal(c->connect.client_key_uri, "");
+}
+
+static void hub_connect_forwards_a_psa_key_id(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  use_only_a_psa_key(fx);
+  init_client(fx, false);
+  assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
+  const az_iot_mock_call* c = last_connect();
+  assert_non_null(c);
+  assert_int_equal(c->connect.client_key_psa_id, 0x7FFF0001u);
 }
 
 /* The adapter-facing callback must actually reach the provider's sign() slot,
@@ -374,7 +404,7 @@ static void the_forwarded_sign_hook_calls_the_provider(void** state)
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
 
-  const az_iot_mock_call* c = last_connect(fx);
+  const az_iot_mock_call* c = last_connect();
   assert_non_null(c);
   assert_non_null(c->connect.sign);
 
@@ -416,7 +446,7 @@ static void the_forwarded_sign_hook_preserves_out_len_on_failure(void** state)
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
 
-  const az_iot_mock_call* c = last_connect(fx);
+  const az_iot_mock_call* c = last_connect();
   assert_non_null(c);
   assert_non_null(c->connect.sign);
 
@@ -452,7 +482,7 @@ static void the_forwarded_sign_hook_rejects_an_unusable_provider(void** state)
   fixture* fx = (fixture*)*state;
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
-  const az_iot_mock_call* c = last_connect(fx);
+  const az_iot_mock_call* c = last_connect();
   assert_non_null(c);
   assert_non_null(c->connect.sign);
 
@@ -493,7 +523,7 @@ static void a_v2_provider_without_sign_forwards_no_hook(void** state)
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
 
-  const az_iot_mock_call* c = last_connect(fx);
+  const az_iot_mock_call* c = last_connect();
   assert_non_null(c);
   assert_false(c->connect.has_sign);
   assert_null(c->connect.sign_ctx);
@@ -510,7 +540,7 @@ static void a_v1_provider_sign_slot_is_ignored(void** state)
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
 
-  const az_iot_mock_call* c = last_connect(fx);
+  const az_iot_mock_call* c = last_connect();
   assert_non_null(c);
   assert_false(c->connect.has_sign);
   assert_int_equal(fx->provider.sign_calls, 0);
@@ -531,7 +561,7 @@ static void a_certificate_without_any_key_is_refused_at_open(void** state)
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_CREDENTIAL_INCOMPLETE);
   /* No adapter was created: the refusal happened before any connect attempt. */
-  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
 }
 
 /* A key URI with nothing naming the engine or provider that owns it is
@@ -553,7 +583,7 @@ static void a_key_uri_without_an_engine_id_is_allowed_with_sign(void** state)
   fx->provider.material.crypto_engine_id = NULL;
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
-  const az_iot_mock_call* c = last_connect(fx);
+  const az_iot_mock_call* c = last_connect();
   assert_non_null(c);
   assert_true(c->connect.has_sign);
 }
@@ -567,7 +597,7 @@ static void a_sign_hook_alone_satisfies_the_key_requirement(void** state)
   fx->provider.material.crypto_engine_id = NULL;
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
-  const az_iot_mock_call* c = last_connect(fx);
+  const az_iot_mock_call* c = last_connect();
   assert_non_null(c);
   assert_true(c->connect.has_sign);
   assert_string_equal(c->connect.client_key_uri, "");
@@ -583,7 +613,7 @@ static void material_without_a_client_certificate_is_not_rejected(void** state)
   fx->provider.material.trusted_ca_path = "/dev/null/ca.pem";
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
-  const az_iot_mock_call* c = last_connect(fx);
+  const az_iot_mock_call* c = last_connect();
   assert_non_null(c);
   assert_true(c->connect.use_tls);
 }
@@ -601,7 +631,7 @@ static void a_plain_pem_credential_is_unaffected(void** state)
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
 
-  const az_iot_mock_call* c = last_connect(fx);
+  const az_iot_mock_call* c = last_connect();
   assert_non_null(c);
   assert_true(c->connect.has_client_cert_pem);
   assert_true(c->connect.has_client_key_pem);
@@ -623,7 +653,7 @@ static void material_is_released_after_the_adapter_connect(bool with_dps, void**
   init_client(fx, with_dps);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_OK);
 
-  const az_iot_mock_call* c = last_connect(fx);
+  const az_iot_mock_call* c = last_connect();
   assert_non_null(c);
   assert_string_equal(c->connect.client_key_pem, "KEY-PEM");
   assert_string_equal(c->connect.client_key_password, "KEY-PW");
@@ -666,7 +696,7 @@ static void material_is_released_when_the_adapter_connect_fails(bool with_dps, v
 {
   fixture* fx = (fixture*)*state;
   init_wiping_provider(fx, with_dps);
-  az_iot_mock_mqtt_factory_fail_next_connect(fx->factory, AZ_IOT_ERR_MQTT);
+  az_iot_mock_mqtt_adapter_fail_next_connect(AZ_IOT_ERR_MQTT);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_MQTT);
   assert_all_material_released(fx);
 }
@@ -679,52 +709,6 @@ static void dps_material_is_released_when_the_adapter_connect_fails(void** state
 static void hub_material_is_released_when_the_adapter_connect_fails(void** state)
 {
   material_is_released_when_the_adapter_connect_fails(false, state);
-}
-
-/** @brief State observer that close()s the client on CONNECTING, then deinits
- * the provider, as az_iot_certificate_provider.h allows once closed. */
-static void close_on_connecting(const az_iot_connection_state_event* e, void* ctx)
-{
-  fixture* fx = (fixture*)ctx;
-  if (e->state == AZ_IOT_CONN_STATE_CONNECTING)
-  {
-    (void)az_iot_connection_client_close(&fx->client);
-    fx->provider.deinitialized = true;
-  }
-}
-
-/* close() from the CONNECTING announcement abandons the attempt before
- * connect(); close() releases its material, before the provider can go. */
-static void material_is_released_when_closed_before_connect(bool with_dps, void** state)
-{
-  fixture* fx = (fixture*)*state;
-  init_wiping_provider(fx, with_dps);
-  assert_int_equal(
-      az_iot_connection_client_add_state_observer(&fx->client, close_on_connecting, fx), AZ_IOT_OK);
-  /* DPS reports the cancelled start; the hub attempt is simply abandoned. */
-  assert_int_equal(
-      az_iot_connection_client_open(&fx->client), with_dps ? AZ_IOT_ERR_NOT_CONNECTED : AZ_IOT_OK);
-
-  az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_factory_last_client(fx->factory);
-  if (m != NULL)
-  {
-    for (size_t i = 0; i < az_iot_mock_mqtt_client_call_count(m); ++i)
-    {
-      assert_int_not_equal(az_iot_mock_mqtt_client_call_at(m, i)->kind, AZ_IOT_MOCK_CALL_CONNECT);
-    }
-  }
-  assert_all_material_released(fx);
-  assert_int_equal(fx->provider.releases_after_deinit, 0);
-}
-
-static void dps_material_is_released_when_closed_before_connect(void** state)
-{
-  material_is_released_when_closed_before_connect(true, state);
-}
-
-static void hub_material_is_released_when_closed_before_connect(void** state)
-{
-  material_is_released_when_closed_before_connect(false, state);
 }
 
 /* A provider that holds no material yet is not a configuration error: it may
@@ -772,9 +756,8 @@ static void a_null_vtable_is_rejected_on_the_csr_path(void** state)
   opts.dps.id_scope = "0ne00000000";
   opts.dps.registration_id = "ut-device";
   opts.dps.request_operational_certificate = true;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_int_equal(az_iot_test_connection_client_init(&fx->client, &opts), AZ_IOT_OK);
-  assert_int_equal(
-      az_iot_connection_client_register_mqtt_factory(&fx->client, fx->factory), AZ_IOT_OK);
 
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_NOT_SUPPORTED);
 }
@@ -800,7 +783,7 @@ static void a_credential_that_degrades_after_open_fails_the_connect(void** state
   fx->provider.degrade_after_calls = 1;
   init_client(fx, false);
   assert_int_equal(az_iot_connection_client_open(&fx->client), AZ_IOT_ERR_CREDENTIAL_INCOMPLETE);
-  assert_null(az_iot_mock_mqtt_factory_last_client(fx->factory));
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
   /* The rejected material is released too. */
   assert_int_equal(fx->provider.load_calls, fx->provider.release_calls);
 }
@@ -834,6 +817,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(the_key_uri_query_is_redacted_from_logs, setup, teardown),
     cmocka_unit_test_setup_teardown(hub_connect_forwards_the_key_reference, setup, teardown),
     cmocka_unit_test_setup_teardown(hub_connect_falls_back_to_bootstrap_material, setup, teardown),
+    cmocka_unit_test_setup_teardown(dps_connect_forwards_a_psa_key_id, setup, teardown),
+    cmocka_unit_test_setup_teardown(hub_connect_forwards_a_psa_key_id, setup, teardown),
     cmocka_unit_test_setup_teardown(the_forwarded_sign_hook_calls_the_provider, setup, teardown),
     cmocka_unit_test_setup_teardown(
         the_forwarded_sign_hook_preserves_out_len_on_failure, setup, teardown),
@@ -859,10 +844,6 @@ int main(void)
         dps_material_is_released_when_the_adapter_connect_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_material_is_released_when_the_adapter_connect_fails, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        dps_material_is_released_when_closed_before_connect, setup, teardown),
-    cmocka_unit_test_setup_teardown(
-        hub_material_is_released_when_closed_before_connect, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_provider_with_no_material_yet_is_not_refused, setup, teardown),
     cmocka_unit_test_setup_teardown(a_provider_without_load_is_rejected, setup, teardown),

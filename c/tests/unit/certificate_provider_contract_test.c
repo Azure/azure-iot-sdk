@@ -23,6 +23,7 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
+#include "../support/test_x509.h"
 #include "azure/iot/az_iot_certificate_provider_pem.h"
 
 #include "../support/cert_provider_contract.h"
@@ -50,12 +51,7 @@ static void write_bootstrap_identity(void)
   assert_non_null(X509_gmtime_adj(X509_getm_notBefore(x), 0));
   assert_non_null(X509_gmtime_adj(X509_getm_notAfter(x), 3600));
   assert_int_equal(1, X509_set_pubkey(x, k));
-  X509_NAME* name = X509_get_subject_name(x);
-  assert_int_equal(
-      1,
-      X509_NAME_add_entry_by_txt(
-          name, "CN", MBSTRING_UTF8, (const unsigned char*)"az-iot-contract-boot", -1, -1, 0));
-  assert_int_equal(1, X509_set_issuer_name(x, name));
+  assert_int_equal(1, test_x509_set_self_signed_name(x, "az-iot-contract-boot"));
   assert_true(X509_sign(x, k, EVP_sha256()) > 0);
 
   BIO* b = BIO_new_file(BOOT_CRT, "wb");

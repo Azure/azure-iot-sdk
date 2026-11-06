@@ -63,12 +63,7 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_mqtt_factory* factory_v3;
-  az_iot_mqtt_factory* factory_v5;
-  /* Only the one matching `profile` is initialized. */
   az_iot_mqttv3_telemetry_client mqttv3;
-  az_iot_mqttv5_telemetry_client mqttv5;
-  az_iot_connection_profile profile;
   int telemetry_initialized;
 } sample_state;
 
@@ -76,8 +71,6 @@ typedef struct
 {
   az_iot_connection_state conn_state;
   int faulted; /* terminal: nothing this sample can do about it */
-  int rebuild; /* DPS assigned `assigned_profile`; rebuild for it */
-  az_iot_connection_profile assigned_profile;
   int send_pending;
   int sent_ok;
   int send_failed;
@@ -89,37 +82,16 @@ static void telemetry_destroy(sample_state* state)
   {
     return;
   }
-  if (state->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-  {
-    az_iot_mqttv5_telemetry_client_deinit(&state->mqttv5);
-  }
-  else
-  {
-    az_iot_mqttv3_telemetry_client_deinit(&state->mqttv3);
-  }
+  az_iot_mqttv3_telemetry_client_deinit(&state->mqttv3);
   state->telemetry_initialized = 0;
 }
 
-/* Pins the connection to `profile`: an assignment to the other generation is
- * then refused with AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. */
-static az_iot_result telemetry_build(sample_state* state, az_iot_connection_profile profile)
+static az_iot_result telemetry_build(sample_state* state)
 {
-  az_iot_result result;
-  switch (profile)
-  {
-    case AZ_IOT_CONNECTION_PROFILE_MQTT_V5:
-      result = az_iot_mqttv5_telemetry_client_init(&state->mqttv5, &state->connection_client);
-      break;
-    case AZ_IOT_CONNECTION_PROFILE_MQTT_V3:
-      result = az_iot_mqttv3_telemetry_client_init(&state->mqttv3, &state->connection_client);
-      break;
-    case AZ_IOT_CONNECTION_PROFILE_UNKNOWN:
-    default:
-      return AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
-  }
+  az_iot_result result
+      = az_iot_mqttv3_telemetry_client_init(&state->mqttv3, &state->connection_client);
   if (result == AZ_IOT_OK)
   {
-    state->profile = profile;
     state->telemetry_initialized = 1;
   }
   return result;
@@ -129,13 +101,6 @@ static void sample_state_destroy(sample_state* state)
 {
   telemetry_destroy(state);
   az_iot_connection_client_deinit(&state->connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(state->factory_v3);
-  az_iot_paho_factory_destroy(state->factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(state->factory_v3);
-  az_iot_az_mqtt_factory_destroy(state->factory_v5);
-#endif
   az_iot_certificate_provider_pem_deinit(&state->certs);
   sample_config_release(&state->config);
 }
@@ -144,18 +109,18 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 {
   user_context* ctx = (user_context*)user_ctx;
 
-  /* Only record it: feature clients must not be destroyed from inside the
-   * callback, which runs nested in do_work(). */
-  if (sample_event_is_profile_mismatch(event, &ctx->assigned_profile))
-  {
-    ctx->rebuild = 1;
-    return;
-  }
-
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     ctx->faulted = 1;
-    sample_report_unsupported_profile(event);
+    /* DPS assigned a hub generation this SDK does not support. */
+    if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED && event->profile != NULL)
+    {
+      printf(
+          "Unsupported hub generation \"%s\"%s. Upgrade the SDK.\n",
+          event->profile->connection_profile_raw != NULL ? event->profile->connection_profile_raw
+                                                         : "(none)",
+          event->profile->connection_profile_raw_truncated ? " (truncated)" : "");
+    }
   }
 
   /* The provisioning lifecycle reports on its own scope; only the hub one says
@@ -182,10 +147,8 @@ static void on_send_done(az_iot_result status, void* user_ctx)
 
 static az_iot_result send_one(sample_state* state, user_context* ctx, const reading* r)
 {
-  /* The same message on either generation. MQTTv3 URL-encodes every
-   * property into the topic ("$.ct" goes out as "%24.ct", "deg C" as
-   * "deg%20C"); MQTTv5 carries them as MQTT v5 user properties, byte for byte,
-   * with $.ct mapped to the native content type. The payload needs to stay
+  /* MQTTv3 URL-encodes every property into the topic ("$.ct" goes out as
+   * "%24.ct", "deg C" as "deg%20C"). The payload needs to stay
    * valid only during the send call. */
   char payload[64];
   int len = snprintf(
@@ -204,9 +167,8 @@ static az_iot_result send_one(sample_state* state, user_context* ctx, const read
   msg.properties = props;
   msg.properties_count = sizeof(props) / sizeof(props[0]);
 
-  az_iot_result result = state->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-      ? az_iot_mqttv5_telemetry_client_send(&state->mqttv5, &msg, on_send_done, ctx)
-      : az_iot_mqttv3_telemetry_client_send(&state->mqttv3, &msg, on_send_done, ctx);
+  az_iot_result result
+      = az_iot_mqttv3_telemetry_client_send(&state->mqttv3, &msg, on_send_done, ctx);
   ctx->send_pending = (result == AZ_IOT_OK);
   return result;
 }
@@ -298,11 +260,26 @@ int main(void)
 
   /* Connection client (DPS provisioning is internal). The default reconnection
    * and identity recovery policies keep the device reconnecting on its own. */
+  /* Memory for the connection client's entries, sized for the default limits. */
+  static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_connection_client_options copts = az_iot_connection_client_options_default();
+  copts.workspace = connection_workspace;
+  copts.workspace_size = sizeof(connection_workspace);
   copts.dps.id_scope = state.config.id_scope;
   copts.dps.registration_id = state.config.reg_id;
   copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
   {
@@ -311,32 +288,7 @@ int main(void)
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
-  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub.
-   * The connection picks the one the assigned hub needs. */
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state.factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state.factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state.factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
-
-  if (telemetry_build(&state, sample_initial_profile(&state.config)) != AZ_IOT_OK
+  if (telemetry_build(&state) != AZ_IOT_OK
       || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
@@ -375,24 +327,6 @@ int main(void)
   {
     (void)az_iot_connection_client_do_work(&state.connection_client, 100);
 
-    if (user_ctx.rebuild)
-    {
-      user_ctx.rebuild = 0;
-      printf(
-          "DPS assigned %s; rebuilding the telemetry client.\n",
-          sample_connection_profile_name(user_ctx.assigned_profile));
-      telemetry_destroy(&state);
-      user_ctx.send_pending = 0; /* lost with the old client */
-      az_iot_connection_client_close(&state.connection_client);
-      if (telemetry_build(&state, user_ctx.assigned_profile) != AZ_IOT_OK
-          || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
-      {
-        user_ctx.faulted = 1; /* recovery failed */
-        break;
-      }
-      continue;
-    }
-
     /* One reading per completed send. While not connected readings wait in the
      * queue, which drops the oldest when full. */
     reading r;
@@ -412,9 +346,8 @@ int main(void)
   reading_queue_deinit(&readings);
 
   printf(
-      "Sent %d message(s) on %s, %d failed, %u reading(s) dropped.\n",
+      "Sent %d message(s), %d failed, %u reading(s) dropped.\n",
       user_ctx.sent_ok,
-      sample_connection_profile_name(state.profile),
       user_ctx.send_failed,
       dropped);
 
