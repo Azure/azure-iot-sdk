@@ -641,15 +641,19 @@ static void a_tampered_or_malformed_key_is_refused(void** state)
 
 /**
  * @brief Provisions a primary at persistent @p handle, as a TPM provisioning
- * tool would: CreatePrimary from the template of @p pub (zero unique), then
- * EvictControl.
+ * tool would: CreatePrimary from the template of @p pub, then EvictControl.
+ * @p unique_marker seeds `unique`, so the key differs from the backend's
+ * zero-unique fallback; its public area goes to @p out_pub / @p out_len.
  */
 static void persist_primary(
     ESYS_CONTEXT* esys,
     ESYS_TR hierarchy,
     const uint8_t* pub,
     size_t pub_len,
-    uint32_t handle)
+    uint8_t unique_marker,
+    uint32_t handle,
+    uint8_t out_pub[TPM2_MAX_COMMAND_SIZE],
+    size_t* out_len)
 {
   TPM2B_PUBLIC key_template;
   memset(&key_template, 0, sizeof(key_template));
@@ -657,11 +661,13 @@ static void persist_primary(
   assert_int_equal(
       Tss2_MU_TPM2B_PUBLIC_Unmarshal(pub, pub_len, &offset, &key_template), TSS2_RC_SUCCESS);
   memset(key_template.publicArea.unique.rsa.buffer, 0, key_template.publicArea.unique.rsa.size);
+  key_template.publicArea.unique.rsa.buffer[0] = unique_marker;
   key_template.size = 0;
   TPM2B_SENSITIVE_CREATE no_sensitive = { 0 };
   TPM2B_DATA no_outside_info = { 0 };
   TPML_PCR_SELECTION no_pcrs = { 0 };
   ESYS_TR primary = ESYS_TR_NONE;
+  TPM2B_PUBLIC* created = NULL;
   assert_int_equal(
       Esys_CreatePrimary(
           esys,
@@ -674,11 +680,17 @@ static void persist_primary(
           &no_outside_info,
           &no_pcrs,
           &primary,
-          NULL,
+          &created,
           NULL,
           NULL,
           NULL),
       TSS2_RC_SUCCESS);
+  size_t offset_out = 0;
+  assert_int_equal(
+      Tss2_MU_TPM2B_PUBLIC_Marshal(created, out_pub, TPM2_MAX_COMMAND_SIZE, &offset_out),
+      TSS2_RC_SUCCESS);
+  *out_len = offset_out;
+  Esys_Free(created);
   ESYS_TR persistent = ESYS_TR_NONE;
   assert_int_equal(
       Esys_EvictControl(
@@ -783,6 +795,8 @@ static void assert_publics(
 static void provisioned_ek_and_srk_are_used_and_kept(void** state)
 {
   (void)state;
+  static uint8_t fallback_ek[TPM2_MAX_COMMAND_SIZE];
+  static uint8_t fallback_srk[TPM2_MAX_COMMAND_SIZE];
   static uint8_t ek[TPM2_MAX_COMMAND_SIZE];
   static uint8_t srk[TPM2_MAX_COMMAND_SIZE];
   static const uint8_t bytes[32] = { 0x3C, 0x5A, 0x96, 0x69 };
@@ -790,22 +804,45 @@ static void provisioned_ek_and_srk_are_used_and_kept(void** state)
   uint8_t expected[AZ_IOT_SHA256_SIZE];
   uint8_t mac[AZ_IOT_SHA256_SIZE];
   const uint8_t* pub = NULL;
+  size_t fallback_ek_len = 0;
+  size_t fallback_srk_len = 0;
   size_t ek_len = 0;
   size_t srk_len = 0;
 
   sample_tpm_tss* tpm = open_tpm(HANDLE_FOR_TESTS);
-  sample_tpm_tss_ek_public(tpm, &pub, &ek_len);
-  memcpy(ek, pub, ek_len);
-  sample_tpm_tss_srk_public(tpm, &pub, &srk_len);
-  memcpy(srk, pub, srk_len);
+  sample_tpm_tss_ek_public(tpm, &pub, &fallback_ek_len);
+  memcpy(fallback_ek, pub, fallback_ek_len);
+  sample_tpm_tss_srk_public(tpm, &pub, &fallback_srk_len);
+  memcpy(fallback_srk, pub, fallback_srk_len);
   close_tpm();
 
+  /* Provisioned primaries differ from the fallback ones (non-zero unique), so
+   * a backend that re-creates them instead of using the handles fails below. */
   ESYS_CONTEXT* esys = esys_open();
-  persist_primary(esys, ESYS_TR_RH_ENDORSEMENT, ek, ek_len, SAMPLE_TPM_TSS_EK_HANDLE);
-  persist_primary(esys, ESYS_TR_RH_OWNER, srk, srk_len, SAMPLE_TPM_TSS_SRK_HANDLE);
+  persist_primary(
+      esys,
+      ESYS_TR_RH_ENDORSEMENT,
+      fallback_ek,
+      fallback_ek_len,
+      0xE5,
+      SAMPLE_TPM_TSS_EK_HANDLE,
+      ek,
+      &ek_len);
+  persist_primary(
+      esys,
+      ESYS_TR_RH_OWNER,
+      fallback_srk,
+      fallback_srk_len,
+      0x55,
+      SAMPLE_TPM_TSS_SRK_HANDLE,
+      srk,
+      &srk_len);
   esys_close();
+  assert_true(ek_len != fallback_ek_len || memcmp(ek, fallback_ek, ek_len) != 0);
+  assert_true(srk_len != fallback_srk_len || memcmp(srk, fallback_srk, srk_len) != 0);
 
-  size_t key_len = dps_key_for_tpm(bytes, sizeof(bytes), key);
+  size_t key_len
+      = build_dps_key(ek, ek_len, srk, srk_len, TPM2_ALG_SHA256, bytes, sizeof(bytes), key);
   tpm = open_tpm(HANDLE_FOR_TESTS);
   assert_publics(tpm, ek, ek_len, srk, srk_len);
   az_iot_dps_tpm_ops ops = sample_tpm_tss_ops(tpm);
