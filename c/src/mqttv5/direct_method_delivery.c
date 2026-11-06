@@ -281,7 +281,8 @@ static void on_probe_ack_complete(
         AZ_IOT_LOG_COMPONENT_MQTTV5_DIRECT_METHOD,
         "the probe-ack for '%s' could not be sent within its budget; dropping the token",
         RI(slot).method_name);
-    RI(slot).in_use = false;
+    az_iot_mqttv5_direct_method_client__end_ready_token(
+        (az_iot_mqttv5_direct_method_client*)owner, slot);
   }
 }
 

@@ -84,7 +84,8 @@ software updates. APIs may change before a stable release.
   again after a lost PUBACK, until their Message Expiry or result deadline; a result is never
   published at or after its deadline (`respond()` then returns `AZ_IOT_ERR_TIMEOUT`).
   `az_iot_connection_client_options::max_unconfirmed_delivery_timeout_ms` bounds messages that
-  carry no Message Expiry.
+  carry no Message Expiry. A probe redelivered once accepted (token live, invocation running,
+  or among the last `max_concurrent_invocations` ended) is not answered again and takes no capacity.
 - Custom topics (`az_iot_custom_topic_client.h`): publish at QoS 0 or 1, with content type, user
   properties and message expiry, to the topics the hub's topic templates allow
   (`az_iot_mqttv5_custom_topic_client_format_topic()` fills in `{deviceId}`). Publish only.
