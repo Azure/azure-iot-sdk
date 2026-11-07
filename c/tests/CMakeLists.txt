@@ -220,6 +220,19 @@ if(UNIX)
     # setenv()/unsetenv() are POSIX, not C99.
     target_compile_definitions(az_iot_tests_test_shard PRIVATE _POSIX_C_SOURCE=200809L)
 endif()
+# support/e2e_process.h: a child process for the e2e suites that drive a program (e2e/). Here,
+# not in e2e/, so every build compiles it and runs its test, which needs no Azure resources.
+add_library(az_iot_e2e_process STATIC support/e2e_process.c)
+target_include_directories(az_iot_e2e_process PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+az_iot_apply_warnings(az_iot_e2e_process)
+add_executable(az_iot_tests_e2e_process_child unit/e2e_process_test_child.c)
+target_include_directories(az_iot_tests_e2e_process_child PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+az_iot_apply_warnings(az_iot_tests_e2e_process_child)
+az_iot_add_cmocka_test(az_iot_tests_e2e_process unit/e2e_process_test.c)
+target_link_libraries(az_iot_tests_e2e_process PRIVATE az_iot_e2e_process)
+target_compile_definitions(az_iot_tests_e2e_process PRIVATE
+    "AZ_IOT_E2E_PROCESS_TEST_CHILD=\"$<TARGET_FILE:az_iot_tests_e2e_process_child>\"")
+add_dependencies(az_iot_tests_e2e_process az_iot_tests_e2e_process_child)
 # Concurrent writers and rotation in the file sink, which documents itself as
 # thread-safe. RACE: also run under helgrind and DRD.
 az_iot_add_cmocka_test(az_iot_tests_log_file_race RACE unit/log_file_race_test.c)

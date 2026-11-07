@@ -31,7 +31,7 @@
 #                 builds the native e2e tests, gets its test-config, materializes
 #                 the device X.509 material to files, and runs its group.
 #      coverage : merges the Linux groups' tracefiles into coverage-trace-e2e.
-#      esp32-qemu: the ESP32 IoT Hub sample in QEMU (esp32, esp32c3), always on
+#      esp32-qemu: the ESP32 IoT Hub sample in QEMU (esp32, esp32c3, esp32s3), always on
 #                 the shared environment (see the job).
 #   3. teardown : always() deletes the shared resource group (via the reusable
 #                 destroy-e2e-resources step). It recomputes the group name from
@@ -328,7 +328,7 @@ jobs:
         # Windows runner image does not carry.
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }}
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport az_iot_tests_e2e_amqp_link az_iot_tests_e2e_notify_time az_iot_tests_e2e_http_headers az_iot_tests_e2e_amqp_capture az_iot_tests_e2e_amqp_telemetry az_iot_tests_e2e_sas az_iot_tests_e2e_tpm az_iot_tests_e2e_az_mqtt az_iot_tests_e2e_fileupload_az_mqtt az_iot_tests_e2e_transport_az_mqtt az_iot_tests_e2e_sas_az_mqtt az_iot_tests_e2e_tpm_az_mqtt
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_process az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport az_iot_tests_e2e_amqp_link az_iot_tests_e2e_notify_time az_iot_tests_e2e_http_headers az_iot_tests_e2e_amqp_capture az_iot_tests_e2e_amqp_telemetry az_iot_tests_e2e_sas az_iot_tests_e2e_tpm az_iot_tests_e2e_az_mqtt az_iot_tests_e2e_fileupload_az_mqtt az_iot_tests_e2e_transport_az_mqtt az_iot_tests_e2e_sas_az_mqtt az_iot_tests_e2e_tpm_az_mqtt
           ${{ runner.os == 'Linux' && format('cmake --build --preset {0} --target az_iot_tests_e2e_custody az_iot_tests_e2e_custody_az_mqtt az_iot_tests_e2e_amqp_transport_sigpipe', matrix.preset) || '' }}
 
       - name: Build the file upload sample (Linux)
@@ -453,7 +453,8 @@ jobs:
           # suite and the transport suite (WebSockets, and MQTT through an HTTP
           # proxy; its proxy scenarios skip themselves when no proxy is
           # configured for the leg), the DPS TPM suite, and the AMQP link,
-          # notification-time, HTTP header parsing and telemetry capture tests (no Azure resources).
+          # notification-time, HTTP header parsing and telemetry capture tests, and the child-process
+          # helper's test (no Azure resources).
           # The CSR enrollment test is not built here -- it needs a DPS
           # enrollment linked to a signing CA, which only ci-c-e2e-csr
           # provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
@@ -580,11 +581,12 @@ jobs:
   # coverage, and merging it would understate coverage for an unrelated reason.
   # The ESP32 IoT Hub sample (samples/unified/esp32) in QEMU: the firmware is the
   # device, az_iot_tests_e2e_esp32_qemu the service (eng/esp-idf-qemu-e2e.sh).
-  # esp32 keeps its key in flash; esp32c3 in the Digital Signature peripheral,
-  # its key burned into an emulated eFuse. Always on the shared environment, on
-  # push and nightly too: the per-run enrollments' RSA-4096 keys exceed the DS
-  # peripheral's 3072 bits, and the shared group CA issues RSA-2048. Device
-  # index 12 (esp32) and 13 (esp32c3), after the test legs' 0..11.
+  # esp32 keeps its key in flash; esp32c3 and esp32s3 in the Digital Signature
+  # peripheral, its key burned into an emulated eFuse. Always on the shared
+  # environment, on push and nightly too: the per-run enrollments' RSA-4096 keys
+  # exceed the esp32c3 DS peripheral's 3072 bits, and the shared group CA issues
+  # RSA-2048. Device index 12 (esp32), 13 (esp32c3) and 14 (esp32s3), after the
+  # test legs' 0..11.
   esp32-qemu:
     name: esp32 qemu / ${{ matrix.target }}
     needs: changes
@@ -602,6 +604,8 @@ jobs:
             device-index: 12
           - target: esp32c3
             device-index: 13
+          - target: esp32s3
+            device-index: 14
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

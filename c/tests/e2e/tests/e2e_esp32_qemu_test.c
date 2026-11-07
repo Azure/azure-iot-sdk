@@ -18,142 +18,47 @@
 #include <cmocka.h>
 
 #include <errno.h>
-#include <fcntl.h>
 #include <inttypes.h>
-#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
-#include <sys/wait.h>
 #include <time.h>
-#include <unistd.h>
 
 #include <azure/core/az_json.h>
 
 #include "az_iot_e2e_service.h"
+#include "support/e2e_process.h"
 
 #define E2E_READY_TIMEOUT_S 420 /* boot, DHCP, DPS and hub, TLS emulated */
 #define E2E_TELEMETRY_TIMEOUT_S 180
 #define E2E_REQUEST_TIMEOUT_S 120
 #define E2E_WATCH_TIMEOUT_S 90 /* the Event Hub AMQP handshake can fail transiently */
 #define E2E_PUMP_MS 50
-
-/** @brief The firmware's QEMU process and what it has printed. */
-typedef struct
-{
-  pid_t pid;
-  int output; /* read end of its stdout and stderr, non-blocking */
-  char log[128 * 1024]; /* most recent output, NUL-terminated */
-  size_t log_length;
-  size_t echoed; /* log bytes already echoed to stdout */
-} firmware_process;
+#define E2E_STOP_GRACE_MS 5000
 
 static az_iot_e2e_service* s_service;
-static firmware_process s_firmware;
+static az_iot_e2e_process s_firmware;
 static char s_device_id[129];
 
-/** @brief Starts @p command through /bin/sh in its own process group, output piped to us. */
-static bool firmware_start(firmware_process* f, const char* command)
+/** @brief The service transport, one step. */
+static void pump_service(void* context)
 {
-  int fds[2];
-  if (pipe(fds) != 0)
-  {
-    return false;
-  }
-  f->pid = fork();
-  if (f->pid == 0)
-  {
-    (void)setpgid(0, 0);
-    (void)dup2(fds[1], STDOUT_FILENO);
-    (void)dup2(fds[1], STDERR_FILENO);
-    (void)close(fds[0]);
-    (void)close(fds[1]);
-    execl("/bin/sh", "sh", "-c", command, (char*)NULL);
-    _exit(127);
-  }
-  (void)close(fds[1]);
-  if (f->pid < 0)
-  {
-    (void)close(fds[0]);
-    return false;
-  }
-  f->output = fds[0];
-  return fcntl(f->output, F_SETFL, O_NONBLOCK) == 0;
-}
-
-/** @brief Reads what the firmware printed and echoes whole lines, prefixed, to stdout. */
-static void firmware_read(firmware_process* f)
-{
-  for (;;)
-  {
-    if (f->log_length + 1 >= sizeof(f->log)) // Full: keep the newer half.
-    {
-      size_t const keep = sizeof(f->log) / 2;
-      memmove(f->log, f->log + f->log_length - keep, keep);
-      f->echoed = f->echoed > f->log_length - keep ? f->echoed - (f->log_length - keep) : 0;
-      f->log_length = keep;
-    }
-    ssize_t n = read(f->output, f->log + f->log_length, sizeof(f->log) - 1 - f->log_length);
-    if (n <= 0)
-    {
-      break;
-    }
-    f->log_length += (size_t)n;
-  }
-  f->log[f->log_length] = '\0';
-  char* line_end;
-  while ((line_end = memchr(f->log + f->echoed, '\n', f->log_length - f->echoed)) != NULL)
-  {
-    printf("[esp32] %.*s\n", (int)(line_end - (f->log + f->echoed)), f->log + f->echoed);
-    f->echoed = (size_t)(line_end - f->log) + 1;
-  }
-  (void)fflush(stdout);
-}
-
-/** @brief Whether the firmware printed @p text (in the retained log). */
-static bool firmware_printed(const firmware_process* f, const char* text)
-{
-  return strstr(f->log, text) != NULL;
-}
-
-/** @brief Stops the process group (sh, the script and QEMU). */
-static void firmware_stop(firmware_process* f)
-{
-  if (f->pid <= 0)
-  {
-    return;
-  }
-  (void)kill(-f->pid, SIGTERM);
-  for (int i = 0; i < 50 && waitpid(f->pid, NULL, WNOHANG) == 0; ++i)
-  {
-    struct timespec t = { 0, 100 * 1000 * 1000 };
-    (void)nanosleep(&t, NULL);
-  }
-  (void)kill(-f->pid, SIGKILL);
-  (void)waitpid(f->pid, NULL, 0);
-  firmware_read(f);
-  (void)close(f->output);
-  f->pid = 0;
+  (void)context;
+  (void)az_iot_e2e_service_do_work(s_service, E2E_PUMP_MS);
 }
 
 /** @brief One step: the firmware's output, then the service transport. */
 static void pump(void)
 {
-  firmware_read(&s_firmware);
-  (void)az_iot_e2e_service_do_work(s_service, E2E_PUMP_MS);
+  az_iot_e2e_process_read_output(&s_firmware);
+  pump_service(NULL);
 }
 
 /** @brief Pumps until the firmware printed @p text or @p seconds pass. */
 static bool wait_for_firmware(const char* text, int seconds)
 {
-  time_t const end = time(NULL) + seconds;
-  while (!firmware_printed(&s_firmware, text) && time(NULL) < end)
-  {
-    pump();
-  }
-  return firmware_printed(&s_firmware, text);
+  return az_iot_e2e_process_wait_for_output(&s_firmware, text, seconds * 1000, pump_service, NULL);
 }
 
 /** @brief Pumps until the REST request in flight completes; returns 1, or 0 on timeout, -1 on
@@ -246,7 +151,7 @@ static void make_marker(char* out, size_t size, const char* tag)
 static int group_teardown(void** state)
 {
   (void)state;
-  firmware_stop(&s_firmware);
+  (void)az_iot_e2e_process_stop(&s_firmware, E2E_STOP_GRACE_MS);
   if (s_service != NULL)
   {
     az_iot_e2e_service_telemetry_watch_end(s_service);
@@ -307,14 +212,15 @@ static int group_setup(void** state)
   }
 
   printf("[e2e] starting the firmware: %s\n", command);
-  if (!firmware_start(&s_firmware, command))
+  if (!az_iot_e2e_process_start_shell(&s_firmware, command, NULL, "[esp32] "))
   {
     fprintf(stderr, "[e2e] could not start the firmware: %s\n", strerror(errno));
     return fail_group_setup();
   }
   if (!wait_for_firmware("hub_esp32: ready on ", E2E_READY_TIMEOUT_S))
   {
-    fprintf(stderr, "[e2e] the firmware did not connect within %d s\n", E2E_READY_TIMEOUT_S);
+    fprintf(
+        stderr, "[e2e] the firmware did not connect within %d s, or exited\n", E2E_READY_TIMEOUT_S);
     return fail_group_setup();
   }
   return 0;
