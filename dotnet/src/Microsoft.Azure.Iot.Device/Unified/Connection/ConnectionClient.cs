@@ -429,13 +429,18 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             {
                 // The connection was lost before IoT hub acknowledged the request. It stays pending and is resent once this
                 // client reconnects.
-                ReleaseCertificateSigningConnectionClaim(pending, claimedNonce);
+                ReleaseCertificateSigningConnectionClaim(pending, request.RequestId, claimedNonce);
             }
-            catch
+            catch when (!IsSendSuperseded(pending, request.RequestId, claimedNonce))
             {
                 TryRemovePendingCertificateSigning(pending);
                 cancellationRegistration.Dispose();
                 throw;
+            }
+            catch
+            {
+                // Another send (a resend after reconnecting, or a recovery) took over this request, so this failure does not
+                // decide its outcome.
             }
 
             return operation;
@@ -491,6 +496,37 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             };
         }
 
+        /// <summary>
+        /// Remove a pending request only if the send that sent it as <paramref name="requestId"/> on the connection
+        /// <paramref name="claimedNonce"/> is still the one that decides its outcome.
+        /// </summary>
+        private bool TryRemovePendingCertificateSigning(PendingCertificateSigning pending, string requestId, Guid claimedNonce)
+        {
+            lock (_certificateSigningLock)
+            {
+                return IsSendOwner(pending, requestId, claimedNonce) && _pendingCertificateSignings.Remove(requestId);
+            }
+        }
+
+        private bool IsSendSuperseded(PendingCertificateSigning pending, string requestId, Guid claimedNonce)
+        {
+            lock (_certificateSigningLock)
+            {
+                return _pendingCertificateSignings.TryGetValue(requestId, out PendingCertificateSigning? current)
+                    && current == pending
+                    && !IsSendOwner(pending, requestId, claimedNonce);
+            }
+        }
+
+        // Must be called under _certificateSigningLock.
+        private bool IsSendOwner(PendingCertificateSigning pending, string requestId, Guid claimedNonce)
+        {
+            return _pendingCertificateSignings.TryGetValue(requestId, out PendingCertificateSigning? current)
+                && current == pending
+                && pending.RequestId == requestId
+                && pending.SentConnectionNonce == claimedNonce;
+        }
+
         private bool TryRemovePendingCertificateSigning(PendingCertificateSigning pending)
         {
             lock (_certificateSigningLock)
@@ -505,11 +541,11 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// Forget that a pending request was sent on the given connection, because sending it there failed, so that it is
         /// resent on the next connection (or on the current one, if its device presence flow already completed).
         /// </summary>
-        private void ReleaseCertificateSigningConnectionClaim(PendingCertificateSigning pending, Guid claimedNonce)
+        private void ReleaseCertificateSigningConnectionClaim(PendingCertificateSigning pending, string requestId, Guid claimedNonce)
         {
             lock (_certificateSigningLock)
             {
-                if (pending.SentConnectionNonce == claimedNonce)
+                if (IsSendOwner(pending, requestId, claimedNonce))
                 {
                     pending.SentConnectionNonce = null;
                 }
@@ -568,12 +604,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             foreach (PendingCertificateSigning pending in toFail)
             {
-                pending.Operation.SetFailed(new DeviceException(
-                    "The certificate signing request was abandoned because this client reconnected to a different IoT hub or as a different device before the request completed.")
-                {
-                    Retryability = ErrorRetryability.Terminal,
-                    IsContained = true,
-                });
+                pending.Operation.SetFailed(CreateIdentityChangedException());
             }
 
             if (toSend.Count == 0)
@@ -592,9 +623,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
             catch (Exception e)
             {
-                foreach ((PendingCertificateSigning pending, _) in toSend)
+                foreach ((PendingCertificateSigning pending, string requestId) in toSend)
                 {
-                    if (TryRemovePendingCertificateSigning(pending))
+                    if (TryRemovePendingCertificateSigning(pending, requestId, nonce))
                     {
                         pending.Operation.SetFailed(e);
                     }
@@ -604,6 +635,16 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
 
             await Task.WhenAll(toSend.Select(item => SendPendingCertificateSigningAsync(item.Pending, item.RequestId, nonce)));
+        }
+
+        private static DeviceException CreateIdentityChangedException()
+        {
+            return new DeviceException(
+                "The certificate signing request was abandoned because this client reconnected to a different IoT hub or as a different device before the request completed.")
+            {
+                Retryability = ErrorRetryability.Terminal,
+                IsContained = true,
+            };
         }
 
         /// <summary>
@@ -617,7 +658,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
             catch (MqttClientNotConnectedException)
             {
-                ReleaseCertificateSigningConnectionClaim(pending, claimedNonce);
+                ReleaseCertificateSigningConnectionClaim(pending, requestId, claimedNonce);
             }
             catch (OperationCanceledException)
             {
@@ -626,7 +667,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
             catch (Exception e)
             {
-                if (TryRemovePendingCertificateSigning(pending))
+                // A send that was superseded (for example, by a recovery after IoT hub answered this one) does not fail the request.
+                if (TryRemovePendingCertificateSigning(pending, requestId, claimedNonce))
                 {
                     pending.Operation.SetFailed(e);
                 }
@@ -701,12 +743,17 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                             return Task.CompletedTask;
                         }
 
-                        // The authentication provider receives these on the next connection attempt to IoT hub.
-                        if (CurrentConnectionContext != null)
+                        // Read the context once, so that a concurrent context replacement cannot redirect these certificates
+                        // to a different device or IoT hub than the one validated here.
+                        ConnectionContext? connectionContext = CurrentConnectionContext;
+                        if (connectionContext == null || !pending.IsForIdentity(connectionContext))
                         {
-                            CurrentConnectionContext.IssuedClientCertificates = response.Certificates;
+                            pending.Operation.SetFailed(CreateIdentityChangedException());
+                            return Task.CompletedTask;
                         }
 
+                        // The authentication provider receives these on the next connection attempt to IoT hub.
+                        connectionContext.IssuedClientCertificates = response.Certificates;
                         pending.Operation.SetCompleted(response);
                     }
                     else
