@@ -151,6 +151,24 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             IsConnectionTargetSet = true;
             IsClassicDevicePresenceEstablished = true;
             ClassicDevicePresenceEstablished?.Invoke();
+            ReleaseHeldPublishes();
+        }
+
+        /// <summary>
+        /// Simulate the device reconnecting to an MQTTv5 IoT hub: like the connection client, publishes held since the
+        /// connection was lost are sent on the new connection.
+        /// </summary>
+        public Guid SimulateReconnected(Guid? connectionNonce = null)
+        {
+            Guid nonce = connectionNonce ?? Guid.NewGuid();
+            ConnectionNonce = nonce;
+            IsConnectionTargetSet = true;
+            ReleaseHeldPublishes();
+            return nonce;
+        }
+
+        private void ReleaseHeldPublishes()
+        {
             TaskCompletionSource reconnected;
             lock (PublishedMessages)
             {
