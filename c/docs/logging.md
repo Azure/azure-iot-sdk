@@ -49,7 +49,7 @@ az_iot_log_file_sink_close(&file_sink);
 The built-in sinks write:
 
 ```text
-2026-10-03T18:16:17.408Z [INFO] [connection] [10294] [connection_client.c:3756] open: sdk=2.0.0-preview.1 route=dps ...
+2026-10-03T18:16:17.408Z [INFO] [connection] [10294] [connection_client.c:3756] open: sdk=2.0.0-preview.2 route=dps ...
 ```
 
 | Field | Meaning |
