@@ -349,7 +349,16 @@ namespace Microsoft.Azure.Iot.Device
         /// Raised when <see cref="_unrecoverableFault"/> is set, so that operations waiting for the connection to come
         /// back stop waiting for something that will never happen.
         /// </summary>
-        private event Action? UnrecoverablyFaulted;
+        private protected event Action? UnrecoverablyFaulted;
+
+        /// <summary>
+        /// Whether nothing will bring the connection back without the application connecting again: this client hit a fault
+        /// it will not recover from, or the application deliberately disconnected it (or is doing so).
+        /// </summary>
+        private protected bool IsConnectionAbandoned =>
+            _unrecoverableFault != null
+            || Volatile.Read(ref _deliberateDisconnectsInProgress) != 0
+            || !IsConnectionTargetSet;
 
         // Incremented each time the application deliberately disconnects this client. An operation that was waiting for
         // the connection to come back, or a re-provisioning attempt that was about to start, compares this against the
@@ -364,7 +373,7 @@ namespace Microsoft.Azure.Iot.Device
         /// Raised when the application deliberately disconnects this client, so that operations waiting for the
         /// connection to come back stop waiting for a recovery that the disconnect has abandoned.
         /// </summary>
-        private event Action? DeliberatelyDisconnected;
+        private protected event Action? DeliberatelyDisconnected;
 
         // Completed once the most recently started re-provisioning attempt has fully stopped, so that a deliberate
         // disconnect can wait for it rather than racing it for this client's connection.
@@ -1498,8 +1507,17 @@ namespace Microsoft.Azure.Iot.Device
 
             if (fault != null)
             {
-                throw new OperationCanceledException("Operation canceled because this client hit a fault that it cannot recover from. See the inner exception for that fault.", fault);
+                throw CreateUnrecoverablyFaultedException(fault);
             }
+        }
+
+        /// <summary>
+        /// The exception that operations waiting for the connection to come back fail with once this client has hit a
+        /// fault that it will not recover from.
+        /// </summary>
+        private protected OperationCanceledException CreateUnrecoverablyFaultedException(DeviceException? fault = null)
+        {
+            return new OperationCanceledException("Operation canceled because this client hit a fault that it cannot recover from. See the inner exception for that fault.", fault ?? _unrecoverableFault);
         }
 
         /// <summary>
@@ -1650,7 +1668,6 @@ namespace Microsoft.Azure.Iot.Device
 
                     Debug.Assert(provisioningFlowCompletedArgs.RegistrationResult != null);
 
-                    //TODO do we care about initial twin as returned by DPS?
                     return provisioningFlowCompletedArgs.RegistrationResult;
                 }
             }
