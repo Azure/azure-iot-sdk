@@ -130,6 +130,7 @@ jobs:
             --filter "Category!=CertificateManagement&Category!=Longhaul" `
             --coverlet `
             --coverlet-output-format cobertura `
+            --coverlet-include "[Microsoft.Azure.Iot.Device]*" `
             --report-xunit-trx `
             --report-xunit-trx-filename test-results.trx `
             --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `
