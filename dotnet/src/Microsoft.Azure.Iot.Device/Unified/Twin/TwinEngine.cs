@@ -213,6 +213,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
             _connection.ConnectionLost += HandleConnectionLost;
+            _connection.ConnectionAbandoned += HandleConnectionAbandoned;
             _connection.ClassicDevicePresenceEstablished += HandleClassicDevicePresenceEstablished;
 
             if (_connection.IsClassicDevicePresenceEstablished)
@@ -1305,6 +1306,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             StartGetTwinAttempt(fetch);
         }
 
+        // Nothing will bring the connection back unless the application connects again, so a GET waiting to be sent (or sent
+        // again) once reconnected must fail now. Otherwise, an attempt that is queued but not yet handed to the connection
+        // client could fail with an unrelated error, or be sent on a connection the application makes later.
+        private void HandleConnectionAbandoned(Exception exception)
+        {
+            AbandonAllGetTwinFetches(() => exception);
+        }
+
         private void AbandonAllGetTwinFetches(Func<Exception> createException)
         {
             List<GetTwinWaiter> abandoned = new();
@@ -1863,6 +1872,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             _isDisposed = true;
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.ConnectionLost -= HandleConnectionLost;
+            _connection.ConnectionAbandoned -= HandleConnectionAbandoned;
             _connection.ClassicDevicePresenceEstablished -= HandleClassicDevicePresenceEstablished;
             lock (_desiredStateLock)
             {

@@ -72,7 +72,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 _reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
             }
 
+            ConnectionAbandoned?.Invoke(new OperationCanceledException("Deliberately disconnected."));
             reconnected.TrySetException(new OperationCanceledException("Deliberately disconnected."));
+        }
+
+        public event Action<Exception>? ConnectionAbandoned;
+
+        event Action<Exception>? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ConnectionAbandoned
+        {
+            add => ConnectionAbandoned += value;
+            remove => ConnectionAbandoned -= value;
         }
 
         // Completed while connected. Like the connection client, publishes made after the connection is lost wait for it.
@@ -133,12 +142,26 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// <summary>Optional override for how the "service" answers an unsubscribe. Defaults to succeeding for every topic filter.</summary>
         public Func<MqttUnsubscribe, Task<MqttUnsubscribeAck>>? OnUnsubscribe { get; set; }
 
+        /// <summary>
+        /// Optional hook run as a publish enters <see cref="PublishAsync"/>, before the connection state is checked. Lets a
+        /// test hold a publish that a feature client has handed over but that the connection client has not yet admitted.
+        /// </summary>
+        public Func<MqttPublish, Task>? BeforePublishAdmitted { get; set; }
+
         public bool IsDisposed { get; private set; }
 
         public ConnectionContext? GetCurrentConnectionContext() => CurrentConnectionContext;
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
+            if (BeforePublishAdmitted != null)
+            {
+                await BeforePublishAdmitted.Invoke(publish);
+            }
+
+            // Like the connection client, a publish whose token is already canceled is never sent.
+            cancellationToken.ThrowIfCancellationRequested();
+
             Task reconnected;
             lock (PublishedMessages)
             {

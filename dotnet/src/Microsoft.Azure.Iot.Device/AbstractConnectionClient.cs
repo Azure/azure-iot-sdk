@@ -1440,8 +1440,17 @@ namespace Microsoft.Azure.Iot.Device
 
             if (fault != null)
             {
-                throw new OperationCanceledException("Operation canceled because this client hit a fault that it cannot recover from. See the inner exception for that fault.", fault);
+                throw CreateUnrecoverablyFaultedException(fault);
             }
+        }
+
+        /// <summary>
+        /// The exception that operations waiting for the connection to come back fail with once this client has hit a
+        /// fault that it will not recover from.
+        /// </summary>
+        private protected OperationCanceledException CreateUnrecoverablyFaultedException(DeviceException? fault = null)
+        {
+            return new OperationCanceledException("Operation canceled because this client hit a fault that it cannot recover from. See the inner exception for that fault.", fault ?? _unrecoverableFault);
         }
 
         /// <summary>

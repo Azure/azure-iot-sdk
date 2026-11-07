@@ -141,6 +141,44 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task GetTwinAsync_Classic_DisconnectingBeforeAQueuedResendIsAdmittedFailsItAndNeverSendsIt()
+        {
+            MockFeatureConnectionClient connection = CreateClassicConnection();
+            using TwinClient twinClient = new(connection);
+
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
+            await connection.WaitForPublishedMessagesAsync(1);
+
+            // The resend is queued, but held before the connection client gets to check the connection state.
+            TaskCompletionSource<string> resendQueued = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource releaseResend = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connection.BeforePublishAdmitted = async publish =>
+            {
+                if (resendQueued.TrySetResult(publish.Topic))
+                {
+                    await releaseResend.Task;
+                }
+            };
+            connection.SimulateConnectionLost();
+            await resendQueued.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            connection.SimulateDeliberateDisconnect();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => getTask.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+
+            // The application connects again before the queued resend gets going, which must not send it. (Connecting starts
+            // a GET of its own, which is expected.)
+            connection.SimulateClassicDevicePresenceEstablished();
+            releaseResend.SetResult();
+            await connection.WaitForPublishedMessagesAsync(2);
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            string resendTopic = await resendQueued.Task;
+            lock (connection.PublishedMessages)
+            {
+                Assert.DoesNotContain(connection.PublishedMessages, publish => publish.Topic == resendTopic);
+            }
+        }
+
+        [Fact]
         public async Task GetTwinAsync_Classic_CancellingStopsWaitingWhileTheRequestIsHeldForReconnection()
         {
             MockFeatureConnectionClient connection = CreateClassicConnection();

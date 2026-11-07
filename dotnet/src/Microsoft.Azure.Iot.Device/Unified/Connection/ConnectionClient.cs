@@ -47,6 +47,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             remove => HubConnectionLost -= value;
         }
 
+        private event Action<Exception>? ConnectionAbandoned;
+
+        event Action<Exception>? IConnectionClient.ConnectionAbandoned
+        {
+            add => ConnectionAbandoned += value;
+            remove => ConnectionAbandoned -= value;
+        }
+
         private event Action? ClassicDevicePresenceEstablished;
 
         event Action? IConnectionClient.ClassicDevicePresenceEstablished
@@ -92,6 +100,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             ClassicDevicePresenceEstablished += HandleCertificateSigningPresenceEstablished;
             DeliberatelyDisconnected += CancelPendingCertificateSigningOperations;
             UnrecoverablyFaulted += CancelPendingCertificateSigningOperations;
+            DeliberatelyDisconnected += () => ConnectionAbandoned?.Invoke(new OperationCanceledException(
+                "Operation canceled because the connection client was deliberately disconnected while this operation was waiting for the connection to be re-established."));
+            UnrecoverablyFaulted += () => ConnectionAbandoned?.Invoke(CreateUnrecoverablyFaultedException());
             HubConnectionLost += () => _classicConnection.MarkLost();
         }
 
@@ -431,16 +442,15 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 // client reconnects.
                 ReleaseCertificateSigningConnectionClaim(pending, request.RequestId, claimedNonce);
             }
-            catch when (!IsSendSuperseded(pending, request.RequestId, claimedNonce))
+            catch when (ShouldSendFailureFailRequest(pending, request.RequestId, claimedNonce))
             {
-                TryRemovePendingCertificateSigning(pending);
                 cancellationRegistration.Dispose();
                 throw;
             }
             catch
             {
-                // Another send (a resend after reconnecting, or a recovery) took over this request, so this failure does not
-                // decide its outcome.
+                // Another send (a resend after reconnecting, or a recovery under a new request ID) took over this request,
+                // so this failure does not decide its outcome.
             }
 
             return operation;
@@ -508,13 +518,27 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             }
         }
 
-        private bool IsSendSuperseded(PendingCertificateSigning pending, string requestId, Guid claimedNonce)
+        /// <summary>
+        /// Decide whether the failure of the send that sent a request as <paramref name="requestId"/> on the connection
+        /// <paramref name="claimedNonce"/> fails the request, removing the request if so.
+        /// </summary>
+        /// <remarks>
+        /// The failure fails the request only if that send still owns it. If the request is still pending but another send
+        /// took it over (a resend on a later connection, or a recovery that resubmitted it under a new request ID), the
+        /// failure is ignored. If the request is no longer pending (for example, it was canceled), the failure is reported.
+        /// </remarks>
+        private bool ShouldSendFailureFailRequest(PendingCertificateSigning pending, string requestId, Guid claimedNonce)
         {
             lock (_certificateSigningLock)
             {
-                return _pendingCertificateSignings.TryGetValue(requestId, out PendingCertificateSigning? current)
-                    && current == pending
-                    && !IsSendOwner(pending, requestId, claimedNonce);
+                if (IsSendOwner(pending, requestId, claimedNonce))
+                {
+                    _pendingCertificateSignings.Remove(requestId);
+                    return true;
+                }
+
+                return !(_pendingCertificateSignings.TryGetValue(pending.RequestId, out PendingCertificateSigning? current)
+                    && current == pending);
             }
         }
 
