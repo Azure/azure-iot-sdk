@@ -12,9 +12,9 @@
  *   wait              prints "ready", then on SIGTERM (CTRL_BREAK on Windows) prints "stopping
  *                     gracefully" and exits 3
  *   ignore-stop       prints "ready" and ignores SIGTERM (CTRL_BREAK) until killed */
-#ifdef __linux__
+#if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE // F_SETPIPE_SZ
-#elif !defined(_WIN32)
+#elif !defined(__linux__) && !defined(_WIN32)
 #define _POSIX_C_SOURCE 200809L
 #endif
 
