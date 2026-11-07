@@ -98,5 +98,5 @@ jobs:
 
       - name: Unit tests
         run: >
-          dotnet test tests/Microsoft.Azure.Iot.Device.UnitTests/Microsoft.Azure.Iot.Device.UnitTests.csproj
+          dotnet test --project tests/Microsoft.Azure.Iot.Device.UnitTests/Microsoft.Azure.Iot.Device.UnitTests.csproj
           --configuration Release --no-build
