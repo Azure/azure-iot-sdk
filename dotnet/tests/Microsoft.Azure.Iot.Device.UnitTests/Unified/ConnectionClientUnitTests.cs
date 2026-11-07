@@ -384,8 +384,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.True(operation.Completed.IsCompletedSuccessfully);
         }
 
-        [Fact]
-        public async Task FailedInitialSendThatWasSupersededByRecoveryUnderANewRequestIdDoesNotFailTheCertificateSigning()
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task FailedInitialSendThatWasSupersededByRecoveryUnderANewRequestIdDoesNotFailTheCertificateSigning(bool isRecoveryCompletedFirst)
         {
             using MockConnectionMqttClient mockMqttClient = new();
             ConnectionContext context = GetMockConnectionContext(false);
@@ -431,13 +433,23 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await ReceiveCertificateSigningResponseAsync(client, request.RequestId, "409", ErrorResponse(409005));
             string replacementId = await replacementSent.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
+            if (isRecoveryCompletedFirst)
+            {
+                await ReceiveCertificateSigningResponseAsync(client, replacementId, "202", AcceptedResponse);
+                await ReceiveCertificateSigningResponseAsync(client, replacementId, "200", CompletedResponse);
+            }
+
             // The initial send, superseded by the recovery, then fails.
             initialPuback.SetResult(new() { ReasonCode = MqttPublishAckReasonCode.UnspecifiedError });
             CertificateSigningOperation operation = await sending.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
-            Assert.False(operation.Completed.IsCompleted);
 
-            await ReceiveCertificateSigningResponseAsync(client, replacementId, "202", AcceptedResponse);
-            await ReceiveCertificateSigningResponseAsync(client, replacementId, "200", CompletedResponse);
+            if (!isRecoveryCompletedFirst)
+            {
+                Assert.False(operation.Completed.IsCompleted);
+                await ReceiveCertificateSigningResponseAsync(client, replacementId, "202", AcceptedResponse);
+                await ReceiveCertificateSigningResponseAsync(client, replacementId, "200", CompletedResponse);
+            }
+
             Assert.True(operation.Completed.IsCompletedSuccessfully);
         }
 

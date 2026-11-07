@@ -450,7 +450,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             catch
             {
                 // Another send (a resend after reconnecting, or a recovery under a new request ID) took over this request,
-                // so this failure does not decide its outcome.
+                // or IoT hub already answered it, so this failure does not decide its outcome.
             }
 
             return operation;
@@ -523,9 +523,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// <paramref name="claimedNonce"/> fails the request, removing the request if so.
         /// </summary>
         /// <remarks>
-        /// The failure fails the request only if that send still owns it. If the request is still pending but another send
-        /// took it over (a resend on a later connection, or a recovery that resubmitted it under a new request ID), the
-        /// failure is ignored. If the request is no longer pending (for example, it was canceled), the failure is reported.
+        /// The failure fails the request only if that send still owns it. If another send took it over (a resend on a later
+        /// connection, or a recovery that resubmitted it under a new request ID), or IoT hub already answered the request,
+        /// the failure is ignored, whether or not the request is still pending. Otherwise the request already ended (for
+        /// example, it was canceled), and the failure is reported.
         /// </remarks>
         private bool ShouldSendFailureFailRequest(PendingCertificateSigning pending, string requestId, Guid claimedNonce)
         {
@@ -537,8 +538,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     return true;
                 }
 
-                return !(_pendingCertificateSignings.TryGetValue(pending.RequestId, out PendingCertificateSigning? current)
-                    && current == pending);
+                // Ending a request does not reset these, so they still say whether this send was superseded.
+                bool isSuperseded = pending.RequestId != requestId || pending.SentConnectionNonce != claimedNonce;
+                return !isSuperseded && !pending.IsAnsweredByIotHub;
             }
         }
 
@@ -551,13 +553,19 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 && pending.SentConnectionNonce == claimedNonce;
         }
 
-        private bool TryRemovePendingCertificateSigning(PendingCertificateSigning pending)
+        private bool TryRemovePendingCertificateSigning(PendingCertificateSigning pending, bool isAnsweredByIotHub = false)
         {
             lock (_certificateSigningLock)
             {
-                return _pendingCertificateSignings.TryGetValue(pending.RequestId, out PendingCertificateSigning? current)
-                    && current == pending
-                    && _pendingCertificateSignings.Remove(pending.RequestId);
+                if (!_pendingCertificateSignings.TryGetValue(pending.RequestId, out PendingCertificateSigning? current)
+                    || current != pending
+                    || !_pendingCertificateSignings.Remove(pending.RequestId))
+                {
+                    return false;
+                }
+
+                pending.IsAnsweredByIotHub = isAnsweredByIotHub;
+                return true;
             }
         }
 
@@ -762,7 +770,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                             throw new JsonException("The certificate signing completion response had null certificates or correlation ID.");
                         }
 
-                        if (!TryRemovePendingCertificateSigning(pending))
+                        if (!TryRemovePendingCertificateSigning(pending, isAnsweredByIotHub: true))
                         {
                             return Task.CompletedTask;
                         }
@@ -852,6 +860,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     pending.SentConnectionNonce = claimedNonce;
                     recoveryRequestId = pending.RequestId;
                 }
+                else
+                {
+                    pending.IsAnsweredByIotHub = true;
+                }
             }
 
             if (recoveryRequestId == null)
@@ -926,6 +938,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
             // Whether the current request ID replaces an earlier request that this client resent.
             public bool IsReplaceRecovery { get; set; }
+
+            // Whether IoT hub's response decided this request's outcome (issued certificates, or rejected it), which a
+            // later send failure must not override.
+            public bool IsAnsweredByIotHub { get; set; }
 
             public bool IsForIdentity(ConnectionContext connectionContext) =>
                 string.Equals(HubDeviceId, connectionContext.DeviceId, StringComparison.Ordinal)
