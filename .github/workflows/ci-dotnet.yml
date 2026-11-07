@@ -183,7 +183,7 @@ jobs:
     - name: Code Coverage Summary Report
       uses: irongut/CodeCoverageSummary@51cc3a756ddcd398d447c044c02cb6aa83fdae95 # v1.3.0
       with:
-        filename: coverage/Microsoft.Azure.Iot.Device.UnitTests/**/coverage*.xml
+        filename: coverage/**/coverage.cobertura*.xml
         format: markdown
         hide_branch_rate: false
         hide_complexity: false
