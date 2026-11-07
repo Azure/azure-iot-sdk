@@ -55,6 +55,14 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             remove => HubConnectionLost -= value;
         }
 
+        private event Action<Exception>? ConnectionAbandoned;
+
+        event Action<Exception>? IConnectionClient.ConnectionAbandoned
+        {
+            add => ConnectionAbandoned += value;
+            remove => ConnectionAbandoned -= value;
+        }
+
         private event Action? HubIdentityChanged;
 
         event Action? IConnectionClient.HubIdentityChanged
@@ -160,6 +168,9 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             _receiveDesiredPropertyUpdates = options.ReceiveDesiredPropertyUpdates;
             _receiveReportedPropertiesUponConnect = options.ReceiveReportedPropertiesUponConnect;
             _sessionExpiryInterval = options.SessionExpiryInterval;
+            DeliberatelyDisconnected += () => ConnectionAbandoned?.Invoke(new OperationCanceledException(
+                "Operation canceled because the connection client was deliberately disconnected while this operation was waiting for the connection to be re-established."));
+            UnrecoverablyFaulted += () => ConnectionAbandoned?.Invoke(CreateUnrecoverablyFaultedException());
         }
 
         // Keep the session for the interval requested at CONNECT rather than the generic DISCONNECT default.

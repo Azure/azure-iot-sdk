@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Authentication;
@@ -69,7 +69,58 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         public void SimulateConnectionLost()
         {
             IsClassicDevicePresenceEstablished = false;
+            lock (PublishedMessages)
+            {
+                if (_reconnected.Task.IsCompleted)
+                {
+                    _reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+                }
+            }
+
             ConnectionLost?.Invoke();
+        }
+
+        /// <summary>
+        /// Simulate the application deliberately disconnecting: like the connection client, publishes that wait for the
+        /// connection to come back fail with <see cref="OperationCanceledException"/>.
+        /// </summary>
+        public void SimulateDeliberateDisconnect()
+        {
+            IsClassicDevicePresenceEstablished = false;
+            TaskCompletionSource reconnected;
+            lock (PublishedMessages)
+            {
+                IsConnectionTargetSet = false;
+                reconnected = _reconnected;
+                _reconnected = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+
+            ConnectionAbandoned?.Invoke(new OperationCanceledException("Deliberately disconnected."));
+            reconnected.TrySetException(new OperationCanceledException("Deliberately disconnected."));
+        }
+
+        public event Action<Exception>? ConnectionAbandoned;
+
+        event Action<Exception>? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ConnectionAbandoned
+        {
+            add => ConnectionAbandoned += value;
+            remove => ConnectionAbandoned -= value;
+        }
+
+        event Action<Exception>? global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ConnectionAbandoned
+        {
+            add => ConnectionAbandoned += value;
+            remove => ConnectionAbandoned -= value;
+        }
+
+        // Completed while connected. Like the connection client, publishes made after the connection is lost wait for it.
+        private TaskCompletionSource _reconnected = CreateCompletedSource();
+
+        private static TaskCompletionSource CreateCompletedSource()
+        {
+            TaskCompletionSource source = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            source.SetResult();
+            return source;
         }
 
         public event Action? ClassicDevicePresenceEstablished;
@@ -97,8 +148,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         public void SimulateClassicDevicePresenceEstablished(Guid? connectionNonce = null)
         {
             ConnectionNonce = connectionNonce ?? Guid.NewGuid();
+            IsConnectionTargetSet = true;
             IsClassicDevicePresenceEstablished = true;
             ClassicDevicePresenceEstablished?.Invoke();
+            TaskCompletionSource reconnected;
+            lock (PublishedMessages)
+            {
+                reconnected = _reconnected;
+            }
+
+            reconnected.TrySetResult();
         }
 
         /// <summary>Every desired properties version a feature client reported that the device now holds, in order.</summary>
@@ -168,12 +227,40 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// <summary>Optional override for how the "service" answers an unsubscribe. Defaults to succeeding for every topic filter.</summary>
         public Func<MqttUnsubscribe, Task<MqttUnsubscribeAck>>? OnUnsubscribe { get; set; }
 
+        /// <summary>
+        /// Optional hook run as a publish enters <see cref="PublishAsync"/>, before the connection state is checked. Lets a
+        /// test hold a publish that a feature client has handed over but that the connection client has not yet admitted.
+        /// </summary>
+        public Func<MqttPublish, Task>? BeforePublishAdmitted { get; set; }
+
         public bool IsDisposed { get; private set; }
 
         public ConnectionContext? GetCurrentConnectionContext() => CurrentConnectionContext;
 
         public async Task<MqttPublishAck> PublishAsync(MqttPublish publish, CancellationToken cancellationToken = default)
         {
+            if (BeforePublishAdmitted != null)
+            {
+                await BeforePublishAdmitted.Invoke(publish);
+            }
+
+            // Like the connection client, a publish whose token is already canceled is never sent.
+            cancellationToken.ThrowIfCancellationRequested();
+
+            Task reconnected;
+            lock (PublishedMessages)
+            {
+                // Like the connection client, a publish made after a deliberate disconnect fails rather than waiting.
+                if (!IsConnectionTargetSet)
+                {
+                    throw new OperationCanceledException("Deliberately disconnected.");
+                }
+
+                reconnected = _reconnected.Task;
+            }
+
+            await reconnected.WaitAsync(cancellationToken);
+
             lock (PublishedMessages)
             {
                 PublishedMessages.Add(publish);
