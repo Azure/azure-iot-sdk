@@ -24,7 +24,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
         private IConnectionClient _connection;
 
-        // Guards _activeGetTwinFetch, _nextGetTwinFetch, _getTwinLostConnectionNonce and the state of each GetTwinFetch. It may be
+        // Guards _activeGetTwinFetch, _nextGetTwinFetch, _getTwinLostConnectionNonce, _getTwinAbandonment, _createGetTwinAbandonedException
+        // and the state of each GetTwinFetch. It may be
         // taken while holding _desiredStateLock, but never the other way around.
         private readonly object _getTwinLock = new();
 
@@ -37,6 +38,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
         // The connection nonce of the latest connection that was lost, as far as GET requests know.
         private Guid? _getTwinLostConnectionNonce;
+
+        // Counts the times that every pending GET was abandoned (see AbandonAllGetTwinFetches). Calls that a response detached
+        // from their GET are no longer tracked by it, so this tells whether they were meant to be abandoned meanwhile, and
+        // _createGetTwinAbandonedException creates the exception that the latest abandonment failed calls with.
+        private long _getTwinAbandonment;
+        private Func<Exception>? _createGetTwinAbandonedException;
 
         // What a desired properties resync requests: the desired properties in full.
         private static readonly GetTwinRequest s_desiredResyncGetTwinRequest = new(GetDesired: true, GetReported: false, IfNotMatchDesired: 0, IfNotMatchReported: 0);
@@ -1074,10 +1081,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out List<GetTwinWaiter>? waiters,
             out DesiredResync? resync,
             out bool isSent,
-            out Guid? sentConnectionNonce)
+            out Guid? sentConnectionNonce,
+            out long abandonment)
         {
             lock (_getTwinLock)
             {
+                abandonment = _getTwinAbandonment;
                 GetTwinFetch? fetch = _activeGetTwinFetch;
                 if (fetch == null || fetch.GetId != getId)
                 {
@@ -1114,7 +1123,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            if (!TryTakeGetTwinFetch(getId, out List<GetTwinWaiter>? waiters, out DesiredResync? resync, out bool isSent, out Guid? sentConnectionNonce))
+            if (!TryTakeGetTwinFetch(getId, out List<GetTwinWaiter>? waiters, out DesiredResync? resync,             out bool isSent, out Guid? sentConnectionNonce, out long abandonment))
             {
                 Trace.TraceInformation("Dropping a get twin response that does not match the outstanding get twin request.");
                 return;
@@ -1185,7 +1194,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             if (isFromReplacedConnection)
             {
                 Trace.TraceInformation("Dropping a get twin response that arrived after the connection it was requested on was replaced. Sending the request again.");
-                ResendGetTwinRequests(waiters);
+                ResendGetTwinRequests(waiters, abandonment);
                 return;
             }
 
@@ -1218,12 +1227,20 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         }
 
         // The response that these calls waited for was dropped since its connection was replaced, so they wait for a new GET
-        // instead, which goes out on the current connection (or the next one).
-        private void ResendGetTwinRequests(List<GetTwinWaiter> waiters)
+        // instead, which goes out on the current connection (or the next one). If every pending GET was abandoned since these
+        // calls were detached from theirs (abandonment is the count at that time), they fail as the abandonment failed the others.
+        private void ResendGetTwinRequests(List<GetTwinWaiter> waiters, long abandonment)
         {
-            List<GetTwinWaiter> disposed = new();
+            List<GetTwinWaiter> failed = new();
+            Func<Exception> createException = () => new ObjectDisposedException(nameof(TwinClient));
             lock (_getTwinLock)
             {
+                bool wasAbandoned = _getTwinAbandonment != abandonment;
+                if (wasAbandoned)
+                {
+                    createException = _createGetTwinAbandonedException!;
+                }
+
                 foreach (GetTwinWaiter waiter in waiters)
                 {
                     if (waiter.IsAbandoned || waiter.Response.Task.IsCompleted)
@@ -1231,9 +1248,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                         continue;
                     }
 
-                    if (_isDisposed)
+                    if (_isDisposed || wasAbandoned)
                     {
-                        disposed.Add(waiter);
+                        failed.Add(waiter);
                     }
                     else
                     {
@@ -1242,9 +1259,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 }
             }
 
-            foreach (GetTwinWaiter waiter in disposed)
+            foreach (GetTwinWaiter waiter in failed)
             {
-                waiter.Response.TrySetException(new ObjectDisposedException(nameof(TwinClient)));
+                waiter.Response.TrySetException(createException());
             }
         }
 
@@ -1319,6 +1336,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             List<GetTwinWaiter> abandoned = new();
             lock (_getTwinLock)
             {
+                _getTwinAbandonment++;
+                _createGetTwinAbandonedException = createException;
+
                 // The next GET first, so that ending the active one doesn't send it.
                 foreach (GetTwinFetch? fetch in new[] { _nextGetTwinFetch, _activeGetTwinFetch })
                 {

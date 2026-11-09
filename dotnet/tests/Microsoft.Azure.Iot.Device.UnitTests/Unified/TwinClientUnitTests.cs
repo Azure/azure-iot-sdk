@@ -671,6 +671,30 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task GetTwinAsync_Classic_DisconnectAndReconnectWhileAResponseIsHandledFailsTheCallInsteadOfResendingIt()
+        {
+            MockFeatureConnectionClient connection = CreateClassicConnection();
+            using TwinClient twinClient = new(connection);
+            await CompleteConnectSyncAsync(connection, desiredVersion: 1, reportedVersion: 1);
+            int publishCount = connection.PublishedMessages.Count;
+
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
+            MqttPublish getPublish = await connection.WaitForPublishedMessagesAsync(publishCount + 1);
+
+            // The application disconnects and connects again after the response took the call from its GET, but before the
+            // response is checked against the connection.
+            twinClient.GetTwinResponseReceived = () =>
+            {
+                connection.SimulateDeliberateDisconnect();
+                connection.SimulateClassicDevicePresenceEstablished();
+            };
+            await RespondClassicAsync(connection, getPublish, 200, payload: ClassicTwin(1, "{}", 7, "{\"temperature\":20}"));
+            twinClient.GetTwinResponseReceived = null;
+
+            await Assert.ThrowsAsync<OperationCanceledException>(() => getTask.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        }
+
+        [Fact]
         public async Task ConnectSync_Classic_StartsFromTheVersionsThatAResponseFromThePreviousConnectionApplied()
         {
             MockFeatureConnectionClient connection = CreateClassicConnection();
