@@ -125,14 +125,24 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Equal(2, connection.PublishedMessages.Count);
         }
 
-        [Fact]
-        public async Task GetTwinAsync_Classic_ResendAfterReassignmentToAnMqttv5HubUsesTheMqttv5Protocol()
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task GetTwinAsync_Classic_ResendAfterReassignmentToAnMqttv5HubUsesTheMqttv5Protocol(bool isSharingTheDesiredResync)
         {
             MockFeatureConnectionClient connection = CreateClassicConnection();
             using TwinClient twinClient = new(connection);
+            int publishCount = 0;
+            if (isSharingTheDesiredResync)
+            {
+                // The call joins a desired-only resync GET, which an MQTTv3 IoT hub answers with the full twin anyway.
+                await CompleteConnectSyncAsync(connection, desiredVersion: 1);
+                publishCount = connection.PublishedMessages.Count;
+                await ReceiveClassicDesiredPatchAsync(connection, 3, "{\"fanSpeed\":3}");
+            }
 
             Task<DeviceTwin> getTask = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
-            await connection.WaitForPublishedMessagesAsync(1);
+            await connection.WaitForPublishedMessagesAsync(publishCount + 1);
             TaskCompletionSource resendBuilt = new(TaskCreationOptions.RunContinuationsAsynchronously);
             connection.BeforePublishAdmitted = publish =>
             {
@@ -150,12 +160,15 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             connection.SimulateHubIdentityChanged();
             connection.SimulateReconnected();
 
-            MqttPublish resent = await connection.WaitForPublishedMessagesAsync(2);
+            MqttPublish resent = await connection.WaitForPublishedMessagesAsync(publishCount + 2);
             Assert.Equal($"ih/{IConnectionClient.DeviceIdPlaceholder}/srv/twin", resent.Topic);
+            Assert.Equal(Sections.Both, TwinGet.Parser.ParseFrom(resent.Payload).Sections);
             TwinGetResponse response = new() { DesiredVersion = 5, DesiredPayload = ByteString.CopyFromUtf8("{}"), ReportedVersion = 7, ReportedPayload = ByteString.CopyFromUtf8("{}") };
             await connection.SimulateReceiveAsync(CreateInboundMqttv5TwinPublish("get-response:1", resent.CorrelationData!, response.ToByteArray()));
-            Assert.Equal(5ul, (await getTask.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken)).DesiredVersion);
-            Assert.Equal(2, connection.PublishedMessages.Count);
+            DeviceTwin twin = await getTask.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Assert.Equal(5ul, twin.DesiredVersion);
+            Assert.NotNull(twin.Reported);
+            Assert.Equal(publishCount + 2, connection.PublishedMessages.Count);
         }
 
         [Fact]

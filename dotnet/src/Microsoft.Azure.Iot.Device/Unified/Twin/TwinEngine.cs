@@ -911,14 +911,21 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
             else if (fetch == _nextGetTwinFetch)
             {
-                GetTwinRequest? request = fetch.Resync != null ? s_desiredResyncGetTwinRequest : null;
-                foreach (GetTwinWaiter remaining in fetch.Waiters)
-                {
-                    request = request == null ? remaining.Request : CombineGetTwinRequests(request.Value, remaining.Request);
-                }
-
-                fetch.Request = request!.Value;
+                fetch.Request = GetRequestOfWaiters(fetch)!.Value;
             }
+        }
+
+        // Must be called while holding _getTwinLock. The request that covers what each of the GET's waiters (and the resync)
+        // asked for, or null if nobody waits for it.
+        private static GetTwinRequest? GetRequestOfWaiters(GetTwinFetch fetch)
+        {
+            GetTwinRequest? request = fetch.Resync != null ? s_desiredResyncGetTwinRequest : null;
+            foreach (GetTwinWaiter remaining in fetch.Waiters)
+            {
+                request = request == null ? remaining.Request : CombineGetTwinRequests(request.Value, remaining.Request);
+            }
+
+            return request;
         }
 
         // Must be called while holding _getTwinLock. Sends the first attempt of the active GET, or a new attempt (with a new ID,
@@ -1440,12 +1447,14 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             // A GET attempt still waiting to be sent was built for the previous IoT hub, which may use a different protocol (for
             // example, after re-provisioning from an MQTTv3 IoT hub to an MQTTv5 one). The connection context already
-            // describes the new IoT hub, so a new attempt is built for it instead.
+            // describes the new IoT hub, so a new attempt is built for it instead. Calls that joined a GET on an MQTTv3 IoT hub
+            // weren't combined into its request (that IoT hub always returns the full twin), so the request is rebuilt from them.
             lock (_getTwinLock)
             {
                 GetTwinFetch? active = _activeGetTwinFetch;
                 if (active != null && active.GetId != null && active.SentGetId != active.GetId)
                 {
+                    active.Request = GetRequestOfWaiters(active) ?? active.Request;
                     StartGetTwinAttempt(active);
                 }
             }
