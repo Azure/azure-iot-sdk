@@ -284,7 +284,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.NotNull(hubConnect.ClientCertificate);
             Assert.Equal(issuedCertificate.Thumbprint, hubConnect.ClientCertificate.Thumbprint);
             Assert.True(hubConnect.ClientCertificate.HasPrivateKey);
-            Assert.Null(hubConnect.Password);
+            Assert.NotNull(hubConnect.Password);
+            Assert.Empty(hubConnect.Password);
         }
 
         [Fact]
@@ -408,7 +409,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(1, callbackInvocations);
             Assert.NotNull(hubConnect);
             Assert.Same(issuedCertificateWithKey, hubConnect.ClientCertificate);
-            Assert.Null(hubConnect.Password);
+            Assert.NotNull(hubConnect.Password);
+            Assert.Empty(hubConnect.Password);
         }
 
         [Fact]
