@@ -516,6 +516,31 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task PendingCertificateSigningFailsWhenReprovisioningAssignsTheDeviceToAnMqttv5Hub()
+        {
+            using MockConnectionMqttClient mockMqttClient = new();
+            ConnectionContext context = GetMockConnectionContext(false);
+            using ConnectionClient client = new(new() { MqttClient = mockMqttClient });
+            await client.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+            IotHubCertificateSigningRequest request = new(context.DeviceId, "csr");
+            CertificateSigningOperation operation = await client.SendCertificateSigningRequestAsync(request, TestContext.Current.CancellationToken);
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError)
+                .WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            client.CurrentConnectionContext = new()
+            {
+                AuthenticationProvider = context.AuthenticationProvider,
+                DeviceId = context.DeviceId,
+                IotHubHostName = "other-" + context.IotHubHostName,
+                ConnectionProfile = IotHubConnectionType.Mqttv5,
+            };
+            client.HandleHubIdentityChanged();
+
+            await Assert.ThrowsAsync<DeviceException>(
+                () => operation.Completed.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken));
+        }
+
+        [Fact]
         public async Task ResentCertificateSigningRequestRecoversFromConflictAndMissingReplacedRequest()
         {
             using MockConnectionMqttClient mockMqttClient = new();

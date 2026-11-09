@@ -126,6 +126,39 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task GetTwinAsync_Classic_ResendAfterReassignmentToAnMqttv5HubUsesTheMqttv5Protocol()
+        {
+            MockFeatureConnectionClient connection = CreateClassicConnection();
+            using TwinClient twinClient = new(connection);
+
+            Task<DeviceTwin> getTask = twinClient.GetTwinAsync(TestContext.Current.CancellationToken);
+            await connection.WaitForPublishedMessagesAsync(1);
+            TaskCompletionSource resendBuilt = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connection.BeforePublishAdmitted = publish =>
+            {
+                resendBuilt.TrySetResult();
+                return Task.CompletedTask;
+            };
+            connection.SimulateConnectionLost();
+
+            // The resend was built for the classic IoT hub and is held until the device reconnects.
+            await resendBuilt.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            connection.BeforePublishAdmitted = null;
+
+            // Re-provisioning assigns the device to an MQTTv5 IoT hub before it reconnects.
+            connection.CurrentConnectionContext = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId);
+            connection.SimulateHubIdentityChanged();
+            connection.SimulateReconnected();
+
+            MqttPublish resent = await connection.WaitForPublishedMessagesAsync(2);
+            Assert.Equal($"ih/{IConnectionClient.DeviceIdPlaceholder}/srv/twin", resent.Topic);
+            TwinGetResponse response = new() { DesiredVersion = 5, DesiredPayload = ByteString.CopyFromUtf8("{}"), ReportedVersion = 7, ReportedPayload = ByteString.CopyFromUtf8("{}") };
+            await connection.SimulateReceiveAsync(CreateInboundMqttv5TwinPublish("get-response:1", resent.CorrelationData!, response.ToByteArray()));
+            Assert.Equal(5ul, (await getTask.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken)).DesiredVersion);
+            Assert.Equal(2, connection.PublishedMessages.Count);
+        }
+
+        [Fact]
         public async Task GetTwinAsync_Classic_DisconnectingWhileWaitingToResendFailsIt()
         {
             MockFeatureConnectionClient connection = CreateClassicConnection();

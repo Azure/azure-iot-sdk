@@ -75,7 +75,46 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         internal override void HandleHubIdentityChanged()
         {
             _mqttv5ConnectionClient.ForgetTwinVersions();
+            FailCertificateSigningsForOtherIdentities();
             HubIdentityChanged?.Invoke();
+        }
+
+        /// <summary>
+        /// Fail each pending classic certificate signing request that the current connection context can no longer serve.
+        /// </summary>
+        /// <remarks>
+        /// Pending requests are otherwise only revisited when classic device presence is established, which never happens if
+        /// re-provisioning assigns this device to an MQTTv5 IoT hub.
+        /// </remarks>
+        private void FailCertificateSigningsForOtherIdentities()
+        {
+            ConnectionContext? connectionContext = CurrentConnectionContext;
+            List<PendingCertificateSigning> toFail = new();
+
+            lock (_certificateSigningLock)
+            {
+                foreach (PendingCertificateSigning pending in _pendingCertificateSignings.Values.ToList())
+                {
+                    // IoT hub's answer already decides this request's outcome; completing it checks the identity itself.
+                    if (pending.IsAnsweredByIotHub)
+                    {
+                        continue;
+                    }
+
+                    if (connectionContext == null
+                        || connectionContext.ConnectionProfile != IotHubConnectionType.Mqttv3
+                        || !pending.IsForIdentity(connectionContext))
+                    {
+                        _pendingCertificateSignings.Remove(pending.RequestId);
+                        toFail.Add(pending);
+                    }
+                }
+            }
+
+            foreach (PendingCertificateSigning pending in toFail)
+            {
+                pending.Operation.SetFailed(CreateIdentityChangedException());
+            }
         }
 
         event Action? IConnectionClient.ClassicDevicePresenceEstablished

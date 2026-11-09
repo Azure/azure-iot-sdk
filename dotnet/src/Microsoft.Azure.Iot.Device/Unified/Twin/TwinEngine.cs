@@ -1421,6 +1421,18 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 SetLocalReportedState(0, new JsonObject());
             }
 
+            // A GET attempt still waiting to be sent was built for the previous IoT hub, which may use a different protocol (for
+            // example, after re-provisioning from an MQTTv3 IoT hub to an MQTTv5 one). The connection context already
+            // describes the new IoT hub, so a new attempt is built for it instead.
+            lock (_getTwinLock)
+            {
+                GetTwinFetch? active = _activeGetTwinFetch;
+                if (active != null && active.GetId != null && active.SentGetId != active.GetId)
+                {
+                    StartGetTwinAttempt(active);
+                }
+            }
+
             RaiseTwinEvents();
         }
 
