@@ -28,6 +28,9 @@
 #endif
 
 #define TICK_MS 10
+/* Bytes one read pass takes at most: a child writing without end cannot hold a wait in it. */
+#define READ_PASS_BUDGET (2 * AZ_IOT_E2E_PROCESS_LOG_SIZE)
+#define DRAIN_AFTER_EXIT_MS 1000
 
 #ifdef _WIN32
 
@@ -594,19 +597,26 @@ static void echo_complete_lines(az_iot_e2e_process* process)
 }
 
 /**
- * @brief Reads what the child printed, without blocking, and echoes its whole lines.
+ * @brief Reads at most READ_PASS_BUDGET bytes of what the child printed, without blocking, and
+ * echoes its whole lines.
  *
- * @return Whether @p text (may be NULL) was in the log at some point of this read, including in
+ * @param[out] bytes_read What this pass read. May be NULL.
+ * @return Whether @p text (may be NULL) was in the log at some point of this pass, including in
  * output it dropped to stay bounded.
  */
-static bool read_output_finding(az_iot_e2e_process* process, const char* text)
+static bool read_output_finding(az_iot_e2e_process* process, const char* text, size_t* bytes_read)
 {
   bool found = false;
+  size_t total = 0;
+  if (bytes_read != NULL)
+  {
+    *bytes_read = 0;
+  }
   if (!process->running)
   {
     return false;
   }
-  while (!process->output_ended)
+  while (!process->output_ended && total < READ_PASS_BUDGET)
   {
     if (process->log_length + 1 >= sizeof(process->log)) // Full: keep the newer half.
     {
@@ -620,10 +630,10 @@ static bool read_output_finding(az_iot_e2e_process* process, const char* text)
           = process->echoed_length > dropped ? process->echoed_length - dropped : 0;
       process->log_length = keep;
     }
+    size_t const space = sizeof(process->log) - 1 - process->log_length;
+    size_t const budget = READ_PASS_BUDGET - total;
     long const n = read_available(
-        process,
-        process->log + process->log_length,
-        sizeof(process->log) - 1 - process->log_length);
+        process, process->log + process->log_length, space < budget ? space : budget);
     if (n == 0)
     {
       break;
@@ -635,17 +645,32 @@ static bool read_output_finding(az_iot_e2e_process* process, const char* text)
     else
     {
       process->log_length += (size_t)n;
+      total += (size_t)n;
     }
   }
   process->log[process->log_length] = '\0';
   echo_complete_lines(process);
   (void)fflush(stdout);
+  if (bytes_read != NULL)
+  {
+    *bytes_read = total;
+  }
   return found || (text != NULL && strstr(process->log, text) != NULL);
 }
 
 void az_iot_e2e_process_read_output(az_iot_e2e_process* process)
 {
-  (void)read_output_finding(process, NULL);
+  (void)read_output_finding(process, NULL, NULL);
+}
+
+/** @brief Read passes, at least one, until the pipe is empty or closed, or @p end_ms passes. */
+static void drain_output(az_iot_e2e_process* process, int64_t end_ms)
+{
+  size_t bytes_read = 0;
+  do
+  {
+    (void)read_output_finding(process, NULL, &bytes_read);
+  } while (!process->output_ended && bytes_read > 0 && now_ms() < end_ms);
 }
 
 bool az_iot_e2e_process_has_printed(const az_iot_e2e_process* process, const char* text)
@@ -663,7 +688,7 @@ bool az_iot_e2e_process_wait_for_output(
   int64_t const end = now_ms() + timeout_ms;
   for (;;)
   {
-    if (read_output_finding(process, text))
+    if (read_output_finding(process, text, NULL))
     {
       return true;
     }
@@ -693,7 +718,7 @@ bool az_iot_e2e_process_wait_for_exit(az_iot_e2e_process* process, int timeout_m
     az_iot_e2e_process_read_output(process);
     sleep_ms(TICK_MS);
   }
-  az_iot_e2e_process_read_output(process); // What it printed before it exited is in the pipe.
+  drain_output(process, end); // What it printed before it exited is in the pipe.
   if (exit_code != NULL)
   {
     *exit_code = process->exit_code;
@@ -708,7 +733,14 @@ bool az_iot_e2e_process_wait_for_exit(az_iot_e2e_process* process, int timeout_m
 static bool has_finished(az_iot_e2e_process* process)
 {
   bool const exited = poll_exit(process);
-  az_iot_e2e_process_read_output(process);
+  if (exited)
+  {
+    drain_output(process, now_ms() + DRAIN_AFTER_EXIT_MS);
+  }
+  else
+  {
+    az_iot_e2e_process_read_output(process);
+  }
   return exited && process->output_ended;
 }
 
@@ -729,7 +761,7 @@ bool az_iot_e2e_process_stop(az_iot_e2e_process* process, int grace_ms)
   }
   bool const graceful = has_finished(process);
   kill_and_wait(process); // Also what the child started and left running.
-  az_iot_e2e_process_read_output(process);
+  drain_output(process, now_ms() + DRAIN_AFTER_EXIT_MS);
   release(process);
   process->running = false;
   return graceful;

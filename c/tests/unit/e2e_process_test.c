@@ -130,6 +130,20 @@ static void waiting_finds_a_line_the_same_read_drops_from_the_log(void** state)
       az_iot_e2e_process_wait_for_output(&s_process, "line 00000 ", START_TIMEOUT_MS, NULL, NULL));
 }
 
+static void a_child_that_writes_without_end_cannot_hold_waits_or_stop(void** state)
+{
+  (void)state;
+  const char* const arguments[] = { AZ_IOT_E2E_PROCESS_TEST_CHILD, "spew", NULL };
+  assert_true(az_iot_e2e_process_start(&s_process, arguments, NULL, NULL)); // Too much to echo.
+  assert_true(
+      az_iot_e2e_process_wait_for_output(&s_process, "ready", START_TIMEOUT_MS, NULL, NULL));
+  time_t const start = time(NULL);
+  assert_false(az_iot_e2e_process_wait_for_output(&s_process, "never printed", 200, NULL, NULL));
+  assert_false(az_iot_e2e_process_wait_for_exit(&s_process, 200, NULL));
+  (void)az_iot_e2e_process_stop(&s_process, 300);
+  assert_true(time(NULL) - start < 10);
+}
+
 static void extra_environment_is_set_for_the_child_only(void** state)
 {
   (void)state;
@@ -280,6 +294,7 @@ int main(void)
     cmocka_unit_test_teardown(a_missing_program_does_not_start, teardown),
     cmocka_unit_test_teardown(the_log_keeps_the_newest_output, teardown),
     cmocka_unit_test_teardown(waiting_finds_a_line_the_same_read_drops_from_the_log, teardown),
+    cmocka_unit_test_teardown(a_child_that_writes_without_end_cannot_hold_waits_or_stop, teardown),
     cmocka_unit_test_teardown(extra_environment_is_set_for_the_child_only, teardown),
     cmocka_unit_test_teardown(a_shell_command_runs, teardown),
     cmocka_unit_test_teardown(

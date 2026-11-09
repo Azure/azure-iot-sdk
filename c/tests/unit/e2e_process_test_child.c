@@ -11,7 +11,8 @@
  *                     padding; exits 0
  *   wait              prints "ready", then on SIGTERM (CTRL_BREAK on Windows) prints "stopping
  *                     gracefully" and exits 3
- *   ignore-stop       prints "ready" and ignores SIGTERM (CTRL_BREAK) until killed */
+ *   ignore-stop       prints "ready" and ignores SIGTERM (CTRL_BREAK) until killed
+ *   spew              prints "ready", then writes without end until stopped */
 #if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE // F_SETPIPE_SZ
 #elif !defined(__linux__) && !defined(_WIN32)
@@ -110,6 +111,17 @@ int main(int argc, char** argv)
     (void)fwrite(lines, 100, (size_t)count, stdout);
     free(lines);
     return 0;
+  }
+  if (strcmp(mode, "spew") == 0)
+  {
+    static char block[64 * 1024];
+    memset(block, 'x', sizeof(block) - 1);
+    block[sizeof(block) - 1] = '\n';
+    printf("ready\n");
+    for (;;)
+    {
+      (void)fwrite(block, 1, sizeof(block), stdout);
+    }
   }
   if (strcmp(mode, "wait") == 0 || strcmp(mode, "ignore-stop") == 0)
   {

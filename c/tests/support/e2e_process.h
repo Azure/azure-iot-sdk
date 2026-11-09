@@ -67,7 +67,10 @@ bool az_iot_e2e_process_start_shell(
     const char* const* environment,
     const char* echo_prefix);
 
-/** @brief Reads what the child printed, without blocking, and echoes its whole lines. */
+/**
+ * @brief Reads what the child printed, without blocking, and echoes its whole lines. Reads at most
+ * twice AZ_IOT_E2E_PROCESS_LOG_SIZE per call.
+ */
 void az_iot_e2e_process_read_output(az_iot_e2e_process* process);
 
 /** @brief Whether the kept output contains @p text. */
