@@ -17,6 +17,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 {
     public class TwinClientUnitTests
     {
+        private static readonly int[] s_expectedTwoAttempts = { 1, 2 };
+        private static readonly ulong[] s_expectedReplacedVersionsWithReset = { 10ul, 0ul };
+        private static readonly ulong[] s_expectedReplacedVersionsWithRegression = { 10ul, 5ul };
+
         private const string DeviceId = "someDeviceId";
         // The device ID is left for the connection client to fill in when it actually sends the publish.
         private const string OutgoingTwinTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/srv/twin";
@@ -375,7 +379,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             DeviceTwin twin = await getTask;
             Assert.Equal(2ul, twin.DesiredVersion);
-            Assert.Equal(new[] { 1, 2 }, attempts);
+            Assert.Equal(s_expectedTwoAttempts, attempts);
         }
 
         [Fact]
@@ -505,7 +509,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             await ReceiveGetResponseAsync(connection, getPublish, 7, "{\"fanSpeed\":70}", 1, "{}");
 
             Assert.Equal(7ul, (await getTask).DesiredVersion);
-            Assert.Equal(new[] { 7ul }, snapshotVersions);
+            Assert.Equal(7ul, Assert.Single(snapshotVersions));
             await Task.Delay(100, TestContext.Current.CancellationToken);
             Assert.Single(connection.PublishedMessages);
         }
@@ -532,7 +536,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             MqttPublish resyncPublish = await connection.WaitForPublishedMessagesAsync(2);
             Assert.Equal(Sections.Desired, TwinGet.Parser.ParseFrom(resyncPublish.Payload).Sections);
             await ReceiveGetResponseAsync(connection, resyncPublish, 7, "{\"fanSpeed\":70}");
-            Assert.Equal(new[] { 7ul }, snapshotVersions);
+            Assert.Equal(7ul, Assert.Single(snapshotVersions));
         }
 
         [Fact]
@@ -899,7 +903,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             await RespondToReportedPatchAsync(connection, secondAttempt, Result.Ok, 2);
 
             Assert.Equal(2ul, (await patch).Version);
-            Assert.Equal(new[] { 1, 2 }, attempts);
+            Assert.Equal(s_expectedTwoAttempts, attempts);
         }
 
         [Fact]
@@ -1277,8 +1281,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             await ReceiveGetResponseAsync(connection, getPublish, 3, "{\"a\":3}");
 
-            Assert.Equal(new[] { 3ul }, snapshotVersions);
-            Assert.Equal(new[] { 4ul }, patchVersions);
+            Assert.Equal(3ul, Assert.Single(snapshotVersions));
+            Assert.Equal(4ul, Assert.Single(patchVersions));
         }
 
         [Fact]
@@ -1347,7 +1351,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             MqttPublish newResyncGet = await connection.WaitForPublishedMessagesAsync(2);
             Assert.NotEqual(resyncGet.CorrelationData, newResyncGet.CorrelationData);
             await ReceiveGetResponseAsync(connection, newResyncGet, 5, "{\"a\":5}");
-            Assert.Equal(new[] { 5ul }, snapshotVersions);
+            Assert.Equal(5ul, Assert.Single(snapshotVersions));
             Assert.Equal(5ul, (await getTask).DesiredVersion);
             Assert.Equal(2, connection.PublishedMessages.Count);
         }
@@ -1451,7 +1455,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Empty(snapshotVersions);
 
             await ReceiveGetResponseAsync(connection, secondGet, 11, "{}");
-            Assert.Equal(new[] { 11ul }, snapshotVersions);
+            Assert.Equal(11ul, Assert.Single(snapshotVersions));
         }
 
         [Fact]
@@ -1494,14 +1498,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             lock (timedOutAttempts)
             {
-                Assert.Equal(new[] { 1, 2 }, timedOutAttempts);
+                Assert.Equal(s_expectedTwoAttempts, timedOutAttempts);
             }
             Assert.NotEqual(connection.PublishedMessages[0].CorrelationData, connection.PublishedMessages[1].CorrelationData);
 
             // Only the response to the latest attempt is applied.
             await ReceiveGetResponseAsync(connection, connection.PublishedMessages[0], 3, "{}");
             await ReceiveGetResponseAsync(connection, connection.PublishedMessages[1], 3, "{}");
-            Assert.Equal(new[] { 3ul }, snapshotVersions);
+            Assert.Equal(3ul, Assert.Single(snapshotVersions));
         }
 
         [Fact]
@@ -1619,7 +1623,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             Assert.Empty(connection.PublishedMessages);
             Assert.Equal(6ul, received!.DesiredPropertiesVersion);
-            Assert.Equal(new[] { 6ul }, connection.ObservedDesiredPropertiesVersions);
+            Assert.Equal(6ul, Assert.Single(connection.ObservedDesiredPropertiesVersions));
         }
 
         [Fact]
@@ -1644,7 +1648,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             nextResponseVersion = 6;
             await twinClient.UpdateReportedPropertiesAsync(new() { ReportedProperties = new JsonObject() }, TestContext.Current.CancellationToken);
 
-            Assert.Equal(new[] { 4ul }, connection.ObservedReportedPropertiesVersions);
+            Assert.Equal(4ul, Assert.Single(connection.ObservedReportedPropertiesVersions));
         }
 
         [Fact]
@@ -1697,7 +1701,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 5, reportedVersion: 1);
 
-            Assert.Equal(new[] { 10ul, 0ul }, connection.ReplacedDesiredPropertiesVersions);
+            Assert.Equal(s_expectedReplacedVersionsWithReset, connection.ReplacedDesiredPropertiesVersions);
             MqttPublish get = await connection.WaitForPublishedMessagesAsync(1);
             Assert.Equal("get:1", GetType(get));
 
@@ -1705,7 +1709,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             await ReceiveDesiredPatchAsync(connection, nonce, 6, "{\"fanSpeed\":60}");
 
             Assert.Equal(5ul, snapshot!.Desired!.PropertiesVersion);
-            Assert.Equal(new[] { 6ul }, patches);
+            Assert.Equal(6ul, Assert.Single(patches));
         }
 
         [Fact]
@@ -1756,7 +1760,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 5);
 
-            Assert.Equal(new[] { 10ul, 0ul }, connection.ReplacedReportedPropertiesVersions);
+            Assert.Equal(s_expectedReplacedVersionsWithReset, connection.ReplacedReportedPropertiesVersions);
             Assert.Empty(connection.PublishedMessages);
         }
 
@@ -1770,7 +1774,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             await connection.SimulateReceiveAsync(CreateInboundTwinPublish("twin-push:1", nonce.ToByteArray(bigEndian: true), push.ToByteArray()));
             await ReceiveBirthAckAsync(connection, nonce, desiredVersion: 1, reportedVersion: 5);
 
-            Assert.Equal(new[] { 10ul, 5ul }, connection.ReplacedReportedPropertiesVersions);
+            Assert.Equal(s_expectedReplacedVersionsWithRegression, connection.ReplacedReportedPropertiesVersions);
         }
 
         [Fact]

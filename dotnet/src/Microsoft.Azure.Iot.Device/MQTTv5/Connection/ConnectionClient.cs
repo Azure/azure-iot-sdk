@@ -305,7 +305,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                 }
                 catch (Exception e) when (!cancellationToken.IsCancellationRequested)
                 {
-                    Trace.TraceWarning("Exception thrown while subscribing to devicebound topic. Attempting connection again...", e);
+                    Trace.TraceWarning("Exception thrown while subscribing to devicebound topic. Attempting connection again... {0}", e);
                     await connection.DisconnectAsync(true, CreateNormalDisconnect(), cancellationToken);
                     return;
                 }
@@ -328,7 +328,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
             MqttPublish birthMessage = new MqttPublish()
             {
-                Topic = string.Format("ih/{0}/srv/presence", deviceId),
+                Topic = string.Format(System.Globalization.CultureInfo.InvariantCulture, "ih/{0}/srv/presence", deviceId),
                 CorrelationData = connectNonce.ToByteArray(bigEndian: true),
                 Payload = birth.ToByteArray(),
                 ContentType = ProtobufContentType,
@@ -339,7 +339,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
             // Completes with null if this attempt's birth ack has a payload that cannot be read.
             TaskCompletionSource<BirthAck?> birthAckReceivedTaskCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
-            string birthAckTopic = string.Format("ih/{0}/dev/presence", deviceId);
+            string birthAckTopic = string.Format(System.Globalization.CultureInfo.InvariantCulture, "ih/{0}/dev/presence", deviceId);
             Func<MqttPublishReceivedEventArgs, Task> HandleReceivedBirthAck = (args) =>
             {
                 // Birth ack messages are QoS 0, so no need to ack
@@ -368,7 +368,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                             // The birth message flow is only complete once Hub sends a birth message ack with connection epoch equal to the latest connection epoch we have attempted.
                             // An ack for this attempt that cannot be read ends the wait too, so that the flow reconnects at once
                             // rather than waiting out the birth-ack timeout.
-                            TryParseBirthAck(publish.Payload, out BirthAck? birthAck);
+                            _ = TryParseBirthAck(publish.Payload, out BirthAck? birthAck);
 
                             // Reset the streak as soon as the ack is accepted, even if the flow is canceled before it
                             // observes the ack. An abandoned handler cannot reset a newer attempt's streak because a
@@ -424,7 +424,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                 }
                 catch (Exception e) when (!cancellationToken.IsCancellationRequested)
                 {
-                    Trace.TraceWarning("Exception thrown while publishing birth message", e);
+                    Trace.TraceWarning("Exception thrown while publishing birth message {0}", e);
                     await connection.DisconnectAsync(true, CreateNormalDisconnect(), cancellationToken);
                     return;
                 }
@@ -457,7 +457,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                     {
                         // Claim the attempt so that a birth-ack racing with the timeout is either accepted (and the
                         // flow completes) or counted as a timeout, never both.
-                        birthAckTimedOut = birthAckReceivedTaskCompletionSource.TrySetCanceled();
+                        birthAckTimedOut = birthAckReceivedTaskCompletionSource.TrySetCanceled(CancellationToken.None);
                         if (birthAckTimedOut)
                         {
                             _consecutiveBirthAckTimeouts++;
@@ -648,7 +648,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
                 MqttPublish publish = args.Publish;
                 if (publish.Topic.Equals(_topic, StringComparison.Ordinal)
                     && publish.UserProperties.TryGetType(out string? messageType, out int? typeVersion)
-                    && messageType.Equals("twin-push")
+                    && messageType.Equals("twin-push", StringComparison.Ordinal)
                     && typeVersion == 1
                     && GuidExtensions.TryParseBytes(publish.CorrelationData, out Guid? receivedNonce)
                     && receivedNonce.Value == _connectNonce

@@ -60,7 +60,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         {
             // MQTTv5 IoT hubs only send desired properties patches if asked to. MQTTv3 IoT hubs always send them.
             ConnectionClientOptions options = new() { ReceiveDesiredPropertyUpdates = true };
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, options, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, options, cancellationToken: TestContext.Current.CancellationToken);
             string deviceId = testDeviceContext.ConnectionContext.DeviceId;
 
             RegistryManager registryManager = testAgainstClassicHub

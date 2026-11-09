@@ -255,6 +255,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </summary>
         public void Dispose()
         {
+            GC.SuppressFinalize(this);
+
             _twinClient.Dispose();
         }
     }

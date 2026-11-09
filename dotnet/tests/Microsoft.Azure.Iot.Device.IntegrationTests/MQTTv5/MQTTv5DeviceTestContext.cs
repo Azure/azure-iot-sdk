@@ -27,6 +27,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 
         public async ValueTask DisposeAsync()
         {
+            GC.SuppressFinalize(this);
             try
             {
                 // Disconnect before deleting the device identity. Deleting it while the connection is still open makes

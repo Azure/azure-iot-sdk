@@ -18,6 +18,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 {
     public class ConnectionClientUnitTests
     {
+        private static readonly bool[] s_expectedResumedSessionFlags = { false, false };
+
         private const string AcceptedResponse = """{"correlationId":"correlation-id","operationExpires":"2026-10-20T00:00:00Z"}""";
         private const string CompletedResponse = """{"certificates":["issued-certificate"],"correlationId":"correlation-id"}""";
 
@@ -587,14 +589,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
         private static List<MqttPublish> GetCertificateSigningPublishes(MockConnectionMqttClient mockMqttClient)
         {
-            lock (mockMqttClient.SentMqttTrafficInOrder)
-            {
-                return mockMqttClient.SentMqttTrafficInOrder
-                    .Select(traffic => traffic.Publish)
-                    .OfType<MqttPublish>()
-                    .Where(publish => publish.Topic.StartsWith("$iothub/credentials/POST/", StringComparison.Ordinal))
-                    .ToList();
-            }
+            return mockMqttClient.SentMqttTrafficInOrder
+                .Select(traffic => traffic.Publish)
+                .OfType<MqttPublish>()
+                .Where(publish => publish.Topic.StartsWith("$iothub/credentials/POST/", StringComparison.Ordinal))
+                .ToList();
         }
 
         private static async Task<List<MqttPublish>> WaitForCertificateSigningPublishesAsync(MockConnectionMqttClient mockMqttClient, int count)
@@ -699,7 +698,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                     "unknownField": true
                 }
                 """;
-            await ReceiveCertificateSigningResponseAsync(client, request.RequestId, status.ToString(), payload);
+            await ReceiveCertificateSigningResponseAsync(client, request.RequestId, status.ToString(System.Globalization.CultureInfo.InvariantCulture), payload);
 
             CertificateSigningRequestFailedException failure = await Assert.ThrowsAsync<CertificateSigningRequestFailedException>(
                 () => operation.Completed.WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken));
@@ -1038,7 +1037,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // The broker resumed a session on the final attempt, but the failed attempt before it may have replaced the
             // subscribed session with an empty one, so the subscriptions are sent again.
-            Assert.Equal(new[] { false, false }, cleanSessionFlags);
+            Assert.Equal(s_expectedResumedSessionFlags, cleanSessionFlags);
             Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
         }
 
@@ -1063,7 +1062,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // A session left behind by a previous process may still hold subscriptions for the features that are now
             // disabled, so they are removed before the enabled features are subscribed to.
-            List<MockMqttOutgoingTraffic> traffic = mockMqttClient.SentMqttTrafficInOrder;
+            IReadOnlyList<MockMqttOutgoingTraffic> traffic = mockMqttClient.SentMqttTrafficInOrder;
             if (isSessionResumed)
             {
                 Assert.Equal(2, traffic.Count);
@@ -1185,7 +1184,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 }
             }
 
-            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
+            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder[^1];
 
             // Verify that the telemetry sent by the telemetry client is the last piece of traffic "sent" in this test. It must be preceded by the intial device presence flow traffic and by the reconnection device presence flow traffic
             Assert.NotNull(lastTraffic.Publish);
@@ -1288,7 +1287,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             mockMqttClient.OnSubscribe = async (subscribe) =>
             {
-                if (retryCount == 0 && subscribe.TopicFilters.FirstOrDefault()!.Topic.Equals(expectedTopicString))
+                if (retryCount == 0 && subscribe.TopicFilters.FirstOrDefault()!.Topic.Equals(expectedTopicString, StringComparison.Ordinal))
                 {
                     _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new Exception("mock exception"));
                     retryCount++;
@@ -1328,7 +1327,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 }
             }
 
-            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
+            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder[^1];
 
             // Verify that the subscribe sent directly from this test is the last piece of traffic "sent" in this test. It must be preceded by the intial device presence flow traffic and by the reconnection device presence flow traffic
             Assert.NotNull(lastTraffic.Subscribe);
@@ -1362,7 +1361,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             mockMqttClient.OnUnsubscribe = async (unsubscribe) =>
             {
-                if (retryCount == 0 && unsubscribe.TopicFilters.FirstOrDefault()!.Equals(expectedTopicString))
+                if (retryCount == 0 && unsubscribe.TopicFilters.FirstOrDefault()!.Equals(expectedTopicString, StringComparison.Ordinal))
                 {
                     _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new Exception("mock exception"));
                     retryCount++;
@@ -1402,7 +1401,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 }
             }
 
-            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
+            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder[^1];
 
             // Verify that the subscribe sent directly from this test is the last piece of traffic "sent" in this test. It must be preceded by the intial device presence flow traffic and by the reconnection device presence flow traffic
             Assert.NotNull(lastTraffic.Unsubscribe);
@@ -1484,7 +1483,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Equal(2, attemptCount);
             Assert.Equal(2, mockMqttClient.ConnectAttemptCount);
 
-            MockMqttOutgoingTraffic lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
+            MockMqttOutgoingTraffic lastTraffic = mockMqttClient.SentMqttTrafficInOrder[^1];
             switch (operation)
             {
                 case "publish":

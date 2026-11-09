@@ -316,6 +316,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// </summary>
         public void Dispose()
         {
+            GC.SuppressFinalize(this);
             _twinEngine.Dispose();
         }
     }

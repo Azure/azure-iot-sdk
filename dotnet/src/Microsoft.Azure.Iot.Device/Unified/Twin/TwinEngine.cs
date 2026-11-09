@@ -1549,9 +1549,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            bool isTwinTopic = args.Publish.Topic.EndsWith("/dev/twin");
-            bool isPresenceTopic = args.Publish.Topic.EndsWith("/dev/presence");
-            if (!args.Publish.Topic.StartsWith("ih/") || !(isTwinTopic || isPresenceTopic))
+            bool isTwinTopic = args.Publish.Topic.EndsWith("/dev/twin", StringComparison.Ordinal);
+            bool isPresenceTopic = args.Publish.Topic.EndsWith("/dev/presence", StringComparison.Ordinal);
+            if (!args.Publish.Topic.StartsWith("ih/", StringComparison.Ordinal) || !(isTwinTopic || isPresenceTopic))
             {
                 // The publish is not relevant to this client, so ignore it. This check needs to happen prior to checking the deviceId within the topic b/c deviceId is
                 // not available until after provisioning finishes and this client may be setup prior to provisioning. This allows this client to ignore DPS
@@ -1569,7 +1569,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
 
             string expectedTopic = isTwinTopic ? AzureEventGridIncomingTwinPublishTopic : AzureEventGridIncomingPresencePublishTopic;
-            if (!args.Publish.Topic.Equals(expectedTopic.Replace(IConnectionClient.DeviceIdPlaceholder, connectionContext.DeviceId, StringComparison.Ordinal)))
+            if (!args.Publish.Topic.Equals(expectedTopic.Replace(IConnectionClient.DeviceIdPlaceholder, connectionContext.DeviceId, StringComparison.Ordinal), StringComparison.Ordinal))
             {
                 // This message wasn't for this device so ignore it
                 return;
@@ -1594,7 +1594,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            if (type.Equals("get-response"))
+            if (type.Equals("get-response", StringComparison.Ordinal))
             {
                 if (!GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? getResponseCorrelationData))
                 {
@@ -1616,7 +1616,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
                 await HandleGetTwinResponseAsync(getResponseCorrelationData.Value, twinGetResponse, isClassic: false, receivedConnectionNonce);
             }
-            else if (type.Equals("reported-patch-response"))
+            else if (type.Equals("reported-patch-response", StringComparison.Ordinal))
             {
                 if (!GuidExtensions.TryParseBytes(args.Publish.CorrelationData, out Guid? patchId))
                 {
@@ -1638,7 +1638,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
                 HandleReportedPatchResponse(patchId.Value, reportedPatchResponse);
             }
-            else if (type.Equals("desired-patch"))
+            else if (type.Equals("desired-patch", StringComparison.Ordinal))
             {
                 if (!IsFromCurrentConnection(args.Publish, type, out Guid? connectionNonce))
                 {
@@ -1668,7 +1668,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
                 await CompleteAsync(outcome);
             }
-            else if (type.Equals("twin-push"))
+            else if (type.Equals("twin-push", StringComparison.Ordinal))
             {
                 if (!IsFromCurrentConnection(args.Publish, type, out Guid? connectionNonce))
                 {
@@ -1726,7 +1726,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         private async Task HandleReceivedPresencePublishAsync(MqttPublish publish)
         {
             // The connection client validates and acts on the birth ack's other contents. This client only adopts its twin versions.
-            if (!publish.UserProperties.TryGetType(out string? type, out int? typeVersion) || !type.Equals("birth-ack") || typeVersion != 1)
+            if (!publish.UserProperties.TryGetType(out string? type, out int? typeVersion) || !type.Equals("birth-ack", StringComparison.Ordinal) || typeVersion != 1)
             {
                 return;
             }
