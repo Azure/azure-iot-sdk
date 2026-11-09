@@ -940,9 +940,7 @@ namespace Microsoft.Azure.Iot.Device
             // connect with the operational certificate DPS issued rather than its boot credentials. These are the
             // secondary credentials if the hub rejected the primary ones.
             ConnectionContext connectionContext = CurrentConnectionContext!;
-            AuthenticationCredentials hubCredentials = await connectionContext.GetOperationalAuthenticationCredentialsAsync(
-                cancellationToken,
-                updateSecondaryCredentialSelection: true).ConfigureAwait(false);
+            AuthenticationCredentials hubCredentials = await connectionContext.GetOperationalAuthenticationCredentialsAsync(true, cancellationToken).ConfigureAwait(false);
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
 
             // Always ask to resume the session unless the application opted out: correctness never depends on it, but it
@@ -1119,7 +1117,7 @@ namespace Microsoft.Azure.Iot.Device
         {
             if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
             {
-                Trace.TraceError("ConnectionClient encountered an unrecoverable error during provisioning.", args.Exception);
+                Trace.TraceError("ConnectionClient encountered an unrecoverable error during provisioning. {0}", args.Exception);
                 // The connection layer has stopped maintaining the connection to DPS, so no further connection will
                 // arrive to start the provisioning flow again.
                 CancelCurrentProvisioningFlow();
@@ -1392,7 +1390,7 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         private async Task MarkUnrecoverablyFaultedAsync(DeviceException fault)
         {
-            Trace.TraceError("ConnectionClient encountered an unrecoverable exception", fault);
+            Trace.TraceError("ConnectionClient encountered an unrecoverable exception {0}", fault);
             _unrecoverableFault = fault;
 
             // Release everything inside this client that is waiting for the connection (for example feature operations
@@ -1664,6 +1662,11 @@ namespace Microsoft.Azure.Iot.Device
                 await SubscribeToRegistrationResponseMessagesAsync(provisioningFlowCancellation.Token);
 
                 RegistrationOperationStatus registrationStatus = await PublishRegistrationRequestAsync(provisioningFlowCancellation.Token);
+
+                if (registrationStatus.OperationId == null)
+                {
+                    throw new ArgumentException("DPS returned a registration status with no operation Id which should never happen");
+                }
 
                 DeviceRegistrationResult registrationResult = await PollUntilProvisioningFinishesAsync(
                     registrationStatus.OperationId,

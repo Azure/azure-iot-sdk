@@ -18,7 +18,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             uint expectedResponseTimeout = 20;
             uint expectedConnectTimeout = 20;
 
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(true, null, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(true, null, null, TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
             ServiceClient serviceClient = Setup.GetMQTTv3IotHubServiceClient();
@@ -42,7 +42,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             TaskCompletionSource<DirectMethodRequestReceivedEventArgs> DirectMethodReceivedTcs = new();
             directMethodClient.DirectMethodInvokedAsync += (args) =>
             {
-                if (args.MethodName.Equals(expectedDirectMethodName))
+                if (args.MethodName.Equals(expectedDirectMethodName, StringComparison.Ordinal))
                 {
                     if (args.Payload == null)
                     {
@@ -51,7 +51,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
                     var requestPayload = SimpleDirectMethodPayload.FromJsonBytes(args.Payload);
 
-                    if (requestPayload.SomeString.Equals(expectedRequestPayload.SomeString) && requestPayload.SomeInt == expectedRequestPayload.SomeInt)
+                    if (requestPayload.SomeString != null && requestPayload.SomeString.Equals(expectedRequestPayload.SomeString, StringComparison.Ordinal) && requestPayload.SomeInt == expectedRequestPayload.SomeInt)
                     {
                         actualDirectMethodRequestsReceivedCount++;
                         DirectMethodResponse response = new()

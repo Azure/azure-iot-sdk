@@ -724,7 +724,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         private Task HandleReceivedCertificateSigningPublish(MqttPublishReceivedEventArgs args)
         {
-            if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic))
+            if (args.Publish.Topic.StartsWith(CertificateSigningResponseTopic, StringComparison.Ordinal))
             {
                 PendingCertificateSigning? pending = null;
                 string? requestId = null;
@@ -750,7 +750,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                         }
                     }
 
-                    if (status.Equals("202"))
+                    if (status.Equals("202", StringComparison.Ordinal))
                     {
                         CertificateSigningRequestAccepted accepted = JsonSerializer.Deserialize<CertificateSigningRequestAccepted>(args.Publish.Payload)
                             ?? throw new JsonException("The certificate signing acceptance response was null.");
@@ -761,7 +761,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
                         pending.Operation.SetAccepted(accepted);
                     }
-                    else if (status.Equals("200"))
+                    else if (status.Equals("200", StringComparison.Ordinal))
                     {
                         CertificateSigningResponse response = JsonSerializer.Deserialize<CertificateSigningResponse>(args.Publish.Payload)
                             ?? throw new JsonException("The certificate signing completion response was null.");
