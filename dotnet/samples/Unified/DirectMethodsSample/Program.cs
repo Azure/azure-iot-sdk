@@ -36,7 +36,7 @@ internal class Program
         Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>> HandleDirectMethodAsync = (args) =>
         {
             Console.WriteLine($"Received direct method with name {args.MethodName}");
-            if (args.MethodName.Equals(MethodName))
+            if (args.MethodName.Equals(MethodName, StringComparison.Ordinal))
             {
                 DirectMethodRequestPayloadObject? directMethodRequestPayload = null;
                 try
