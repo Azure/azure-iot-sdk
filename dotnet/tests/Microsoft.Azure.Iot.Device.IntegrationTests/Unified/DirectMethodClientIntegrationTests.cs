@@ -18,7 +18,11 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             uint expectedResponseTimeout = 20;
             uint expectedConnectTimeout = 20;
 
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(true, null, null, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(
+                testAgainstClassicHub: true,
+                options: null,
+                certificateValidity: null,
+                cancellationToken: TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
             ServiceClient serviceClient = Setup.GetMQTTv3IotHubServiceClient();
