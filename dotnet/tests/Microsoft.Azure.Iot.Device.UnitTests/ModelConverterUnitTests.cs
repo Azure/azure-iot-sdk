@@ -66,8 +66,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 SessionExpiryInterval = 3600,
                 UserProperties = new List<MqttNetUserProperty>
                 {
-                    new("key1", "value1"),
-                    new("key2", "value2"),
+                    new("key1", Encoding.UTF8.GetBytes("value1")),
+                    new("key2", Encoding.UTF8.GetBytes("value2")),
                 },
             };
 
@@ -205,7 +205,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 packetIdentifier: 7,
                 reasonCode: MQTTnet.MqttClientPublishReasonCode.Success,
                 reasonString: "published",
-                userProperties: new List<MqttNetUserProperty> { new("pubKey", "pubValue") });
+                userProperties: new List<MqttNetUserProperty> { new("pubKey", Encoding.UTF8.GetBytes("pubValue")) });
 
             MqttPublishAck generic = ModelConverter.ToGeneric(puback);
 
@@ -281,7 +281,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 packetIdentifier: 3,
                 items: items,
                 reasonString: "subscribed",
-                userProperties: new List<MqttNetUserProperty> { new("subKey", "subValue") });
+                userProperties: new List<MqttNetUserProperty> { new("subKey", Encoding.UTF8.GetBytes("subValue")) });
 
             MqttSubscribeAck generic = ModelConverter.ToGeneric(suback);
 
@@ -339,7 +339,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 packetIdentifier: 11,
                 items: items,
                 reasonString: "partially granted",
-                userProperties: new List<MqttNetUserProperty> { new("k1", "v1"), new("k2", "v2") });
+                userProperties: new List<MqttNetUserProperty> { new("k1", Encoding.UTF8.GetBytes("v1")), new("k2", Encoding.UTF8.GetBytes("v2")) });
 
             MqttSubscribeAck generic = ModelConverter.ToGeneric(suback);
 
@@ -483,7 +483,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 packetIdentifier: 9,
                 items: [new("topic/one", MQTTnet.MqttClientUnsubscribeResultCode.Success)],
                 reasonString: "unsubscribed",
-                userProperties: new List<MqttNetUserProperty> { new("unsubKey", "unsubValue") });
+                userProperties: new List<MqttNetUserProperty> { new("unsubKey", Encoding.UTF8.GetBytes("unsubValue")) });
 
             MqttUnsubscribeAck generic = ModelConverter.ToGeneric(unsuback);
 
@@ -556,7 +556,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 packetIdentifier: 14,
                 items: items,
                 reasonString: "unsubscribed",
-                userProperties: new List<MqttNetUserProperty> { new("k1", "v1"), new("k2", "v2") });
+                userProperties: new List<MqttNetUserProperty> { new("k1", Encoding.UTF8.GetBytes("v1")), new("k2", Encoding.UTF8.GetBytes("v2")) });
 
             MqttUnsubscribeAck generic = ModelConverter.ToGeneric(unsuback);
 
@@ -584,7 +584,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     new("topic/four", MQTTnet.MqttClientUnsubscribeResultCode.TopicFilterInvalid),
                 ],
                 "mixed results",
-                new List<MqttNetUserProperty> { new("k1", "v1") });
+                new List<MqttNetUserProperty> { new("k1", Encoding.UTF8.GetBytes("v1")) });
 
             List<MqttUnsubscribeAckItem> genericItems = ModelConverter.ToGeneric(unsuback).Items.ToList();
 

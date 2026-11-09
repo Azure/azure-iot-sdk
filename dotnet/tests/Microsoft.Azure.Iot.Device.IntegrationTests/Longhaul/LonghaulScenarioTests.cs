@@ -49,7 +49,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
             };
 
             UnifiedDeviceTestContext device = await Setup.CreateConnectedUnifiedConnectionClientAsync(
-                testAgainstClassicHub: true, options, cancellationToken, CertificateValidity(settings));
+                testAgainstClassicHub: true, options, CertificateValidity(settings), cancellationToken);
             string deviceId = device.ConnectionContext.DeviceId;
             using Device.Unified.Telemetry.TelemetryClient telemetryClient = new(device.ConnectionClient);
             using Device.Unified.Twin.TwinClient twinClient = new(device.ConnectionClient);

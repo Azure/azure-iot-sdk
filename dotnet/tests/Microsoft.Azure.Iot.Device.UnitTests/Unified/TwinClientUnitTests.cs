@@ -18,6 +18,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         private const string DeviceId = "someDeviceId";
         private const string ClassicGetTopicPrefix = "$iothub/twin/GET/?$rid=";
         private const string ClassicReportedPatchTopicPrefix = "$iothub/twin/PATCH/properties/reported/?$rid=";
+        private static readonly string[] s_expectedPushThenPatchEvents = { "push:3", "patch:4" };
+        private static readonly string[] s_expectedPushThenCompletionEvents = { "push", "completed" };
+        private static readonly string[] s_expectedResyncThenPatchEvents = { "push:2", "patch:3" };
 
         [Fact]
         public async Task GetTwinAsync_Classic_PublishesGetAndReturnsResponse()
@@ -309,7 +312,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             await RespondClassicAsync(connection, getPublish, 200, payload: ClassicTwin(3, "{\"fanSpeed\":3}", 1, "{}"));
 
-            Assert.Equal(new[] { "push:3", "patch:4" }, events);
+            Assert.Equal(s_expectedPushThenPatchEvents, events);
             Assert.Equal("{\"fanSpeed\":4}", twinClient.GetTwinState().Desired.ToJsonString());
         }
 
@@ -328,7 +331,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await ReceiveClassicDesiredPatchAsync(connection, 4, "{\"fanSpeed\":4}");
             await RespondClassicAsync(connection, getPublish, 200, payload: ClassicTwin(3, "{\"fanSpeed\":3}", 1, "{}"));
 
-            Assert.Equal(new[] { 4ul }, patchVersions);
+            Assert.Equal(4ul, Assert.Single(patchVersions));
             Assert.StartsWith(ClassicReportedPatchTopicPrefix, connection.PublishedMessages.Last().Topic);
         }
 
@@ -361,7 +364,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             MqttPublish patchPublish = Assert.Single(connection.PublishedMessages, publish => publish.Topic.StartsWith(ClassicReportedPatchTopicPrefix, StringComparison.Ordinal));
             Assert.Equal("{\"a\":1,\"ack\":3}", Encoding.UTF8.GetString(patchPublish.Payload));
-            Assert.Equal(new[] { "push", "completed" }, events);
+            Assert.Equal(s_expectedPushThenCompletionEvents, events);
         }
 
         [Fact]
@@ -488,9 +491,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.NotEqual(ExtractRid(resyncGet.Topic), ExtractRid(retry.Topic));
             await RespondClassicAsync(connection, retry, 200, payload: ClassicTwin(3, "{\"fanSpeed\":3}", 1, "{}"));
 
-            Assert.Equal(new[] { 3ul }, snapshotVersions);
+            Assert.Equal(3ul, Assert.Single(snapshotVersions));
             await ReceiveClassicDesiredPatchAsync(connection, 4, "{\"fanSpeed\":4}");
-            Assert.Equal(new[] { 4ul }, patchVersions);
+            Assert.Equal(4ul, Assert.Single(patchVersions));
             Assert.Equal(publishCount + 2, connection.PublishedMessages.Count);
         }
 
@@ -572,7 +575,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.False(connection.PublishCancellationTokens[publishCount].IsCancellationRequested);
 
             await RespondClassicAsync(connection, resyncGet, 200, payload: ClassicTwin(3, "{\"fanSpeed\":3}", 1, "{}"));
-            Assert.Equal(new[] { 3ul }, snapshotVersions);
+            Assert.Equal(3ul, Assert.Single(snapshotVersions));
             Assert.Equal(publishCount + 1, connection.PublishedMessages.Count);
         }
 
@@ -636,7 +639,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             // The new connection's resync gets a GET of its own, which the call's resent request shares.
             MqttPublish newResyncGet = await connection.WaitForPublishedMessagesAsync(publishCount + 2);
             await RespondClassicAsync(connection, newResyncGet, 200, payload: ClassicTwin(5, "{\"fanSpeed\":5}", 1, "{}"));
-            Assert.Equal(new[] { 5ul }, snapshotVersions);
+            Assert.Equal(5ul, Assert.Single(snapshotVersions));
             Assert.Equal(5ul, (await getTask).DesiredVersion);
             Assert.Equal(publishCount + 2, connection.PublishedMessages.Count);
         }
@@ -979,7 +982,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await ReceiveClassicDesiredPatchAsync(connection, 3, "{\"mode\":\"eco\"}");
             await RespondClassicAsync(connection, getPublish, 200, payload: ClassicTwin(2, "{\"fanSpeed\":2}", 1, "{}"));
 
-            Assert.Equal(new[] { "push:2", "patch:3" }, events);
+            Assert.Equal(s_expectedResyncThenPatchEvents, events);
             TwinState state = twinClient.GetTwinState();
             Assert.Equal(3ul, state.DesiredVersion);
             Assert.Equal("{\"fanSpeed\":2,\"mode\":\"eco\"}", state.Desired.ToJsonString());
