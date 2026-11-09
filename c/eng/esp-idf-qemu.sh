@@ -9,9 +9,9 @@
 #   eng/esp-idf-qemu.sh <build-dir> <target> --run              run, the log on stdout
 #   eng/esp-idf-qemu.sh <build-dir> <target> --download <port>  download mode, UART on TCP <port>
 #
-# target: esp32, esp32s3 or esp32c3 (--download: esp32c3). Waiting exits 0 once a log line
-# matches <regex> (grep -E), 1 when QEMU exits or <seconds> (default 120) pass first; the log is
-# <build-dir>/qemu.log. --run and --download run until QEMU is killed.
+# target: esp32, esp32s3 or esp32c3 (--download: esp32c3 or esp32s3). Waiting exits 0 once a log
+# line matches <regex> (grep -E), 1 when QEMU exits or <seconds> (default 120) pass first; the log
+# is <build-dir>/qemu.log. --run and --download run until QEMU is killed.
 #
 # Each run writes a fresh flash image from the build, so NVS and OTA state do not persist.
 #
@@ -79,11 +79,17 @@ case "$mode" in
     exec "${qemu[@]}" -nic user,model=open_eth
     ;;
   --download)
-    if [ "$target" != esp32c3 ] || [ $# -lt 4 ]; then
-      echo "--download needs esp32c3 and a port" >&2
+    # The strapping that boots into download mode, as ESP-IDF's `idf.py qemu`.
+    case "$target" in
+      esp32c3) strap=0x02 ;;
+      esp32s3) strap=0x07 ;;
+      *) strap= ;;
+    esac
+    if [ -z "$strap" ] || [ $# -lt 4 ]; then
+      echo "--download needs esp32c3 or esp32s3, and a port" >&2
       exit 2
     fi
-    exec "${qemu[@]}" -global driver=esp32c3.gpio,property=strap_mode,value=0x02 \
+    exec "${qemu[@]}" -global "driver=${target}.gpio,property=strap_mode,value=${strap}" \
       -serial "tcp:127.0.0.1:$4,server,nowait" # Loopback only: the eFuse is not read-protected.
     ;;
 esac
