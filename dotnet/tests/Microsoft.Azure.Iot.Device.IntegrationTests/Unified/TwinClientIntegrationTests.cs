@@ -55,7 +55,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestTwin()
         {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(true, null, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(true, null, cancellationToken: TestContext.Current.CancellationToken);
             string deviceId = testDeviceContext.ConnectionContext.DeviceId;
 
             RegistryManager registryManager = Setup.GetMQTTv3IotHubRegistryManager();

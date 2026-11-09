@@ -19,7 +19,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [InlineData(false)]
         public async Task TestDeviceToCloudTelemetry(bool testAgainstClassicHub)
         {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, cancellationToken: TestContext.Current.CancellationToken);
 
             TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
 
@@ -38,7 +38,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [InlineData(false)]
         public async Task TestDeviceToCloudTelemetryWithAllUserProperties(bool testAgainstClassicHub)
         {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, cancellationToken: TestContext.Current.CancellationToken);
 
             using TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
 
@@ -68,7 +68,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [InlineData(false)]
         public async Task TelemetryClientEncodesUserProperties(bool testAgainstClassicHub)
         {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, cancellationToken: TestContext.Current.CancellationToken);
 
             using TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
 
@@ -89,7 +89,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [InlineData(false)]
         public async Task TestCloudToDeviceMessages(bool testAgainstClassicHub)
         {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, cancellationToken: TestContext.Current.CancellationToken);
             ConnectionClient connectionClient = testDeviceContext.ConnectionClient;
 
             ServiceClient serviceClient = Setup.GetMQTTv3IotHubServiceClient();

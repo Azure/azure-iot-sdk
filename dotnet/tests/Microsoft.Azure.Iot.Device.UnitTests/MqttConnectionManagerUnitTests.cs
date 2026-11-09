@@ -12,6 +12,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 {
     public class MqttConnectionManagerUnitTests
     {
+        private static readonly string[] s_expectedReconnectEvents = { "connected", "disconnected", "connected" };
+
         // Each simulated connect attempt takes this long to fail, so the "Disconnected" callbacks of the failed attempts
         // have ample time to try starting reconnection loops of their own while the initial connect is still retrying.
         private static readonly TimeSpan s_connectAttemptDuration = TimeSpan.FromSeconds(1);
@@ -160,7 +162,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(MqttConnectReasonCode.Success, connectAck.ResultCode);
 
             // Give any callbacks that were queued behind the initial connect time to (incorrectly) start reconnecting.
-            await Task.Delay(TimeSpan.FromSeconds(1));
+            await Task.Delay(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken);
 
             // The initial connect does not consult the policy on attempt 1, so the policy should have been consulted
             // exactly once for each of the later attempts, and only by the initial connect's loop.
@@ -384,7 +386,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             lock (events)
             {
-                Assert.Equal(new[] { "connected", "disconnected", "connected" }, events);
+                Assert.Equal(s_expectedReconnectEvents, events);
             }
         }
 
@@ -541,7 +543,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                         {
                             Exception = failure,
                             Reason = MqttDisconnectReason.ImplementationSpecificError,
-                        }));
+                        }), CancellationToken.None);
                     }
 
                     throw failure;

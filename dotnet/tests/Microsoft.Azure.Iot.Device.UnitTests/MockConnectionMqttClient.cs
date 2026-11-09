@@ -210,7 +210,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         private void SimulateBirthAckIfBirthPublish(MqttPublish publish)
         {
-            if (!publish.Topic.StartsWith("ih/") || !publish.Topic.EndsWith("/srv/presence"))
+            if (!publish.Topic.StartsWith("ih/", StringComparison.Ordinal) || !publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
             {
                 return;
             }

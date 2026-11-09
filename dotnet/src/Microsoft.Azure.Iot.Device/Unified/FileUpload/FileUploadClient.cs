@@ -77,9 +77,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         {
             // Fetched per request so SAS tokens are renewed before they expire and newly issued client certificates are
             // picked up. Uses the same primary or secondary credentials as the device's current connection.
-            AuthenticationCredentials credentials = await currentConnectionContext.GetOperationalAuthenticationCredentialsAsync(
-                cancellationToken,
-                updateSecondaryCredentialSelection: false).ConfigureAwait(false);
+            AuthenticationCredentials credentials = await currentConnectionContext.GetOperationalAuthenticationCredentialsAsync(false, cancellationToken).ConfigureAwait(false);
 
             // Providers that authenticate with a SAS token return it as the password; otherwise the client certificate authenticates the request.
             if (credentials.Password.Length > 0)
@@ -262,7 +260,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
 
             if (httpResponse.StatusCode == System.Net.HttpStatusCode.OK)
             {
-                return JsonSerializer.Deserialize<FileUploadSasUriResponse>(await httpResponse.Content.ReadAsStringAsync())!;
+                return JsonSerializer.Deserialize<FileUploadSasUriResponse>(await httpResponse.Content.ReadAsStringAsync(cancellationToken))!;
             }
             else
             {
@@ -350,8 +348,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         /// </summary>
         public void Dispose()
         {
+            GC.SuppressFinalize(this);
             DisposeHttpClient(disposeUserSuppliedHttpClient: true);
-
             _connection.Dispose();
         }
 

@@ -18,6 +18,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 {
     public class ConnectionClientUnitTests
     {
+        private static readonly bool[] s_expectedResumedSessionFlags = { false, false };
+
         private const string AcceptedResponse = """{"correlationId":"correlation-id","operationExpires":"2026-10-20T00:00:00Z"}""";
         private const string CompletedResponse = """{"certificates":["issued-certificate"],"correlationId":"correlation-id"}""";
 
@@ -639,7 +641,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                     "unknownField": true
                 }
                 """;
-            await ReceiveCertificateSigningResponseAsync(client, request.RequestId, status.ToString(), payload);
+            await ReceiveCertificateSigningResponseAsync(client, request.RequestId, status.ToString(System.Globalization.CultureInfo.InvariantCulture), payload);
 
             CertificateSigningRequestFailedException failure = await Assert.ThrowsAsync<CertificateSigningRequestFailedException>(
                 () => operation.Completed.WaitAsync(TimeSpan.FromSeconds(1), TestContext.Current.CancellationToken));
@@ -978,7 +980,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // The broker resumed a session on the final attempt, but the failed attempt before it may have replaced the
             // subscribed session with an empty one, so the subscriptions are sent again.
-            Assert.Equal(new[] { false, false }, cleanSessionFlags);
+            Assert.Equal(s_expectedResumedSessionFlags, cleanSessionFlags);
             Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
         }
 
@@ -1201,7 +1203,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             mockMqttClient.OnSubscribe = async (subscribe) =>
             {
-                if (retryCount == 0 && subscribe.TopicFilters.FirstOrDefault()!.Topic.Equals(expectedTopicString))
+                if (retryCount == 0 && subscribe.TopicFilters.FirstOrDefault()!.Topic.Equals(expectedTopicString, StringComparison.Ordinal))
                 {
                     _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new Exception("mock exception"));
                     retryCount++;
@@ -1257,7 +1259,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             mockMqttClient.OnUnsubscribe = async (unsubscribe) =>
             {
-                if (retryCount == 0 && unsubscribe.TopicFilters.FirstOrDefault()!.Equals(expectedTopicString))
+                if (retryCount == 0 && unsubscribe.TopicFilters.FirstOrDefault()!.Equals(expectedTopicString, StringComparison.Ordinal))
                 {
                     _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new Exception("mock exception"));
                     retryCount++;

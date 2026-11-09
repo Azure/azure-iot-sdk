@@ -18,6 +18,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 {
     public class FileUploadClientUnitTests
     {
+        private static readonly string[] s_expectedEscapedRequestPaths = { "devices/device%3Fone/files", "devices/device%3Fone/files/notifications" };
+
         private const string HostName = "some-hub.azure-devices.net";
         private const string DeviceId = "device-id";
 
@@ -201,8 +203,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         [Fact]
         public async Task HttpClientIsRecreatedOnlyWhenTlsCallbacksChange()
         {
-            RemoteCertificateValidationCallback firstValidation = (_, _, _, _) => true;
-            RemoteCertificateValidationCallback secondValidation = (_, _, _, _) => true;
+            RemoteCertificateValidationCallback firstValidation = (_, _, _, errors) => errors == SslPolicyErrors.None;
+            RemoteCertificateValidationCallback secondValidation = (_, _, _, errors) => errors == SslPolicyErrors.None;
             LocalCertificateSelectionCallback selection = (_, _, _, _, _) => null!;
             var authentication = new SwitchableAuthenticationProvider
             {
@@ -235,7 +237,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         public void HttpMessageHandlerAppliesCredentialTlsSettings()
         {
             using X509Certificate2 certificate = CreateCertificate();
-            RemoteCertificateValidationCallback validation = (_, _, _, _) => true;
+            RemoteCertificateValidationCallback validation = (_, _, _, errors) => errors == SslPolicyErrors.None;
             LocalCertificateSelectionCallback selection = (_, _, _, _, _) => null!;
 
             using var handler = Assert.IsType<SocketsHttpHandler>(FileUploadClient.CreateHttpMessageHandler(new AuthenticationCredentials
@@ -336,7 +338,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await fileUploadClient.CompleteFileUploadSasUriAsync(new FileUploadCompletionNotification { CorrelationId = "id", IsSuccess = true }, TestContext.Current.CancellationToken);
 
             Assert.Equal(
-                new[] { "devices/device%3Fone/files", "devices/device%3Fone/files/notifications" },
+                s_expectedEscapedRequestPaths,
                 handler.RequestUris.Select(uri => uri.GetComponents(UriComponents.Path, UriFormat.UriEscaped)));
         }
 
