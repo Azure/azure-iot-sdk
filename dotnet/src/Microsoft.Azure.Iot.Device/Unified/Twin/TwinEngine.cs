@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Google.Protobuf;
@@ -213,6 +213,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             _connection.PublishReceivedAsync += HandleReceivedMqttPublish;
             _connection.ConnectionLost += HandleConnectionLost;
+            _connection.ConnectionAbandoned += HandleConnectionAbandoned;
             _connection.ClassicDevicePresenceEstablished += HandleClassicDevicePresenceEstablished;
 
             if (_connection.IsClassicDevicePresenceEstablished)
@@ -267,9 +268,13 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </remarks>
         /// <exception cref="ArgumentException">Thrown when neither desired nor reported properties are requested.</exception>
         /// <exception cref="DeviceException">
-        /// Thrown if this get twin request could not be sent, or with <see cref="ErrorRetryability.Retryable"/> if the
-        /// connection to IoT hub was lost after the request was sent but before the response arrived. The request may be
-        /// retried once reconnected. A request made while the device is reconnecting is sent once it has reconnected.
+        /// Thrown if this get twin request could not be sent. If the connection to IoT hub is lost before the response arrives
+        /// (or the request is made while the device is reconnecting), the request is sent again once the device has
+        /// reconnected, so this only fails if the device never reconnects.
+        /// </exception>
+        /// <exception cref="OperationCanceledException">
+        /// Thrown if the connection client is deliberately disconnected, or faults unrecoverably, while this request waits to be
+        /// sent again.
         /// </exception>
         public async Task<DeviceTwin> GetTwinAsync(bool getReported = true, bool getDesired = true, ulong ifNotMatchReported = 0, ulong ifNotMatchDesired = 0, CancellationToken cancellationToken = default)
         {
@@ -298,6 +303,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 {
                     lock (_getTwinLock)
                     {
+                        waiter.IsAbandoned = true;
                         RemoveGetTwinWaiter(waiter);
                     }
                 }
@@ -870,7 +876,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 // The connection client returns the PUBACK as-is, so a rejected request must be surfaced here.
                 MqttPublishAck puback = await _connection.PublishAsync(publish, attemptCancellationToken);
                 MqttAckValidator.ThrowIfPubackHasErrorCode(puback);
-                List<GetTwinWaiter> abandoned;
                 lock (_getTwinLock)
                 {
                     // For example, the response already arrived.
@@ -892,14 +897,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                         return;
                     }
 
-                    // The resync (if any) ends along with the connection.
-                    abandoned = TakeGetTwinWaiters(fetch);
-                    EndGetTwinFetch(fetch);
-                }
-
-                foreach (GetTwinWaiter waiter in abandoned)
-                {
-                    waiter.Response.TrySetException(CreateGetTwinConnectionLostException());
+                    ResendGetTwinFetchAfterConnectionLoss(fetch);
                 }
             }
             catch (OperationCanceledException) when (attemptCancellationToken.IsCancellationRequested)
@@ -1126,8 +1124,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             // A response that is handled once the connection that it arrived on, that its GET was sent on, or (for a resync's GET)
             // that the resync started on was replaced, for example by one as a different identity, describes a twin that this
-            // device may no longer have. It is dropped, and the calls sharing it fail as if the connection had been lost before it
-            // arrived. The connection is checked and the response applied while holding _desiredStateLock, which a new
+            // device may no longer have. It is dropped, and the calls sharing it send their request again on the current
+            // connection, as if the connection had been lost before it arrived. The connection is checked and the response applied while holding _desiredStateLock, which a new
             // connection's connect sync also holds while it replaces the resync and records the versions it starts from, so the
             // two never interleave.
             DesiredStateOutcome outcome = new();
@@ -1186,12 +1184,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             if (isFromReplacedConnection)
             {
-                Trace.TraceInformation("Dropping a get twin response that arrived after the connection it was requested on was replaced.");
-                foreach (GetTwinWaiter waiter in waiters)
-                {
-                    waiter.Response.TrySetException(CreateGetTwinConnectionLostException());
-                }
-
+                Trace.TraceInformation("Dropping a get twin response that arrived after the connection it was requested on was replaced. Sending the request again.");
+                ResendGetTwinRequests(waiters);
                 return;
             }
 
@@ -1223,26 +1217,51 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
         }
 
+        // The response that these calls waited for was dropped since its connection was replaced, so they wait for a new GET
+        // instead, which goes out on the current connection (or the next one).
+        private void ResendGetTwinRequests(List<GetTwinWaiter> waiters)
+        {
+            List<GetTwinWaiter> disposed = new();
+            lock (_getTwinLock)
+            {
+                foreach (GetTwinWaiter waiter in waiters)
+                {
+                    if (waiter.IsAbandoned || waiter.Response.Task.IsCompleted)
+                    {
+                        continue;
+                    }
+
+                    if (_isDisposed)
+                    {
+                        disposed.Add(waiter);
+                    }
+                    else
+                    {
+                        AddToGetTwinFetch(waiter.Request, waiter, null, isNewAttemptRequired: false);
+                    }
+                }
+            }
+
+            foreach (GetTwinWaiter waiter in disposed)
+            {
+                waiter.Response.TrySetException(new ObjectDisposedException(nameof(TwinClient)));
+            }
+        }
+
         // Twin exchanges can't outlive the connection they were sent on, since IoT hub never sends their responses on a later one.
         private void HandleConnectionLost()
         {
             // A GET that is still waiting to be sent (for example, one made while reconnecting) is sent on the next connection
-            // instead. The resync (if any) ends along with the connection.
-            List<GetTwinWaiter> abandoned = new();
+            // instead. So is a GET whose response the lost connection took with it, if any call still waits for it. The resync
+            // (if any) ends along with the connection.
             lock (_getTwinLock)
             {
                 _getTwinLostConnectionNonce = _connection.ConnectionNonce;
                 GetTwinFetch? active = _activeGetTwinFetch;
                 if (active != null && active.GetId != null && active.SentGetId == active.GetId)
                 {
-                    abandoned = TakeGetTwinWaiters(active);
-                    EndGetTwinFetch(active);
+                    ResendGetTwinFetchAfterConnectionLoss(active);
                 }
-            }
-
-            foreach (GetTwinWaiter waiter in abandoned)
-            {
-                waiter.Response.TrySetException(CreateGetTwinConnectionLostException());
             }
 
             // Reported patches are kept and sent again on the next connection. IoT hub may have applied the attempt in flight,
@@ -1268,13 +1287,31 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
         }
 
-        private static DeviceException CreateGetTwinConnectionLostException()
+        // Must be called while holding _getTwinLock. The latest attempt of this GET went out on a connection that was lost, so its
+        // response can never arrive. If any call still waits for it, a new attempt is sent once the device has reconnected (the
+        // connection client holds it until then, and fails it if the application disconnects or the client faults meanwhile).
+        // Otherwise, the GET only served the resync, which ends along with the connection.
+        private void ResendGetTwinFetchAfterConnectionLoss(GetTwinFetch fetch)
         {
-            return new DeviceException("The connection to IoT hub was lost before the response to this twin request arrived. It may be retried once reconnected.")
+            if (fetch.Waiters.Count == 0)
             {
-                Retryability = ErrorRetryability.Retryable,
-                IsContained = true,
-            };
+                EndGetTwinFetch(fetch);
+                return;
+            }
+
+            Trace.TraceInformation("The connection to IoT hub was lost before the response to a get twin request arrived. Sending it again once reconnected.");
+            fetch.SentGetId = null;
+            fetch.SentConnectionNonce = null;
+            fetch.Attempt = 1;
+            StartGetTwinAttempt(fetch);
+        }
+
+        // Nothing will bring the connection back unless the application connects again, so a GET waiting to be sent (or sent
+        // again) once reconnected must fail now. Otherwise, an attempt that is queued but not yet handed to the connection
+        // client could fail with an unrelated error, or be sent on a connection the application makes later.
+        private void HandleConnectionAbandoned(Exception exception)
+        {
+            AbandonAllGetTwinFetches(() => exception);
         }
 
         private void AbandonAllGetTwinFetches(Func<Exception> createException)
@@ -1758,6 +1795,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
             // Guarded by _getTwinLock. The GET this call waits for, if it still waits.
             public GetTwinFetch? Fetch { get; set; }
+
+            // Guarded by _getTwinLock. Whether the call stopped waiting (for example, it was cancelled).
+            public bool IsAbandoned { get; set; }
         }
 
         // A GET request to IoT hub (sent, or waiting to be sent), and who waits for its response. Guarded by _getTwinLock.
@@ -1832,6 +1872,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             _isDisposed = true;
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.ConnectionLost -= HandleConnectionLost;
+            _connection.ConnectionAbandoned -= HandleConnectionAbandoned;
             _connection.ClassicDevicePresenceEstablished -= HandleClassicDevicePresenceEstablished;
             lock (_desiredStateLock)
             {
