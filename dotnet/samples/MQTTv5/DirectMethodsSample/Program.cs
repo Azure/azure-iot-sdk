@@ -37,7 +37,7 @@ internal class Program
         using DirectMethodClient directMethodClient = new DirectMethodClient(connectionClient);
         Func<DirectMethodRequestProbeReceivedEventArgs, Task<DirectMethodProbeAck>> HandleDirectMethodProbeAsync = async (args) =>
         {
-            if (args.MethodName.Equals(MethodName))
+            if (args.MethodName.Equals(MethodName, StringComparison.Ordinal))
             {
                 Console.WriteLine($"Received direct method probe for the expected method '{args.MethodName}'. Responding to IoT Hub that this device is ready for it.");
                 return DirectMethodProbeAck.Accepted();
@@ -50,7 +50,7 @@ internal class Program
         Func<DirectMethodRequestReceivedEventArgs, Task<DirectMethodResponse>> HandleDirectMethodAsync = (args) =>
         {
             Console.WriteLine($"Received direct method with name {args.MethodName}");
-            if (args.MethodName.Equals(MethodName))
+            if (args.MethodName.Equals(MethodName, StringComparison.Ordinal))
             {
                 DirectMethodRequestPayloadObject? directMethodRequestPayload = null;
                 try

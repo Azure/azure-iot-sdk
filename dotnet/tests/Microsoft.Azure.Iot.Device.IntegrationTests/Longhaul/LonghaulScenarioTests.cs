@@ -60,7 +60,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
             };
 
             MQTTv5DeviceTestContext device = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(
-                null, options, cancellationToken, CertificateValidity(settings));
+                null, options, CertificateValidity(settings), cancellationToken);
             using Device.MQTTv5.Telemetry.TelemetryClient telemetryClient = new(device.ConnectionClient);
             using Device.MQTTv5.Twin.TwinClient twinClient = new(device.ConnectionClient);
             using Device.MQTTv5.DirectMethods.DirectMethodClient directMethodClient = new(device.ConnectionClient);
@@ -112,7 +112,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Longhaul
             };
 
             UnifiedDeviceTestContext device = await Setup.CreateConnectedUnifiedConnectionClientAsync(
-                testAgainstClassicHub, options, cancellationToken, CertificateValidity(settings));
+                testAgainstClassicHub: testAgainstClassicHub,
+                options: options,
+                certificateValidity: CertificateValidity(settings),
+                cancellationToken: cancellationToken);
             string deviceId = device.ConnectionContext.DeviceId;
             using Device.Unified.Telemetry.TelemetryClient telemetryClient = new(device.ConnectionClient);
             using Device.Unified.Twin.TwinClient twinClient = new(device.ConnectionClient);

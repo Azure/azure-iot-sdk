@@ -737,7 +737,7 @@ supported on MQTTv5 IoT Hub, so there is no MQTTv5 client. Wire format per
 
 C2D was the last feature client with **no unit coverage at all** — its only test was the e2e
 round trip, so every argument-validation, topic-build and teardown path was unexercised.
-`c2d_client_test.c` now covers them; what is left `Pending` is noted per row.
+`mqttv3_c2d_client_test.c` now covers them; what is left `Pending` is noted per row.
 
 | Group | Test | Scenario | Type | Status | Code Location |
 | --- | --- | --- | --- | --- | --- |

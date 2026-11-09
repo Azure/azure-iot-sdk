@@ -17,6 +17,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 {
     public class ConnectionClientUnitTests
     {
+        private static readonly bool[] s_expectedTwoResumedSessionFlags = { false, false };
+        private static readonly bool[] s_expectedThreeResumedSessionFlags = { false, false, false };
+        private static readonly int[] s_expectedTimeoutsAfterReset = { 0, 1, 2, 0 };
+        private static readonly int[] s_expectedTwoInitialTimeouts = { 0, 0 };
+        private static readonly int[] s_expectedEscalatingTimeouts = { 0, 1, 2 };
+
         private static ConnectionContext GetMockConnectionContext()
         {
 #pragma warning disable SYSLIB0026 // Type or member is obsolete (Mock certificate, don't need to load a real one using typical X509 certificate loader
@@ -371,7 +377,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             // The SUBACK was observed on the session before the connection dropped, so the resumed session still holds
             // the subscriptions and only the birth is sent again.
-            Assert.Equal(new[] { false, false }, cleanStartFlags);
+            Assert.Equal(s_expectedTwoResumedSessionFlags, cleanStartFlags);
             Assert.Equal(1, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
             Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Publish?.Topic.EndsWith("/srv/presence", StringComparison.Ordinal) == true));
         }
@@ -484,7 +490,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 Assert.Equal(5, mockMqttClient.SentMqttTrafficInOrder.Count);
             }
 
-            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
+            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder[^1];
 
             // Verify that the telemetry sent by the telemetry client is the last piece of traffic "sent" in this test. It must be preceded by the intial device presence flow traffic and by the reconnection device presence flow traffic
             Assert.NotNull(lastTraffic.Publish);
@@ -516,7 +522,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             mockMqttClient.OnSubscribe = async (subscribe) =>
             {
-                if (retryCount == 0 && subscribe.TopicFilters.FirstOrDefault()!.Topic.Equals(expectedTopicString))
+                if (retryCount == 0 && subscribe.TopicFilters.FirstOrDefault()!.Topic.Equals(expectedTopicString, StringComparison.Ordinal))
                 {
                     retryCount++;
                     _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new IOException("mock connection reset"));
@@ -539,7 +545,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 Assert.Equal(5, mockMqttClient.SentMqttTrafficInOrder.Count);
             }
 
-            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
+            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder[^1];
 
             // Verify that the subscribe sent directly from this test is the last piece of traffic "sent" in this test. It must be preceded by the intial device presence flow traffic and by the reconnection device presence flow traffic
             Assert.NotNull(lastTraffic.Subscribe);
@@ -571,7 +577,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             mockMqttClient.OnUnsubscribe = async (unsubscribe) =>
             {
-                if (retryCount == 0 && unsubscribe.TopicFilters.FirstOrDefault()!.Equals(expectedTopicString))
+                if (retryCount == 0 && unsubscribe.TopicFilters.FirstOrDefault()!.Equals(expectedTopicString, StringComparison.Ordinal))
                 {
                     retryCount++;
                     _ = mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.ImplementationSpecificError, new IOException("mock connection reset"));
@@ -594,7 +600,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 Assert.Equal(5, mockMqttClient.SentMqttTrafficInOrder.Count);
             }
 
-            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
+            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder[^1];
 
             // Verify that the subscribe sent directly from this test is the last piece of traffic "sent" in this test. It must be preceded by the intial device presence flow traffic and by the reconnection device presence flow traffic
             Assert.NotNull(lastTraffic.Unsubscribe);
@@ -703,7 +709,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             lock (requestedTimeouts)
             {
-                Assert.Equal(new[] { 0, 1, 2, 0 }, requestedTimeouts);
+                Assert.Equal(s_expectedTimeoutsAfterReset, requestedTimeouts);
             }
         }
 
@@ -755,7 +761,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
             await reconnected.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            Assert.Equal(new[] { false, false, false }, cleanStartFlags);
+            Assert.Equal(s_expectedThreeResumedSessionFlags, cleanStartFlags);
             Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
             Assert.Equal(3, Volatile.Read(ref birthCount));
         }
@@ -849,8 +855,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
             Assert.Equal(2, Volatile.Read(ref birthCount));
-            Assert.Equal(new[] { 0, 0 }, requestedTimeouts);
-            Assert.Single(mockMqttClient.SentMqttTrafficInOrder.Where(traffic => traffic.Subscribe != null));
+            Assert.Equal(s_expectedTwoInitialTimeouts, requestedTimeouts);
+            Assert.Single(mockMqttClient.SentMqttTrafficInOrder, traffic => traffic.Subscribe != null);
         }
 
         // A connect the application starts after closing is a fresh CONNECT cycle, so it uses the first row of the
@@ -915,7 +921,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Volatile.Write(ref answerBirths, true);
             lock (requestedTimeouts)
             {
-                Assert.Equal(new[] { 0, 1, 2 }, requestedTimeouts);
+                Assert.Equal(s_expectedEscalatingTimeouts, requestedTimeouts);
             }
 
             await connectionClient.DisconnectAsync(null, TestContext.Current.CancellationToken);
@@ -925,7 +931,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             lock (requestedTimeouts)
             {
-                Assert.Equal(new[] { 0, 1, 2, 0 }, requestedTimeouts);
+                Assert.Equal(s_expectedTimeoutsAfterReset, requestedTimeouts);
             }
         }
 

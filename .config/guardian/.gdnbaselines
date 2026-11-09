@@ -1,0 +1,450 @@
+{
+  "properties": {
+    "helpUri": "https://eng.ms/docs/microsoft-security/security/azure-security/cloudai-security-fundamentals-engineering/security-integration/guardian-wiki/microsoft-guardian/general/baselines"
+  },
+  "version": "1.0.0",
+  "baselines": {
+    "default": {
+      "name": "default",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "lastUpdatedDate": "2026-11-03 07:09:33Z"
+    }
+  },
+  "results": {
+    "4d9fd2b149c164ecb9894dad559fe089a7d5b979961ed0cb79d3a05f87d456f0": {
+      "signature": "4d9fd2b149c164ecb9894dad559fe089a7d5b979961ed0cb79d3a05f87d456f0",
+      "alternativeSignatures": [
+        "9b02a2a5e9d4124a87ff8546d08d8deac0663f372b51ba0ec43ff867d24357a8",
+        "65a2699994ba47f6474f5ab6e031a6f015951b7d556702b0d6a846b7fc2d3c0f",
+        "3822825c9526fe877b1ab9dcb9c230233e087dbe33772fd3febc5b093c66ece3"
+      ],
+      "target": "windows/az_iot_core-1.0.0.dll",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "a4bcd61c2b60793bf14dde2340e6543430f38ba0a00b8fbe44fece975674ddc6": {
+      "signature": "a4bcd61c2b60793bf14dde2340e6543430f38ba0a00b8fbe44fece975674ddc6",
+      "alternativeSignatures": [
+        "38fcb9fbc6d19ddb5e625c450b98507869427ade14bc41cddfb466f553889de3",
+        "80c1ed075a63090ceeb3ac7903a25b7e78b40428e548052974f10ddc8f17129b",
+        "35111a10ed4d779aeb15fb03f259b05e3d45470823535b104009c1807c72f57f"
+      ],
+      "target": "windows/az_iot_mqttv3-1.0.0.dll",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "68d72a58b0fd2b79c96681cf92c3b5dfffa95005308868a0a4a7a3af32134852": {
+      "signature": "68d72a58b0fd2b79c96681cf92c3b5dfffa95005308868a0a4a7a3af32134852",
+      "alternativeSignatures": [
+        "2c066f81690865e8ffd552f61c772ad9e1b0e2f912b1e65d7041de35fb32b693",
+        "14ee8a0c92de2aafe2081701e1b4bb2b26350e19f1c7cc3cb5d59be58f8f4e76",
+        "559eeedd885b8e0d30461537d84f7101a501c35e2536f20f9a556b10f5fd9920"
+      ],
+      "target": "windows/samples/authentication/RelWithDebInfo/az_iot_sample_auth_custom_certificate_provider.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "eefb9f3705a6aa9f69ed40c489b1408709ca36858c4714e75adb16ed7d2b20f4": {
+      "signature": "eefb9f3705a6aa9f69ed40c489b1408709ca36858c4714e75adb16ed7d2b20f4",
+      "alternativeSignatures": [
+        "d384c8d7af6254c0092a767c9d5268ddba8d004c4e742d29e5120ab60c26162e",
+        "856db17679deee82a3cfde415243a69b5e5d3a8e918539615aa29ec595bf0309",
+        "4b0941f0dbbbdfb8b586c46c4682f5fd6b27fb5f6fe14dcbfe8fbdcfb1695afe"
+      ],
+      "target": "windows/samples/authentication/RelWithDebInfo/az_iot_sample_auth_dps_csr_managed.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "697257e3c8b102864bff1d16014bf112a9954c53220dfa21687b36ea88da35e7": {
+      "signature": "697257e3c8b102864bff1d16014bf112a9954c53220dfa21687b36ea88da35e7",
+      "alternativeSignatures": [
+        "92c4683ee6731ac6ed63e183e6e921834f0a21428c6fa3118f97c3553e061282",
+        "f1b68449d7fe10dbc97e2b6a7a1eaf8a7153bad5d2f3bbd7703c255991c5df56",
+        "9723b63d33dcede7f2803234cd94c4f720c3dfb29911adff5314cecce04ed1a8"
+      ],
+      "target": "windows/samples/authentication/RelWithDebInfo/az_iot_sample_auth_dps_persist_assignment.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "728c3a749bc9cc4b7a18685d97742990ec8b84a7a5a25917afd65dde0c059a30": {
+      "signature": "728c3a749bc9cc4b7a18685d97742990ec8b84a7a5a25917afd65dde0c059a30",
+      "alternativeSignatures": [
+        "9bb1b9874ea8a87212a5dcb36a145fcaea0c0c43ecbda6dee1ed569825c9d3f6",
+        "691ab4f97889b4b38ffb05c760abb98763810a548bc1057abfe384be7b4737fe",
+        "399bebee261c50334887d65f8ce0c0faa8a398bb4cb3d32a0dd8fa1f4e67e03d"
+      ],
+      "target": "windows/samples/authentication/RelWithDebInfo/az_iot_sample_auth_dps_sas_key.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "03ad8db99e754aa2dc52ba02169a9a67704506eac730080594ca32f95ecc1d8e": {
+      "signature": "03ad8db99e754aa2dc52ba02169a9a67704506eac730080594ca32f95ecc1d8e",
+      "alternativeSignatures": [
+        "72262442f8742eb3a040348cbafef1e0482f815cc6317c536dee037939312915",
+        "260f62f90a0ddb0d6603e1609b4c1bada8b3f216182b734adbaf5cb324b2c2df",
+        "ddd89993e50a99f5a3155def65c3473323b56c021e5be83d425397b75ac1e143"
+      ],
+      "target": "windows/samples/authentication/RelWithDebInfo/az_iot_sample_auth_dps_sas_key_issued_cert.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "fcfab18ccaf8645789ee126fb8d29be3fd98ecaaeae29547461dd67ed41dd055": {
+      "signature": "fcfab18ccaf8645789ee126fb8d29be3fd98ecaaeae29547461dd67ed41dd055",
+      "alternativeSignatures": [
+        "2fb7ce547e32a996a04f1a6a21bdbdc74d912a79505f609145a7b92e960c06b3",
+        "0b015ff822d24462dbadebf6f6afb946d59086f2d2a470952fa552772bee80bf",
+        "818266b03ab9145664bedf13ca1339a84e95a62f72f6eaee718c14b53494b451"
+      ],
+      "target": "windows/samples/authentication/RelWithDebInfo/az_iot_sample_auth_hsm_pkcs11.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "ee4a523491e605a284d4f0b5b7eccbd7ea3c99dbb781109bab6f6625c7fb14d4": {
+      "signature": "ee4a523491e605a284d4f0b5b7eccbd7ea3c99dbb781109bab6f6625c7fb14d4",
+      "alternativeSignatures": [
+        "f95077dceeff37eedc19f10d54d70feda53609f549252345a306641f1ba9217f",
+        "9826c66f78ac71a16e36fe9887e8a4a15e0a1794b5bfc1475f83f857207f0189",
+        "f0f9e297d4636cf2cf56c48bc265293322d09ca0cee6336682629eb69c3aa4c1"
+      ],
+      "target": "windows/samples/authentication/RelWithDebInfo/az_iot_sample_auth_hsm_sign_callback.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "4e7b6b09bfb0a0c239dac5469bdc9ffbe2430584692be364b2ca3c70ce75a536": {
+      "signature": "4e7b6b09bfb0a0c239dac5469bdc9ffbe2430584692be364b2ca3c70ce75a536",
+      "alternativeSignatures": [
+        "0826b3e8d46e2b54cc60d3f71ffd51c9928790551daa8d25d9dd81453baf02e4",
+        "a13aa6dc30f6ca44e7c86f7f33c6ed4e43375492990b48c93d9e25610f0bf085",
+        "93c6f521da54b5e30195459dc4acc5c242d28c77c01b0e76692d0e1b2146f656"
+      ],
+      "target": "windows/samples/authentication/RelWithDebInfo/az_iot_sample_auth_hub_renew.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "952b4b39fb27d42c77a7b4dec7cebbfe18d35356bf0835808f3c2d656b589991": {
+      "signature": "952b4b39fb27d42c77a7b4dec7cebbfe18d35356bf0835808f3c2d656b589991",
+      "alternativeSignatures": [
+        "04e10cc0fe5dba273a44725c75f795bdc1f792823d711a6c0e35b7773937a378",
+        "617c335355b0a2c57b4539f74f679858162ee59dd4d669acf2a04c9dce298ed9",
+        "f9f951d67638bf0dafdd04cf03589d145daab0e7e53a03087a91293af7d9982d"
+      ],
+      "target": "windows/samples/authentication/RelWithDebInfo/az_iot_sample_auth_user_provided_sas_token.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "722dffb2ec7c9b3a50ee03773b69408675cd4c256e7deaac46c11d0456dc4966": {
+      "signature": "722dffb2ec7c9b3a50ee03773b69408675cd4c256e7deaac46c11d0456dc4966",
+      "alternativeSignatures": [
+        "5ff0c2e25787d18a618f18c2bd7bdae6e413b77d1165716b7a7096a2fefff050",
+        "f105de18f2903ef8cdb9ef826c15cf64486b33b356dde84ce57a7fee4a061bb8",
+        "92b0f25a0abfb762302d0a44aa54c3791ebd1d1efdb87c33ca72442dcf84a1b3"
+      ],
+      "target": "windows/samples/unified/RelWithDebInfo/az_iot_sample_c2d_receiver.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "73d01dea6c3d2bbaed828ef11c685dab83869edd44ca8326a8e79ee255e36646": {
+      "signature": "73d01dea6c3d2bbaed828ef11c685dab83869edd44ca8326a8e79ee255e36646",
+      "alternativeSignatures": [
+        "9229709917231654aac8dfac920de1663d1900af5fac3994f0bb68d25c3457de",
+        "9ac62fcc3396f624ed2e500472dd56779e0bb5e6490aead8c3a0e817d28af42f",
+        "c8b390f5bb5ea819a9a2dec3c9e45a8eeeea63ae443162a29db6a867a1b9fed7"
+      ],
+      "target": "windows/samples/unified/RelWithDebInfo/az_iot_sample_connect_first.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "53f23b654b607a50e193b55f142c9dc2d6cc83bfec5a6b5ba25c3c128b91a7d5": {
+      "signature": "53f23b654b607a50e193b55f142c9dc2d6cc83bfec5a6b5ba25c3c128b91a7d5",
+      "alternativeSignatures": [
+        "ed957604655449d6ffa25514f30cb693e78f26068ae0a795ffb05b731c18e6d5",
+        "da6b5e01cd7c7099943f02e3e4dff722a1e056340eecbdc139caaa0864b2d01e",
+        "0313a487ab32cbed2b10cc88c229d740b3ac94f3a5c75bb2716daba2067be799"
+      ],
+      "target": "windows/samples/unified/RelWithDebInfo/az_iot_sample_direct_method_responder.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "ed05a26903196f59fe4ba4d248c564c71521ccab6a84e3886097ef715911efcb": {
+      "signature": "ed05a26903196f59fe4ba4d248c564c71521ccab6a84e3886097ef715911efcb",
+      "alternativeSignatures": [
+        "ebcc31e13ab96811dd594c0cec08c54590930102c99b776bd1079b2e7ce36127",
+        "9bcd22b5d542aa101e4202cb076c4f4317ad13b7a25b53b62bea8135dc6f3304",
+        "b280d2fedd6e4872c9314f6fa0ad0e9c39fe9e2fe7158493ca01c826f44f6472"
+      ],
+      "target": "windows/samples/unified/RelWithDebInfo/az_iot_sample_direct_method_slow_responder.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "9cf3fd8af856f36050c57d8d52f7b5bccc75e96e8cdc2cd6d3137c03a7eb2a16": {
+      "signature": "9cf3fd8af856f36050c57d8d52f7b5bccc75e96e8cdc2cd6d3137c03a7eb2a16",
+      "alternativeSignatures": [
+        "05f1a76cfdf15df8e808a720df01d06fdd3d70d463aad7b7dcb146bd1aade7c6",
+        "55a8dc9643389ed0cdf952a8784c88ab5f22494035f1cd788311a2ba295d06d4",
+        "d201b57f59cbecb497d55dd06db1dc98ba3358d4af1267f53d3c4c54bb2789a9"
+      ],
+      "target": "windows/samples/unified/RelWithDebInfo/az_iot_sample_file_upload.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "f927ca95beed109bb313ccade72fe1a083dbaf2404b387e2c0925f027e605f89": {
+      "signature": "f927ca95beed109bb313ccade72fe1a083dbaf2404b387e2c0925f027e605f89",
+      "alternativeSignatures": [
+        "ffa418ad62efd5cffbf077d4b9edc2a544447f53799a397775422316b20899d0",
+        "cfd032a7c1ce61e4557c9556b6f7aa797fbc9c96ab85526a12eb1f9ab3455c7f",
+        "1de2140f931966e7e1b34c750824b0fbc86655acb611ca4b718febcfa01621fc"
+      ],
+      "target": "windows/samples/unified/RelWithDebInfo/az_iot_sample_multithreaded_telemetry.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "bdad73bc506155a9b85656eac008e6fd7d9f297fa6987ce360d185b22f7d7d9a": {
+      "signature": "bdad73bc506155a9b85656eac008e6fd7d9f297fa6987ce360d185b22f7d7d9a",
+      "alternativeSignatures": [
+        "6bd46ee5c48fcfa09bef93bc9628e622839f9a69661c00252bdb8efec6dafdac",
+        "cd381bea3410072a2e1046c87fe8762dd314f632d01032d50c190b137a2b9cb2",
+        "c2ab84768ba8d5739fd7549078bd6e8837f7ab6b55ab639611352ed164683eeb"
+      ],
+      "target": "windows/samples/unified/RelWithDebInfo/az_iot_sample_proxy.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "0c8126a08c352db770e39ece73b17ffe81dad03494ea492326115ee93193128c": {
+      "signature": "0c8126a08c352db770e39ece73b17ffe81dad03494ea492326115ee93193128c",
+      "alternativeSignatures": [
+        "f3ce64326f9f24e1fa543254e8091ec1aab4c132f765e46e9cc1fe9d1b3d8cdc",
+        "202f6fb376f86aefd96cc0ddfe2b911e8df18938c24b923b3eef625e256fde11",
+        "994661426116ad71b0a60b3461ba8e9e1a2dbdbb66138f58ca0664f9c1198d2c"
+      ],
+      "target": "windows/samples/unified/RelWithDebInfo/az_iot_sample_telemetry.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "2f85dca2cc613e251aa0bf44e6238b1f90ed0f4969e78290a09dc8996325b054": {
+      "signature": "2f85dca2cc613e251aa0bf44e6238b1f90ed0f4969e78290a09dc8996325b054",
+      "alternativeSignatures": [
+        "8cc680211bbfaa282662ee28ca740a09b4b942b3664315172bff4ed2e4645962",
+        "2a9179b6e389b29369e84afe0d45d6044000f1ab7bc83d32a13c341ca6418e1b",
+        "1d34f8f400a3d7d050e12c43f0febf7f230faee0bfe75774261713a08bd59b4e"
+      ],
+      "target": "windows/samples/unified/RelWithDebInfo/az_iot_sample_twin_get_patch.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "91f9c2882d5d69f56780db9b9b9c60a10db0e161bb582c0090322ecb4e59ec2f": {
+      "signature": "91f9c2882d5d69f56780db9b9b9c60a10db0e161bb582c0090322ecb4e59ec2f",
+      "alternativeSignatures": [
+        "0534bac2d48323067c249adb209740b15345483675079ead920a2e3bd68a75bd",
+        "569613525c52051dd40ff0f5717c82ce82236258afcf51f3260e4ed4f69fd9ac",
+        "ba798153165883d8d198b1b9ac245e5cd9f044a6888451ca9485fb46b6fbbe9e"
+      ],
+      "target": "windows/samples/unified/RelWithDebInfo/az_iot_sample_websockets.exe",
+      "uriBaseId": "file:///D:/a/_work/1/a/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "binskim",
+      "ruleId": "BA2007",
+      "createdDate": "2026-11-03 07:09:33Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "6fa15dd70099abd1dac96bb60596f2b1a289e9c5e1f3aadec51911bb2550e7ff": {
+      "signature": "6fa15dd70099abd1dac96bb60596f2b1a289e9c5e1f3aadec51911bb2550e7ff",
+      "alternativeSignatures": [
+        "7e0b858eec0a95158e928a017de6f03203a07db68579767579286d1083c7d214",
+        "eac742b2d1efc3c546669df13adf6d5d3eca995c048209fc58f960422bf77a40",
+        "3abe21b89c4f058d663d98902324cd4f21e6fbd184b249d2898f905eb14e92fc"
+      ],
+      "target": "c/deps/azure-sdk-for-c/eng/common/TestResources/New-TestResources.ps1",
+      "line": 187,
+      "uriBaseId": "file:///D:/a/_work/1/s/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "psscriptanalyzer",
+      "ruleId": "PSAvoidUsingConvertToSecureStringWithPlainText",
+      "createdDate": "2026-11-03 06:46:45Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "5bc14edacbe3f7bb7082ed8bfe4eaecceb37ebbf515c1418c3f34e850a106cf0": {
+      "signature": "5bc14edacbe3f7bb7082ed8bfe4eaecceb37ebbf515c1418c3f34e850a106cf0",
+      "alternativeSignatures": [
+        "bd7337ccf7bb1cbd0e08de707e3572ef7fc8aa2c9cac1da7adf58488b07d1b75",
+        "da1615451e85d3a41a190f15bc10f4b3452e7a449a907ae6c2c871794a902863",
+        "798d42637ef6e65ac719b2f990fb504008ea1fc67d86d81b43f534d6c53bb589"
+      ],
+      "target": "c/deps/azure-sdk-for-c/eng/common/TestResources/New-TestResources.ps1",
+      "line": 489,
+      "uriBaseId": "file:///D:/a/_work/1/s/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "psscriptanalyzer",
+      "ruleId": "PSAvoidUsingConvertToSecureStringWithPlainText",
+      "createdDate": "2026-11-03 06:46:45Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    },
+    "ece4f05bca2d2d41c2aaa48300c2f0d439dfa9698b74cf0b8c5e4b155bc46f89": {
+      "signature": "ece4f05bca2d2d41c2aaa48300c2f0d439dfa9698b74cf0b8c5e4b155bc46f89",
+      "alternativeSignatures": [
+        "c3d39d727aa3fc4c0bd3180dbc1a3113fc876baf9a8a0784ee2b9abf7e431f43",
+        "6188093677525557bfe14d88250baa3d52120a54dbeb98dbec5ba76727a31535",
+        "c0becbf3ba46906f57808daf98be1748a0ef3ab46eb12a89cafc13195e68b69b"
+      ],
+      "target": "c/deps/azure-sdk-for-c/eng/common/TestResources/Remove-TestResources.ps1",
+      "line": 117,
+      "uriBaseId": "file:///D:/a/_work/1/s/",
+      "memberOf": [
+        "default"
+      ],
+      "tool": "psscriptanalyzer",
+      "ruleId": "PSAvoidUsingConvertToSecureStringWithPlainText",
+      "createdDate": "2026-11-03 06:46:45Z",
+      "expirationDate": "2027-04-22 07:11:53Z",
+      "justification": "This error is baselined with an expiration date of 180 days from 2026-11-03 07:11:53Z"
+    }
+  }
+}

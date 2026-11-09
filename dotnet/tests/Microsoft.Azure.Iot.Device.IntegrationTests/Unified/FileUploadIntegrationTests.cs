@@ -25,7 +25,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 Assert.Skip("file upload is not supported for MQTTv5 hubs yet");
             }
 
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, cancellationToken: TestContext.Current.CancellationToken);
 
             FileUploadClient fileUploadClient;
             if (testAgainstClassicHub)
@@ -111,7 +111,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 Assert.Skip("file upload is not supported for MQTTv5 hubs yet");
             }
 
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, cancellationToken: TestContext.Current.CancellationToken);
 
             FileUploadClient fileUploadClient;
             fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);

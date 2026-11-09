@@ -33,6 +33,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
     /// </remarks>
     public class DevicePresenceFailureRecoveryTests
     {
+        private static readonly int[] s_expectedThreeAttempts = { 1, 2, 3 };
+        private static readonly int[] s_expectedTwoFirstAttempts = { 1, 1 };
+
         private static ConnectionContext GetMockConnectionContext()
         {
 #pragma warning disable SYSLIB0026 // Type or member is obsolete (Mock certificate, don't need to load a real one using typical X509 certificate loader
@@ -295,7 +298,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             await WaitForBirthCountAsync(mockMqttClient, 3);
             lock (attempts)
             {
-                Assert.Equal(new[] { 1, 2, 3 }, attempts);
+                Assert.Equal(s_expectedThreeAttempts, attempts);
             }
 
             Assert.Equal(2, mockMqttClient.DisconnectRequests.Count);
@@ -491,7 +494,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 {
                     if (attempts.Count == 2)
                     {
-                        Assert.Equal(new[] { 1, 1 }, attempts);
+                        Assert.Equal(s_expectedTwoFirstAttempts, attempts);
                         return;
                     }
                 }
@@ -811,8 +814,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             }
             finally
             {
-                pendingSuback.TrySetCanceled();
-                pendingPuback.TrySetCanceled();
+                pendingSuback.TrySetCanceled(TestContext.Current.CancellationToken);
+                pendingPuback.TrySetCanceled(TestContext.Current.CancellationToken);
                 connectionClient.Dispose();
             }
         }
@@ -870,7 +873,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             mockMqttClient.OnPublish = async (publish) =>
             {
                 // Only the birth message is published in this test, so every publish here is a device presence publish.
-                if (publish.Topic.EndsWith("/srv/presence") && birthPublishInjector != null)
+                if (publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal) && birthPublishInjector != null)
                 {
                     int attempt = Interlocked.Increment(ref birthPublishCount);
                     MqttPublishAck? injected = birthPublishInjector.Invoke(publish, attempt);
@@ -897,7 +900,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             // A successful birth flow ends by publishing the birth message on the presence topic, so that must be the
             // last traffic on the wire once device presence has been announced.
-            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
+            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder[^1];
             Assert.NotNull(lastTraffic.Publish);
             Assert.EndsWith("/srv/presence", lastTraffic.Publish.Topic);
         }

@@ -349,7 +349,16 @@ namespace Microsoft.Azure.Iot.Device
         /// Raised when <see cref="_unrecoverableFault"/> is set, so that operations waiting for the connection to come
         /// back stop waiting for something that will never happen.
         /// </summary>
-        private event Action? UnrecoverablyFaulted;
+        private protected event Action? UnrecoverablyFaulted;
+
+        /// <summary>
+        /// Whether nothing will bring the connection back without the application connecting again: this client hit a fault
+        /// it will not recover from, or the application deliberately disconnected it (or is doing so).
+        /// </summary>
+        private protected bool IsConnectionAbandoned =>
+            _unrecoverableFault != null
+            || Volatile.Read(ref _deliberateDisconnectsInProgress) != 0
+            || !IsConnectionTargetSet;
 
         // Incremented each time the application deliberately disconnects this client. An operation that was waiting for
         // the connection to come back, or a re-provisioning attempt that was about to start, compares this against the
@@ -364,7 +373,7 @@ namespace Microsoft.Azure.Iot.Device
         /// Raised when the application deliberately disconnects this client, so that operations waiting for the
         /// connection to come back stop waiting for a recovery that the disconnect has abandoned.
         /// </summary>
-        private event Action? DeliberatelyDisconnected;
+        private protected event Action? DeliberatelyDisconnected;
 
         // Completed once the most recently started re-provisioning attempt has fully stopped, so that a deliberate
         // disconnect can wait for it rather than racing it for this client's connection.
@@ -998,9 +1007,7 @@ namespace Microsoft.Azure.Iot.Device
             // connect with the operational certificate DPS issued rather than its boot credentials. These are the
             // secondary credentials if the hub rejected the primary ones.
             ConnectionContext connectionContext = CurrentConnectionContext!;
-            AuthenticationCredentials hubCredentials = await connectionContext.GetOperationalAuthenticationCredentialsAsync(
-                cancellationToken,
-                updateSecondaryCredentialSelection: true).ConfigureAwait(false);
+            AuthenticationCredentials hubCredentials = await connectionContext.GetOperationalAuthenticationCredentialsAsync(true, cancellationToken).ConfigureAwait(false);
             connectPacketToEdit = ApplyAuthentication(hubCredentials, connectPacketToEdit);
 
             // Always ask to resume the session unless the application opted out: correctness never depends on it, but it
@@ -1177,7 +1184,7 @@ namespace Microsoft.Azure.Iot.Device
         {
             if (CurrentEndpoint == ConnectionEndpoint.DeviceProvisioningService)
             {
-                Trace.TraceError("ConnectionClient encountered an unrecoverable error during provisioning.", args.Exception);
+                Trace.TraceError("ConnectionClient encountered an unrecoverable error during provisioning. {0}", args.Exception);
                 // The connection layer has stopped maintaining the connection to DPS, so no further connection will
                 // arrive to start the provisioning flow again.
                 CancelCurrentProvisioningFlow();
@@ -1450,7 +1457,7 @@ namespace Microsoft.Azure.Iot.Device
         /// </summary>
         private async Task MarkUnrecoverablyFaultedAsync(DeviceException fault)
         {
-            Trace.TraceError("ConnectionClient encountered an unrecoverable exception", fault);
+            Trace.TraceError("ConnectionClient encountered an unrecoverable exception {0}", fault);
             _unrecoverableFault = fault;
 
             // Release everything inside this client that is waiting for the connection (for example feature operations
@@ -1498,8 +1505,17 @@ namespace Microsoft.Azure.Iot.Device
 
             if (fault != null)
             {
-                throw new OperationCanceledException("Operation canceled because this client hit a fault that it cannot recover from. See the inner exception for that fault.", fault);
+                throw CreateUnrecoverablyFaultedException(fault);
             }
+        }
+
+        /// <summary>
+        /// The exception that operations waiting for the connection to come back fail with once this client has hit a
+        /// fault that it will not recover from.
+        /// </summary>
+        private protected OperationCanceledException CreateUnrecoverablyFaultedException(DeviceException? fault = null)
+        {
+            return new OperationCanceledException("Operation canceled because this client hit a fault that it cannot recover from. See the inner exception for that fault.", fault ?? _unrecoverableFault);
         }
 
         /// <summary>
@@ -1650,7 +1666,6 @@ namespace Microsoft.Azure.Iot.Device
 
                     Debug.Assert(provisioningFlowCompletedArgs.RegistrationResult != null);
 
-                    //TODO do we care about initial twin as returned by DPS?
                     return provisioningFlowCompletedArgs.RegistrationResult;
                 }
             }
@@ -1729,6 +1744,11 @@ namespace Microsoft.Azure.Iot.Device
                 await SubscribeToRegistrationResponseMessagesAsync(provisioningFlowCancellation.Token);
 
                 RegistrationOperationStatus registrationStatus = await PublishRegistrationRequestAsync(provisioningFlowCancellation.Token);
+
+                if (registrationStatus.OperationId == null)
+                {
+                    throw new ArgumentException("DPS returned a registration status with no operation Id which should never happen");
+                }
 
                 DeviceRegistrationResult registrationResult = await PollUntilProvisioningFinishesAsync(
                     registrationStatus.OperationId,

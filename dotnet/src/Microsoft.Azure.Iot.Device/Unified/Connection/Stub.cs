@@ -58,6 +58,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
             remove => _unifiedConnectionClient.ConnectionLost -= value;
         }
 
+        event Action<Exception>? MQTTv5.Connection.IConnectionClient.ConnectionAbandoned
+        {
+            add => _unifiedConnectionClient.ConnectionAbandoned += value;
+            remove => _unifiedConnectionClient.ConnectionAbandoned -= value;
+        }
+
         event Action? MQTTv5.Connection.IConnectionClient.ClassicDevicePresenceEstablished
         {
             add => _unifiedConnectionClient.ClassicDevicePresenceEstablished += value;

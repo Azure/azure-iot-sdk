@@ -82,7 +82,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             foreach (string connectionStringKeyValuePair in connectionStringKeyValuePairs)
             {
                 string[] keyAndValue = connectionStringKeyValuePair.Split("=");
-                if (keyAndValue[0].Equals("HostName"))
+                if (keyAndValue[0].Equals("HostName", StringComparison.Ordinal))
                 {
                     return keyAndValue[1];
                 }
@@ -98,7 +98,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             foreach (string connectionStringKeyValuePair in connectionStringKeyValuePairs)
             {
                 string[] keyAndValue = connectionStringKeyValuePair.Split("=");
-                if (keyAndValue[0].Equals("HostName"))
+                if (keyAndValue[0].Equals("HostName", StringComparison.Ordinal))
                 {
                     return keyAndValue[1];
                 }
@@ -173,7 +173,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 }
             };
 
-            await GetMQTTv5IotHubRegistryManager().AddDeviceAsync(device);
+            await GetMQTTv5IotHubRegistryManager().AddDeviceAsync(device, cancellationToken);
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx, null);
 
@@ -188,7 +188,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             };
         }
 
-        public static async Task<MQTTv5DeviceTestContext> CreateConnectedMQTTv5ConnectionClientAsync(DeviceTwin? initialTwin, Device.MQTTv5.Models.ConnectionClientOptions? options = null, CancellationToken cancellationToken = default, TimeSpan? certificateValidity = null)
+        public static async Task<MQTTv5DeviceTestContext> CreateConnectedMQTTv5ConnectionClientAsync(DeviceTwin? initialTwin, Device.MQTTv5.Models.ConnectionClientOptions? options = null, TimeSpan? certificateValidity = null, CancellationToken cancellationToken = default)
         {
             using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient(testAgainstClassicHub: false);
 
@@ -226,7 +226,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             };
         }
 
-        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default, TimeSpan? certificateValidity = null)
+        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, TimeSpan? certificateValidity = null, CancellationToken cancellationToken = default)
         {
             using ProvisioningServiceClient provisioningServiceClient = GetDpsHubServiceClient(testAgainstClassicHub);
 
@@ -330,12 +330,27 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
         /// Creates a symmetric-key device using an individual enrollment, or the configured certificate-management
         /// enrollment group when a CSR private key is supplied. The caller owns the private key.
         /// </summary>
+        /// <param name="initialTwinState">
+        /// The initial twin of the individual enrollment, which DPS applies to the device it creates in IoT hub. Not supported
+        /// with <paramref name="issuedCertificatePrivateKey"/>, whose shared enrollment group this helper doesn't own.
+        /// </param>
+        /// <param name="beforeConnect">
+        /// Called with the connection client before it provisions and connects, for example to construct feature clients
+        /// so that no event raised upon connecting is missed.
+        /// </param>
         public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
             bool testAgainstClassicHub = true,
             ConnectionClientOptions? options = null,
-            CancellationToken cancellationToken = default,
-            AsymmetricAlgorithm? issuedCertificatePrivateKey = null)
+            AsymmetricAlgorithm? issuedCertificatePrivateKey = null,
+            Microsoft.Azure.Devices.Provisioning.Service.TwinState? initialTwinState = null,
+            Action<ConnectionClient>? beforeConnect = null,
+            CancellationToken cancellationToken = default)
         {
+            if (issuedCertificatePrivateKey != null && initialTwinState != null)
+            {
+                throw new ArgumentException("An initial twin needs an individual enrollment, which certificate signing doesn't use.", nameof(initialTwinState));
+            }
+
             string registrationId = Guid.NewGuid().ToString();
             byte[] symmetricKey;
             IndividualEnrollment? individualEnrollment = null;
@@ -359,7 +374,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 symmetricKey = RandomNumberGenerator.GetBytes(32);
                 string encodedSymmetricKey = Convert.ToBase64String(symmetricKey);
                 Attestation attestation = new SymmetricKeyAttestation(encodedSymmetricKey, encodedSymmetricKey);
-                individualEnrollment = new(registrationId, attestation);
+                individualEnrollment = new(registrationId, attestation)
+                {
+                    InitialTwinState = initialTwinState,
+                };
                 await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
             }
 
@@ -376,6 +394,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             try
             {
+                beforeConnect?.Invoke(connectionClient);
+
                 ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
                     async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cancellationToken),
                     cancellationToken);

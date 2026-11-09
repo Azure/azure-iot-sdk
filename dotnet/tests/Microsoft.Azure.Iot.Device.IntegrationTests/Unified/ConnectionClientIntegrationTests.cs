@@ -35,7 +35,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 MqttClient = new MqttNetClient(mqttClientOptions)
             };
 
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(isClassicHub, connectionClientOptions, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(isClassicHub, connectionClientOptions, cancellationToken: TestContext.Current.CancellationToken);
 
             await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
         }
@@ -63,7 +63,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 MqttClient = new MqttNetClient(mqttClientOptions)
             };
 
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(isClassicHub, connectionClientOptions, TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(isClassicHub, connectionClientOptions, cancellationToken: TestContext.Current.CancellationToken);
 
             await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
 

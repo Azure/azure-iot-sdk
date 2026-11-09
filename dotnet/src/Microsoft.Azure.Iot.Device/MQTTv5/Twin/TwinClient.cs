@@ -191,6 +191,13 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
             set => _twinEngine.ReportedPatchTimeoutSchedule = value;
         }
 
+        /// <inheritdoc cref="TwinEngine.GetTwinResponseReceived"/>
+        internal Action? GetTwinResponseReceived
+        {
+            get => _twinEngine.GetTwinResponseReceived;
+            set => _twinEngine.GetTwinResponseReceived = value;
+        }
+
         /// <summary>
         /// Get a snapshot of this device's copy of its twin, as last raised by <see cref="TwinStateChanged"/> (or changed since).
         /// </summary>
@@ -309,6 +316,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Twin
         /// </summary>
         public void Dispose()
         {
+            GC.SuppressFinalize(this);
             _twinEngine.Dispose();
         }
     }

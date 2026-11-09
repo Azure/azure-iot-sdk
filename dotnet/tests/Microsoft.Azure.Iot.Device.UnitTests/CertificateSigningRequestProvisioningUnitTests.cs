@@ -38,7 +38,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         [Fact]
         public async Task HubConnectionPassesCancellationTokenToOperationalAuthentication()
         {
-            Mock<AuthenticationProvider> authentication = new(MockBehavior.Strict, new object?[] { null, null });
+            Mock<AuthenticationProvider> authentication = new(MockBehavior.Strict, new object[] { null!, null! });
             authentication.Setup(provider => provider.GetPrimaryOperationalAuthenticationCredentialsAsync(
                 AssignedHub, DeviceId, null, It.Is<CancellationToken>(token => token.CanBeCanceled)))
                 .ReturnsAsync(new AuthenticationCredentials());
@@ -276,6 +276,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             // DPS is authenticated with a SAS token derived from the symmetric key.
             Assert.NotNull(dpsConnect);
             Assert.Null(dpsConnect.ClientCertificate);
+            Assert.NotNull(dpsConnect.Password);
             Assert.StartsWith("SharedAccessSignature ", Encoding.UTF8.GetString(dpsConnect.Password));
 
             // IoT hub is authenticated with the DPS-issued certificate instead.
@@ -283,6 +284,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.NotNull(hubConnect.ClientCertificate);
             Assert.Equal(issuedCertificate.Thumbprint, hubConnect.ClientCertificate.Thumbprint);
             Assert.True(hubConnect.ClientCertificate.HasPrivateKey);
+            Assert.NotNull(hubConnect.Password);
             Assert.Empty(hubConnect.Password);
         }
 
@@ -407,6 +409,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(1, callbackInvocations);
             Assert.NotNull(hubConnect);
             Assert.Same(issuedCertificateWithKey, hubConnect.ClientCertificate);
+            Assert.NotNull(hubConnect.Password);
             Assert.Empty(hubConnect.Password);
         }
 
@@ -651,7 +654,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             private async Task<MqttPublishAck> HandlePublishAsync(MqttPublish publish)
             {
-                if (publish.Topic.StartsWith(RegisterTopicPrefix))
+                if (publish.Topic.StartsWith(RegisterTopicPrefix, StringComparison.Ordinal))
                 {
                     RegistrationRequestPayload = JsonSerializer.Deserialize<RegistrationRequestPayload>(
                         publish.Payload, JsonSerializationSettings.Options);
@@ -662,7 +665,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                         Status = ProvisioningRegistrationStatus.Assigning,
                     });
                 }
-                else if (publish.Topic.StartsWith(GetOperationStatusTopicPrefix))
+                else if (publish.Topic.StartsWith(GetOperationStatusTopicPrefix, StringComparison.Ordinal))
                 {
                     await RespondAsync(new RegistrationOperationStatus()
                     {
@@ -715,7 +718,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             private async Task<MqttPublishAck> HandlePublishAsync(MqttPublish publish)
             {
-                if (publish.Topic.StartsWith(RegisterTopicPrefix))
+                if (publish.Topic.StartsWith(RegisterTopicPrefix, StringComparison.Ordinal))
                 {
                     await _mqttClient.SimulatePublishReceivedAsync(new MqttPublish()
                     {
