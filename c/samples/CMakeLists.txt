@@ -34,6 +34,7 @@ endif()
 #                           [CRYPTO])
 # One executable per adapter in AZ_IOT_SAMPLE_ADAPTERS (ADAPTERS narrows it), linked to that
 # adapter and, with CRYPTO, to the AZ_IOT_SAMPLE_CRYPTO backend. Sets AZ_IOT_SAMPLE_TARGETS.
+# With AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS, compiles in the pipeline hooks (sample_utils.h).
 function(az_iot_add_adapter_sample target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "CRYPTO" "OUTPUT_NAME"
         "SOURCES;LIBS;INCLUDES;DEFINES;ADAPTERS")
@@ -63,6 +64,9 @@ function(az_iot_add_adapter_sample target)
         endif()
         target_include_directories(${t} PRIVATE ${AZ_IOT_SAMPLES_COMMON_DIR} ${arg_INCLUDES})
         target_compile_definitions(${t} PRIVATE AZ_IOT_SAMPLE_ADAPTER_${ADAPTER} ${arg_DEFINES})
+        if(AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS)
+            target_compile_definitions(${t} PRIVATE SAMPLE_PIPELINE_HOOKS)
+        endif()
         target_link_libraries(${t} PRIVATE ${arg_LIBS} az_iot_adapter_${adapter})
         # Windows finds DLLs next to the executable: the SDK's stay in the shared bin/.
         if(WIN32 AND BUILD_SHARED_LIBS AND NOT adapter STREQUAL "paho")

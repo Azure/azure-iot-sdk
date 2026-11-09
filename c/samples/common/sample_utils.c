@@ -597,6 +597,33 @@ void sample_install_stop_handler(void)
 
 bool sample_is_stop_requested(void) { return s_stop_requested != 0; }
 
+#if defined(SAMPLE_PIPELINE_HOOKS)
+void sample_pipeline_checks_begin(void)
+{
+  (void)setvbuf(stdout, NULL, _IONBF, 0);
+  (void)setvbuf(stderr, NULL, _IONBF, 0);
+  /* Before the marker, so a stop sent as soon as it appears is recorded. */
+  sample_install_stop_handler();
+#if defined(SIGBREAK)
+  /* Windows: CTRL_BREAK_EVENT, the only console event a process in its own group receives. */
+  (void)signal(SIGBREAK, on_stop_signal);
+#endif
+  printf("sample-pipeline: begin\n");
+}
+
+int sample_pipeline_checks_end(int rc)
+{
+  printf("sample-pipeline: end rc=%d\n", rc);
+  return rc;
+}
+
+void sample_pipeline_checks_request_stop(const char* reason)
+{
+  printf("sample-pipeline: stop %s\n", reason);
+  s_stop_requested = 1;
+}
+#endif
+
 uint64_t sample_now_ms(void)
 {
 #ifdef _WIN32

@@ -507,6 +507,9 @@ static sample_tpm* open_tpm(void)
 
 int main(int argc, char** argv)
 {
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call.
+  sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
@@ -671,5 +674,8 @@ cleanup:
   free(endpoint);
   free(reg_id_env);
   free(ca);
-  return rc;
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call or return the value
+  // directly.
+  return sample_pipeline_checks_end(rc);
 }

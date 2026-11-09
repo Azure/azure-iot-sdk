@@ -24,6 +24,7 @@ it adds `c/`.
 | `AZ_IOT_AZ_MQTT_TLS` | `openssl` | TLS backend of the az_mqtt adapter: `openssl` (3.0+, with key references) or `mbedtls`. Windows uses Schannel. |
 | `AZ_IOT_AZ_MQTT_CONFIG_FILE` | empty | A header the az_mqtt adapter reads first (also a compile-time macro). The adapter has no compile-time limits: buffer sizes are run-time values. See [az_mqtt adapter limits](#az_mqtt-adapter-limits). |
 | `AZ_IOT_BUILD_SAMPLES` | `ON` | Build the samples. |
+| `AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS` | `OFF` | Compile the samples' CI pipeline hooks in. See [Pipeline hooks](../samples/README.md#pipeline-hooks). |
 | `AZ_IOT_BUILD_TESTS` | `OFF` | Build the unit tests (the presets turn it on). |
 | `AZ_IOT_INSTALL` | `ON` when `c/` is the top-level project | Generate install rules and the `azure-iot-sdk` CMake package. |
 | `BUILD_SHARED_LIBS` | `OFF` | Build `core` and `mqttv3` as shared libraries. Adapters are always static. See [Struct versioning](struct_versioning.md). |

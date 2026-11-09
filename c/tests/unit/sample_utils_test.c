@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /**
  * @file sample_utils_test.c
- * @brief The samples' file helpers (samples/common/sample_utils.c). Files are
+ * @brief The samples' helpers (samples/common/sample_utils.c). Files are
  * created in the working directory and removed by each test.
  */
 #if !defined(_WIN32)
@@ -30,6 +30,9 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#else
+#include <process.h>
+#include <windows.h>
 #endif
 
 #include "sample_utils.h"
@@ -38,12 +41,14 @@
 #define DESTINATION_FILE "sample_utils_test_destination.tmp"
 #define LINK_FILE "sample_utils_test_link.tmp"
 #define DIRECTORY "sample_utils_test_directory.tmp"
+#define PIPELINE_OUTPUT_FILE "sample_utils_test_pipeline_output.tmp"
 
 static void remove_test_files(void)
 {
   (void)remove(SOURCE_FILE);
   (void)remove(DESTINATION_FILE);
   (void)remove(LINK_FILE);
+  (void)remove(PIPELINE_OUTPUT_FILE);
 #if !defined(_WIN32)
   (void)chmod(DIRECTORY, 0700);
   (void)remove(DIRECTORY "/" DESTINATION_FILE);
@@ -577,6 +582,97 @@ static void stop_handler_records_sigterm_and_sigint(void** state)
 #endif
 }
 
+/**
+ * @brief Pipeline scenario: begin installs the stop handler without requesting a stop, and end
+ * returns its argument.
+ */
+static bool pipeline_begin_and_end_holds(void)
+{
+#if defined(_WIN32)
+  const int stop_signal = SIGBREAK; /* CTRL_BREAK_EVENT */
+#else
+  const int stop_signal = SIGTERM;
+#endif
+  bool before = sample_is_stop_requested();
+  sample_pipeline_checks_begin();
+  bool after_begin = sample_is_stop_requested();
+  bool raised = raise(stop_signal) == 0;
+  return !before && !after_begin && raised && sample_is_stop_requested()
+      && sample_pipeline_checks_end(7) == 7;
+}
+
+/** @brief Pipeline scenario: request_stop moves the stop request from false to true. */
+static bool pipeline_request_stop_holds(void)
+{
+  bool before = sample_is_stop_requested();
+  sample_pipeline_checks_request_stop("test reason");
+  return !before && sample_is_stop_requested();
+}
+
+/** @brief A pipeline scenario, run in a new process so the stop request starts false. */
+typedef struct pipeline_scenario
+{
+  const char* name; /**< Command-line argument that runs it on Windows. */
+  bool (*holds)(void);
+} pipeline_scenario;
+
+static const pipeline_scenario s_pipeline_begin_and_end
+    = { "pipeline-begin-and-end", pipeline_begin_and_end_holds };
+static const pipeline_scenario s_pipeline_request_stop
+    = { "pipeline-request-stop", pipeline_request_stop_holds };
+
+/** @brief Run @p scenario with stdout written to PIPELINE_OUTPUT_FILE. @return true if it holds. */
+static bool pipeline_scenario_run(const pipeline_scenario* scenario)
+{
+#if defined(_WIN32)
+  FILE* output = NULL;
+  bool redirected = freopen_s(&output, PIPELINE_OUTPUT_FILE, "wb", stdout) == 0;
+#else
+  bool redirected = freopen(PIPELINE_OUTPUT_FILE, "wb", stdout) != NULL;
+#endif
+  return redirected && scenario->holds() && fflush(stdout) == 0;
+}
+
+/**
+ * @brief Run @p scenario in a new process: fork() on POSIX, this executable again on Windows.
+ * @return true if it holds.
+ */
+static bool pipeline_scenario_holds_in_new_process(const pipeline_scenario* scenario)
+{
+  (void)remove(PIPELINE_OUTPUT_FILE);
+  (void)fflush(stdout);
+  (void)fflush(stderr);
+#if defined(_WIN32)
+  char path[MAX_PATH];
+  DWORD length = GetModuleFileNameA(NULL, path, (DWORD)sizeof(path));
+  return length > 0 && length < sizeof(path)
+      && _spawnl(_P_WAIT, path, "sample_utils_test", scenario->name, NULL) == 0;
+#else
+  pid_t child = fork();
+  if (child == 0)
+  {
+    _exit(pipeline_scenario_run(scenario) ? 0 : 1);
+  }
+  int status = 0;
+  return child > 0 && waitpid(child, &status, 0) == child && WIFEXITED(status)
+      && WEXITSTATUS(status) == 0;
+#endif
+}
+
+static void pipeline_begin_and_end_print_markers_and_return_rc(void** state)
+{
+  (void)state;
+  assert_true(pipeline_scenario_holds_in_new_process(&s_pipeline_begin_and_end));
+  assert_file_holds(PIPELINE_OUTPUT_FILE, "sample-pipeline: begin\nsample-pipeline: end rc=7\n");
+}
+
+static void pipeline_request_stop_prints_reason_and_requests_stop(void** state)
+{
+  (void)state;
+  assert_true(pipeline_scenario_holds_in_new_process(&s_pipeline_request_stop));
+  assert_file_holds(PIPELINE_OUTPUT_FILE, "sample-pipeline: stop test reason\n");
+}
+
 static void sleep_until_tick_end_waits_out_the_rest_of_the_tick(void** state)
 {
   (void)state;
@@ -617,8 +713,18 @@ static void is_plain_file_name_refuses_names_that_leave_the_directory(void** sta
       sample_is_plain_file_name(az_span_create((uint8_t*)with_nul, (int32_t)sizeof(with_nul) - 1)));
 }
 
-int main(void)
+int main(int argc, char** argv)
 {
+  /* Windows: a pipeline scenario's new process. */
+  const pipeline_scenario* scenarios[] = { &s_pipeline_begin_and_end, &s_pipeline_request_stop };
+  for (size_t i = 0; argc == 2 && i < sizeof(scenarios) / sizeof(scenarios[0]); i++)
+  {
+    if (strcmp(argv[1], scenarios[i]->name) == 0)
+    {
+      return pipeline_scenario_run(scenarios[i]) ? 0 : 1;
+    }
+  }
+
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(file_replace_overwrites_the_destination, setup, teardown),
     cmocka_unit_test_setup_teardown(file_delete_removes_the_file, setup, teardown),
@@ -660,6 +766,10 @@ int main(void)
     cmocka_unit_test_setup_teardown(
         file_complete_atomic_write_replaces_only_complete_contents, setup, teardown),
     cmocka_unit_test(stop_handler_records_sigterm_and_sigint),
+    cmocka_unit_test_setup_teardown(
+        pipeline_begin_and_end_print_markers_and_return_rc, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        pipeline_request_stop_prints_reason_and_requests_stop, setup, teardown),
     cmocka_unit_test(sleep_until_tick_end_waits_out_the_rest_of_the_tick),
     cmocka_unit_test(sleep_until_tick_end_returns_at_once_after_the_tick),
   };
