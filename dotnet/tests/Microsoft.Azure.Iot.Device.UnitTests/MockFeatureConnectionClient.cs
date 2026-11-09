@@ -279,6 +279,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             await reconnected.WaitAsync(cancellationToken);
 
+            // Like the connection client (whose MQTT client checks the token before sending), a publish canceled while
+            // waiting is never sent, even if its cancellation callbacks have not run yet (for example, after CancelAsync).
+            cancellationToken.ThrowIfCancellationRequested();
+
             lock (PublishedMessages)
             {
                 PublishedMessages.Add(publish);
