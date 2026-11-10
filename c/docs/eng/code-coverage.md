@@ -70,13 +70,15 @@ job did not need to run and fails when it failed.
 ### Nightly: combined coverage
 
 [ci-c-coverage-combined.yml](../../../.github/workflows/ci-c-coverage-combined.yml) merges the
-unit tracefile with those of the nightly e2e workflows (`ci-c-e2e`, `ci-c-e2e-csr`,
-`ci-c-e2e-adu`) using [`eng/combine-coverage.sh`](../../eng/combine-coverage.sh).
+unit tracefile with those of the nightly e2e workflows (`ci-c-e2e`, `ci-c-e2e-csr`) using
+[`eng/combine-coverage.sh`](../../eng/combine-coverage.sh).
 
-- It accepts only runs of `main` itself (push, schedule or dispatch, never pull requests) whose
+- It reports on one branch: `main` when scheduled, or the dispatched branch (`main` or
+  `releases/public-preview`; `ci-c-public-preview-nightly.yml` dispatches it there nightly).
+- It accepts only runs of that branch itself (push, schedule or dispatch, never pull requests) whose
   `head_sha` is the target commit. Tracefiles from different revisions would give a plausible but
   wrong percentage, and `combine-coverage.sh` does not detect that itself.
-- It builds only a target commit that is on `main`; a dispatched SHA that is not fails the run.
+- It builds only a target commit that is on that branch; a dispatched SHA that is not fails the run.
 - Without a dispatched SHA, the target is the commit of the last green `ci-c-e2e` run, so a missing
   `e2e` tracefile fails the run rather than producing a unit-only report.
 - It writes per-suite and combined reports (summary, Markdown, Cobertura, lcov).

@@ -8,7 +8,7 @@
 #   target_link_libraries(app PRIVATE azure::iot::mqttv3 azure::iot::adapter_paho)
 #
 # Components are the installed library targets, named without the azure::iot::
-# prefix: core, mqttv3, mqttv5 and each adapter the build produced. Each also
+# prefix: core, mqttv3 and each adapter the build produced. Each also
 # gets a pkg-config file, azure-iot-sdk-<component>.pc (az_iot_pkgconfig.cmake).
 #
 # azure-sdk-for-c has no install rules and its types are embedded in our public
@@ -36,7 +36,6 @@ set(_az_iot_sdk_for_c_inc "${CMAKE_INSTALL_INCLUDEDIR}/azure-sdk-for-c")
 set(_az_iot_export_names
     az_iot_core                          core
     az_iot_mqttv3                        mqttv3
-    az_iot_mqttv5                        mqttv5
     az_iot_adapter_paho                  adapter_paho
     az_iot_adapter_az_mqtt               adapter_az_mqtt
     az_iot_crypto_openssl                crypto_openssl
@@ -94,7 +93,7 @@ endforeach()
 
 # az_mqtt (deps/az_mqtt) libraries the az_mqtt adapter links. Exported, not components.
 set(_az_iot_az_mqtt_targets "")
-foreach(_tgt IN ITEMS az_mqtt_core az_mqttv3 az_mqttv5)
+foreach(_tgt IN ITEMS az_mqtt_core az_mqttv3)
     if(TARGET az_iot_adapter_az_mqtt AND TARGET ${_tgt})
         set_target_properties(${_tgt} PROPERTIES EXPORT_NAME ${_tgt})
         list(APPEND _az_iot_az_mqtt_targets ${_tgt})
@@ -220,12 +219,12 @@ configure_package_config_file(
     INSTALL_DESTINATION ${_az_iot_pkg_cmake_dir}
 )
 # Numeric only: CMake package versions have no pre-release label, so
-# X.Y.Z-<label> and X.Y.Z both report X.Y.Z. SameMinorVersion while in preview;
-# revisit (SameMajorVersion) once stable releases guarantee API compatibility.
+# X.Y.Z-<label> and X.Y.Z both report X.Y.Z. SameMajorVersion: stable releases
+# keep the API compatible within a major version.
 write_basic_package_version_file(
     "${PROJECT_BINARY_DIR}/${_az_iot_pkg}-config-version.cmake"
     VERSION ${PROJECT_VERSION}
-    COMPATIBILITY SameMinorVersion
+    COMPATIBILITY SameMajorVersion
 )
 install(FILES
     "${PROJECT_BINARY_DIR}/${_az_iot_pkg}-config.cmake"

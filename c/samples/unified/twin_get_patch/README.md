@@ -5,17 +5,12 @@
 
 On every connect, requests the device twin (GET) and reports a property
 (`{"sample":"hello"}`, PATCH); in between it prints desired-property updates. Runs about 60 seconds,
-on whichever IoT Hub DPS assigns. For an mqttv5-only device, see
-[`mqttv5/twin_get_patch`](../../mqttv5/twin_get_patch/README.md).
+on whichever IoT Hub DPS assigns.
 
 ## Sample features
 
-- Hub generations: mqttv3 (MQTT 3.1.1) and mqttv5 (MQTT 5), whichever DPS assigns, including after the device is moved to a hub of the other generation.
-- The two generations differ in protocol, so each client has its own callbacks:
--   - GET: mqttv3 returns one document; mqttv5 returns the desired and reported sections separately, each with its own version.
--   - PATCH: mqttv3 reports the new version; mqttv5 also reports the service's verdict. An mqttv5 patch can complete and still be refused (another writer moved the version first); the sample counts that as a failure.
--   - The mqttv5 client encodes patches into an application-supplied buffer.
-- Rebuilds its clients when DPS assigns the other generation, as [`unified/telemetry`](../telemetry/README.md) does.
+- Hub: mqttv3 (MQTT 3.1.1).
+- GET returns one document; PATCH reports the new version.
 - Platforms: Linux and Windows.
 
 ## Service requirements
@@ -23,7 +18,6 @@ on whichever IoT Hub DPS assigns. For an mqttv5-only device, see
 - An Azure IoT Hub Device Provisioning Service (DPS) instance linked to an IoT Hub.
 - An X.509 enrollment (individual or group) for the device. For an mqttv3 hub,
   [Quickstart: Provision an X.509 certificate simulated device](https://learn.microsoft.com/azure/iot-dps/quick-create-simulated-device-x509) walks through the setup.
-- To exercise mqttv5, the device's enrollment must assign it to an mqttv5 IoT Hub.
 
 To see a desired-property update on an mqttv3 hub, update the twin with the Azure CLI
 (`azure-iot` extension) while the sample runs:
@@ -101,10 +95,6 @@ twin desired (version 2): {"color":"blue","$version":2}
 twin_get: AZ_IOT_OK, patch_reported: AZ_IOT_OK version=3
 ```
 
-On an mqttv5 hub, the GET prints `twin GET desired (version N): ...` and
-`twin GET reported (version N): ...`, and a refused patch prints
-`twin patch refused (status <code>, current version <N>)`.
-
 ## Troubleshooting
 
 | Symptom | Likely cause |
@@ -112,14 +102,12 @@ On an mqttv5 hub, the GET prints `twin GET desired (version N): ...` and
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. DPS verdicts are retried until the sample's run time ends. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
-| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK version does not know. |
+| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK does not support. |
 
 ## Where to look in `main.c`
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
-| Build or rebuild the twin client for a generation | `clients_build()`, `clients_destroy()` |
+| MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
+| Build the twin client | `clients_build()`, `clients_destroy()` |
 | mqttv3 GET, PATCH, desired updates | `az_iot_mqttv3_twin_client_get()`, `az_iot_mqttv3_twin_client_patch_reported()`; `on_get_mqttv3()`, `on_patch_mqttv3()`, `on_desired_mqttv3()` |
-| mqttv5 GET, PATCH, desired updates | `az_iot_mqttv5_twin_client_get()`, `az_iot_mqttv5_twin_client_patch_reported()`; `on_get_mqttv5()`, `on_patch_mqttv5()`, `on_desired_mqttv5()` |
-| mqttv5 encode buffer | `az_iot_mqttv5_twin_client_set_encode_buffer()` |

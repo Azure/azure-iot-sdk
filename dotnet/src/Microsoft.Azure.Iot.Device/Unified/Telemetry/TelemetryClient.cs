@@ -138,7 +138,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
         {
-            if (!args.Publish.Topic.StartsWith("devices/") || !args.Publish.Topic.Contains("/messages/devicebound/"))
+            if (!args.Publish.Topic.StartsWith("devices/", StringComparison.Ordinal) || !args.Publish.Topic.Contains("/messages/devicebound/"))
             {
                 // The publish is not relevant to this client, so ignore it. This check needs to happen prior to checking the deviceId within the topic b/c deviceId is
                 // not available until after provisioning finishes and this client may be setup prior to provisioning. This allows this client to ignore DPS
@@ -157,7 +157,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
 
             var expectedDeviceBoundMessagesTopic = DeviceBoundMessagesTopicFormat.Replace(IConnectionClient.DeviceIdPlaceholder, connectionContext.DeviceId, StringComparison.Ordinal);
 
-            if (args.Publish.Topic.StartsWith(expectedDeviceBoundMessagesTopic))
+            if (args.Publish.Topic.StartsWith(expectedDeviceBoundMessagesTopic, StringComparison.Ordinal))
             {
                 if (_cloudToDeviceTelemetryReceived.HasHandlers)
                 {
@@ -181,19 +181,19 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
                             string key = Uri.UnescapeDataString(parts[0]);
                             string value = parts.Length > 1 ? Uri.UnescapeDataString(parts[1]) : "";
 
-                            if (key.Equals(TelemetryClient.MessagePropertyMessageId))
+                            if (key.Equals(TelemetryClient.MessagePropertyMessageId, StringComparison.Ordinal))
                             {
                                 receivedCloudToDeviceMessage.MessageId = value;
                             }
-                            else if (key.Equals(TelemetryClient.MessagePropertyCorrelationId))
+                            else if (key.Equals(TelemetryClient.MessagePropertyCorrelationId, StringComparison.Ordinal))
                             {
                                 receivedCloudToDeviceMessage.CorrelationId = value;
                             }
-                            else if (key.Equals(TelemetryClient.MessagePropertyContentType))
+                            else if (key.Equals(TelemetryClient.MessagePropertyContentType, StringComparison.Ordinal))
                             {
                                 receivedCloudToDeviceMessage.ContentType = value;
                             }
-                            else if (key.Equals(TelemetryClient.MessagePropertyContentEncoding))
+                            else if (key.Equals(TelemetryClient.MessagePropertyContentEncoding, StringComparison.Ordinal))
                             {
                                 receivedCloudToDeviceMessage.ContentEncoding = value;
                             }
@@ -229,6 +229,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Telemetry
         /// </summary>
         public void Dispose()
         {
+            GC.SuppressFinalize(this);
+
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
             _connection.Dispose();
             _isDisposed = true;

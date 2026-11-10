@@ -59,7 +59,9 @@ static unsigned long conf_now_ms(void)
 /* shared state for the suite (set by az_iot_conformance_run)            */
 /* ------------------------------------------------------------------------- */
 
-static az_iot_mqtt_factory* g_factory = NULL;
+static const az_iot_mqtt_adapter* g_adapter = NULL;
+/* The suite's MQTT version: every client the suite builds is of it. */
+static az_iot_mqtt_version g_version = AZ_IOT_MQTT_VERSION_3_1_1;
 static const char* g_host = "localhost";
 static uint16_t g_port = 1883;
 /* Adapter capabilities and end-to-end custody material, from
@@ -87,11 +89,6 @@ static bool adapter_claims_proxy(void)
 static bool adapter_claims_tls_pem(void)
 {
   return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_TLS_PEM) != 0u;
-}
-
-static bool adapter_claims_connack_reason_string(void)
-{
-  return (g_capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING) != 0u;
 }
 
 static bool adapter_claims_key_custody_uri(void)
@@ -207,15 +204,6 @@ static const char* read_env(const char* name, char* buf, size_t cap)
 #endif
 }
 
-int az_iot_conformance_capabilities_fit_suite(
-    az_iot_conformance_suite suite_kind,
-    uint32_t capabilities)
-{
-  /* Exercised by the MQTT 5 suite only: declared for another suite, it would pass unproven. */
-  return (capabilities & (uint32_t)AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING) == 0u
-      || suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5;
-}
-
 /* A declared capability that was never exercised.
  *
  * The suite exists so that a third party can bring their own MQTT layer and
@@ -284,11 +272,7 @@ static unsigned g_timeout_scale = 1;
 #define CONF_TOPIC_MAX 256
 #define CONF_PAYLOAD_MAX 1024
 #define CONF_EVENTS_MAX 16
-/* v5 property capture. Small on purpose: these bound a stack-allocated
- * recorder, and the property cases pin a handful of entries each. */
-#define CONF_PROPS_MAX 6
 #define CONF_PROP_STR_MAX 48
-#define CONF_CORRELATION_MAX 32
 
 typedef struct conf_recorder
 {
@@ -301,47 +285,10 @@ typedef struct conf_recorder
   char topics[CONF_EVENTS_MAX][CONF_TOPIC_MAX];
   uint8_t payloads[CONF_EVENTS_MAX][CONF_PAYLOAD_MAX];
   size_t payload_lens[CONF_EVENTS_MAX];
-  /* MQTT v5 message properties, captured per event.
-   *
-   * Recorded as copies rather than as the adapter's pointers: the event and
-   * everything it points at belong to the adapter only for the duration of the
-   * callback, so an assertion made after process_loop() returned would be
-   * reading freed memory -- and would pass just often enough to be useless.
-   *
-   * `prop_counts` counts every property the view yields; the first
-   * CONF_PROPS_MAX are kept, and the last one too. `prop_null_*` count entries
-   * with a NULL key or value, which must not happen: a zero-length property is
-   * legal and must arrive as "", never as NULL. `prop_ends` is what ended the
-   * iteration: AZ_IOT_ERR_NOT_FOUND, never an error. */
-  size_t prop_counts[CONF_EVENTS_MAX];
-  char prop_last_keys[CONF_EVENTS_MAX][CONF_PROP_STR_MAX];
-  char prop_last_values[CONF_EVENTS_MAX][CONF_PROP_STR_MAX];
-  az_iot_result prop_ends[CONF_EVENTS_MAX];
-  char prop_keys[CONF_EVENTS_MAX][CONF_PROPS_MAX][CONF_PROP_STR_MAX];
-  char prop_values[CONF_EVENTS_MAX][CONF_PROPS_MAX][CONF_PROP_STR_MAX];
-  size_t prop_null_keys[CONF_EVENTS_MAX];
-  size_t prop_null_values[CONF_EVENTS_MAX];
-  int has_content_type[CONF_EVENTS_MAX];
-  char content_types[CONF_EVENTS_MAX][CONF_PROP_STR_MAX];
-  uint8_t correlations[CONF_EVENTS_MAX][CONF_CORRELATION_MAX];
-  size_t correlation_lens[CONF_EVENTS_MAX];
-  uint32_t message_expiries[CONF_EVENTS_MAX];
   /* The event's reason string, copied; NULL is recorded as -1. */
   char reason_strings[CONF_EVENTS_MAX][CONF_PROP_STR_MAX];
   int reason_string_lens[CONF_EVENTS_MAX];
 } conf_recorder;
-
-/* Copy a NUL-terminated string the adapter exposed into a fixed slot. */
-static void conf_copy_str(char* dst, size_t cap, const char* src)
-{
-  size_t n = strlen(src);
-  if (n >= cap)
-  {
-    n = cap - 1;
-  }
-  memcpy(dst, src, n);
-  dst[n] = '\0';
-}
 
 /* As conf_copy_str, for a string that is not NUL-terminated. */
 static void conf_copy_n(char* dst, size_t cap, const char* src, size_t n)
@@ -352,50 +299,6 @@ static void conf_copy_n(char* dst, size_t cap, const char* src, size_t n)
   }
   memcpy(dst, src, n);
   dst[n] = '\0';
-}
-
-static void conf_record_v5_properties(conf_recorder* r, size_t i, const az_iot_mqtt_message* msg)
-{
-  size_t cursor = 0;
-  az_iot_mqtt_user_property_view up;
-  while ((r->prop_ends[i] = az_iot_mqtt_user_properties_next(&msg->user_properties, &cursor, &up))
-         == AZ_IOT_OK)
-  {
-    if (up.key == NULL)
-    {
-      r->prop_null_keys[i]++;
-      continue;
-    }
-    if (up.value == NULL)
-    {
-      r->prop_null_values[i]++;
-      continue;
-    }
-    size_t slot = r->prop_counts[i]++;
-    conf_copy_n(r->prop_last_keys[i], CONF_PROP_STR_MAX, up.key, up.key_len);
-    conf_copy_n(r->prop_last_values[i], CONF_PROP_STR_MAX, up.value, up.value_len);
-    if (slot < CONF_PROPS_MAX)
-    {
-      conf_copy_n(r->prop_keys[i][slot], CONF_PROP_STR_MAX, up.key, up.key_len);
-      conf_copy_n(r->prop_values[i][slot], CONF_PROP_STR_MAX, up.value, up.value_len);
-    }
-  }
-  if (msg->content_type)
-  {
-    r->has_content_type[i] = 1;
-    conf_copy_str(r->content_types[i], CONF_PROP_STR_MAX, msg->content_type);
-  }
-  if (msg->correlation_data && msg->correlation_data_len > 0)
-  {
-    size_t n = msg->correlation_data_len;
-    if (n > CONF_CORRELATION_MAX)
-    {
-      n = CONF_CORRELATION_MAX;
-    }
-    memcpy(r->correlations[i], msg->correlation_data, n);
-    r->correlation_lens[i] = n;
-  }
-  r->message_expiries[i] = msg->message_expiry_seconds;
 }
 
 static void on_event(const az_iot_mqtt_event* evt, void* ctx)
@@ -440,7 +343,6 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
       memcpy(r->payloads[i], evt->message->payload, plen);
     }
     r->payload_lens[i] = plen;
-    conf_record_v5_properties(r, i, evt->message);
   }
 }
 
@@ -588,20 +490,6 @@ static int saw_subscribe_ack_error(const conf_recorder* r)
   return 0;
 }
 
-/* A PUBLISH_ACK carrying an error status. A publish the broker refuses is not a
- * transport failure either: it has to reach the application as a failed ack. */
-static int saw_publish_ack_error(const conf_recorder* r)
-{
-  for (size_t i = 0; i < r->count; ++i)
-  {
-    if (r->kinds[i] == AZ_IOT_MQTT_EVT_PUBLISH_ACK && r->statuses[i] != AZ_IOT_OK)
-    {
-      return 1;
-    }
-  }
-  return 0;
-}
-
 static int saw_message(const conf_recorder* r)
 {
   for (size_t i = 0; i < r->count; ++i)
@@ -661,13 +549,8 @@ static int saw_disconnected(const conf_recorder* r)
 /* broker packets                                                             */
 /* ------------------------------------------------------------------------- */
 
-/* Bind the version under test once, so the cases below read as intent rather
- * than repeating a v3/v5 branch each time they need a refusal. */
-static az_iot_test_mqtt_version conf_mqtt_version(void)
-{
-  return (g_factory->version == AZ_IOT_MQTT_VERSION_5) ? AZ_IOT_TEST_MQTT_V5
-                                                       : AZ_IOT_TEST_MQTT_V3_1_1;
-}
+/* Bind the version under test once, so the cases below read as intent. */
+static az_iot_test_mqtt_version conf_mqtt_version(void) { return AZ_IOT_TEST_MQTT_V3_1_1; }
 
 static az_iot_test_mqtt_packet conf_connack(az_iot_test_mqtt_reason reason)
 {
@@ -682,11 +565,6 @@ static az_iot_test_mqtt_packet conf_suback(az_iot_test_mqtt_reason reason)
 static az_iot_test_mqtt_packet conf_puback(az_iot_test_mqtt_reason reason)
 {
   return az_iot_test_mqtt_puback(conf_mqtt_version(), reason);
-}
-
-static az_iot_test_mqtt_packet conf_disconnect(az_iot_test_mqtt_reason reason)
-{
-  return az_iot_test_mqtt_disconnect(conf_mqtt_version(), reason);
 }
 
 /* Point an INJECT rule at a built packet. Deliberately here and not in the
@@ -715,11 +593,58 @@ static void unique_client_id(char* buf, size_t cap, const char* prefix)
   snprintf(buf, cap, "%s-%lu-%lu", prefix, conf_process_id(), conf_now_ms());
 }
 
+/* Sizes of every client the suite builds: room for its largest packet (a 600-byte payload), the
+ * TLS PEM a connect copies, and a message store for the resumed sessions. */
+static const az_iot_mqtt_limits k_client_limits = { 8192, 8192, 16, 16384, 16384 };
+
+/* Clients alive at once. */
+#define CONF_CLIENTS_MAX 8
+
+/** @brief A client the suite built and the heap workspace it lives in; NULL client: free. */
+typedef struct conf_client_slot
+{
+  az_iot_mqtt_client* client;
+  uint8_t* workspace;
+} conf_client_slot;
+
+static conf_client_slot g_client_slots[CONF_CLIENTS_MAX];
+
+/** @brief The slot holding @p client, or a free one when @p client is NULL; NULL if none. */
+static conf_client_slot* conf_client_slot_of(const az_iot_mqtt_client* client)
+{
+  for (size_t i = 0; i < CONF_CLIENTS_MAX; ++i)
+  {
+    if (g_client_slots[i].client == client)
+    {
+      return &g_client_slots[i];
+    }
+  }
+  return NULL;
+}
+
+/* Each client in its own heap workspace, freed by destroy_client(): a client used after destroy()
+ * is a use-after-free the sanitizers report. */
 static az_iot_mqtt_client* make_client(void)
 {
-  az_iot_mqtt_client* c = g_factory->create(g_factory->factory_ctx);
-  assert_non_null(c);
-  assert_non_null(c->iface);
+  conf_client_slot* slot = conf_client_slot_of(NULL);
+  assert_non_null(slot);
+  size_t const size = g_adapter->get_workspace_size(&k_client_limits);
+  assert_true(size > 0);
+  uint8_t* workspace = (uint8_t*)malloc(size);
+  assert_non_null(workspace);
+  az_iot_mqtt_client* c = NULL;
+  az_iot_result const r = g_adapter->init(g_version, &k_client_limits, workspace, size, &c);
+  /* Judged before the workspace, which holds the client, is freed. */
+  if (r != AZ_IOT_OK || c == NULL || c->iface == NULL)
+  {
+    const char* const what = r != AZ_IOT_OK ? "failed"
+        : c == NULL                         ? "gave no client"
+                                            : "gave no iface";
+    free(workspace);
+    fail_msg("adapter init() %s (%d)", what, (int)r);
+  }
+  slot->client = c;
+  slot->workspace = workspace;
   return c;
 }
 
@@ -729,7 +654,54 @@ static void destroy_client(az_iot_mqtt_client* c)
   {
     c->iface->destroy(c);
   }
+  conf_client_slot* slot = c != NULL ? conf_client_slot_of(c) : NULL;
+  if (slot != NULL)
+  {
+    free(slot->workspace);
+    slot->workspace = NULL;
+    slot->client = NULL;
+  }
 }
+
+/**
+ * @brief Per-test teardown: destroys the clients a case left behind (a failed assertion skips its
+ * destroy_client()) and frees their workspaces.
+ */
+static int conf_release_clients(void** state)
+{
+  (void)state;
+  for (size_t i = 0; i < CONF_CLIENTS_MAX; ++i)
+  {
+    if (g_client_slots[i].client != NULL)
+    {
+      destroy_client(g_client_slots[i].client);
+    }
+  }
+  return 0;
+}
+
+/** @brief Runs this process's shard of @p tests, each followed by conf_release_clients(). */
+static int conf_run_group(const char* group_name, const struct CMUnitTest* tests, size_t count)
+{
+  struct CMUnitTest* with_release = (struct CMUnitTest*)malloc(sizeof(*with_release) * count);
+  if (with_release == NULL)
+  {
+    fprintf(stderr, "%s: out of memory\n", group_name);
+    return 1;
+  }
+  for (size_t i = 0; i < count; ++i)
+  {
+    with_release[i] = tests[i];
+    with_release[i].teardown_func = conf_release_clients;
+  }
+  int const failed = az_iot_test_shard_run_group(group_name, with_release, count, NULL, NULL);
+  free(with_release);
+  return failed;
+}
+
+/** @brief conf_run_group() named after the @p group_tests array. */
+#define CONF_RUN_GROUP(group_tests) \
+  conf_run_group(#group_tests, group_tests, sizeof(group_tests) / sizeof((group_tests)[0]))
 
 static void connect_client(az_iot_mqtt_client* c, conf_recorder* rec, const char* client_id)
 {
@@ -1380,19 +1352,12 @@ static void reconnect_after_network_drop(void** state)
 /* ------------------------------------------------------------------------- */
 
 /* The cases below are the only ones that can prove an adapter put a session's
- * terms on the wire. Clean Start, the Session Expiry Interval and the Will are
+ * terms on the wire. Clean Session and the Will are
  * all write-only from the client's side: the iface has no getter for them, the
  * broker does not report them back, and an adapter that dropped every one of
  * them would still connect, publish and subscribe exactly as these tests
  * otherwise observe. So the proxy in front of the broker decodes the CONNECT
- * (and the DISCONNECT) and the assertions are made on those fields.
- *
- * The version split is not cosmetic. A v3.1.1 CONNECT has no property field at
- * all, so an adapter that sent a Session Expiry Interval or a Will Delay
- * Interval to a v3.1.1 broker would be emitting bytes the protocol has no place
- * for; "absent" is therefore asserted, not merely "not equal". */
-
-static int conf_is_v5(void) { return g_factory->version == AZ_IOT_MQTT_VERSION_5; }
+ * (and the DISCONNECT) and the assertions are made on those fields. */
 
 /* Stand the proxy up in front of the configured broker and point `copts` at
  * it, leaving the caller to set whatever session terms it is asserting on. */
@@ -1416,7 +1381,7 @@ static void conf_proxy_connect_options(
   copts->connect_timeout_seconds = k_step_timeout_seconds;
 }
 
-/* Clean Start (Clean Session on 3.1.1) is carried as the caller asked, in both
+/* Clean Session is carried as the caller asked, in both
  * directions: an adapter that hardcodes either value fails one half of this. */
 static void connect_carries_the_clean_session_flag(void** state)
 {
@@ -1439,7 +1404,7 @@ static void connect_carries_the_clean_session_flag(void** state)
 
     az_iot_test_proxy_connect_fields f;
     assert_int_equal(az_iot_test_proxy_last_connect_fields(proxy, &f), 1);
-    assert_int_equal(f.protocol_level, conf_is_v5() ? 5 : 4);
+    assert_int_equal(f.protocol_level, 4);
     assert_int_equal(f.clean_flag, clean);
     assert_int_equal(f.will_flag, 0);
 
@@ -1494,47 +1459,8 @@ static void connect_does_not_read_credentials_after_returning(void** state)
   az_iot_test_proxy_stop(proxy);
 }
 
-/* The Session Expiry Interval is an MQTT 5 property. A v5 adapter must put the
- * value it was given in the CONNECT; a v3.1.1 adapter must send no property at
- * all, because a v3.1.1 CONNECT has nowhere to put one. */
-static void session_expiry_is_sent_only_on_v5(void** state)
-{
-  (void)state;
-  char cid[64];
-  unique_client_id(cid, sizeof(cid), "az-iot-conf-expiry");
-
-  az_iot_test_proxy* proxy = NULL;
-  az_iot_mqtt_connect_options copts;
-  conf_proxy_connect_options(&proxy, &copts, cid);
-  copts.clean_start = true;
-  copts.session_expiry_seconds = 120;
-
-  conf_recorder rec = { 0 };
-  az_iot_mqtt_client* c = make_client();
-  c->iface->set_inbound_cb(c, on_event, &rec);
-  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
-  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
-
-  az_iot_test_proxy_connect_fields f;
-  assert_int_equal(az_iot_test_proxy_last_connect_fields(proxy, &f), 1);
-  if (conf_is_v5())
-  {
-    assert_int_equal(f.has_session_expiry, 1);
-    assert_int_equal(f.session_expiry_seconds, 120);
-  }
-  else
-  {
-    assert_int_equal(f.has_session_expiry, 0);
-  }
-
-  (void)c->iface->disconnect(c);
-  destroy_client(c);
-  az_iot_test_proxy_stop(proxy);
-}
-
 /* The Will is announced in the CONNECT with the topic, QoS, retain flag and
- * payload it was given. The Will Delay Interval is v5-only and must not appear
- * on a v3.1.1 connection. */
+ * payload it was given. */
 static void the_will_is_announced_in_connect(void** state)
 {
   (void)state;
@@ -1553,8 +1479,6 @@ static void the_will_is_announced_in_connect(void** state)
   copts.lwt.payload_len = sizeof(will_body);
   copts.lwt.qos = AZ_IOT_MQTT_QOS_1;
   copts.lwt.retain = true;
-  copts.lwt.will_delay_seconds = 30;
-  copts.session_expiry_seconds = 60; /* so the delay is expressible at all */
 
   conf_recorder rec = { 0 };
   az_iot_mqtt_client* c = make_client();
@@ -1569,63 +1493,13 @@ static void the_will_is_announced_in_connect(void** state)
   assert_int_equal(f.will_payload_len, sizeof(will_body));
   assert_int_equal(f.will_qos, 1);
   assert_int_equal(f.will_retain, 1);
-  if (conf_is_v5())
-  {
-    assert_int_equal(f.has_will_delay, 1);
-    assert_int_equal(f.will_delay_seconds, 30);
-  }
-  else
-  {
-    assert_int_equal(f.has_will_delay, 0);
-  }
 
   (void)c->iface->disconnect(c);
   destroy_client(c);
   az_iot_test_proxy_stop(proxy);
 }
 
-/* A session connected with a DISCONNECT reason code closes with that code, so
- * "Disconnect with Will Message" (0x04) reaches the broker instead of the
- * orderly close that discards the Will. On v3.1.1 there is no reason code to
- * carry and the DISCONNECT body stays empty, which reads back as 0. */
-static void disconnect_carries_the_reason_code_it_was_connected_with(void** state)
-{
-  (void)state;
-  char cid[64];
-  unique_client_id(cid, sizeof(cid), "az-iot-conf-discreason");
-  char will_topic[128];
-  snprintf(will_topic, sizeof(will_topic), "az_iot/conformance/%s/gone", cid);
-
-  az_iot_test_proxy* proxy = NULL;
-  az_iot_mqtt_connect_options copts;
-  conf_proxy_connect_options(&proxy, &copts, cid);
-  copts.clean_start = true;
-  copts.lwt.topic = will_topic;
-  copts.lwt.qos = AZ_IOT_MQTT_QOS_0;
-  copts.disconnect_reason_code = (uint8_t)AZ_IOT_MQTT_DISCONNECT_WITH_WILL_MESSAGE;
-
-  conf_recorder rec = { 0 };
-  az_iot_mqtt_client* c = make_client();
-  c->iface->set_inbound_cb(c, on_event, &rec);
-  assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
-  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
-
-  assert_int_equal(c->iface->disconnect(c), AZ_IOT_OK);
-  assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
-
-  uint8_t reason = 0xFFu;
-  assert_int_equal(wait_client_disconnect_reason(proxy, &reason, k_step_timeout_ms), 1);
-  assert_int_equal(
-      reason,
-      conf_is_v5() ? (uint8_t)AZ_IOT_MQTT_DISCONNECT_WITH_WILL_MESSAGE
-                   : (uint8_t)AZ_IOT_MQTT_DISCONNECT_NORMAL);
-
-  destroy_client(c);
-  az_iot_test_proxy_stop(proxy);
-}
-
-/* A zero-initialized connect options struct -- every adapter's starting point,
- * and every caller written before the field existed -- closes normally. */
+/* disconnect() sends a DISCONNECT, with the empty body MQTT 3.1.1 defines. */
 static void a_session_with_no_reason_code_closes_normally(void** state)
 {
   (void)state;
@@ -1647,7 +1521,7 @@ static void a_session_with_no_reason_code_closes_normally(void** state)
 
   uint8_t reason = 0xFFu;
   assert_int_equal(wait_client_disconnect_reason(proxy, &reason, k_step_timeout_ms), 1);
-  assert_int_equal(reason, (uint8_t)AZ_IOT_MQTT_DISCONNECT_NORMAL);
+  assert_int_equal(reason, 0);
 
   destroy_client(c);
   az_iot_test_proxy_stop(proxy);
@@ -1658,9 +1532,7 @@ static void a_session_with_no_reason_code_closes_normally(void** state)
  * report 0, and a session the broker actually resumed must report 1.
  *
  * The session is made resumable the way the protocol requires -- a subscription
- * to hold, a non-clean reconnect, and on v5 a non-zero Session Expiry Interval,
- * without which the session ends with the network connection and the second
- * CONNACK would correctly report 0. */
+ * to hold, and a non-clean reconnect. */
 static void session_present_reports_whether_the_broker_resumed_the_session(void** state)
 {
   (void)state;
@@ -1672,21 +1544,10 @@ static void session_present_reports_whether_the_broker_resumed_the_session(void*
   az_iot_test_proxy* proxy = NULL;
   az_iot_mqtt_connect_options copts;
   conf_proxy_connect_options(&proxy, &copts, cid);
-  if (conf_is_v5())
-  {
-    /* A v5 session ends with the network connection unless it is given an
-     * expiry, so a Clean Start session with one still survives the disconnect
-     * and is there to be resumed. */
-    copts.clean_start = true;
-    copts.session_expiry_seconds = 120;
-  }
-  else
-  {
-    /* MQTT 3.1.1 has no expiry: Clean Session 1 discards the state at
-     * disconnect, so there would be nothing left to resume. The client id is
-     * unique to this run, so this first CONNACK still has nothing to report. */
-    copts.clean_start = false;
-  }
+  /* MQTT 3.1.1 has no expiry: Clean Session 1 discards the state at
+   * disconnect, so there would be nothing left to resume. The client id is
+   * unique to this run, so this first CONNACK still has nothing to report. */
+  copts.clean_start = false;
 
   conf_recorder rec = { 0 };
   az_iot_mqtt_client* c = make_client();
@@ -1774,8 +1635,7 @@ static void connect_connack_error_is_reported(void** state)
     }
   }
   assert_true(ack >= 0);
-  assert_int_equal(
-      rec.protocol_codes[ack], (g_factory->version == AZ_IOT_MQTT_VERSION_5) ? 0x87 : 0x05);
+  assert_int_equal(rec.protocol_codes[ack], 0x05);
 
   (void)c->iface->disconnect(c);
   destroy_client(c);
@@ -1822,172 +1682,6 @@ static void keep_alive_timeout_is_reported(void** state)
   (void)c->iface->disconnect(c);
   destroy_client(c);
   az_iot_test_proxy_stop(proxy);
-}
-
-static az_iot_test_proxy* start_proxy(uint16_t* port_out);
-static void begin_connect_via_proxy(
-    az_iot_mqtt_client* c,
-    conf_recorder* rec,
-    const char* client_id,
-    uint16_t proxy_port);
-
-/* Connect through a synthetic broker answering with @p connack, then sending @p disconnect after
- * 300 ms unless it is NULL; record events in @p rec. Returns the client and fills @p proxy_out. */
-static az_iot_mqtt_client* connect_to_synthetic_broker(
-    const az_iot_test_mqtt_packet* connack,
-    const az_iot_test_mqtt_packet* disconnect,
-    const char* client_id_prefix,
-    conf_recorder* rec,
-    az_iot_test_proxy** proxy_out)
-{
-  uint16_t proxy_port = 0;
-  *proxy_out = start_proxy(&proxy_port);
-  assert_int_not_equal(connack->len, 0);
-  assert_int_equal(
-      az_iot_test_proxy_set_synthetic_connack(*proxy_out, connack->bytes, connack->len), 0);
-  if (disconnect != NULL)
-  {
-    assert_int_not_equal(disconnect->len, 0);
-    assert_int_equal(
-        az_iot_test_proxy_set_synthetic_disconnect(
-            *proxy_out, disconnect->bytes, disconnect->len, 300),
-        0);
-  }
-
-  char cid[64];
-  unique_client_id(cid, sizeof(cid), client_id_prefix);
-  az_iot_mqtt_client* c = make_client();
-  begin_connect_via_proxy(c, rec, cid, proxy_port);
-  return c;
-}
-
-/* A v5 server DISCONNECT must be surfaced as a DISCONNECTED event. The proxy
- * sends a success CONNACK, then injects a DISCONNECT with a reason code.
- *
- * MQTT 3.1.1 has no server-sent DISCONNECT packet, so this case belongs only to
- * the v5 suite. It is registered there and nowhere else rather than checking
- * g_factory->version and skipping: the two harness executables are built from
- * separate mains, so the version cannot vary within a run, and a suite that
- * declines part of its job at run time is one nobody notices has shrunk. */
-static void server_disconnect_is_reported(void** state)
-{
-  (void)state;
-  az_iot_test_mqtt_packet const connack = conf_connack(AZ_IOT_TEST_MQTT_REASON_SUCCESS);
-  az_iot_test_mqtt_packet const bye = conf_disconnect(AZ_IOT_TEST_MQTT_REASON_SERVER_SHUTTING_DOWN);
-  conf_recorder rec = { 0 };
-  az_iot_test_proxy* proxy = NULL;
-  az_iot_mqtt_client* c
-      = connect_to_synthetic_broker(&connack, &bye, "az-iot-conf-srvdisc", &rec, &proxy);
-  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
-  assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
-
-  /* The reason code is reported verbatim, classified by az_iot_mqtt_disconnect_result(). */
-  size_t i = 0;
-  while (i < rec.count && rec.kinds[i] != AZ_IOT_MQTT_EVT_DISCONNECTED)
-  {
-    ++i;
-  }
-  assert_true(i < rec.count);
-  assert_int_equal(rec.protocol_codes[i], bye.bytes[2]);
-  assert_int_equal(
-      rec.statuses[i], az_iot_mqtt_disconnect_result(AZ_IOT_MQTT_VERSION_5, bye.bytes[2]));
-  /* The packet carried no Reason String, so the event carries none. */
-  assert_reason_string_recorded(&rec, i, NULL);
-
-  (void)c->iface->disconnect(c);
-  destroy_client(c);
-  az_iot_test_proxy_stop(proxy);
-}
-
-/* A server DISCONNECT's Reason String is reported verbatim on the DISCONNECTED event: it is the
- * server's only explanation of why it ended the session. v5 only (see
- * server_disconnect_is_reported). */
-static void assert_server_disconnect_reason_string_is_reported(const char* reason_string)
-{
-  az_iot_test_mqtt_packet const connack = conf_connack(AZ_IOT_TEST_MQTT_REASON_SUCCESS);
-  az_iot_test_mqtt_packet const bye = az_iot_test_mqtt_disconnect_v5_raw(0x97, reason_string);
-  conf_recorder rec = { 0 };
-  az_iot_test_proxy* proxy = NULL;
-  az_iot_mqtt_client* c
-      = connect_to_synthetic_broker(&connack, &bye, "az-iot-conf-srvdiscrs", &rec, &proxy);
-
-  assert_true(wait_until(c, &rec, saw_connected_ok, k_step_timeout_ms));
-  assert_true(wait_until(c, &rec, saw_disconnected, k_step_timeout_ms));
-
-  size_t i = 0;
-  while (i < rec.count && rec.kinds[i] != AZ_IOT_MQTT_EVT_DISCONNECTED)
-  {
-    ++i;
-  }
-  assert_true(i < rec.count);
-  assert_int_equal(rec.protocol_codes[i], 0x97);
-  assert_reason_string_recorded(&rec, i, reason_string);
-
-  (void)c->iface->disconnect(c);
-  destroy_client(c);
-  az_iot_test_proxy_stop(proxy);
-}
-
-static void a_server_disconnect_reason_string_is_reported(void** state)
-{
-  (void)state;
-  assert_server_disconnect_reason_string_is_reported("quota exceeded for this device");
-}
-
-/* A present but empty Reason String is reported as such, not as absent. */
-static void a_server_disconnect_empty_reason_string_is_reported(void** state)
-{
-  (void)state;
-  assert_server_disconnect_reason_string_is_reported("");
-}
-
-/* A refused CONNACK's Reason String is reported verbatim on the failed CONNECTED event by an
- * adapter declaring AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING; any other must report none
- * rather than a wrong one. v5 only: MQTT 3.1.1 has no Reason String. */
-static void assert_refused_connack_reason_string_is_reported(const char* reason_string)
-{
-  az_iot_test_mqtt_packet const connack = az_iot_test_mqtt_connack_v5_raw(0x87, reason_string);
-  conf_recorder rec = { 0 };
-  az_iot_test_proxy* proxy = NULL;
-  az_iot_mqtt_client* c
-      = connect_to_synthetic_broker(&connack, NULL, "az-iot-conf-connackrs", &rec, &proxy);
-
-  assert_true(wait_until(c, &rec, saw_connack_error, k_step_timeout_ms));
-  assert_false(saw_connected_ok(&rec));
-
-  size_t i = 0;
-  while (i < rec.count
-         && !(rec.kinds[i] == AZ_IOT_MQTT_EVT_CONNECTED && rec.statuses[i] != AZ_IOT_OK))
-  {
-    ++i;
-  }
-  assert_true(i < rec.count);
-  assert_int_equal(rec.protocol_codes[i], 0x87);
-  assert_reason_string_recorded(
-      &rec, i, adapter_claims_connack_reason_string() ? reason_string : NULL);
-
-  (void)c->iface->disconnect(c);
-  destroy_client(c);
-  az_iot_test_proxy_stop(proxy);
-}
-
-static void a_refused_connack_reason_string_is_reported(void** state)
-{
-  (void)state;
-  assert_refused_connack_reason_string_is_reported("client certificate thumbprint mismatch");
-}
-
-/* A present but empty Reason String is reported as such, not as absent. */
-static void a_refused_connack_empty_reason_string_is_reported(void** state)
-{
-  (void)state;
-  assert_refused_connack_reason_string_is_reported("");
-}
-
-static void a_refused_connack_without_a_reason_string_reports_none(void** state)
-{
-  (void)state;
-  assert_refused_connack_reason_string_is_reported(NULL);
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2283,12 +1977,10 @@ static void a_stalled_link_resumes_without_losing_the_session(void** state)
  * ever ran.
  *
  * Everything else on the connection is still the real broker; only this one
- * exchange is scripted. The SUBACK's Reason String, @p reason_string (NULL: none), must be
- * reported verbatim, like a PUBACK's. */
+ * exchange is scripted. MQTT 3.1.1 has no Reason String, so the ack carries none. */
 static void assert_refused_subscribe_is_reported(
     const az_iot_test_mqtt_packet* suback,
-    int32_t code,
-    const char* reason_string)
+    int32_t code)
 {
   uint16_t proxy_port = 0;
   az_iot_test_proxy* proxy = start_proxy(&proxy_port);
@@ -2339,9 +2031,9 @@ static void assert_refused_subscribe_is_reported(
     }
   }
   assert_true(ack >= 0);
-  assert_int_equal(rec.statuses[ack], az_iot_mqtt_suback_result(g_factory->version, (int)code));
+  assert_int_equal(rec.statuses[ack], az_iot_mqtt_suback_result(g_version, (int)code));
   assert_int_equal(rec.protocol_codes[ack], code);
-  assert_reason_string_recorded(&rec, (size_t)ack, reason_string);
+  assert_reason_string_recorded(&rec, (size_t)ack, NULL);
   assert_int_equal(az_iot_test_proxy_rule_hits(proxy, (size_t)refuse_id), 1);
 
   (void)c->iface->disconnect(c);
@@ -2353,28 +2045,11 @@ static void a_refused_subscribe_is_reported(void** state)
 {
   (void)state;
   az_iot_test_mqtt_packet const suback = conf_suback(AZ_IOT_TEST_MQTT_REASON_REFUSED);
-  int32_t const code = (g_factory->version == AZ_IOT_MQTT_VERSION_5) ? 0x87 : 0x80;
+  int32_t const code = 0x80;
   /* A refusal the broker will repeat: the status reported must say so. */
   assert_int_equal(
-      az_iot_mqtt_suback_result(g_factory->version, (int)code), AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
-  assert_refused_subscribe_is_reported(&suback, code, NULL);
-}
-
-/* v5 only: MQTT 3.1.1 has no Reason String. Not authorized, with the broker's explanation. */
-static void a_refused_subscribe_reason_string_is_reported(void** state)
-{
-  (void)state;
-  az_iot_test_mqtt_packet const suback
-      = az_iot_test_mqtt_suback_v5_raw(0x87, "no topic space allows this filter");
-  assert_refused_subscribe_is_reported(&suback, 0x87, "no topic space allows this filter");
-}
-
-/* A present but empty Reason String is reported as such, not as absent. */
-static void a_refused_subscribe_empty_reason_string_is_reported(void** state)
-{
-  (void)state;
-  az_iot_test_mqtt_packet const suback = az_iot_test_mqtt_suback_v5_raw(0x97, "");
-  assert_refused_subscribe_is_reported(&suback, 0x97, "");
+      az_iot_mqtt_suback_result(g_version, (int)code), AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
+  assert_refused_subscribe_is_reported(&suback, code);
 }
 
 /* A PUBLISH cut short mid-flight must never reach the application. Half a
@@ -2785,512 +2460,10 @@ static void a_missing_client_cert_is_rejected(void** state)
 }
 #endif /* AZ_IOT_CONFORMANCE_WITH_TLS */
 
-/* A publish the broker refuses must surface as a failed PUBLISH_ACK. The proxy
- * swallows the PUBLISH and answers it with a PUBACK carrying @p code (and
- * @p reason_string unless NULL), echoing the client's packet id so the ack is
- * matched to the publish rather than discarded as unsolicited.
- *
- * The adapter must report the code verbatim, classified by
- * az_iot_mqtt_puback_result(), and the Reason String verbatim: they are all an
- * application has to tell a refusal from a failure, and why it was refused.
- *
- * MQTT 3.1.1 has no reason code in a PUBACK, so a v3 publish can only fail by
- * losing the connection -- a different path with a different meaning. These
- * cases are therefore registered in the v5 suite alone rather than checking the
- * version and skipping at run time. */
-static void assert_refused_publish_is_reported(uint8_t code, const char* reason_string)
-{
-  uint16_t proxy_port = 0;
-  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
-
-  az_iot_test_mqtt_packet puback = az_iot_test_mqtt_puback_v5_raw(code, reason_string);
-  assert_int_not_equal(puback.len, 0);
-
-  az_iot_test_proxy_rule swallow = { 0 };
-  swallow.dir = AZ_IOT_TEST_PROXY_C2B;
-  swallow.on_packet = AZ_IOT_TEST_PROXY_PKT_PUBLISH;
-  swallow.action = AZ_IOT_TEST_PROXY_ACTION_SUPPRESS;
-  assert_true(az_iot_test_proxy_add_rule(proxy, &swallow) >= 0);
-
-  az_iot_test_proxy_rule refuse = { 0 };
-  refuse.dir = AZ_IOT_TEST_PROXY_C2B;
-  refuse.on_packet = AZ_IOT_TEST_PROXY_PKT_PUBLISH;
-  inject_packet(&refuse, AZ_IOT_TEST_PROXY_B2C, &puback);
-  int refuse_id = az_iot_test_proxy_add_rule(proxy, &refuse);
-  assert_true(refuse_id >= 0);
-
-  char cid[64];
-  unique_client_id(cid, sizeof(cid), "az-iot-conf-pubrefuse");
-  char topic[128];
-  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
-
-  conf_recorder rec = { 0 };
-  az_iot_mqtt_client* c = make_client();
-  connect_via_proxy(c, &rec, cid, proxy_port);
-
-  static const uint8_t body[] = { 'r', 'e', 'f', 'u', 's', 'e', 'd' };
-  az_iot_mqtt_message msg = { 0 };
-  msg.topic = topic;
-  msg.payload = body;
-  msg.payload_len = sizeof(body);
-  msg.qos = AZ_IOT_MQTT_QOS_1;
-  uint16_t pub_pid = 0;
-  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
-
-  assert_true(wait_until(c, &rec, saw_publish_ack_error, k_step_timeout_ms));
-  assert_int_equal(az_iot_test_proxy_rule_hits(proxy, (size_t)refuse_id), 1);
-
-  size_t acks = 0;
-  for (size_t i = 0; i < rec.count; ++i)
-  {
-    if (rec.kinds[i] != AZ_IOT_MQTT_EVT_PUBLISH_ACK)
-    {
-      continue;
-    }
-    ++acks;
-    assert_int_equal(rec.packet_ids[i], pub_pid);
-    assert_int_equal(rec.protocol_codes[i], code);
-    assert_int_equal(rec.statuses[i], az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, code));
-    assert_reason_string_recorded(&rec, i, reason_string);
-  }
-  assert_int_equal(acks, 1);
-
-  (void)c->iface->disconnect(c);
-  destroy_client(c);
-  az_iot_test_proxy_stop(proxy);
-}
-
-/* Not authorized, with the broker's explanation. */
-static void a_refused_publish_is_reported(void** state)
-{
-  (void)state;
-  assert_refused_publish_is_reported(0x87, "no topic template allows this topic");
-}
-
-/* A present but empty Reason String is reported as such, not as absent. */
-static void a_refused_publish_with_an_empty_reason_string_is_reported(void** state)
-{
-  (void)state;
-  assert_refused_publish_is_reported(0x87, "");
-}
-
-/* Quota exceeded, without a Reason String: AZ_IOT_ERR_BUSY, so the caller retries later. */
-static void a_publish_over_quota_is_reported_as_busy(void** state)
-{
-  (void)state;
-  assert_refused_publish_is_reported(0x97, NULL);
-}
-
-/* ------------------------------------------------------------------------- */
-/* MQTT v5 message properties                                                 */
-/*                                                                            */
-/* MQTTv5 carries its protocol metadata in v5 User Properties -- the message   */
-/* `type`, its content type, the correlation data that pairs a response with   */
-/* its request -- so an adapter that drops, reorders, de-duplicates or         */
-/* truncates them is not carrying the protocol, however well it carries the    */
-/* payload. These cases pin both directions.                                   */
-/* ------------------------------------------------------------------------- */
-
-/* Index of the first recorded MESSAGE on `topic`, or -1. */
-static int recorded_message_on(const conf_recorder* r, const char* topic)
-{
-  for (size_t i = 0; i < r->count; ++i)
-  {
-    if (r->kinds[i] == AZ_IOT_MQTT_EVT_MESSAGE && strcmp(r->topics[i], topic) == 0)
-    {
-      return (int)i;
-    }
-  }
-  return -1;
-}
-
-/* Outbound: everything the typed message carries must reach a subscriber
- * unchanged, through a real broker.
- *
- * The awkward entries are the point. MQTT 5.0 permits repeated keys and
- * zero-length values, and an adapter that collapses "x" twice into one entry,
- * or turns an empty value into a missing one, silently rewrites the message. A
- * pair whose key is NULL has nothing to send and is dropped whole -- a property
- * with no name is not a property -- and that too must be observable rather than
- * a guess. */
-static void v5_message_properties_survive_a_roundtrip(void** state)
-{
-  (void)state;
-  char cid[64];
-  unique_client_id(cid, sizeof(cid), "az-iot-conf-v5props");
-  char topic[128];
-  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
-
-  conf_recorder rec = { 0 };
-  az_iot_mqtt_client* c = make_client();
-  connect_client(c, &rec, cid);
-
-  uint16_t sub_pid = 0;
-  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
-  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
-
-  const az_iot_mqtt_user_property sent[]
-      = { { "type", "telemetry:1" }, { "x", "1" },          { "x", "2" },
-          { "empty", "" },           { "nullvalue", NULL }, { NULL, "no-key" } };
-  static const uint8_t correlation[] = { 0xDE, 0xAD, 0xBE, 0xEF };
-  static const uint8_t body[] = { 'v', '5' };
-
-  az_iot_mqtt_message msg = { 0 };
-  msg.topic = topic;
-  msg.payload = body;
-  msg.payload_len = sizeof(body);
-  msg.qos = AZ_IOT_MQTT_QOS_1;
-  msg.user_properties
-      = az_iot_mqtt_user_properties_from_array(sent, sizeof(sent) / sizeof(sent[0]));
-  msg.content_type = "application/json";
-  msg.correlation_data = correlation;
-  msg.correlation_data_len = sizeof(correlation);
-  msg.message_expiry_seconds = 120;
-
-  uint16_t pub_pid = 0;
-  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
-  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
-
-  int i = recorded_message_on(&rec, topic);
-  assert_true(i >= 0);
-  assert_int_equal(rec.payload_lens[i], sizeof(body));
-  assert_memory_equal(rec.payloads[i], body, sizeof(body));
-
-  /* Five of the six: the keyless pair is the one that must not be on the
-   * wire. */
-  assert_int_equal(rec.prop_counts[i], 5);
-  assert_int_equal(rec.prop_null_keys[i], 0);
-  assert_int_equal(rec.prop_null_values[i], 0);
-  assert_string_equal(rec.prop_keys[i][0], "type");
-  assert_string_equal(rec.prop_values[i][0], "telemetry:1");
-  assert_string_equal(rec.prop_keys[i][1], "x");
-  assert_string_equal(rec.prop_values[i][1], "1");
-  assert_string_equal(rec.prop_keys[i][2], "x");
-  assert_string_equal(rec.prop_values[i][2], "2");
-  assert_string_equal(rec.prop_keys[i][3], "empty");
-  assert_string_equal(rec.prop_values[i][3], "");
-  assert_string_equal(rec.prop_keys[i][4], "nullvalue");
-  assert_string_equal(rec.prop_values[i][4], "");
-
-  assert_true(rec.has_content_type[i]);
-  assert_string_equal(rec.content_types[i], "application/json");
-  assert_int_equal(rec.correlation_lens[i], sizeof(correlation));
-  assert_memory_equal(rec.correlations[i], correlation, sizeof(correlation));
-  /* A broker forwards the expiry it has left, not the one it was given, so the
-   * assertion is that it survived at all and was not inflated. */
-  assert_true(rec.message_expiries[i] > 0);
-  assert_true(rec.message_expiries[i] <= 120);
-
-  uint16_t unsub_pid = 0;
-  assert_int_equal(c->iface->unsubscribe(c, topic, &unsub_pid), AZ_IOT_OK);
-  (void)c->iface->disconnect(c);
-  destroy_client(c);
-}
-
-/* Inbound: properties a broker sends must be surfaced byte for byte.
- *
- * Injected rather than published, because the cases that matter cannot be
- * produced by publishing through this API: a zero-length KEY is legal MQTT that
- * the outbound path deliberately refuses to originate, and the bytes Paho hands
- * an adapter are length-delimited and NOT NUL-terminated, so an adapter that
- * forwards them straight through as `const char*` reads past the value. Both
- * end as an empty string here, never as NULL and never as trailing rubbish. */
-static void v5_properties_from_the_server_are_surfaced_intact(void** state)
-{
-  (void)state;
-  uint16_t proxy_port = 0;
-  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
-
-  static const char* const inject_topic = "az/p";
-  static const uint8_t body[] = { 'i' };
-  const az_iot_test_mqtt_user_property props[]
-      = { { "k", "" }, { "", "v" }, { "dup", "1" }, { "dup", "2" } };
-  az_iot_test_mqtt_packet publish = az_iot_test_mqtt_publish_v5(
-      inject_topic, body, sizeof(body), props, sizeof(props) / sizeof(props[0]), "text/plain");
-  assert_true(publish.len > 0);
-
-  /* The client's SUBSCRIBE is only a trigger: the packet is injected towards
-   * the client, so no subscription has to match it. */
-  az_iot_test_proxy_rule push = { 0 };
-  push.dir = AZ_IOT_TEST_PROXY_C2B;
-  push.on_packet = AZ_IOT_TEST_PROXY_PKT_SUBSCRIBE;
-  inject_packet(&push, AZ_IOT_TEST_PROXY_B2C, &publish);
-  /* A PUBLISH carries no id to echo; leaving it set would rewrite the topic. */
-  push.echo_packet_id = 0;
-  push.packet_id_offset = 0;
-  int push_id = az_iot_test_proxy_add_rule(proxy, &push);
-  assert_true(push_id >= 0);
-
-  char cid[64];
-  unique_client_id(cid, sizeof(cid), "az-iot-conf-v5inprops");
-  char topic[128];
-  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
-
-  conf_recorder rec = { 0 };
-  az_iot_mqtt_client* c = make_client();
-  connect_via_proxy(c, &rec, cid, proxy_port);
-
-  uint16_t sub_pid = 0;
-  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
-  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
-  assert_int_equal(az_iot_test_proxy_rule_hits(proxy, (size_t)push_id), 1);
-
-  int i = recorded_message_on(&rec, inject_topic);
-  assert_true(i >= 0);
-  assert_int_equal(rec.payload_lens[i], sizeof(body));
-  assert_memory_equal(rec.payloads[i], body, sizeof(body));
-
-  assert_int_equal(rec.prop_counts[i], 4);
-  assert_int_equal(rec.prop_null_keys[i], 0);
-  assert_int_equal(rec.prop_null_values[i], 0);
-  assert_string_equal(rec.prop_keys[i][0], "k");
-  assert_string_equal(rec.prop_values[i][0], "");
-  assert_string_equal(rec.prop_keys[i][1], "");
-  assert_string_equal(rec.prop_values[i][1], "v");
-  assert_string_equal(rec.prop_keys[i][2], "dup");
-  assert_string_equal(rec.prop_values[i][2], "1");
-  assert_string_equal(rec.prop_keys[i][3], "dup");
-  assert_string_equal(rec.prop_values[i][3], "2");
-  assert_true(rec.has_content_type[i]);
-  assert_string_equal(rec.content_types[i], "text/plain");
-
-  (void)c->iface->disconnect(c);
-  destroy_client(c);
-  az_iot_test_proxy_stop(proxy);
-}
-
-/* 24 User Properties: more than any fixed array an adapter used to hold. */
-#define CONF_MANY_PROPS 24
-static const az_iot_mqtt_user_property k_many_props[CONF_MANY_PROPS] = {
-  { "p00", "v00" }, { "p01", "v01" }, { "p02", "v02" }, { "p03", "v03" }, { "p04", "v04" },
-  { "p05", "v05" }, { "p06", "v06" }, { "p07", "v07" }, { "p08", "v08" }, { "p09", "v09" },
-  { "p10", "v10" }, { "p11", "v11" }, { "p12", "v12" }, { "p13", "v13" }, { "p14", "v14" },
-  { "p15", "v15" }, { "p16", "v16" }, { "p17", "v17" }, { "p18", "v18" }, { "p19", "v19" },
-  { "p20", "v20" }, { "p21", "v21" }, { "p22", "v22" }, { "p23", "v23" },
-};
-
-static void assert_many_props(const conf_recorder* rec, int i)
-{
-  assert_int_equal(rec->prop_ends[i], AZ_IOT_ERR_NOT_FOUND);
-  assert_int_equal(rec->prop_counts[i], CONF_MANY_PROPS);
-  assert_int_equal(rec->prop_null_keys[i], 0);
-  assert_int_equal(rec->prop_null_values[i], 0);
-  for (size_t p = 0; p < CONF_PROPS_MAX; ++p)
-  {
-    assert_string_equal(rec->prop_keys[i][p], k_many_props[p].key);
-    assert_string_equal(rec->prop_values[i][p], k_many_props[p].value);
-  }
-  assert_string_equal(rec->prop_last_keys[i], k_many_props[CONF_MANY_PROPS - 1].key);
-  assert_string_equal(rec->prop_last_values[i], k_many_props[CONF_MANY_PROPS - 1].value);
-}
-
-/* Outbound and back: every property is sent and every one is surfaced, in
- * order. An adapter with a fixed array refuses the publish or drops the tail. */
-static void v5_many_properties_survive_a_roundtrip(void** state)
-{
-  (void)state;
-  char cid[64];
-  unique_client_id(cid, sizeof(cid), "az-iot-conf-v5many");
-  char topic[128];
-  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
-
-  conf_recorder rec = { 0 };
-  az_iot_mqtt_client* c = make_client();
-  connect_client(c, &rec, cid);
-
-  uint16_t sub_pid = 0;
-  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
-  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
-
-  static const uint8_t body[] = { 'm' };
-  az_iot_mqtt_message msg = { 0 };
-  msg.topic = topic;
-  msg.payload = body;
-  msg.payload_len = sizeof(body);
-  msg.qos = AZ_IOT_MQTT_QOS_1;
-  msg.user_properties = az_iot_mqtt_user_properties_from_array(k_many_props, CONF_MANY_PROPS);
-
-  uint16_t pub_pid = 0;
-  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
-  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
-
-  int i = recorded_message_on(&rec, topic);
-  assert_true(i >= 0);
-  assert_many_props(&rec, i);
-
-  uint16_t unsub_pid = 0;
-  assert_int_equal(c->iface->unsubscribe(c, topic, &unsub_pid), AZ_IOT_OK);
-  (void)c->iface->disconnect(c);
-  destroy_client(c);
-}
-
-/* Inbound from the server: all 24 are surfaced, none silently dropped. */
-static void v5_many_properties_from_the_server_are_all_surfaced(void** state)
-{
-  (void)state;
-  uint16_t proxy_port = 0;
-  az_iot_test_proxy* proxy = start_proxy(&proxy_port);
-
-  az_iot_test_mqtt_user_property props[CONF_MANY_PROPS];
-  for (size_t p = 0; p < CONF_MANY_PROPS; ++p)
-  {
-    props[p].key = k_many_props[p].key;
-    props[p].value = k_many_props[p].value;
-  }
-  static const char* const inject_topic = "az/m";
-  static const uint8_t body[] = { 'i' };
-  az_iot_test_mqtt_packet publish
-      = az_iot_test_mqtt_publish_v5(inject_topic, body, sizeof(body), props, CONF_MANY_PROPS, NULL);
-  assert_true(publish.len > 0);
-
-  az_iot_test_proxy_rule push = { 0 };
-  push.dir = AZ_IOT_TEST_PROXY_C2B;
-  push.on_packet = AZ_IOT_TEST_PROXY_PKT_SUBSCRIBE;
-  inject_packet(&push, AZ_IOT_TEST_PROXY_B2C, &publish);
-  push.echo_packet_id = 0;
-  push.packet_id_offset = 0;
-  int push_id = az_iot_test_proxy_add_rule(proxy, &push);
-  assert_true(push_id >= 0);
-
-  char cid[64];
-  unique_client_id(cid, sizeof(cid), "az-iot-conf-v5manyin");
-  char topic[128];
-  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
-
-  conf_recorder rec = { 0 };
-  az_iot_mqtt_client* c = make_client();
-  connect_via_proxy(c, &rec, cid, proxy_port);
-
-  uint16_t sub_pid = 0;
-  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
-  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
-
-  int i = recorded_message_on(&rec, inject_topic);
-  assert_true(i >= 0);
-  assert_many_props(&rec, i);
-
-  (void)c->iface->disconnect(c);
-  destroy_client(c);
-  az_iot_test_proxy_stop(proxy);
-}
-
-/* The session-present bit of the CONNACK must reach the application.
- *
- * It is the only thing that tells a client whether the broker still holds its
- * subscriptions and whatever was queued while it was away: a client told
- * "present" when the session was in fact new stays subscribed to nothing and
- * goes deaf without any error being reported. Both values are pinned, because a
- * client that hardcodes either one passes a test for the other. */
-static void assert_session_present_is_reported(int session_present)
-{
-  az_iot_test_proxy_options popts = az_iot_test_proxy_options_default();
-  popts.upstream_host = g_host;
-  popts.upstream_port = g_port;
-  az_iot_test_proxy* proxy = NULL;
-  uint16_t proxy_port = 0;
-  assert_int_equal(az_iot_test_proxy_start(&popts, &proxy, &proxy_port), 0);
-
-  az_iot_test_mqtt_packet connack
-      = az_iot_test_mqtt_connack_raw(conf_mqtt_version(), 0x00u, session_present);
-  assert_int_equal(az_iot_test_proxy_set_synthetic_connack(proxy, connack.bytes, connack.len), 0);
-
-  char cid[64];
-  unique_client_id(cid, sizeof(cid), "az-iot-conf-sesspresent");
-  conf_recorder rec = { 0 };
-  az_iot_mqtt_client* c = make_client();
-  connect_via_proxy(c, &rec, cid, proxy_port);
-
-  int found = -1;
-  for (size_t i = 0; i < rec.count; ++i)
-  {
-    if (rec.kinds[i] == AZ_IOT_MQTT_EVT_CONNECTED && rec.statuses[i] == AZ_IOT_OK)
-    {
-      found = (int)i;
-      break;
-    }
-  }
-  assert_true(found >= 0);
-  assert_int_equal(rec.session_present[found] ? 1 : 0, session_present);
-
-  (void)c->iface->disconnect(c);
-  destroy_client(c);
-  az_iot_test_proxy_stop(proxy);
-}
-
-static void v5_session_present_from_connack_is_reported(void** state)
-{
-  (void)state;
-  assert_session_present_is_reported(0);
-  assert_session_present_is_reported(1);
-}
-
-/* A v3.1.1 broker must never be sent v5 properties.
- *
- * DPS and MQTTv3 hubs are both v3.1.1, and the same typed message struct
- * reaches every adapter, so a v5 property field left set by a caller must be
- * ignored rather than serialized. A broker handed v5 bytes on a 3.1.1
- * connection closes the connection, so the proof is that the message completes
- * a round trip and arrives carrying no properties at all. */
-static void v3_1_1_publish_ignores_the_v5_only_fields(void** state)
-{
-  (void)state;
-  char cid[64];
-  unique_client_id(cid, sizeof(cid), "az-iot-conf-v3props");
-  char topic[128];
-  snprintf(topic, sizeof(topic), "az_iot/conformance/%s", cid);
-
-  conf_recorder rec = { 0 };
-  az_iot_mqtt_client* c = make_client();
-  connect_client(c, &rec, cid);
-
-  uint16_t sub_pid = 0;
-  assert_int_equal(c->iface->subscribe(c, topic, AZ_IOT_MQTT_QOS_1, &sub_pid), AZ_IOT_OK);
-  assert_true(wait_until(c, &rec, saw_subscribe_ack_ok, k_step_timeout_ms));
-
-  const az_iot_mqtt_user_property sent[] = { { "type", "telemetry:1" } };
-  static const uint8_t correlation[] = { 0x01, 0x02 };
-  static const uint8_t body[] = { 'v', '3' };
-
-  az_iot_mqtt_message msg = { 0 };
-  msg.topic = topic;
-  msg.payload = body;
-  msg.payload_len = sizeof(body);
-  msg.qos = AZ_IOT_MQTT_QOS_1;
-  msg.user_properties
-      = az_iot_mqtt_user_properties_from_array(sent, sizeof(sent) / sizeof(sent[0]));
-  msg.content_type = "application/json";
-  msg.correlation_data = correlation;
-  msg.correlation_data_len = sizeof(correlation);
-  msg.message_expiry_seconds = 120;
-
-  uint16_t pub_pid = 0;
-  assert_int_equal(c->iface->publish(c, &msg, &pub_pid), AZ_IOT_OK);
-  assert_true(wait_until(c, &rec, saw_message, k_step_timeout_ms));
-
-  int i = recorded_message_on(&rec, topic);
-  assert_true(i >= 0);
-  assert_int_equal(rec.payload_lens[i], sizeof(body));
-  assert_memory_equal(rec.payloads[i], body, sizeof(body));
-  assert_int_equal(rec.prop_counts[i], 0);
-  assert_false(rec.has_content_type[i]);
-  assert_int_equal(rec.correlation_lens[i], 0);
-  assert_int_equal(rec.message_expiries[i], 0);
-
-  uint16_t unsub_pid = 0;
-  assert_int_equal(c->iface->unsubscribe(c, topic, &unsub_pid), AZ_IOT_OK);
-  (void)c->iface->disconnect(c);
-  destroy_client(c);
-}
-
 /* ------------------------------------------------------------------------- */
 /* entry point                                                                */
 /* ------------------------------------------------------------------------- */
 
-/* The cases both suites run. Kept in a macro so the v3 and v5 lists cannot
- * drift apart by editing one and forgetting the other. The intended differences
- * are the cases appended to the v5 list below, each of which depends on
- * something MQTT 3.1.1 does not have: a server-sent DISCONNECT packet, and a
- * reason code in a PUBACK. */
 /* ------------------------------------------------------------------------- */
 /* non-extractable key custody (D8)                                          */
 /*                                                                           */
@@ -4430,14 +3603,12 @@ static void a_proxy_that_refuses_the_tunnel_fails_the_connect(void** state)
       cmocka_unit_test(an_unreachable_proxy_is_never_bypassed),                                  \
       cmocka_unit_test(connect_carries_the_clean_session_flag),                                  \
       cmocka_unit_test(connect_does_not_read_credentials_after_returning),                       \
-      cmocka_unit_test(session_expiry_is_sent_only_on_v5),                                       \
       cmocka_unit_test(the_will_is_announced_in_connect),                                        \
-      cmocka_unit_test(disconnect_carries_the_reason_code_it_was_connected_with),                \
       cmocka_unit_test(a_session_with_no_reason_code_closes_normally),                           \
       cmocka_unit_test(session_present_reports_whether_the_broker_resumed_the_session)
 
-/* Expands to nothing when the certificate cases were compiled out, so the two
- * lists above stay a single expression either way. */
+/* Expands to nothing when the certificate cases were compiled out, so the
+ * list above stays a single expression either way. */
 #ifdef AZ_IOT_CONFORMANCE_WITH_TLS
 #define TLS_TESTS                                                         \
   cmocka_unit_test(tls_handshake_succeeds_with_trusted_valid_cert),       \
@@ -4452,17 +3623,17 @@ static void a_proxy_that_refuses_the_tunnel_fails_the_connect(void** state)
 #define TLS_TESTS
 #endif
 
-int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory)
+int az_iot_conformance_run(az_iot_conformance_suite suite_kind, const az_iot_mqtt_adapter* adapter)
 {
-  return az_iot_conformance_run_with_options(suite_kind, factory, NULL);
+  return az_iot_conformance_run_with_options(suite_kind, adapter, NULL);
 }
 
 int az_iot_conformance_run_with_options(
     az_iot_conformance_suite suite_kind,
-    az_iot_mqtt_factory* factory,
+    const az_iot_mqtt_adapter* adapter,
     const az_iot_conformance_options* options)
 {
-  if (!factory)
+  if (!adapter || !adapter->get_workspace_size || !adapter->init)
   {
     return 1;
   }
@@ -4494,15 +3665,6 @@ int az_iot_conformance_run_with_options(
         stderr,
         "conformance: websocket_port is set but AZ_IOT_CONFORMANCE_CAP_WEBSOCKETS was not "
         "declared\n");
-    return 1;
-  }
-
-  if (!az_iot_conformance_capabilities_fit_suite(suite_kind, g_capabilities))
-  {
-    fprintf(
-        stderr,
-        "conformance: AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING was declared for a suite "
-        "other than MQTTv5, which never exercises it\n");
     return 1;
   }
 
@@ -4578,20 +3740,6 @@ int az_iot_conformance_run_with_options(
     return 1;
   }
 
-  /* Validate the factory's advertised version matches the requested suite. */
-  az_iot_mqtt_version want = (suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5)
-      ? AZ_IOT_MQTT_VERSION_5
-      : AZ_IOT_MQTT_VERSION_3_1_1;
-  if (factory->version != want)
-  {
-    fprintf(
-        stderr,
-        "conformance: factory version mismatch (got %d, want %d)\n",
-        (int)factory->version,
-        (int)want);
-    return 1;
-  }
-
   /* Resolve broker config from env. */
   const char* host = getenv("AZ_IOT_MQTT_BROKER_HOST");
   const char* port = getenv("AZ_IOT_MQTT_BROKER_PORT");
@@ -4611,7 +3759,9 @@ int az_iot_conformance_run_with_options(
     return 1;
   }
 
-  g_factory = factory;
+  g_adapter = adapter;
+  (void)suite_kind;
+  g_version = AZ_IOT_MQTT_VERSION_3_1_1;
   g_host = host;
   g_port = port ? (uint16_t)atoi(port) : (uint16_t)1883;
 
@@ -4624,40 +3774,13 @@ int az_iot_conformance_run_with_options(
   fprintf(
       stderr,
       "conformance: running %s suite against %s:%u\n",
-      (suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5) ? "MQTTv5" : "MQTTv3.1.1",
+      "MQTTv3.1.1",
       g_host,
       (unsigned)g_port);
 
   int failed;
-  if (suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5)
-  {
-    const struct CMUnitTest v5_tests[]
-        = { AZ_IOT_CONFORMANCE_COMMON_TESTS,
-            cmocka_unit_test(server_disconnect_is_reported),
-            cmocka_unit_test(a_server_disconnect_reason_string_is_reported),
-            cmocka_unit_test(a_server_disconnect_empty_reason_string_is_reported),
-            cmocka_unit_test(a_refused_connack_reason_string_is_reported),
-            cmocka_unit_test(a_refused_connack_empty_reason_string_is_reported),
-            cmocka_unit_test(a_refused_connack_without_a_reason_string_reports_none),
-            cmocka_unit_test(a_refused_subscribe_reason_string_is_reported),
-            cmocka_unit_test(a_refused_subscribe_empty_reason_string_is_reported),
-            cmocka_unit_test(a_refused_publish_is_reported),
-            cmocka_unit_test(a_refused_publish_with_an_empty_reason_string_is_reported),
-            cmocka_unit_test(a_publish_over_quota_is_reported_as_busy),
-            cmocka_unit_test(v5_message_properties_survive_a_roundtrip),
-            cmocka_unit_test(v5_properties_from_the_server_are_surfaced_intact),
-            cmocka_unit_test(v5_many_properties_survive_a_roundtrip),
-            cmocka_unit_test(v5_many_properties_from_the_server_are_all_surfaced),
-            cmocka_unit_test(v5_session_present_from_connack_is_reported) };
-    failed = az_iot_test_shard_run_group_tests(v5_tests, NULL, NULL);
-  }
-  else
-  {
-    const struct CMUnitTest v3_tests[]
-        = { AZ_IOT_CONFORMANCE_COMMON_TESTS,
-            cmocka_unit_test(v3_1_1_publish_ignores_the_v5_only_fields) };
-    failed = az_iot_test_shard_run_group_tests(v3_tests, NULL, NULL);
-  }
+  const struct CMUnitTest v3_tests[] = { AZ_IOT_CONFORMANCE_COMMON_TESTS };
+  failed = CONF_RUN_GROUP(v3_tests);
 
   /* Before the custody groups: they load the key's provider process-wide, after
    * which the suite's own mutual-TLS handshakes no longer complete. */
@@ -4666,7 +3789,7 @@ int az_iot_conformance_run_with_options(
 #ifdef AZ_IOT_CONFORMANCE_WITH_TLS
     const struct CMUnitTest pem_tests[]
         = { cmocka_unit_test(mutual_tls_does_not_read_pem_after_returning) };
-    failed += az_iot_test_shard_run_group_tests(pem_tests, NULL, NULL);
+    failed += CONF_RUN_GROUP(pem_tests);
 #else
     char allow[16];
     failed += az_iot_conformance_report_unproven_capability(
@@ -4694,7 +3817,7 @@ int az_iot_conformance_run_with_options(
     {
       const struct CMUnitTest custody_tests[]
           = { cmocka_unit_test(key_custody_completes_a_tls_handshake) };
-      failed += az_iot_test_shard_run_group_tests(custody_tests, NULL, NULL);
+      failed += CONF_RUN_GROUP(custody_tests);
     }
     else
     {
@@ -4725,7 +3848,7 @@ int az_iot_conformance_run_with_options(
     {
       const struct CMUnitTest sign_tests[]
           = { cmocka_unit_test(key_custody_sign_hook_completes_a_tls_handshake) };
-      failed += az_iot_test_shard_run_group_tests(sign_tests, NULL, NULL);
+      failed += CONF_RUN_GROUP(sign_tests);
     }
     else
     {
@@ -4756,7 +3879,7 @@ int az_iot_conformance_run_with_options(
     {
       const struct CMUnitTest psa_tests[]
           = { cmocka_unit_test(key_custody_psa_key_completes_a_tls_handshake_and_reconnects) };
-      failed += az_iot_test_shard_run_group_tests(psa_tests, NULL, NULL);
+      failed += CONF_RUN_GROUP(psa_tests);
     }
     else
     {
@@ -4799,7 +3922,7 @@ int az_iot_conformance_run_with_options(
       (void)(a_websocket_session_carries_a_large_payload);
       const struct CMUnitTest ws_tests[]
           = { cmocka_unit_test(a_websocket_session_completes_a_roundtrip) };
-      failed += az_iot_test_shard_run_group_tests(ws_tests, NULL, NULL);
+      failed += CONF_RUN_GROUP(ws_tests);
     }
     else
     {
@@ -4827,7 +3950,7 @@ int az_iot_conformance_run_with_options(
             cmocka_unit_test(a_proxy_rejects_a_missing_credential),
             cmocka_unit_test(a_tunnel_dropped_mid_session_is_reported),
             cmocka_unit_test(a_proxy_that_refuses_the_tunnel_fails_the_connect) };
-    failed += az_iot_test_shard_run_group_tests(proxy_tests, NULL, NULL);
+    failed += CONF_RUN_GROUP(proxy_tests);
   }
 
   return (failed == 0) ? 0 : 1;

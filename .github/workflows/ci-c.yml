@@ -5,7 +5,7 @@ name: ci-c
 
 on:
   push:
-    branches: [ main, 'dev/c' ]
+    branches: [ main, 'dev/c', 'releases/public-preview' ]
   # No workflow-level `paths:` filter. Path filtering happens in the `changes`
   # job below and is applied per job via `if:`. A workflow that never triggers
   # reports no checks at all, which deadlocks any required status check on a PR
@@ -51,6 +51,8 @@ jobs:
       pull-requests: read
     outputs:
       c: ${{ steps.filter.outputs.c == 'true' || steps.filter.outputs.common == 'true' || steps.filter.outputs.workflow == 'true' }}
+      # Everything eng/check-ga-scope.sh scans; runs only the cheap conventions job.
+      ga_scope: ${{ steps.filter.outputs.ga_scope == 'true' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -73,6 +75,9 @@ jobs:
             # `every` would AND two.
             workflow:
               - '.github/{workflows/ci-c.yml,actions/install-openssl/**,actions/install-curl-windows/**}'
+            # Keep in sync with `scope` in c/eng/check-ga-scope.sh.
+            ga_scope:
+              - '{c/**,.github/workflows/ci-c*.yml,.github/workflows/codeql-c.yml,.github/instructions/c-*.md}'
 
   # The Paho-OFF legs build the whole tree on az_mqtt. Every leg checks that
   # nothing depends on an adapter it was configured without
@@ -94,10 +99,12 @@ jobs:
             preset: linux-clang-debug
             build_type: Debug
             with_paho: ON
+            sample_pipeline_hooks: ON
           - os: windows-latest
             preset: windows-msvc-debug
             build_type: Debug
             with_paho: ON
+            sample_pipeline_hooks: ON
           - os: ubuntu-24.04
             preset: linux-gcc-debug
             build_type: Debug
@@ -143,10 +150,11 @@ jobs:
         # Linux presets set AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS, and that option
         # fails the configure step outright when OpenSSL is missing instead of
         # dropping the certificate-validation tests.
-        # libcurl: the samples that use it (dps_tpm, file_upload's upload path,
-        # software_update/pc/http_download)
+        # libcurl: the samples that use it (dps_tpm, file_upload's upload path)
         # are expected to build.
-        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev
+        # libtss2-dev and swtpm: the dps_tpm tpm2-tss backend and its test, which runs
+        # against swtpm (see the step after Test).
+        run: sudo apt-get update && sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libtss2-dev swtpm
 
       # libcurl for the same samples on Windows.
       - name: Install libcurl (Windows)
@@ -160,7 +168,7 @@ jobs:
           CMAKE_PREFIX_PATH: ${{ steps.curl.outputs.prefix }}
         run: |
           cmake -DBUILD_DIR=build/${{ matrix.preset }} -DMODE=prepare -P eng/check-dependencies.cmake
-          cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }} -DAZ_IOT_WITH_AZ_MQTT=ON
+          cmake --preset ${{ matrix.preset }} -DAZ_IOT_WITH_PAHO=${{ matrix.with_paho }} -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS=${{ matrix.sample_pipeline_hooks || 'OFF' }}
       - name: Build
         run: cmake --build --preset ${{ matrix.preset }} --config ${{ matrix.build_type }}
       # Every connecting sample is built for every adapter. Windows: az_mqtt has no
@@ -198,6 +206,11 @@ jobs:
           # push.
           AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
         run: ctest --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && format('-C {0}', matrix.build_type) || '' }} --output-on-failure
+      # The tpm2-tss backend test is skipped at configure time when tpm2-tss or swtpm is
+      # missing; this fails the leg instead of letting the test silently disappear.
+      - name: Require the tpm2-tss test (Linux)
+        if: runner.os == 'Linux'
+        run: ctest --preset ${{ matrix.preset }} -R '^az_iot_tests_sample_tpm_tss$' --no-tests=error --output-on-failure
 
   # The build legs above use OpenSSL 3.x: Linux the distribution's (3.0, the minimum supported),
   # Windows the runner's. These legs build the same tree against OpenSSL 4.x, from source via
@@ -294,7 +307,7 @@ jobs:
   conventions:
     name: coding conventions (c/src)
     needs: changes
-    if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
+    if: needs.changes.outputs.c == 'true' || needs.changes.outputs.ga_scope == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -315,6 +328,10 @@ jobs:
         run: >
           bash eng/check-race-suppressions.sh
           && bash eng/check-race-suppressions.sh --self-test
+      - name: Check GA scope
+        run: >
+          bash eng/check-ga-scope.sh
+          && bash eng/check-ga-scope.sh --self-test
       # Pinned: clang-format output differs between major versions, so an
       # unpinned binary would make the gate flap when the runner image moves.
       - name: Install clang-format
@@ -464,12 +481,13 @@ jobs:
           # Set for completeness. This step excludes the conformance suites
           # anyway (-E conformance): running a live-broker network suite under
           # valgrind is slow and its failures would be about the broker, not
-          # about memory.
+          # about memory. az_iot_tests_fixed_sizes_refuse_overrides is excluded
+          # too: it runs CMake and the compiler, not SDK code; other jobs run it.
           AZ_IOT_MQTT_BROKER_HOST: localhost
           AZ_IOT_MQTT_BROKER_PORT: '1883'
         working-directory: c/build/linux-gcc-debug
         run: |
-          ctest --output-on-failure -E conformance \
+          ctest --output-on-failure -E 'conformance|^az_iot_tests_fixed_sizes_refuse_overrides$' \
             --overwrite MemoryCheckCommand=/usr/bin/valgrind \
             --overwrite "MemoryCheckCommandOptions=--error-exitcode=1 --leak-check=full --show-leak-kinds=definite,possible --track-origins=yes --errors-for-leak-kinds=definite,possible" \
             -T memcheck
@@ -704,7 +722,7 @@ jobs:
         run: ctest --preset linux-gcc-debug --output-on-failure --timeout 1800
 
   # ---------------------------------------------------------------------------
-  # Software updates mbedTLS crypto adapter, once per maintained mbedTLS branch
+  # mbedTLS crypto adapter, once per maintained mbedTLS branch
   # (3.6 LTS, 4.1 LTS, latest). No distro ships these, so each leg builds the
   # pinned release. The known-answer suite also runs under valgrind.
   # ---------------------------------------------------------------------------
@@ -727,19 +745,19 @@ jobs:
         run: bash eng/install-mbedtls.sh ${{ matrix.mbedtls }} "$RUNNER_TEMP/mbedtls"
       - name: Configure
         run: >
-          cmake -S . -B build/su-mbedtls -G Ninja
+          cmake -S . -B build/crypto-mbedtls -G Ninja
           -DCMAKE_C_COMPILER=gcc -DCMAKE_BUILD_TYPE=Debug
           -DAZ_IOT_BUILD_TESTS=ON -DAZ_IOT_WITH_PAHO=OFF -DAZ_IOT_BUILD_SAMPLES=OFF
           -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/mbedtls"
       - name: Build
-        run: cmake --build build/su-mbedtls --target az_iot_tests_crypto_mbedtls az_iot_tests_crypto_openssl
+        run: cmake --build build/crypto-mbedtls --target az_iot_tests_crypto_mbedtls az_iot_tests_crypto_openssl
       - name: Test
-        run: ctest --test-dir build/su-mbedtls --output-on-failure -R '^az_iot_tests_crypto_' --no-tests=error
+        run: ctest --test-dir build/crypto-mbedtls --output-on-failure -R '^az_iot_tests_crypto_' --no-tests=error
       - name: Test under valgrind
         run: >
           valgrind --error-exitcode=1 --leak-check=full --show-leak-kinds=definite,possible
           --track-origins=yes --errors-for-leak-kinds=definite,possible
-          build/su-mbedtls/tests/az_iot_tests_crypto_mbedtls
+          build/crypto-mbedtls/tests/az_iot_tests_crypto_mbedtls
 
   # ---------------------------------------------------------------------------
   # az_mqtt adapter conformance, every capability it implements: proxy (the
@@ -829,7 +847,7 @@ jobs:
           -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_AZ_MQTT_TLS=${{ matrix.tls }}
           -DAZ_IOT_BUILD_CONFORMANCE_TESTS=ON -DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON
       - name: Build
-        run: cmake --build build/az-mqtt --target az_iot_conformance_az_mqtt_v3 az_iot_conformance_az_mqtt_v5 az_iot_az_mqtt_adapter_broker
+        run: cmake --build build/az-mqtt --target az_iot_conformance_az_mqtt_v3 az_iot_az_mqtt_adapter_broker
       - name: Conformance
         env:
           AZ_IOT_MQTT_BROKER_HOST: 127.0.0.1
@@ -898,13 +916,12 @@ jobs:
           cmake -DBUILD_DIR=build/isolation -DINSTALL_PREFIX="$RUNNER_TEMP/az-iot-sdk"
           "-DFORBID=paho;rust_mqtt;openssl;curl"
           -DEXPECT_SAMPLES=az_mqtt
-          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;http_download;hsm_pkcs11"
+          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;hsm_pkcs11"
           -P eng/check-dependencies.cmake
 
   # The OpenSSL-free Windows build documented in samples/README.md: az_mqtt over Schannel, no
   # Paho, no OpenSSL (the runner's is hidden from CMake) and no crypto backend. Not built: the
-  # samples deps-isolation lists, plus those that need a crypto backend (SAS key, software
-  # updates).
+  # samples deps-isolation lists, plus those that need a crypto backend (SAS key).
   windows-no-openssl:
     name: windows-msvc / az_mqtt + Schannel (no OpenSSL)
     needs: changes
@@ -931,7 +948,7 @@ jobs:
           cmake -DBUILD_DIR=build/windows-msvc-debug -DCONFIG=Debug
           "-DFORBID=paho;rust_mqtt;openssl"
           -DEXPECT_SAMPLES=az_mqtt
-          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;http_download;hsm_pkcs11;dps_sas_key;multi_step;reboot_resume;simulated_onboarding;simulated_regular;library_mode"
+          "-DEXPECT_SAMPLES_EXCEPT=custom_certificate_provider;dps_csr_managed;dps_persist_assignment;hub_renew;dps_sas_key_issued_cert;user_provided_sas_token;dps_tpm;hsm_pkcs11;dps_sas_key"
           -P eng/check-dependencies.cmake
 
   # Optimized build (so _FORTIFY_SOURCE is active) checked by
@@ -1112,7 +1129,7 @@ jobs:
             cmake -S tests/install -B "$AZ_IOT_BUILD-$cfg-consumer" -G Ninja \
               -DCMAKE_BUILD_TYPE="$cfg" "${vcpkg_args[@]}" \
               -DCMAKE_PREFIX_PATH="$prefix;$AZ_IOT_DEPS" \
-              -DAZ_IOT_EXPECTED_COMPONENTS="core;mqttv3;mqttv5;adapter_paho;crypto_openssl;certificate_provider_managed"
+              -DAZ_IOT_EXPECTED_COMPONENTS="core;mqttv3;adapter_paho;crypto_openssl;certificate_provider_managed"
             cmake --build "$AZ_IOT_BUILD-$cfg-consumer"
             ctest --test-dir "$AZ_IOT_BUILD-$cfg-consumer" --output-on-failure --no-tests=error
           done
@@ -1145,7 +1162,7 @@ jobs:
   # installed files must use the install-time prefix.
   # Every PR and main build checks that the removed Rust MQTT adapter is absent
   # from both the build and the installed package.
-  # The -shared variants build core, mqttv3 and mqttv5 as shared libraries.
+  # The -shared variants build core and mqttv3 as shared libraries.
   # -installed-deps uses azure-sdk-for-c and Paho from a prefix (AZ_IOT_USE_INSTALLED_*).
   # -no-paho builds without Paho: neither the build nor the package may reference
   # it, and asking the package for adapter_paho must fail.
@@ -1162,47 +1179,47 @@ jobs:
             name: linux-gcc
             shared: 'OFF'
             mbedtls: '3.6.7'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: ubuntu-24.04
             name: linux-gcc-shared
             shared: 'ON'
             mbedtls: '3.6.7'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           # azure-sdk-for-c and Paho from an install prefix (eng/install-deps.sh), not fetched.
           - os: ubuntu-24.04
             name: linux-gcc-installed-deps
             shared: 'OFF'
             mbedtls: '3.6.7'
             installed_deps: 'ON'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;adapter_paho;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc
             shared: 'OFF'
             mbedtls: ''
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc-shared
             shared: 'ON'
             mbedtls: ''
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc-openssl-4.1-static
             shared: 'OFF'
             mbedtls: ''
             openssl: '4.1.0'
-            components: core;mqttv3;mqttv5;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;adapter_paho;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
           - os: ubuntu-24.04
             name: linux-gcc-no-paho
             shared: 'OFF'
             mbedtls: '3.6.7'
             with_paho: 'OFF'
-            components: core;mqttv3;mqttv5;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
+            components: core;mqttv3;adapter_az_mqtt;crypto_openssl;crypto_mbedtls;certificate_provider_managed
           - os: windows-latest
             name: windows-msvc-no-paho
             shared: 'OFF'
             mbedtls: ''
             with_paho: 'OFF'
-            components: core;mqttv3;mqttv5;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
+            components: core;mqttv3;adapter_az_mqtt;crypto_openssl;certificate_provider_managed
     runs-on: ${{ matrix.os }}
     defaults:
       run:
@@ -1357,13 +1374,13 @@ jobs:
           ver=$(sed -n 's/^#define AZ_IOT_VERSION_STRING "\([^"]*\)".*/\1/p' \
             "$AZ_IOT_PREFIX/include/azure/iot/az_iot_version.h")
           test -n "$ver"
-          exe="$AZ_IOT_CONSUMER/install_test_mqttv5"
+          exe="$AZ_IOT_CONSUMER/install_test_mqttv3"
           if [ "$RUNNER_OS" = "Windows" ]; then
             deps=$(dumpbin -nologo -dependents "$exe.exe")
-            want="az_iot_core-$ver.dll az_iot_mqttv5-$ver.dll"
+            want="az_iot_core-$ver.dll az_iot_mqttv3-$ver.dll"
           else
             deps=$(readelf -d "$exe")
-            want="[libaz_iot_core.so.$ver] [libaz_iot_mqttv5.so.$ver]"
+            want="[libaz_iot_core.so.$ver] [libaz_iot_mqttv3.so.$ver]"
           fi
           for w in $want; do
             if ! grep -qiF -- "$w" <<< "$deps"; then
@@ -1467,7 +1484,7 @@ jobs:
       # actually had -- coverage computed over fewer tests than anyone thought.
       # Now that no suite decides at run time whether to participate, the count
       # is deterministic, so assert it exactly. Bump this when adding a suite.
-      EXPECTED_TESTS: '77'
+      EXPECTED_TESTS: '69'
     services:
       mosquitto:
         image: eclipse-mosquitto:2
@@ -1657,11 +1674,10 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # ESP-IDF builds: one job per ESP32 sample, target and profile, each through
-  # eng/esp-idf-build.sh (fails on any compiler warning). Secure profiles are
-  # signed with a key generated per build and discarded. qemu builds (OpenCores
+  # eng/esp-idf-build.sh (fails on any compiler warning). qemu builds (OpenCores
   # Ethernet) are also booted in QEMU and must get an IPv4 address. Every cell
   # builds with the newest ESP-IDF 6 release; the cells with `idf: v6.0` build
-  # with the samples' minimum, v6.0.
+  # with the sample's minimum, v6.0.
   # ---------------------------------------------------------------------------
   esp-idf:
     name: esp-idf / ${{ matrix.sample }} / ${{ matrix.target }} / ${{ matrix.profile }}${{ matrix.idf == 'v6.0' && ' / v6.0' || '' }}
@@ -1678,28 +1694,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        sample: [ software_update/esp32 ]
-        target: [ esp32, esp32c3, esp32s3, esp32c6 ]
-        profile: [ default, secure ]
-        # An axis, so the v6.0 entries below add jobs instead of changing the v6.1 ones.
-        idf: [ v6.1 ]
         include:
-          - sample: software_update/esp32
-            target: esp32
-            profile: secure_esp32_legacy
-          - sample: software_update/esp32
-            target: esp32
-            profile: secure_virtual_efuse
-          # QEMU emulates esp32, esp32s3 and esp32c3 only.
-          - sample: software_update/esp32
-            target: esp32
-            profile: qemu
-          - sample: software_update/esp32
-            target: esp32s3
-            profile: qemu
-          - sample: software_update/esp32
-            target: esp32c3
-            profile: qemu
           - { sample: unified/esp32, target: esp32, profile: default }
           - { sample: unified/esp32, target: esp32c3, profile: default }
           - { sample: unified/esp32, target: esp32s3, profile: default }
@@ -1707,8 +1702,7 @@ jobs:
           - { sample: unified/esp32, target: esp32, profile: qemu }
           - { sample: unified/esp32, target: esp32s3, profile: qemu }
           - { sample: unified/esp32, target: esp32c3, profile: qemu }
-          # The samples' minimum ESP-IDF.
-          - { sample: software_update/esp32, target: esp32, profile: default, idf: v6.0 }
+          # The sample's minimum ESP-IDF.
           - { sample: unified/esp32, target: esp32, profile: default, idf: v6.0 }
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -1802,3 +1796,29 @@ jobs:
           fi
           echo "::error::coverage gate failed (coverage-c: $coverage_result)"
           exit 1
+
+  # Single stable check name for rulesets to require: reports on every run and
+  # fails when any job failed or was cancelled (skipped jobs pass).
+  gate:
+    name: ci-c-gate
+    needs: [ changes, build, openssl-4, conventions, c-standards, valgrind, race-detector, asan-windows, asan-ubsan-linux, tsan-linux, crypto-mbedtls, az-mqtt, deps-isolation, windows-no-openssl, hardening-linux, hardening-windows, installed-deps-windows, install, subproject, coverage-c, esp-idf, esp-idf-gate, coverage-gate ]
+    if: always()
+    runs-on: ubuntu-24.04
+    # No checkout: the workflow default working-directory c/ would not exist.
+    defaults:
+      run:
+        working-directory: .
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check every job's result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$RESULTS"
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<< "$RESULTS")
+          if [ -n "$failed" ]; then
+            echo "::error::ci-c-gate: failed or cancelled: $failed"
+            exit 1
+          fi

@@ -6,7 +6,9 @@
 # Runs both software updates suites, per MQTT adapter, each adapter with its own
 # new device:
 #   az_iot_tests_e2e_su        the DPS channel, with no update offered
-#   az_iot_tests_e2e_su_offer  offered updates through the whole client
+#   az_iot_tests_e2e_su_offer  offered updates through the whole client, delta
+#                              ones on Linux also with the real delta processor
+#                              (installed by .github/actions/install-su-delta-processor)
 # then checks what the service recorded for each device and offer. The offers job
 # stages the offers once; the e2e-su job runs on Linux and on Windows (MSVC; Paho
 # over OpenSSL, az_mqtt over Schannel), each leg with its own devices.
@@ -36,38 +38,13 @@
 name: ci-c-e2e-adu
 
 on:
+  # releases/public-preview only: its nightly dispatcher (ci-c-public-preview-nightly.yml) runs it.
   workflow_dispatch:
+  # Pull requests: every one to releases/public-preview, so the gate job always
+  # reports there (never on main); the `changes` job decides whether the e2e
+  # legs run.
   pull_request:
-    paths:
-      - 'c/src/CMakeLists.txt'
-      - 'c/src/sources.cmake'
-      - 'c/src/core/**'
-      - 'c/src/features/su/**'
-      - 'c/inc/azure/iot/*.h'
-      - 'c/inc/azure/iot/adapters/**'
-      - 'c/adapters/paho/**'
-      - 'c/adapters/az_mqtt/**'
-      - 'c/adapters/crypto_openssl/**'
-      - 'c/adapters/cert_openssl/**'
-      - 'c/adapters/su/**'
-      - 'c/deps/az_mqtt/**'
-      - 'c/CMakeLists.txt'
-      - 'c/CMakePresets.json'
-      - 'c/cmake/**'
-      - 'c/tests/CMakeLists.txt'
-      - 'c/tests/support/**'
-      - 'c/tests/deps/**'
-      - 'c/tests/e2e/**'
-      - 'c/eng/e2e-shared-device.ps1'
-      - 'c/eng/e2e-trusted-ca.ps1'
-      - 'c/eng/collect-coverage.sh'
-      - 'c/eng/e2e-mqttv5-adr-namespace.ps1'
-      - '.github/workflows/ci-c-e2e-adu.yml'
-      - '.github/actions/install-curl-windows/**'
-      - '.github/actions/install-openssl/**'
-      - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
-  schedule:
-    - cron: '0 12 * * *'
+    branches: [ releases/public-preview ]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
@@ -77,12 +54,63 @@ permissions:
   contents: read
 
 jobs:
+  # On pull requests, whether the e2e legs run; every other event runs them.
+  changes:
+    name: detect changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # dorny/paths-filter reads the pull request files through the API.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.e2e == 'true' }}
+    steps:
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            e2e:
+              - 'c/src/CMakeLists.txt'
+              - 'c/src/sources.cmake'
+              - 'c/src/core/**'
+              - 'c/src/features/su/**'
+              - 'c/inc/azure/iot/*.h'
+              - 'c/inc/azure/iot/adapters/**'
+              - 'c/adapters/paho/**'
+              - 'c/adapters/az_mqtt/**'
+              - 'c/adapters/crypto_openssl/**'
+              - 'c/adapters/cert_openssl/**'
+              - 'c/adapters/su/**'
+              - 'c/eng/install-su-delta-processor.sh'
+              - 'c/eng/apt-install.sh'
+              - 'c/deps/az_mqtt/**'
+              - 'c/CMakeLists.txt'
+              - 'c/CMakePresets.json'
+              - 'c/cmake/**'
+              - 'c/tests/CMakeLists.txt'
+              - 'c/tests/support/**'
+              - 'c/tests/deps/**'
+              - 'c/tests/e2e/**'
+              - 'c/tests/unit/data/su_delta/**'
+              - 'c/eng/e2e-shared-device.ps1'
+              - 'c/eng/e2e-trusted-ca.ps1'
+              - 'c/eng/collect-coverage.sh'
+              - 'c/eng/e2e-mqttv5-adr-namespace.ps1'
+              - '.github/workflows/ci-c-e2e-adu.yml'
+              - '.github/actions/install-curl-windows/**'
+              - '.github/actions/install-openssl/**'
+              - '.github/actions/install-su-delta-processor/**'
+              - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
+
   # As in ci-c-e2e-mqttv5.yml: the namespace (and its Software Update link) can
   # drop out of Azure. Not on pull requests, which rely on the scheduled repair
   # (every 10 minutes) in ci-c-e2e-mqttv5-adr-namespace.yml.
+  # main has no software updates: a dispatch on main (the UI default) does nothing.
   adr-namespace:
     name: ADR namespace
-    if: ${{ github.event_name != 'pull_request' }}
+    if: ${{ github.event_name != 'pull_request' && github.ref != 'refs/heads/main' }}
     permissions:
       contents: read
       id-token: write
@@ -95,9 +123,10 @@ jobs:
   # Stages the standing offers once per run; each OS leg below reads them.
   offers:
     name: software updates offers
-    needs: adr-namespace
+    needs: [ changes, adr-namespace ]
     if: >-
-      ${{ !cancelled() &&
+      ${{ !cancelled() && needs.changes.outputs.run == 'true' &&
+          github.ref != 'refs/heads/main' &&
           (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&
@@ -106,7 +135,7 @@ jobs:
     permissions:
       contents: read
       id-token: write   # azure/login OIDC
-    timeout-minutes: 80
+    timeout-minutes: 140
     env:
       AZ_IOT_E2E_SU_SUBSCRIPTION_ID: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
       AZ_IOT_E2E_SU_RESOURCE_GROUP: ${{ vars.E2E_MQTTV5_SHARED_RESOURCE_GROUP }}
@@ -128,9 +157,9 @@ jobs:
           subscription-id: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
 
       # Seconds when the offers are staged. Otherwise typically about 11 min; at
-      # most 4 x (10 min import + 5 min job) + 10 min to Active + 5 min grace.
+      # most 8 x (10 min import + 5 min job) + 10 min to Active + 5 min grace.
       - name: Ensure standing offers
-        timeout-minutes: 75
+        timeout-minutes: 135
         shell: pwsh
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
@@ -153,9 +182,9 @@ jobs:
     permissions:
       contents: read
       id-token: write   # azure/login OIDC
-    # Above the sum of the step budgets (about 130 min), so every step's own
+    # Above the sum of the step budgets (about 200 min), so every step's own
     # timeout fires first.
-    timeout-minutes: 150
+    timeout-minutes: 220
     strategy:
       fail-fast: false
       matrix:
@@ -196,8 +225,17 @@ jobs:
       - name: Install build dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev
+          bash "$GITHUB_WORKSPACE/c/eng/apt-install.sh" ninja-build libcurl4-openssl-dev
           python3 -m pip install --upgrade 'gcovr==7.2'
+
+      # The real delta processor for the MICROSOFT_DELTA offer (POSIX only, as the
+      # reference microsoft/delta:1 handler).
+      - name: Install the software updates delta processor (Linux)
+        id: su-delta
+        if: runner.os == 'Linux'
+        timeout-minutes: 5
+        # actionlint 1.7.12 does not accept the $/ self-repository form yet.
+        uses: ./.github/actions/install-su-delta-processor # zizmor: ignore[self-repository]
 
       - name: Install libcurl (Windows)
         id: curl
@@ -211,8 +249,10 @@ jobs:
         shell: pwsh
         env:
           CMAKE_PREFIX_PATH: ${{ steps.curl.outputs.prefix }}
+          SU_DELTA_LIBRARY: ${{ steps.su-delta.outputs.library }}
         run: |
-          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E_SU=ON
+          $delta = if ($IsLinux) { '-DAZ_IOT_WITH_SU_DELTA=ON', "-DAZ_IOT_SU_DELTA_TEST_LIBRARY=$env:SU_DELTA_LIBRARY" } else { @() }
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E_SU=ON @delta
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake --build --preset $env:AZ_IOT_PRESET --target az_iot_tests_e2e_su az_iot_tests_e2e_su_offer az_iot_tests_e2e_su_az_mqtt az_iot_tests_e2e_su_offer_az_mqtt
 
@@ -265,10 +305,11 @@ jobs:
           $ca = ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $dir 'trusted-ca.pem')
           "SU_DEVICES=$dir", "AZ_IOT_E2E_SU_TRUSTED_CA=$ca" | Add-Content -Path $env:GITHUB_ENV
 
-      # Per adapter: e2e_su (10 min budget), then e2e_su_offer (30 min: 4 offers x
-      # (90 s check + 300 s workflow), plus setup), each on its own device.
+      # Per adapter: e2e_su (10 min budget), then e2e_su_offer (65 min: 8 offers x
+      # (90 s check + 300 s workflow), plus the scenarios without an offer and
+      # setup), each on its own device.
       - name: Run software updates e2e
-        timeout-minutes: 90
+        timeout-minutes: 160
         shell: pwsh
         env:
           AZ_IOT_CURL_PREFIX: ${{ steps.curl.outputs.prefix }}
@@ -282,7 +323,7 @@ jobs:
             $suffix = if ($adapter -eq 'paho') { '' } else { '_az_mqtt' }
             $device = $adapter.Replace('_', '-')
             foreach ($suite in @(@{ Name = 'su'; Device = $device; Timeout = 600 },
-                                 @{ Name = 'su_offer'; Device = "$device-offer"; Timeout = 1800 })) {
+                                 @{ Name = 'su_offer'; Device = "$device-offer"; Timeout = 3900 })) {
               $test = "az_iot_tests_e2e_$($suite.Name)$suffix"
               $env:AZ_IOT_E2E_SU_REG_ID = [Environment]::GetEnvironmentVariable(
                 'SU_REG_ID_' + $suite.Device.Replace('-', '_').ToUpperInvariant())
@@ -303,9 +344,11 @@ jobs:
         run: |
           Import-Module ./c/tests/e2e/scripts/SuE2E.psm1
           $failed = @()
+          # The reference microsoft/delta:1 handler is POSIX only.
+          $skip = if ($IsWindows) { @('MICROSOFT_DELTA') } else { @() }
           foreach ($regId in $env:SU_REG_ID_PAHO_OFFER, $env:SU_REG_ID_AZ_MQTT_OFFER) {
             Write-Host "== $regId"
-            try { Test-SuE2EOffers -StatePath $env:SU_OFFERS_STATE -RegistrationId $regId }
+            try { Test-SuE2EOffers -StatePath $env:SU_OFFERS_STATE -RegistrationId $regId -Skip $skip }
             catch { Write-Host "::error::$regId`: $_"; $failed += $regId }
           }
           if ($failed) { exit 1 }
@@ -332,3 +375,25 @@ jobs:
           name: coverage-trace-e2e-adu
           path: c/coverage/e2e-adu.json
           if-no-files-found: error
+
+  # Single stable check name for rulesets to require: reports on every run and
+  # fails when any job failed or was cancelled (skipped jobs pass).
+  gate:
+    name: ci-c-e2e-adu-gate
+    needs: [ changes, adr-namespace, offers, e2e-su ]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check every job's result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$RESULTS"
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<< "$RESULTS")
+          if [ -n "$failed" ]; then
+            echo "::error::ci-c-e2e-adu-gate: failed or cancelled: $failed"
+            exit 1
+          fi

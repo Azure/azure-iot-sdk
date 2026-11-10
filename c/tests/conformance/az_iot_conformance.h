@@ -11,18 +11,14 @@
  * any specific adapter implementation. To validate a new adapter, the
  * customer:
  *
- *   1. Builds their adapter as a static or shared library that exposes a
- *      function returning an `az_iot_mqtt_factory*` for one or both
- *      MQTT versions.
+ *   1. Builds their adapter as a static or shared library that exposes an
+ *      `az_iot_mqtt_adapter` building MQTT 3.1.1 clients.
  *   2. Links the conformance library (`az_iot_conformance`) and produces
- *      one harness exe per (version, role) tuple that calls
- *      `az_iot_conformance_run()` with the factory and the suite to run.
- *
- * The suite is split by MQTT version so adapters that only implement v3.1.1
- * or only v5 can still pass the relevant suite.
+ *      a harness exe that calls `az_iot_conformance_run()` with the adapter
+ *      and the suite to run.
  *
  * Tests in the suite are designed to be self-contained: each test creates a
- * fresh client from the factory, connects, exercises the iface, and tears
+ * fresh client with the adapter, connects, exercises the iface, and tears
  * down. State leakage between tests is therefore disallowed at the iface
  * level.
  *
@@ -51,8 +47,7 @@ extern "C"
    * for the given MQTT version. */
   typedef enum az_iot_conformance_suite
   {
-    AZ_IOT_CONFORMANCE_SUITE_V3_1_1 = 0,
-    AZ_IOT_CONFORMANCE_SUITE_V5 = 1
+    AZ_IOT_CONFORMANCE_SUITE_V3_1_1 = 0
   } az_iot_conformance_suite;
 
   /* Optional adapter capabilities (D8 and later).
@@ -142,14 +137,7 @@ extern "C"
      * Signature peripheral behind a PSA driver). Proved with
      * az_iot_conformance_options client_key_psa_id + client_cert_path, by a
      * handshake and a reconnect with the same key. */
-    AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA = 1u << 5,
-
-    /* MQTT 5 only: a refused CONNACK's Reason String is reported on the failed
-     * AZ_IOT_MQTT_EVT_CONNECTED. Needs nothing here. Not declaring it does NOT
-     * mean untested: the baseline then requires the event to carry no Reason
-     * String rather than a wrong one. The bundled Paho adapter does not declare
-     * it -- Paho passes none of a refused CONNACK's properties. */
-    AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING = 1u << 6
+    AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_PSA = 1u << 5
   } az_iot_conformance_capability;
 
   typedef struct az_iot_conformance_options
@@ -215,7 +203,8 @@ extern "C"
     uint32_t client_key_psa_id;
   } az_iot_conformance_options;
 
-  /* Run the conformance suite for `suite_kind` against the given factory.
+  /* Run the conformance suite for `suite_kind` against the given adapter, which
+   * builds each client of the suite's MQTT version in a heap workspace.
    * Returns:
    *   0  on success: all tests passed and every declared capability was
    *      exercised -- UNLESS AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN=1 was set in
@@ -233,7 +222,9 @@ extern "C"
    * Equivalent to az_iot_conformance_run_with_options() with no capabilities
    * declared. An adapter that implements an optional feature should call that
    * instead, or the suite cannot hold it to the feature's contract. */
-  int az_iot_conformance_run(az_iot_conformance_suite suite_kind, az_iot_mqtt_factory* factory);
+  int az_iot_conformance_run(
+      az_iot_conformance_suite suite_kind,
+      const az_iot_mqtt_adapter* adapter);
 
   /* Result of az_iot_conformance_custody_material_state(): either NONE,
    * or PARTIAL, or the OR of the route bits whose material is complete. */
@@ -275,20 +266,11 @@ extern "C"
       const char* why,
       const char* allow_value);
 
-  /* Internal, exposed for the suite's own tests.
-   *
-   * Whether @p suite_kind exercises every capability in @p capabilities (bitwise OR of
-   * az_iot_conformance_capability): AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING only in
-   * AZ_IOT_CONFORMANCE_SUITE_V5. Nonzero when it does. */
-  int az_iot_conformance_capabilities_fit_suite(
-      az_iot_conformance_suite suite_kind,
-      uint32_t capabilities);
-
   /* As above, plus the adapter's declared capabilities. `options` may be NULL,
    * which means the same as declaring nothing. */
   int az_iot_conformance_run_with_options(
       az_iot_conformance_suite suite_kind,
-      az_iot_mqtt_factory* factory,
+      const az_iot_mqtt_adapter* adapter,
       const az_iot_conformance_options* options);
 
 #ifdef __cplusplus

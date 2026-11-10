@@ -48,7 +48,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             foreach (string connectionStringKeyValuePair in connectionStringKeyValuePairs)
             {
                 string[] keyAndValue = connectionStringKeyValuePair.Split("=");
-                if (keyAndValue[0].Equals("HostName"))
+                if (keyAndValue[0].Equals("HostName", StringComparison.Ordinal))
                 {
                     return keyAndValue[1];
                 }
@@ -60,7 +60,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
         public const int TestTimeoutMilliseconds = 60 * 1000;
 
-        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default)
+        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, TimeSpan? certificateValidity = null, CancellationToken cancellationToken = default)
         {
             if (!testAgainstClassicHub)
             {
@@ -74,7 +74,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             string certId = Guid.NewGuid().ToString();
             string certPath = $"./{certId}.cer";
             string pfxPath = $"./{certId}.pfx";
-            CreateTestCertificates(pfxPath, certPath, deviceId);
+            CreateTestCertificates(pfxPath, certPath, deviceId, certificateValidity);
 
             X509Certificate2 certificate = X509CertificateLoader.LoadCertificateFromFile(certPath);
             X509Certificate2 pfx = X509CertificateLoader.LoadPkcs12FromFile(pfxPath, TestCertificatesPassword);
@@ -174,11 +174,26 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
         /// Creates a symmetric-key device using an individual enrollment, or the configured certificate-management
         /// enrollment group when a CSR private key is supplied. The caller owns the private key.
         /// </summary>
+        /// <param name="initialTwinState">
+        /// The initial twin of the individual enrollment, which DPS applies to the device it creates in IoT hub. Not supported
+        /// with <paramref name="issuedCertificatePrivateKey"/>, whose shared enrollment group this helper doesn't own.
+        /// </param>
+        /// <param name="beforeConnect">
+        /// Called with the connection client before it provisions and connects, for example to construct feature clients
+        /// so that no event raised upon connecting is missed.
+        /// </param>
         public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
             ConnectionClientOptions? options = null,
-            CancellationToken cancellationToken = default,
-            AsymmetricAlgorithm? issuedCertificatePrivateKey = null)
+            AsymmetricAlgorithm? issuedCertificatePrivateKey = null,
+            Microsoft.Azure.Devices.Provisioning.Service.TwinState? initialTwinState = null,
+            Action<ConnectionClient>? beforeConnect = null,
+            CancellationToken cancellationToken = default)
         {
+            if (issuedCertificatePrivateKey != null && initialTwinState != null)
+            {
+                throw new ArgumentException("An initial twin needs an individual enrollment, which certificate signing doesn't use.", nameof(initialTwinState));
+            }
+
             string registrationId = Guid.NewGuid().ToString();
             byte[] symmetricKey;
             IndividualEnrollment? individualEnrollment = null;
@@ -199,7 +214,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 symmetricKey = RandomNumberGenerator.GetBytes(32);
                 string encodedSymmetricKey = Convert.ToBase64String(symmetricKey);
                 Attestation attestation = new SymmetricKeyAttestation(encodedSymmetricKey, encodedSymmetricKey);
-                individualEnrollment = new(registrationId, attestation);
+                individualEnrollment = new(registrationId, attestation)
+                {
+                    InitialTwinState = initialTwinState,
+                };
                 await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(individualEnrollment, cancellationToken);
             }
 
@@ -217,6 +235,8 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             try
             {
+                beforeConnect?.Invoke(connectionClient);
+
                 ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
                     async () => await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication, cancellationToken: cancellationToken),
                     cancellationToken);
@@ -237,12 +257,12 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             }
         }
 
-        public static void CreateTestCertificates(string pfxPath, string certPath, string deviceId)
+        public static void CreateTestCertificates(string pfxPath, string certPath, string deviceId, TimeSpan? validity = null)
         {
             var ecdsa = ECDsa.Create(); // generate asymmetric key pair
             var rsa = RSA.Create();
             var req = new CertificateRequest($"cn={deviceId}, O=TEST, C=US", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
-            var cert = req.CreateSelfSigned(DateTimeOffset.Now, DateTimeOffset.Now.AddHours(1));
+            var cert = req.CreateSelfSigned(DateTimeOffset.Now, DateTimeOffset.Now.Add(validity ?? TimeSpan.FromHours(1)));
 
             // Create PFX (PKCS #12) with private key
             File.WriteAllBytes(pfxPath, cert.Export(X509ContentType.Pfx, TestCertificatesPassword));

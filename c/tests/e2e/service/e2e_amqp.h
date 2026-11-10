@@ -37,6 +37,8 @@ extern "C"
 #define E2E_AMQP_WATCHED_MAX 4
 #define E2E_AMQP_WATCHED_NEEDLE_MAX 192
 #define E2E_AMQP_CAPTURE_FILTER_MAX 192
+/* Device IDs are at most 128 characters. */
+#define E2E_AMQP_DEVICE_FILTER_MAX 129
 /* Longest a telemetry watcher may take to connect, from its first or restarted setup step. */
 #define E2E_AMQP_SETUP_TIMEOUT_S 60
 /* Largest message one partition receiver reassembles (heap, per partition): past the 1 MB
@@ -113,6 +115,8 @@ extern "C"
     int captured_next; /* ring slot the next message is written to */
     uint32_t received_count; /* data messages received since begin, captured or not */
     char capture_filter[E2E_AMQP_CAPTURE_FILTER_MAX]; /* empty: capture every message */
+    /* Empty, or the only device whose messages are watched and captured. */
+    char device_filter[E2E_AMQP_DEVICE_FILTER_MAX];
     bool eviction_reported; /* the first eviction from the ring has been logged */
 
     /** @brief Needles matched against every full body on arrival; a match latches until end. */
@@ -165,6 +169,15 @@ extern "C"
    * @return false if @p capture_filter is too long; the filter is then unchanged.
    */
   bool e2e_amqp_telemetry_set_capture_filter(e2e_amqp_telemetry* t, const char* capture_filter);
+
+  /**
+   * @brief Watches and captures only the messages the hub received from @p device_id (their
+   * `iothub-connection-device-id` annotation); the others are accepted and ignored.
+   *
+   * @param[in] device_id Device ID; `NULL` or empty: every device.
+   * @return false if @p device_id is too long; the filter is then unchanged.
+   */
+  bool e2e_amqp_telemetry_set_device_filter(e2e_amqp_telemetry* t, const char* device_id);
 
   /**
    * @brief Counts a received data body and, if it contains the capture filter, captures it into
@@ -302,7 +315,7 @@ extern "C"
      * every disposition and let a failing test report them. */
     int delivered_count; /* deliveries the endpoint handed us, whatever their shape */
     int released_count; /* released because they name another device */
-    int stale_count; /* another device's, too old to have a watcher: accepted */
+    int unwatched_count; /* another device's that no watcher waits for: accepted */
     int unparsed_count; /* body missing or not a DATA body */
 
     uint8_t incoming_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
@@ -353,7 +366,7 @@ extern "C"
       int* out_delivered,
       int* out_captured,
       int* out_released,
-      int* out_stale,
+      int* out_unwatched,
       int* out_unparsed);
 
   /* Detach the receiver and close the connection (best-effort). */

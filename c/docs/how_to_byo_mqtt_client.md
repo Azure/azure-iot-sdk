@@ -5,17 +5,14 @@
 
 This guide is for a customer (or platform team) who wants to plug a non-default MQTT client library into `azure-iot-sdk`. The SDK ships with an Eclipse Paho-C adapter, but the MQTT layer is fully pluggable: anything that can implement the `az_iot_mqtt_iface` vtable can be dropped in.
 
-If you can produce a static or shared library that exposes one factory function per MQTT version you support, you are done. The conformance test suite ([tests/conformance/](../tests/conformance/)) verifies that your adapter is plug-compatible.
+If you can produce a static or shared library that exposes an `az_iot_mqtt_adapter` (a `get_workspace_size()` and an `init()` that builds a client of the MQTT version asked in application memory), you are done. The conformance test suite ([tests/conformance/](../tests/conformance/)) verifies that your adapter is plug-compatible.
 
 ## Prerequisites
 
-- Your MQTT client must be able to speak at least one of:
-  - **MQTT v3.1.1**, or
-  - **MQTT v5**.
-- Implementations may speak both; ship one factory per version.
+- Your MQTT client must be able to speak **MQTT v3.1.1**.
 - C99 source-level compatibility for the adapter glue (the underlying client may be C++/Rust/etc., as long as it exposes a C ABI).
 
-The SDK internally determines which MQTT version is required for each Azure service (DPS uses v3.1.1, MQTTv5 uses v5). Your adapter only needs to declare the version it supports — the SDK handles the rest.
+The SDK internally determines which MQTT version is required for each Azure service (DPS and the IoT Hub use v3.1.1) and asks your adapter's `init()` for a client of that version. Refuse a version you do not support with `AZ_IOT_ERR_NOT_SUPPORTED`.
 
 ## Files you need to write
 
@@ -27,7 +24,7 @@ adapters/mymqtt/
 └── az_iot_mqtt_mymqtt.c    # implements az_iot_mqtt_iface (and pulls in your client lib)
 
 inc/azure/iot/adapters/
-└── az_iot_adapter_mymqtt.h # public factory builders (one per version)
+└── az_iot_adapter_mymqtt.h # public az_iot_mymqtt_get_adapter()
 ```
 
 You can take [adapters/paho/](../adapters/paho/) (a client with its own I/O thread) or
@@ -39,79 +36,54 @@ The contract is in [inc/azure/iot/az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_m
 
 | Slot              | Required behavior                                                                                    |
 |-------------------|------------------------------------------------------------------------------------------------------|
-| `connect`         | Initiate CONNECT to `opts->host:opts->port` with `client_id`. Non-blocking. Result via inbound `EVT_CONNECTED`. For v5: honor `clean_start`, `session_expiry_seconds`, `user_properties`, and LWT fields from `connect_options`. |
-| `disconnect`      | Initiate DISCONNECT. Non-blocking. Eventually emits `EVT_DISCONNECTED` with status `AZ_IOT_OK` (only this completion uses `AZ_IOT_OK`; a lost connection or a server DISCONNECT reports an error). For v5: carry `disconnect_reason_code` from the options the session was connected with. |
+| `connect`         | Initiate CONNECT to `opts->host:opts->port` with `client_id`. Non-blocking. Result via inbound `EVT_CONNECTED`. Honor `clean_start` and the LWT fields from `connect_options`. |
+| `disconnect`      | Initiate DISCONNECT. Non-blocking. Eventually emits `EVT_DISCONNECTED` with status `AZ_IOT_OK` (only this completion uses `AZ_IOT_OK`; a lost connection reports an error). |
 | `subscribe`       | Send SUBSCRIBE. Return `out_packet_id` synchronously; emit `EVT_SUBSCRIBE_ACK` when SUBACK arrives.   |
 | `unsubscribe`     | Send UNSUBSCRIBE. Same pattern as `subscribe`. Emit `EVT_UNSUBSCRIBE_ACK`.                            |
-| `publish`         | Send PUBLISH. For QoS>0, emit `EVT_PUBLISH_ACK` when PUBACK arrives. For v5: set `content_type`, `response_topic`, `correlation_data`, and `user_properties` from `az_iot_mqtt_message` on the outbound packet. |
+| `publish`         | Send PUBLISH. For QoS>0, emit `EVT_PUBLISH_ACK` when PUBACK arrives. |
 | `process_loop`    | Drive any pending I/O and dispatch queued inbound events on the calling thread.                       |
 | `set_inbound_cb`  | Register the callback the SDK uses to receive `az_iot_mqtt_event` notifications.                |
 | `destroy`         | Tear down the client. The SDK may call this even on a never-connected client.                        |
 
-### MQTT v5 property handling (critical for HUB_MQTT_V5)
+**On CONNACK** — populate `session_present` in the `az_iot_mqtt_event` delivered with `EVT_CONNECTED`: a session connected with Clean Session 0 has no other way to learn whether the broker resumed it.
 
-The SDK's feature clients (direct methods, twin, telemetry) use MQTT v5 properties extensively when connected to an MQTTv5 IoT Hub. Your v5 adapter **must**:
-
-**On outbound PUBLISH** — propagate these `az_iot_mqtt_message` fields as MQTT v5 properties:
-- `correlation_data` / `correlation_data_len` → Correlation Data property
-- `response_topic` → Response Topic property
-- `content_type` → Content Type property
-- `user_properties` → User Property pairs: read every one with `az_iot_mqtt_user_properties_next()` (UTF-8, not NUL-terminated: use the lengths) and send them in order. The view is valid only during `publish()`; serialize or copy during the call. There is no count limit; if the packet cannot carry them, fail the publish (`AZ_IOT_ERR_NOT_ENOUGH_SPACE`), never drop some.
-**On inbound MESSAGE** — extract these MQTT v5 properties from the received packet and populate the corresponding `az_iot_mqtt_message` fields before delivering `EVT_MESSAGE`:
-- Correlation Data → `correlation_data` / `correlation_data_len`
-- Response Topic → `response_topic`
-- Content Type → `content_type`
-- User Properties → `user_properties`, an `az_iot_mqtt_user_properties` view. Implement its `next` over your client's own storage (the received bytes, a property list), so nothing is copied and none is dropped; or, if your client already copies them into NUL-terminated pairs, use `az_iot_mqtt_user_properties_from_array()`. It must stay valid until your event callback returns. A malformed property makes `next` return `AZ_IOT_ERR_PROTOCOL`.
-
-If any property is absent in the packet, set the pointer to NULL and the length to 0; leave `user_properties` zero-initialized for none.
-
-A `next` over a list your client keeps (`my_prop` is its element type):
-
-```c
-static az_iot_result my_next(const void* src, size_t len, size_t* cursor,
-                             az_iot_mqtt_user_property_view* out)
-{
-  const my_prop* list = (const my_prop*)src;
-  if (*cursor >= len) { return AZ_IOT_ERR_NOT_FOUND; }
-  const my_prop* p = &list[(*cursor)++];
-  out->key = p->key;     out->key_len = p->key_len;     /* never NULL */
-  out->value = p->value; out->value_len = p->value_len; /* never NULL */
-  return AZ_IOT_OK;
-}
-/* inbound: msg.user_properties = (az_iot_mqtt_user_properties){ my_next, list, count }; */
-```
-
-**On CONNACK** — populate `session_present` in the `az_iot_mqtt_event` delivered with `EVT_CONNECTED`. MQTT 3.1.1 carries the flag too, so a v3.1.1 adapter must populate it as well: a session connected with Clean Session 0 has no other way to learn whether the broker resumed it.
-
-### Session terms: Clean Start, Session Expiry, Will and the DISCONNECT reason
+### Session terms: Clean Session and Will
 
 The SDK decides these per session role and hands them to `connect`. An adapter that drops any of them still connects, publishes and subscribes normally, so nothing except the wire shows the difference — which is why the conformance suite decodes the CONNECT and the DISCONNECT and asserts on them directly.
 
 - `username`, `password` — valid only while `connect()` runs. Copy or serialize them before
   returning: the SDK wipes the password (a SAS token) as soon as `connect()` returns and reuses
   its buffer. Conformance: `connect_does_not_read_credentials_after_returning`.
-- `clean_start` — the v5 Clean Start flag. On v3.1.1 map it onto Clean Session; do **not** hardcode either value.
-- `session_expiry_seconds` — the v5 Session Expiry Interval property. **v5 only.** A v3.1.1 CONNECT has no property field, so a v3.1.1 adapter must send nothing for it.
-- `lwt` — set the Will topic, payload, QoS and retain flag on the CONNECT when `lwt.topic` is non-NULL. `lwt.will_delay_seconds` is the v5 Will Delay Interval property and is **v5 only**; a v3.1.1 adapter ignores it.
-- `disconnect_reason_code` — the reason code to put in the MQTT 5 DISCONNECT when `disconnect()` is later called on this session. It is an *additive* field on `az_iot_mqtt_connect_options`, not a parameter of `disconnect()`, so the vtable every adapter implements is unchanged and an adapter written before this field never reads it (see [struct_versioning.md](struct_versioning.md)). `0` (`AZ_IOT_MQTT_DISCONNECT_NORMAL`) is what a zero-initialized struct yields and is the orderly close that discards the Will; `0x04` (`AZ_IOT_MQTT_DISCONNECT_WITH_WILL_MESSAGE`) asks the broker to publish the Will anyway. **v5 only** — MQTT 3.1.1 has no DISCONNECT reason codes, and a v3.1.1 adapter must ignore the field rather than invent a byte for it.
+- `clean_start` — map it onto Clean Session; do **not** hardcode either value.
+- `lwt` — set the Will topic, payload, QoS and retain flag on the CONNECT when `lwt.topic` is non-NULL.
+**On a rejected CONNACK** — set `status` from `az_iot_mqtt_connack_result(version, connack_code)` rather than reporting a blanket `AZ_IOT_ERR_MQTT`. Pass the code exactly as it came off the wire (a v3.1.1 return code); pass a negative value for failures your client raised itself, such as a refused socket or a TLS handshake error. The helper decides whether the broker refused the *identity* (`AZ_IOT_ERR_IDENTITY_REJECTED`) or merely failed to carry the *connection* (`AZ_IOT_ERR_MQTT`). The SDK retries an identity refusal on `identity_recovery` (and, in `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode, re-provisions through DPS), and a connection failure on `reconnection_policy`. An adapter that flattens the two leaves the device on the wrong retry schedule, and unable to follow a DPS hub reassignment in `REPROVISION` mode.
 
-**On a rejected CONNACK** — set `status` from `az_iot_mqtt_connack_result(version, connack_code)` rather than reporting a blanket `AZ_IOT_ERR_MQTT`. Pass the code exactly as it came off the wire (a v3.1.1 return code, or a v5 reason code); pass a negative value for failures your client raised itself, such as a refused socket or a TLS handshake error. The helper decides whether the broker refused the *identity* (`AZ_IOT_ERR_IDENTITY_REJECTED`) or merely failed to carry the *connection* (`AZ_IOT_ERR_MQTT`). The SDK retries an identity refusal on `identity_recovery` (and, in `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode, re-provisions through DPS), and a connection failure on `reconnection_policy`. An adapter that flattens the two leaves the device on the wrong retry schedule, and unable to follow a DPS hub reassignment in `REPROVISION` mode.
+**On a refused SUBACK** — set `status` from `az_iot_mqtt_suback_result(version, suback_code)`, for the same reason. Pass the code exactly as it came off the wire: a v3.1.1 SUBACK return code (`0x00`–`0x02` granted QoS, `0x80` Failure); pass a negative value for failures your client raised itself. The helper decides whether the broker refused the *filter* in a way a retry cannot change (`AZ_IOT_ERR_SUBSCRIPTION_REFUSED` — `0x80`) or the request failed some other way (`AZ_IOT_ERR_MQTT`). That distinction is what lets connection policy separate a filter that will be refused identically next time from one that failed because the service was briefly unwell; an adapter that flattens them denies it the choice. **A granted QoS lower than the one requested is a success, not a refusal** — never report it as an error.
 
-**On a refused SUBACK** — set `status` from `az_iot_mqtt_suback_result(version, suback_code)`, for the same reason. Pass the code exactly as it came off the wire: a v3.1.1 SUBACK return code (`0x00`–`0x02` granted QoS, `0x80` Failure) or a v5 reason code; pass a negative value for failures your client raised itself. The helper decides whether the broker refused the *filter* in a way a retry cannot change (`AZ_IOT_ERR_SUBSCRIPTION_REFUSED` — `0x87` Not authorized, `0x8F` Topic Filter invalid) or hit something transient (`AZ_IOT_ERR_MQTT` — `0x97` Quota exceeded, `0x80` Unspecified error). That distinction is what lets connection policy separate a filter that will be refused identically next time from one that failed because the service was briefly unwell; an adapter that flattens them denies it the choice. **A granted QoS lower than the one requested is a success, not a refusal** — never report it as an error.
-
-**On a PUBACK** — set `status` from `az_iot_mqtt_puback_result(version, puback_code)`. Pass the v5 reason code as it came off the wire, `0` for a v3.1.1 PUBACK, and a negative value for failures your client raised itself. Any v5 code below `0x80` is a success, including `0x10` No matching subscribers. A refusal the broker will repeat (`0x87` Not authorized, `0x90` Topic Name invalid, `0x99` Payload format invalid) becomes `AZ_IOT_ERR_PUBLISH_REFUSED`, as does `0x95` Packet too large, which is not a PUBACK code on the wire but may be passed for a publish your client drops as over the server's Maximum Packet Size; `0x97` Quota exceeded becomes `AZ_IOT_ERR_BUSY`; anything else stays `AZ_IOT_ERR_MQTT`. Feature clients pass this status unchanged to the application's publish callback, so flattening it to `AZ_IOT_ERR_MQTT` makes a refusal look temporary.
+**On a PUBACK** — set `status` from `az_iot_mqtt_puback_result(version, puback_code)`. Pass `0` for a v3.1.1 PUBACK (it carries no code), and a non-zero value for a publish your client failed itself; the helper maps `0` to `AZ_IOT_OK` and anything else to `AZ_IOT_ERR_MQTT`. Feature clients pass this status unchanged to the application's publish callback.
 
 **On any acknowledgement that carries a code** — also set `protocol_code` on the `az_iot_mqtt_event` to that verbatim wire value, and leave it 0 only when there is none. A non-zero value is always the wire code, including the granted QoS on a SUBACK that succeeded. `status` is what the SDK branches on; `protocol_code` is what a log line and a support engineer read, and it is the only way a code newer than this SDK survives the trip into C. Do not substitute your own numbering for it.
 
-**On a v5 PUBACK with a Reason String** — set `reason_string` and `reason_string_len` to it, verbatim; an empty one is non-NULL with length 0, an absent one NULL. Required for a reason code of `0x80` or above, optional below it. It must stay valid until the callback returns; an adapter that delivers from another thread copies it (Paho's adapter does). Applications receive it in their publish callback: it is often the only account of why the hub refused a message. Conformance: `a_refused_publish_is_reported`, `a_refused_publish_with_an_empty_reason_string_is_reported`.
+**On an UNSUBACK** — raise `AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK` with the packet id `unsubscribe()` returned. Conformance: `publish_subscribe_roundtrip`.
 
-**On a v5 server DISCONNECT or refused CONNACK with a Reason String** — set `reason_string` and `reason_string_len` the same way on the `AZ_IOT_MQTT_EVT_DISCONNECTED` or failed `AZ_IOT_MQTT_EVT_CONNECTED` event. Required for a server DISCONNECT; for a refused CONNACK, required when your MQTT library exposes it (Paho's does not). Both events are often raised after the packet's buffer is reused, so copy the string; keeping its first 128 bytes is enough, since that is all the SDK retains. The connection client reports it to the application as `az_iot_connection_state_event.error->message`. Conformance: `a_server_disconnect_reason_string_is_reported`, `a_server_disconnect_empty_reason_string_is_reported`, and, for `AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING`, `a_refused_connack_reason_string_is_reported` and `a_refused_connack_empty_reason_string_is_reported`.
+MQTT 3.1.1 packets carry no Reason String: leave `reason_string` NULL.
 
-**On a v5 SUBACK refusal with a Reason String** — set `reason_string` and `reason_string_len` on the failed `AZ_IOT_MQTT_EVT_SUBSCRIBE_ACK`, as for a PUBACK: required for a reason code of `0x80` or above. Conformance: `a_refused_subscribe_reason_string_is_reported`, `a_refused_subscribe_empty_reason_string_is_reported`.
+### Resumed sessions: no resend
 
-**On an UNSUBACK** — raise `AZ_IOT_MQTT_EVT_UNSUBSCRIBE_ACK` with the packet id `unsubscribe()` returned, in both versions. Conformance: `publish_subscribe_roundtrip`.
+Each session gets a fresh client (`create()` or `init()`), and the SDK destroys it when the session
+ends, even when the next connect resumes the broker session. An adapter therefore need not resend
+unacknowledged PUBLISH or PUBREL packets on a resumed session, and the SDK never asks it to. At the
+session end the SDK completes the publishes still awaiting a PUBACK with
+`AZ_IOT_ERR_NOT_CONNECTED`, and the layer above (the application, or the SDK for its own messages)
+sends them again with new packet identifiers. This deliberately deviates from MQTT section 4.4,
+`MQTT-4.4.0-1`: see [Connecting](connecting.md#resumed-sessions-and-retries).
 
-A v3.1.1 adapter may ignore all v5-only fields (they will always be NULL/zero when passed to `publish`).
+- `az_iot_mqtt_limits.message_store_size` is memory for the copies your MQTT library needs while a
+  session outlives the connection. az_mqtt requires it for QoS 1 on such a session: with 0, its
+  `validate_limits_for_session_usage()` makes the connection client's `init()` fail with
+  `AZ_IOT_ERR_INVALID_ARG`, and its connect refuses such a session with
+  `AZ_IOT_ERR_NOT_SUPPORTED`. When it is full, return `AZ_IOT_ERR_BUSY` from `publish`.
+- The SDK never passes a QoS 2 PUBLISH to `publish`.
 
 ### The single-thread contract (important)
 
@@ -154,38 +126,72 @@ Two obligations, and only one of them is a choice.
 
 **Non-extractable keys.** If `tls.client_key_uri`, `tls.client_key_psa_id` or `tls.sign` is set, the caller is asking you to authenticate with a private key that cannot be read. Honour it, or fail the connect with `AZ_IOT_ERR_NOT_SUPPORTED`. What you must never do is connect *without* the credential you were asked to use — the conformance suite checks this whether or not you claim the feature. See 4.4.
 
-## Step 2 — Implement the factory
+## Step 2 — Implement the adapter
 
-A factory is just a struct + a `create` function:
+An adapter is a constant struct of two functions and an optional third (see `az_iot_mqtt_adapter` in [az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_mqtt_iface.h)). The application lends the connection client one workspace, and the connection client builds each session's client in it with `init()`; it runs one session, so one client, at a time:
 
 ```c
-typedef struct mymqtt_factory_state_tag {
-    az_iot_mqtt_factory public_;
-    /* ... your state ... */
-} mymqtt_factory_state_t;
-
-static az_iot_mqtt_client* mymqtt_factory_create(void* factory_ctx)
+/* get_workspace_size(): bytes for the largest client this adapter builds with limits, over the
+ * MQTT versions it supports; 0 when limits are invalid. */
+static size_t mymqtt_get_workspace_size(const az_iot_mqtt_limits* limits)
 {
-    mymqtt_factory_state_t* st = factory_ctx;
-    /* allocate, fill iface_storage, return &client->base */
+    if (limits == NULL || limits->send_buffer_size == 0 /* ... */)
+    {
+        return 0;
+    }
+    return sizeof(mymqtt_client) + 15u /* any alignment */ + limits->send_buffer_size
+        + limits->receive_buffer_size /* + in-flight entries, message store, connect strings */;
 }
 
-az_iot_mqtt_factory* az_iot_mymqtt_factory_create_v3_1_1(void)
+/* init(): build a client of mqtt_version in workspace, which stays valid until the client is
+ * destroyed. No allocation is needed: carve every buffer out of the workspace. */
+static az_iot_result mymqtt_init(
+    az_iot_mqtt_version mqtt_version,
+    const az_iot_mqtt_limits* limits,
+    uint8_t* workspace,
+    size_t workspace_size,
+    az_iot_mqtt_client** out_client)
 {
-    mymqtt_factory_state_t* st = calloc(1, sizeof(*st));
-    st->public_.version = AZ_IOT_MQTT_VERSION_3_1_1;
-    st->public_.create = mymqtt_factory_create;
-    st->public_.factory_ctx = st;
-    return &st->public_;
+    if (mqtt_version != AZ_IOT_MQTT_VERSION_3_1_1)
+    {
+        return AZ_IOT_ERR_NOT_SUPPORTED;
+    }
+    if (workspace_size < mymqtt_get_workspace_size(limits))
+    {
+        return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+    }
+    /* align, zero, fill iface, place buffers; *out_client = &client->base */
+    return AZ_IOT_OK;
 }
 
-void az_iot_mymqtt_factory_destroy(az_iot_mqtt_factory* factory)
+/* validate_limits_for_session_usage() (optional, may be NULL): refuse limits that cannot serve the
+ * sessions the connection client will run, so its init() fails instead of every connect. */
+static az_iot_result mymqtt_validate_limits_for_session_usage(
+    const az_iot_mqtt_limits* limits,
+    const az_iot_mqtt_session_usage* usage)
 {
-    free(factory); /* NULL: no-op */
+    if (limits == NULL || usage == NULL)
+    {
+        return AZ_IOT_ERR_INVALID_ARG;
+    }
+    if (usage->session_outlives_connection && limits->message_store_size == 0)
+    {
+        /* log why */
+        return AZ_IOT_ERR_INVALID_ARG;
+    }
+    return AZ_IOT_OK;
 }
+
+static const az_iot_mqtt_adapter s_mymqtt_adapter = {
+    .get_workspace_size = mymqtt_get_workspace_size,
+    .init = mymqtt_init,
+    .validate_limits_for_session_usage = mymqtt_validate_limits_for_session_usage,
+};
+
+const az_iot_mqtt_adapter* az_iot_mymqtt_get_adapter(void) { return &s_mymqtt_adapter; }
 ```
 
-The factory struct is minimal: it advertises the MQTT **version** it supports and provides a `create` function that produces clients for that version. The SDK internally knows which version is required for each Azure service and selects the appropriate registered factory at connection time. The application owns the factory and releases it with your destroy function; the connection client only borrows it.
+The client's `destroy()` releases what the client holds and wipes what it copied (credentials included), but frees nothing: the workspace is the application's again once it returns. `az_iot_mqtt_limits` carries the sizes the application chose (send and receive buffers, requests in flight, message store, connect strings); honour the ones that apply to your client and check the others are valid. A client library that allocates its own buffers (as Paho does) may keep only its own state in the workspace.
 
 ## Step 3 — Wire it into CMake
 
@@ -208,7 +214,7 @@ This is how you verify your adapter is plug-compatible. The suite lives in [test
 
 ### 4.1 — Add a harness exe
 
-For each MQTT version your adapter supports, add a tiny harness that hands your factory to `az_iot_conformance_run()`:
+Add a tiny harness that hands your `az_iot_mqtt_adapter` (its `get_workspace_size()` and `init()`, see [az_iot_mqtt_iface.h](../inc/azure/iot/az_iot_mqtt_iface.h)) to `az_iot_conformance_run()`. The suite builds each client of the suite's MQTT version with `init()`, in a heap workspace it frees after `destroy()`:
 
 ```c
 /* tests/conformance/mymqtt_v3_main.c */
@@ -216,10 +222,7 @@ For each MQTT version your adapter supports, add a tiny harness that hands your 
 #include "azure/iot/adapters/az_iot_adapter_mymqtt.h"
 
 int main(void) {
-    az_iot_mqtt_factory* f = az_iot_mymqtt_factory_create_v3_1_1();
-    int rc = az_iot_conformance_run(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, f);
-    az_iot_mymqtt_factory_destroy(f);
-    return rc;
+    return az_iot_conformance_run(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, az_iot_mymqtt_get_adapter());
 }
 ```
 
@@ -234,14 +237,12 @@ if(AZ_IOT_BUILD_CONFORMANCE_TESTS)
 endif()
 ```
 
-Repeat for `_v5` if applicable.
-
 ### 4.2 — Provide a broker
 
 The suite needs a real MQTT broker to talk to. Locally, `eclipse-mosquitto:2` works out of the box:
 
 ```sh
-docker run -d --name mqttv5-mosq -p 1883:1883 eclipse-mosquitto:2 \
+docker run -d --name mqtt-mosq -p 1883:1883 eclipse-mosquitto:2 \
     sh -c "echo 'listener 1883'>/m.conf; \
            echo 'allow_anonymous true'>>/m.conf; \
            mosquitto -c /m.conf"
@@ -268,7 +269,6 @@ Expected output for a fully-working adapter:
 
 ```
 Test #N: az_iot_conformance_mymqtt_v3 ........   Passed
-Test #N: az_iot_conformance_mymqtt_v5 ........   Passed
 ```
 
 ### 4.4 — What the suite actually exercises
@@ -276,13 +276,12 @@ Test #N: az_iot_conformance_mymqtt_v5 ........   Passed
 The cases are in [tests/conformance/az_iot_conformance.c](../tests/conformance/az_iot_conformance.c). They cover:
 
 - **Lifecycle:** connect/disconnect, reuse after disconnect, disconnect without connect, keep-alive,
-  and server- and client-initiated disconnects.
-- **Messaging:** publish/subscribe round trips, refused SUBSCRIBE and PUBLISH, truncated PUBLISH,
-  unknown packet ids, and MQTT 5 properties in both directions.
+  and client-initiated disconnects.
+- **Messaging:** publish/subscribe round trips, refused SUBSCRIBE, truncated PUBLISH and unknown
+  packet ids.
 - **Network faults** (through a test proxy): refused, unresolvable and black-holed endpoints,
   network drops, fragmentation, latency, bandwidth limits and stalled links.
-- **Session terms:** clean-session flag, session expiry (MQTT 5 only), Will, DISCONNECT reason
-  code, session-present.
+- **Session terms:** clean-session flag, Will, the DISCONNECT, session-present.
 - **TLS** (with `-DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON`): server certificate validation (trusted,
   untrusted, expired, hostname mismatch) and mutual TLS.
 - **Egress:** a WebSocket request is never downgraded, and an unreachable proxy is never bypassed.
@@ -327,12 +326,11 @@ opts.client_key_psa_id = my_psa_key_id;
 /* Shared: a certificate carrying the PUBLIC key behind each route. */
 opts.client_cert_path = "/path/to/device-cert.pem";
 
-return az_iot_conformance_run_with_options(AZ_IOT_CONFORMANCE_SUITE_V3_1_1, f, &opts);
+return az_iot_conformance_run_with_options(
+    AZ_IOT_CONFORMANCE_SUITE_V3_1_1, az_iot_mymqtt_get_adapter(), &opts);
 ```
 
 If your adapter loads TLS credentials from in-memory PEM (`trusted_ca_pem`, `client_cert_pem`, `client_key_pem`), declare `AZ_IOT_CONFORMANCE_CAP_TLS_PEM`. It needs no material: the suite issues a client certificate, connects with PEM only, and wipes the buffers as soon as `connect()` returns; the handshake must still succeed. It needs a TLS build (`-DAZ_IOT_BUILD_CONFORMANCE_TESTS_TLS=ON`).
-
-If your MQTT 5 adapter reports a refused CONNACK's Reason String, declare `AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING`. It needs no material; the suite then requires the string verbatim. MQTT 5 suite only: declared for the 3.1.1 suite, the run is refused. Undeclared, it requires the failed `CONNECTED` event to carry none rather than a wrong one. The bundled az_mqtt adapter declares it; Paho's does not.
 
 Each declared route is proved by its own real TLS handshake, signed with a key you cannot read: `key_custody_completes_a_tls_handshake` for the URI route, `key_custody_sign_hook_completes_a_tls_handshake` for the callback route. Declaring one route does not oblige you to the other — the bundled Paho adapter declares only `_URI`, because Paho exposes no TLS key callback.
 
@@ -353,48 +351,36 @@ Material is all-or-none per route, and material supplied for a route you did not
 
 ## Step 5 — Use your adapter at runtime
 
-Once the conformance suite is green, plug the factory into the connection client:
+Once the conformance suite is green, give the adapter, the sizes and a workspace to the connection client:
 
 ```c
-az_iot_mqtt_factory* f = az_iot_mymqtt_factory_create_v3_1_1();
-if (az_iot_connection_client_register_mqtt_factory(client, f) != AZ_IOT_OK)
+static uint8_t mqtt_workspace[MYMQTT_WORKSPACE_SIZE]; /* >= get_workspace_size(&limits) */
+
+az_iot_connection_client_options opts = az_iot_connection_client_options_default();
+/* ... workspace, identity, auth ... */
+opts.mqtt_adapter = az_iot_mymqtt_get_adapter();
+opts.mqtt_limits = (az_iot_mqtt_limits){ .send_buffer_size = 8192, .receive_buffer_size = 8192,
+                                         .max_in_flight_messages = 8,
+                                         .connect_strings_size = 4096 };
+opts.mqtt_workspace = mqtt_workspace;
+opts.mqtt_workspace_size = sizeof(mqtt_workspace);
+if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK)
 {
     /* handle the error */
 }
-/* register a v5 factory too if you support HUB_MQTT_V5 */
-
-/* ... use the client ... */
-
-az_iot_connection_client_deinit(client);
-az_iot_mymqtt_factory_destroy(f);
 ```
 
-The connection client picks the right factory at session-open time based on the MQTT version required for the target Azure service.
-
-Registration lends the factory to the connection client; the application still owns it. Keep it alive until `az_iot_connection_client_deinit()` returns, then destroy it.
+`mqtt_adapter`, `mqtt_limits` and `mqtt_workspace` are required: `init()` fails with `AZ_IOT_ERR_INVALID_ARG` without them, and with `AZ_IOT_ERR_NOT_ENOUGH_SPACE` when the workspace is too small. At session-open time the connection client asks the adapter for a client of the MQTT version the target Azure service requires. The workspace is the connection client's until `az_iot_connection_client_deinit()` returns; deinit wipes it.
 
 ## Common pitfalls
 
 - **Calling the user callback on the wrong thread.** The SDK's whole point is to keep the user on a single thread. If you hand callbacks straight from your client's I/O thread, all higher-level state machines in the SDK become racy. Use a FIFO + drain in `process_loop`.
 - **Returning success synchronously when the operation has not actually completed.** `connect`, `subscribe`, `publish` all return immediately; success/failure of the broker round-trip arrives later through the inbound callback. Returning `az_iot_OK` from `connect` only means "I accepted your CONNECT request and started working on it".
 - **Forgetting to populate every vtable slot.** The conformance suite asserts every slot is non-NULL.
-- **Reusing a single underlying client across DPS → Hub transitions.** Each session asks the factory for a fresh client; do not cache.
+- **Reusing a single underlying client across DPS → Hub transitions.** Each session asks `init()` for a fresh client in the workspace; do not cache.
 - **Gating server certificate validation on a caller flag.** There is no such flag, and `use_tls` is not one — it only selects TLS. Validate the chain and the hostname every time.
 - **Ignoring a key reference you cannot honour.** Connecting anyway means the session carries none of the credential the caller asked to authenticate with. Fail with `AZ_IOT_ERR_NOT_SUPPORTED` instead.
-- **Wrong version.** Registering only a v3.1.1 factory when you need MQTTv5 (which requires v5) will fail at connection time with `AZ_IOT_ERR_NOT_SUPPORTED`.
-- **Destroying a factory before `deinit()`.** The connection client keeps using a registered factory until `az_iot_connection_client_deinit()` returns; destroying it earlier is a use-after-free.
-
-## Feature clients and what they need from the adapter
-
-The following feature clients depend on v5 adapter properties being correctly passed through:
-
-| Feature Client | Outbound v5 properties used | Inbound v5 properties expected |
-|----------------|----------------------------|---------------------------------|
-| Direct Method  | `correlation_data`, `response_topic` | `correlation_data`, `response_topic` |
-| Twin           | `correlation_data` | `correlation_data` |
-| Telemetry      | `content_type`, `correlation_data`, `user_properties` | (none — send only) |
-
-If your v5 adapter does not propagate these properties, the feature clients will silently fail to correlate responses or deliver incomplete data to the application.
+- **Allocating or keeping pointers past `destroy()`.** The workspace may be reused for the next session's client as soon as `destroy()` returns; anything the client allocated must be released by then.
 
 ## Reference
 

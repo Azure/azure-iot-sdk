@@ -16,11 +16,7 @@
 # Scope
 # -----
 # This workflow runs the fast scenarios (telemetry/c2d/method/twin) and the file
-# upload suite. It previously also ran a mocked Device Update (ADU) suite
-# (az_iot_tests_e2e_adu) that drove a signed deployment through the device twin.
-# That suite retired with the removal of ADU's twin delivery channel and is
-# awaiting a rewrite against the new channel, so it is not built or run here.
-# The separate ci-c-e2e-adu.yml workflow is parked for the same reason.
+# upload suite.
 #
 # Stages
 # ------
@@ -35,7 +31,7 @@
 #                 builds the native e2e tests, gets its test-config, materializes
 #                 the device X.509 material to files, and runs its group.
 #      coverage : merges the Linux groups' tracefiles into coverage-trace-e2e.
-#      esp32-qemu: the ESP32 IoT Hub sample in QEMU (esp32, esp32c3), always on
+#      esp32-qemu: the ESP32 IoT Hub sample in QEMU (esp32, esp32c3, esp32s3), always on
 #                 the shared environment (see the job).
 #   3. teardown : always() deletes the shared resource group (via the reusable
 #                 destroy-e2e-resources step). It recomputes the group name from
@@ -63,21 +59,11 @@ name: ci-c-e2e
 
 on:
   workflow_dispatch:
+  # Pull requests: every one, so the gate job always reports; the `changes` job
+  # decides whether the e2e legs run.
   pull_request:
-    paths:
-      - 'c/**'
-      - '!c/**/*.md'
-      - 'common/**'
-      - '!common/**/*.md'
-      # This workflow: a change to it alters what the e2e legs actually do, so
-      # it has to be validated against real Azure rather than merged on the
-      # strength of the other jobs. The provisioning actions now live in
-      # Azure/iot-sdks-e2e-fx and are pinned to a tag, so a change there only
-      # reaches this repository when the pin below is moved.
-      - '.github/workflows/ci-c-e2e.yml'
-      - '.github/actions/install-openssl/**'
   push:
-    branches: [ main ]
+    branches: [ main, 'releases/public-preview' ]
     paths:
       - 'c/**'
       - '!c/**/*.md'
@@ -108,12 +94,53 @@ env:
   E2E_SHARED: ${{ vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request' }}
 
 jobs:
+  # On pull requests, whether the e2e legs run; every other event runs them.
+  changes:
+    name: detect changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    # dorny/paths-filter reads the pull request files through the API.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      # Forks and Dependabot get no secrets or OIDC token, so their PRs skip (as in ci-c-e2e-mqttv5.yml).
+      run: >-
+        ${{ github.event_name != 'pull_request' ||
+            (github.event.pull_request.head.repo.full_name == github.repository &&
+             github.actor != 'dependabot[bot]' &&
+             (steps.filter.outputs.c == 'true' || steps.filter.outputs.common == 'true' ||
+              steps.filter.outputs.workflow == 'true')) }}
+    steps:
+      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          # `every`: a file counts only if it matches all patterns of a filter,
+          # so the `!` patterns exclude Markdown. Hence one filter per path root.
+          predicate-quantifier: every
+          filters: |
+            c:
+              - 'c/**'
+              - '!c/**/*.md'
+            common:
+              - 'common/**'
+              - '!common/**/*.md'
+            # This workflow: a change to it alters what the e2e legs actually do,
+            # so it has to be validated against real Azure rather than merged on
+            # the strength of the other jobs. The provisioning actions live in
+            # Azure/iot-sdks-e2e-fx and are pinned to a tag, so a change there
+            # only reaches this repository when the pin below is moved.
+            workflow:
+              - '.github/{workflows/ci-c-e2e.yml,actions/install-openssl/**}'
+
   setup:
     permissions:
       contents: read
       id-token: write   # azure/login OIDC
     name: setup (provision)
-    if: ${{ !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
+    needs: changes
+    if: ${{ needs.changes.outputs.run == 'true' && !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -130,7 +157,7 @@ jobs:
 
       - name: Provision resources
         id: provision
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@9109e1ce6d9d19bbc750f4715b85db1f5167190e # v1.0.1 + dps-symmkey-group-enrollment-devices (#456)
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@2fc8ffebbdc13476890b15fee48e304b1e135ce3 # v1.0.1 + #456 + #457 + retry on 5xx (#459)
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # The shared action defaults to EastUS; these pipelines run in
@@ -174,6 +201,8 @@ jobs:
   # cache instead of each building it on a cache miss.
   openssl:
     name: OpenSSL ${{ matrix.openssl }} (${{ matrix.os }})
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     permissions:
       contents: read
     strategy:
@@ -278,18 +307,13 @@ jobs:
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
-        # libcurl backs the file upload sample's HTTP hook; without it CMake builds
-        # the sample with a stub hook that cannot perform the Classic control-plane
-        # calls, and the sample run below would prove nothing.
-        #
         # softhsm2 + opensc back the non-extractable-key custody suite: a token
         # to hold the device key and the tool that writes it there. The OpenSSL
         # pkcs11 provider the handshake signs through is built from source (see
         # eng/setup-pkcs11-provider.sh for why the packaged one will not do),
         # which is what meson and pkg-config are for.
         run: |
-          sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev \
-                                                          softhsm2 opensc meson pkg-config
+          bash "$GITHUB_WORKSPACE/c/eng/apt-install.sh" ninja-build softhsm2 opensc meson pkg-config
           python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build e2e tests
@@ -299,13 +323,8 @@ jobs:
         # Windows runner image does not carry.
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }}
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport az_iot_tests_e2e_amqp_link az_iot_tests_e2e_notify_time az_iot_tests_e2e_http_headers az_iot_tests_e2e_amqp_capture az_iot_tests_e2e_amqp_telemetry az_iot_tests_e2e_sas az_iot_tests_e2e_tpm az_iot_tests_e2e_az_mqtt az_iot_tests_e2e_fileupload_az_mqtt az_iot_tests_e2e_transport_az_mqtt az_iot_tests_e2e_sas_az_mqtt az_iot_tests_e2e_tpm_az_mqtt
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_process az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport az_iot_tests_e2e_amqp_link az_iot_tests_e2e_notify_time az_iot_tests_e2e_http_headers az_iot_tests_e2e_amqp_capture az_iot_tests_e2e_amqp_telemetry az_iot_tests_e2e_sas az_iot_tests_e2e_tpm az_iot_tests_e2e_az_mqtt az_iot_tests_e2e_fileupload_az_mqtt az_iot_tests_e2e_transport_az_mqtt az_iot_tests_e2e_sas_az_mqtt az_iot_tests_e2e_tpm_az_mqtt
           ${{ runner.os == 'Linux' && format('cmake --build --preset {0} --target az_iot_tests_e2e_custody az_iot_tests_e2e_custody_az_mqtt az_iot_tests_e2e_amqp_transport_sigpipe', matrix.preset) || '' }}
-
-      - name: Build the file upload sample (Linux)
-        if: runner.os == 'Linux'
-        working-directory: c
-        run: cmake --build --preset ${{ matrix.preset }} --target az_iot_sample_unified_file_upload
 
       # Provisioned runs read events on this job's own consumer group (created
       # by setup). On the shared environment the generated test config sets it.
@@ -409,7 +428,7 @@ jobs:
           $env:AZ_IOT_DPS_SAS_REGISTRATION_ID = "sas-${{ github.run_id }}-${{ github.run_attempt }}-$idx"
 
           # Republish the DEVICE-side configuration (an id scope, a registration id
-          # and three file paths -- no secrets) so the sample step below can reuse
+          # and three file paths -- no secrets) so the custody step below can reuse
           # this leg's device without re-materializing the X.509 material.
           foreach ($name in @('AZ_IOT_DPS_ID_SCOPE', 'AZ_IOT_DPS_REGISTRATION_ID',
                               'AZ_IOT_CLIENT_CERT', 'AZ_IOT_CLIENT_KEY',
@@ -424,11 +443,11 @@ jobs:
           # suite and the transport suite (WebSockets, and MQTT through an HTTP
           # proxy; its proxy scenarios skip themselves when no proxy is
           # configured for the leg), the DPS TPM suite, and the AMQP link,
-          # notification-time, HTTP header parsing and telemetry capture tests (no Azure resources).
-          # The mocked ADU suite retired with ADU's twin delivery channel
-          # and is not built. The CSR enrollment test is not built
-          # here -- it needs a DPS enrollment linked to a signing CA, which only
-          # ci-c-e2e-csr provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
+          # notification-time, HTTP header parsing and telemetry capture tests, and the child-process
+          # helper's test (no Azure resources).
+          # The CSR enrollment test is not built here -- it needs a DPS
+          # enrollment linked to a signing CA, which only ci-c-e2e-csr
+          # provisions, so it lives behind AZ_IOT_BUILD_E2E_CSR.
           # The crypto_openssl unit test is not matched by the e2e name
           # filter, so it stays out of this job.
           # The custody suite is excluded here and run by its own step below: it
@@ -509,20 +528,6 @@ jobs:
             --output-junit ./test_config/results/e2e-custody-${{ matrix.os }}.xml
           if ($LASTEXITCODE -ne 0) { throw "custody e2e failed ($LASTEXITCODE)" }
 
-      - name: Run the file upload sample (Linux)
-        if: runner.os == 'Linux' && matrix.group == 'core'
-        shell: pwsh
-        # The sample is the reference integration of the application HTTP hook the
-        # Classic file-upload control plane requires (this SDK ships no HTTP
-        # client). Building it proves nothing about that hook, so run it against
-        # the real hub: it provisions, requests a SAS URI, PUTs the blob with
-        # libcurl and reports completion, exiting non-zero if any step fails.
-        run: |
-          $exe = "c/build/${{ matrix.preset }}/samples/unified/az_iot_sample_file_upload"
-          if (-not (Test-Path $exe)) { throw "sample not built at $exe" }
-          & $exe
-          if ($LASTEXITCODE -ne 0) { throw "file upload sample failed ($LASTEXITCODE)" }
-
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -552,13 +557,16 @@ jobs:
   # coverage, and merging it would understate coverage for an unrelated reason.
   # The ESP32 IoT Hub sample (samples/unified/esp32) in QEMU: the firmware is the
   # device, az_iot_tests_e2e_esp32_qemu the service (eng/esp-idf-qemu-e2e.sh).
-  # esp32 keeps its key in flash; esp32c3 in the Digital Signature peripheral,
-  # its key burned into an emulated eFuse. Always on the shared environment, on
-  # push and nightly too: the per-run enrollments' RSA-4096 keys exceed the DS
-  # peripheral's 3072 bits, and the shared group CA issues RSA-2048. Device
-  # index 12 (esp32) and 13 (esp32c3), after the test legs' 0..11.
+  # esp32 keeps its key in flash; esp32c3 and esp32s3 in the Digital Signature
+  # peripheral, its key burned into an emulated eFuse. Always on the shared
+  # environment, on push and nightly too: the per-run enrollments' RSA-4096 keys
+  # exceed the esp32c3 DS peripheral's 3072 bits, and the shared group CA issues
+  # RSA-2048. Device index 12 (esp32), 13 (esp32c3) and 14 (esp32s3), after the
+  # test legs' 0..11.
   esp32-qemu:
     name: esp32 qemu / ${{ matrix.target }}
+    needs: changes
+    if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # Runs pull-request code: no Azure OIDC token.
@@ -572,6 +580,8 @@ jobs:
             device-index: 12
           - target: esp32c3
             device-index: 13
+          - target: esp32s3
+            device-index: 14
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -629,7 +639,7 @@ jobs:
             espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c \
             bash -c 'set -e
               git config --global --add safe.directory /work
-              apt-get update -qq && apt-get install -y -qq gcc libc6-dev libssl-dev > /dev/null
+              bash eng/apt-install.sh gcc libc6-dev libssl-dev
               bash eng/esp-idf-qemu-e2e.sh "$0" /device/cert.pem /device/key.pem /tmp/esp32-qemu-e2e' \
             "$TARGET"
 
@@ -678,12 +688,12 @@ jobs:
       contents: read
       id-token: write   # azure/login OIDC
     name: teardown (delete resources)
-    needs: [setup, test]
+    needs: [changes, setup, test]
     # `always()` also covers cancellation. The group name comes from the workflow
     # `env` (not from `needs.setup.outputs`), so a cancelled setup still gets torn
     # down; the destroy action no-ops when the group was never created. Skipped in
     # shared mode: the shared group outlives the run.
-    if: ${{ always() && !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
+    if: ${{ always() && needs.changes.outputs.run == 'true' && !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -699,7 +709,29 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Delete Azure resources
-        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@b96d2aa2eb2b36e1e4dfbdb04aa56cf3dccecf8a # v1.0.1
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@2fc8ffebbdc13476890b15fee48e304b1e135ce3 # v1.0.1 + SHA-pinned azure/powershell (#457)
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}
 
+
+  # Single stable check name for rulesets to require: reports on every run and
+  # fails when any job failed or was cancelled (skipped jobs pass).
+  gate:
+    name: ci-c-e2e-gate
+    needs: [ changes, setup, openssl, test, esp32-qemu, coverage, teardown ]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check every job's result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$RESULTS"
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<< "$RESULTS")
+          if [ -n "$failed" ]; then
+            echo "::error::ci-c-e2e-gate: failed or cancelled: $failed"
+            exit 1
+          fi

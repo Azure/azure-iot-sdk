@@ -107,6 +107,18 @@ Providers in the tree:
   a key type (start from `az_iot_certificate_provider_managed_options_default()`). It generates
   the operational key and CSR, and persists the issued chain. Every CSR is over the operational
   key.
+  - **Durable writes.** The key and the chain are written to a temporary file, flushed, and
+    renamed over the destination. The rename is then flushed too (the parent directory is
+    fsynced on POSIX; `MOVEFILE_WRITE_THROUGH` on Windows), so a stored chain survives a power
+    loss. DPS issues a chain once, so the stored file may be its only copy. If only that last
+    directory sync fails, the store still succeeds: the new file has already replaced the old
+    one and is what `load()` serves, so a failure would break the all-or-nothing contract.
+  - **Unencrypted key, by design.** The operational key is written as unencrypted PEM. It is
+    protected only by file permissions: 0600 on POSIX, an owner-only DACL on Windows. Encrypting
+    it would need a passphrase stored on the same device, which adds no protection. Devices that
+    need key protection should keep the key non-extractable instead: an HSM, TPM or secure
+    element through PKCS#11 (`client_key_uri`), a PSA Crypto key (`client_key_psa_id`), or
+    `sign()`. See [Device certificate storage methods](#device-certificate-storage-methods).
 
 **Key stability.** While the connection client is open, a provider's operational key does not
 change: `get_csr()` signs over it, and `store_issued_certificate()` refuses a chain whose leaf
@@ -149,8 +161,7 @@ operational credential is held.
 
 ## Hub-side renewal (MQTTv3)
 
-Renews the operational certificate without re-provisioning through DPS. MQTTv5 hubs do not
-support it.
+Renews the operational certificate without re-provisioning through DPS.
 
 - **API version:** the hub refuses these topics (`errorCode` 400001) unless the CONNECT username
   carries `api-version=2025-08-01-preview`, which the SDK sends on every mqttv3 hub connection.
@@ -160,7 +171,10 @@ support it.
   The device id is taken from the connected client id.
 - **Two-phase:** `202 Accepted` (signing in progress), then `200` with the issued chain.
 - **Recovery:** a renewal open when the session ends fails with `AZ_IOT_ERR_NOT_CONNECTED`; pass
-  its `request_id` to resubmit once reconnected. `replace` supersedes an active hub-side operation.
+  its `request_id` to resubmit once reconnected. `replace` supersedes an active hub-side operation:
+  a renewal the hub accepted (`202`) before the session ended may still be active, and its
+  resubmission then fails with a `409` code; resubmit with `replace` and a new `request_id`. If
+  that fails with `412`, the request ended meanwhile: send it again without `replace`.
 - **Errors:** routed on the response status (`202`/`200`/other). The JSON body's `errorCode`
   is surfaced as `service_code`, `retryAfter` as `retry_after_s`, `info.credentialError` as
   `credential_error`, `info.credentialMessage` as `credential_message` and `trackingId` as
@@ -401,7 +415,7 @@ Under [`samples/authentication/`](../../samples/authentication/README.md). Each 
 | `dps_csr_managed/` | D9 provider-owned: the `managed` provider, DPS issuance |
 | `hub_renew/` | D7 hub renewal: the SDK gets the CSR from the provider and stores the chain, then `close()`/`open()` |
 | `custom_certificate_provider/` | D9: an application-written provider that makes the CSR and stores the chain |
-| `hsm_pkcs11/` | D8 key-reference URI (non-extractable key), Paho, either hub generation |
+| `hsm_pkcs11/` | D8 key-reference URI (non-extractable key), Paho |
 | `hsm_sign_callback/` | D8 provider `sign()` hook |
 | `custom_provider_template/` | A starting point for a custom provider |
 
@@ -416,7 +430,6 @@ In `tests/e2e/tests/`, run by [`ci-c-e2e.yml`](../../../.github/workflows/ci-c-e
 | DPS issuance and hub renewal | `e2e_csr_test.c` | `AZ_IOT_BUILD_E2E_CSR` (needs a CA-linked DPS enrollment) |
 | SAS onboarding, DPS-issued certificate for the hub | `e2e_csr_sas_test.c` | `AZ_IOT_BUILD_E2E_CSR` (CA-linked symmetric-key group) |
 | Storage / custody: the key held in a PKCS#11 token (SoftHSM2 in CI) | `e2e_custody_test.c` | `AZ_IOT_BUILD_E2E_PKCS11` |
-| Storage / custody on an mqttv5 hub ([`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml)) | `e2e_mqttv5_custody_test.c` | `AZ_IOT_BUILD_E2E_PKCS11` + `AZ_IOT_BUILD_E2E_MQTTV5` |
 
 [`eng/setup-softhsm.sh`](../../eng/setup-softhsm.sh) initializes a SoftHSM2 token, imports the
 device key, deletes the on-disk copy and prints the key URI.

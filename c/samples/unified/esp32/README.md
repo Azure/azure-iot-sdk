@@ -4,19 +4,17 @@
 # IoT Hub Sample - ESP32
 
 An ESP32 that provisions through DPS with an X.509 identity and then, on whichever hub DPS
-assigns (mqttv3 or mqttv5):
+assigns (mqttv3):
 
 - sends telemetry every `HUB_TELEMETRY_INTERVAL_S` seconds (`{"deviceId":"<id>","count":n}`, with
   the device id DPS assigned);
 - answers the direct method `echo` with its payload (status 200, or 413 when the response would
-  not fit), any other with 404 (mqttv5 refuses undeclared methods itself);
+  not fit), any other with 404;
 - acknowledges each desired twin version by patching `{"desiredVersion":<version>}` into the
-  reported properties, including one set while it was offline: on mqttv3 it reads the twin on
-  each connect; on mqttv5 the hub pushes the desired snapshot on connect. A version older than one
-  already seen is ignored, except in an mqttv5 snapshot (the whole document, e.g. a replaced
-  twin). A failed twin read or refused patch is retried after 5 s; on mqttv3, one unanswered for
-  60 s makes the sample reconnect, which ends it, and it is then retried. The same applies to a
-  telemetry message not acknowledged within 60 s, on either hub.
+  reported properties, including one set while it was offline: it reads the twin on each connect.
+  A version older than one already seen is ignored. A failed twin read or refused patch is retried
+  after 5 s; one unanswered for 60 s makes the sample reconnect, which ends it, and it is then
+  retried. The same applies to a telemetry message not acknowledged within 60 s.
 
 It restarts after 15 minutes without a hub connection: ESP-IDF's `protocol_examples_common` stops
 reconnecting Wi-Fi after `EXAMPLE_WIFI_CONN_MAX_RETRY` failures, and a restart brings it up again.
@@ -28,7 +26,7 @@ sequenceDiagram
     participant Hub as IoT Hub
     D->>DPS: TLS with the device certificate, register
     DPS-->>D: assigned hub and connection profile
-    D->>Hub: connect (mqttv3 or mqttv5)
+    D->>Hub: connect (mqttv3)
     loop while connected
         D->>Hub: telemetry {"deviceId":"<id>","count":n}
         Hub-->>D: direct method echo / desired twin patch
@@ -36,9 +34,8 @@ sequenceDiagram
     end
 ```
 
-The clients are built for mqttv3 before connecting, what DPS assigns when it names no
-connection profile. If DPS assigns mqttv5, the sample rebuilds them and reconnects, as
-[unified/telemetry](../telemetry/README.md) explains. Everything is in
+The clients are built before connecting. If DPS assigns a hub profile this SDK does not support,
+the connection faults and the sample restarts. Everything is in
 [`main/app_main.c`](main/app_main.c).
 
 ## Prerequisites
@@ -61,9 +58,32 @@ requires.
 The device certificate and key come from the `esp_secure_cert` partition (0xD000), read by the
 [esp_secure_cert certificate provider](../../../adapters/cert_esp_secure_cert/az_iot_certificate_provider_esp_secure_cert.h);
 the certificate CN must equal `HUB_DPS_REGISTRATION_ID`. On ESP32-S3/C3/C6 the key stays in the
-Digital Signature peripheral; on ESP32 it is a PEM key in the partition. Write the partition
-after `idf.py flash` as the [software updates sample](../../software_update/esp32/README.md#device-identity)
-describes; that README also covers read-protecting the DS key for production.
+Digital Signature peripheral; on ESP32 it is a PEM key in the partition.
+
+Write the partition with Espressif's `configure_esp_secure_cert.py`
+(`pip install esp-secure-cert-tool`) after `idf.py flash`; `idf.py flash` leaves it in place,
+`idf.py erase-flash` erases it. These commands are for development:
+
+```sh
+# ESP32-S3/C3/C6: --configure_ds burns the eFuse key block --efuse_key_id (irreversible).
+configure_esp_secure_cert.py -p PORT --target_chip esp32c3 --secure_cert_type cust_flash_tlv \
+    --device-cert device_cert.pem --private-key device_key.pem \
+    --configure_ds --priv_key_algo RSA 2048 --efuse_key_id 3
+# ESP32:
+configure_esp_secure_cert.py -p PORT --target_chip esp32 --secure_cert_type cust_flash_tlv \
+    --device-cert device_cert.pem --private-key device_key.pem
+```
+
+`--priv_key_algo` must match the key (RSA and its size). The tool burns the DS key block
+**without read protection**, so its key can still be read and used to decrypt the DS data off
+the chip. For production, read-protect it right after provisioning and check that
+`espefuse.py -p PORT summary` reports the block as read-protected:
+
+```sh
+espefuse.py --chip esp32c3 -p PORT read_protect_efuse BLOCK_KEY3
+```
+
+For production key custody, see [Production keys](../../../docs/connecting.md#production-keys).
 
 The DPS and hub server certificates are verified against the ESP-IDF certificate bundle.
 
@@ -132,9 +152,8 @@ QEMU_FLASH_EXTRA="0xd000 /tmp/id/esp_secure_cert.bin" \
 ```
 
 esp32c3 and esp32s3 builds use the Digital Signature peripheral by default
-(`CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL`). For esp32c3 the script burns the key into an emulated
-eFuse: add `QEMU_EFUSE=/tmp/id/qemu_efuse.bin`. DS takes RSA keys of at most 3072 bits. The
-script does not write DS identities for esp32s3.
+(`CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL`). The script burns the key into an emulated eFuse: add
+`QEMU_EFUSE=/tmp/id/qemu_efuse.bin`. The esp32c3 DS takes RSA keys of at most 3072 bits.
 
 ## CI
 
@@ -143,6 +162,6 @@ CI (`ci-c`, job `esp-idf`) builds this sample for esp32, esp32c3, esp32s3 and es
 address, with ESP-IDF v6.1; the default profile for esp32 also with v6.0, the minimum. Any compiler
 warning fails the build.
 
-`ci-c-e2e` (job `esp32-qemu`) runs it in QEMU on esp32 and esp32c3 (key in DS) against an IoT
-Hub: telemetry, the `echo` method and a desired-version acknowledgement
+`ci-c-e2e` (job `esp32-qemu`) runs it in QEMU on esp32, esp32c3 and esp32s3 (the last two with the
+key in DS) against an IoT Hub: telemetry, the `echo` method and a desired-version acknowledgement
 ([ESP32 in QEMU](../../../docs/eng/end-to-end-tests.md#esp32-in-qemu)).

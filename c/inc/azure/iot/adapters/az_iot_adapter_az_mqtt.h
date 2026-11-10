@@ -12,9 +12,10 @@
  * written when called and wait only while the socket send buffer is full, at most
  * AZ_MQTT_TRANSPORT_SEND_TIMEOUT_MS (over WebSockets, up to twice that).
  *
- * Register one or both factories with the connection client; the SDK picks one by MQTT
- * version (v3.1.1 for DPS and mqttv3, v5 for mqttv5). Each client the factory creates owns its
- * buffers, sized at build time (see the AZ_IOT_AZ_MQTT_* CMake cache variables).
+ * Set az_iot_connection_client_options::mqtt_adapter to az_iot_az_mqtt_get_adapter(): the
+ * connection client builds each session's client in mqtt_workspace, of the MQTT version the
+ * session needs (v3.1.1 for DPS and the mqttv3 hub), with the buffer sizes of
+ * mqtt_limits. AZ_IOT_AZ_MQTT_WORKSPACE_SIZE() sizes a static workspace.
  *
  * TLS backend: OpenSSL 3 or mbedTLS on Linux, Schannel on Windows, ESP-IDF's mbedTLS on ESP32
  * (platforms/esp32; with no trusted CA, the server is verified against the ESP-IDF certificate
@@ -38,38 +39,16 @@ extern "C"
 #endif
 
   /**
-   * @brief Create a factory of MQTT 3.1.1 clients.
-   * @return The factory, or NULL when out of memory. Release it with
-   * az_iot_az_mqtt_factory_destroy().
-   */
-  az_iot_mqtt_factory* az_iot_az_mqtt_factory_create_v3_1_1(void);
-
-  /**
-   * @brief Create a factory of MQTT 5 clients.
-   * @return The factory, or NULL when out of memory. Release it with
-   * az_iot_az_mqtt_factory_destroy().
-   */
-  az_iot_mqtt_factory* az_iot_az_mqtt_factory_create_v5(void);
-
-  /**
-   * @brief Destroy a factory from either function above (NULL: no-op). Clients it created are
-   * not destroyed; they follow the az_iot_mqtt_iface destroy() contract.
-   *
-   * The application owns the factory; registering it only lends it to the connection client.
-   * A registered factory must stay alive until az_iot_connection_client_deinit() returns;
-   * destroy it after that, or at any time if it was never registered or registration failed.
-   */
-  void az_iot_az_mqtt_factory_destroy(az_iot_mqtt_factory* factory);
-
-  /**
-   * @brief The az_mqtt adapter: builds MQTT 3.1.1 and MQTT 5 clients in application memory, with
-   * no allocation. A constant; nothing to create or destroy.
+   * @brief The az_mqtt adapter: builds MQTT 3.1.1 clients in application memory, with no
+   * allocation. A constant; nothing to create or destroy. Its
+   * validate_limits_for_session_usage() refuses az_iot_mqtt_limits::message_store_size 0 for a
+   * session that outlives its connection.
    */
   const az_iot_mqtt_adapter* az_iot_az_mqtt_get_adapter(void);
 
   /**
    * @brief Workspace bytes for the largest az_mqtt client the connection client may run with
-   * @p limits: over the MQTT versions compiled in, with this build's TLS backend.
+   * @p limits, with this build's TLS backend.
    *
    * @return The size, or 0 when @p limits is invalid (see az_iot_mqtt_limits).
    */
@@ -77,7 +56,7 @@ extern "C"
 
 /**
  * @brief Upper bound of one az_mqtt client's own state, in bytes. The adapter fails to compile if
- * its state is larger: raise this then (e.g. with a larger AZ_IOT_AZ_MQTT_USER_PROPERTIES_MAX).
+ * its state is larger: raise this then.
  */
 #ifndef AZ_IOT_AZ_MQTT_CLIENT_STATE_SIZE
 #define AZ_IOT_AZ_MQTT_CLIENT_STATE_SIZE 4096u
@@ -96,21 +75,21 @@ extern "C"
  * OpenSSL 560 B, mbedTLS 4.2-4.6 KB, Schannel about 197 KB). init() reports a workspace that is
  * still too small with AZ_IOT_ERR_NOT_ENOUGH_SPACE.
  */
-#define AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(                                              \
-    send_buffer_size,                                                               \
-    receive_buffer_size,                                                            \
-    max_in_flight_messages,                                                         \
-    message_store_size,                                                             \
-    connect_strings_size,                                                           \
-    max_tls_state_size)                                                             \
-  (15u + (size_t)AZ_IOT_AZ_MQTT_CLIENT_STATE_SIZE                                   \
-   + AZ_IOT_AZ_MQTT_WORKSPACE_ALIGN(                                                \
-       2u * (size_t)(max_in_flight_messages) * AZ_IOT_AZ_MQTT_IN_FLIGHT_ENTRY_SIZE) \
-   + AZ_IOT_AZ_MQTT_WORKSPACE_ALIGN(send_buffer_size)                               \
-   + AZ_IOT_AZ_MQTT_WORKSPACE_ALIGN(receive_buffer_size)                            \
-   + AZ_IOT_AZ_MQTT_WORKSPACE_ALIGN((size_t)(receive_buffer_size) + 3u)             \
-   + AZ_IOT_AZ_MQTT_WORKSPACE_ALIGN(max_tls_state_size)                             \
-   + AZ_IOT_AZ_MQTT_WORKSPACE_ALIGN(connect_strings_size)                           \
+#define AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(                                         \
+    send_buffer_size,                                                          \
+    receive_buffer_size,                                                       \
+    max_in_flight_messages,                                                    \
+    message_store_size,                                                        \
+    connect_strings_size,                                                      \
+    max_tls_state_size)                                                        \
+  (15u + (size_t)AZ_IOT_AZ_MQTT_CLIENT_STATE_SIZE                              \
+   + AZ_IOT_AZ_MQTT_WORKSPACE_ALIGN(                                           \
+       (size_t)(max_in_flight_messages) * AZ_IOT_AZ_MQTT_IN_FLIGHT_ENTRY_SIZE) \
+   + AZ_IOT_AZ_MQTT_WORKSPACE_ALIGN(send_buffer_size)                          \
+   + AZ_IOT_AZ_MQTT_WORKSPACE_ALIGN(receive_buffer_size)                       \
+   + AZ_IOT_AZ_MQTT_WORKSPACE_ALIGN((size_t)(receive_buffer_size) + 1u)        \
+   + AZ_IOT_AZ_MQTT_WORKSPACE_ALIGN(max_tls_state_size)                        \
+   + AZ_IOT_AZ_MQTT_WORKSPACE_ALIGN(connect_strings_size)                      \
    + AZ_IOT_AZ_MQTT_WORKSPACE_ALIGN(message_store_size))
 
 #ifdef __cplusplus

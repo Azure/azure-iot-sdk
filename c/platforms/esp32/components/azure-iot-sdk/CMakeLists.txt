@@ -13,7 +13,7 @@ get_filename_component(AZ_IOT_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOL
 # Same source lists as src/CMakeLists.txt.
 include("${AZ_IOT_ROOT}/src/sources.cmake")
 set(srcs)
-foreach(_src IN LISTS AZ_IOT_CORE_SOURCES AZ_IOT_MQTTV3_SOURCES AZ_IOT_MQTTV5_SOURCES)
+foreach(_src IN LISTS AZ_IOT_CORE_SOURCES AZ_IOT_MQTTV3_SOURCES)
     list(APPEND srcs "${AZ_IOT_ROOT}/src/${_src}")
 endforeach()
 
@@ -25,7 +25,6 @@ idf_component_register(
         # Internal headers resolve siblings as "internal/foo.h" regardless of
         # which src/ subtree the includer lives in (matches src/CMakeLists.txt).
         "${AZ_IOT_ROOT}/src/core"
-        "${AZ_IOT_ROOT}/src/features/su"
     REQUIRES
         azure-sdk-for-c
 )

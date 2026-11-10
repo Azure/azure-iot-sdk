@@ -10,12 +10,7 @@
  * the properties ride in the topic, so the client percent-decodes them before
  * the handler sees anything.
  *
- * There is no MQTT v5 counterpart: C2D is not carried on the MQTTv5 hub. The mqttv3
- * client pins MQTTv3 at init(), before open(), so DPS assigning an MQTTv5 hub --
- * on the first connect or after a move -- stops the connection with
- * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. The sample reports that and exits
- * non-zero; it does not rebuild. A move to another MQTTv3 hub needs nothing
- * from the application.
+ * A move to another MQTTv3 hub needs nothing from the application.
  *
  * DPS is handled internally by the connection client when dps.id_scope is set.
  */
@@ -43,7 +38,6 @@ typedef struct
   sample_config config;
   az_iot_certificate_provider_pem certs;
   az_iot_connection_client connection_client;
-  az_iot_mqtt_factory* factory_v3;
   az_iot_mqttv3_c2d_client c2d;
   int c2d_initialized;
 } sample_state;
@@ -53,8 +47,6 @@ typedef struct
   az_iot_connection_state conn_state;
   int connected_count;
   int faulted; /* terminal: nothing this sample can do about it */
-  int unsupported_hub; /* DPS assigned `assigned_profile`, which has no C2D */
-  az_iot_connection_profile assigned_profile;
   int messages_received;
 } user_context;
 
@@ -66,11 +58,6 @@ static void sample_state_destroy(sample_state* s)
     s->c2d_initialized = 0;
   }
   az_iot_connection_client_deinit(&s->connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(s->factory_v3);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(s->factory_v3);
-#endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
 }
@@ -79,18 +66,10 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 {
   user_context* ctx = (user_context*)user_ctx;
 
-  if (event->state == AZ_IOT_CONN_STATE_FAULTED
-      && event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH && event->profile != NULL)
-  {
-    ctx->assigned_profile = event->profile->connection_profile;
-    ctx->unsupported_hub = 1;
-    return;
-  }
-
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     ctx->faulted = 1;
-    /* DPS assigned a hub generation newer than this SDK. */
+    /* DPS assigned a hub generation this SDK does not support. */
     if (event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED && event->profile != NULL)
     {
       printf(
@@ -164,13 +143,19 @@ static void pump(sample_state* s, uint32_t timeout_ms)
 
 int main(void)
 {
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call.
+  sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_state state = { 0 };
   if (sample_config_load(&state.config) != 0)
   {
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
 
   user_context user_ctx = { 0 };
@@ -184,7 +169,10 @@ int main(void)
   if (az_iot_certificate_provider_pem_init(&state.certs, &pem) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
 
   /* Connection client (DPS provisioning is internal). The default reconnection
@@ -198,32 +186,35 @@ int main(void)
   copts.dps.registration_id = state.config.reg_id;
   copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
-  /* v3.1.1 serves both DPS and an MQTTv3 hub. */
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state.factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
-
-  /* Pins MQTTv3: an MQTTv5 assignment is refused before that hub is reached. */
   if (az_iot_mqttv3_c2d_client_init(&state.c2d, &state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
   state.c2d_initialized = 1;
 
@@ -231,24 +222,20 @@ int main(void)
       || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
 
   uint64_t end_ms = sample_now_ms() + SAMPLE_RUN_MS;
-  while (!user_ctx.faulted && !user_ctx.unsupported_hub && sample_now_ms() < end_ms)
+  while (!user_ctx.faulted && sample_now_ms() < end_ms)
   {
     pump(&state, 100);
   }
 
-  if (user_ctx.unsupported_hub)
-  {
-    printf(
-        "DPS assigned %s. Cloud-to-device messages are not available on this hub generation.\n",
-        az_iot_connection_profile_to_string(user_ctx.assigned_profile));
-  }
-
   printf("Received %d message(s).\n", user_ctx.messages_received);
-  int rc = (user_ctx.connected_count > 0 && !user_ctx.faulted && !user_ctx.unsupported_hub) ? 0 : 1;
+  int rc = (user_ctx.connected_count > 0 && !user_ctx.faulted) ? 0 : 1;
 
   az_iot_connection_client_close(&state.connection_client);
   for (int i = 0; i < 100 && user_ctx.conn_state != AZ_IOT_CONN_STATE_IDLE; ++i)
@@ -258,5 +245,8 @@ int main(void)
 
   sample_state_destroy(&state);
 
-  return rc;
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call or return the value
+  // directly.
+  return sample_pipeline_checks_end(rc);
 }

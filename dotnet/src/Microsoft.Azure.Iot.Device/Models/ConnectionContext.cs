@@ -61,8 +61,8 @@ namespace Microsoft.Azure.Iot.Device.Models
         /// is set and the provider still has them, otherwise the primary ones.
         /// </summary>
         internal async Task<AuthenticationCredentials> GetOperationalAuthenticationCredentialsAsync(
-            CancellationToken cancellationToken,
-            bool updateSecondaryCredentialSelection)
+            bool updateSecondaryCredentialSelection,
+            CancellationToken cancellationToken)
         {
             AuthenticationProvider authentication = AuthenticationProvider;
             if (UsesSecondaryCredentials)

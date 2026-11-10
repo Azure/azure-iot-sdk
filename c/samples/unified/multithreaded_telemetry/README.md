@@ -11,7 +11,7 @@ so the difference between the two `main.c` files is exactly the feature.
 
 ## Sample features
 
-- Hub generations: mqttv3 (MQTT 3.1.1) and mqttv5 (MQTT 5), whichever DPS assigns, including after the device is moved to a hub of the other generation.
+- Hub: mqttv3 (MQTT 3.1.1).
 - Two sensor threads push a reading every 2.5 seconds into [`reading_queue.c`](reading_queue.c), a bounded FIFO the application owns and locks (pthread mutex, or a critical section on Windows). The sensor threads never call the SDK.
 - The main thread is the only one that calls the SDK. It runs `do_work()` and, between calls, pops one reading and sends it once the previous send has completed. The SDK callbacks run inside `do_work()` on that thread, so the state they share with the loop needs no lock.
 - While the device is not connected, readings wait in the queue. When it is full, the oldest reading is dropped and counted.
@@ -55,7 +55,7 @@ message was sent and the connection never settled at `FAULTED`; otherwise 1.
 ## Expected output
 
 ```
-Sent 21 message(s) on AZ_IOT_CONNECTION_PROFILE_MQTT_V3, 0 failed, 0 reading(s) dropped.
+Sent 21 message(s), 0 failed, 0 reading(s) dropped.
 ```
 
 The counts depend on how long connecting took.

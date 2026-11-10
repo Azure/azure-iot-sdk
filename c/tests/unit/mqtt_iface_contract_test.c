@@ -65,23 +65,27 @@ static void on_event(const az_iot_mqtt_event* evt, void* ctx)
 
 /* ------------------------------------------------------------------------- */
 
-static void factory_advertises_version(void** state)
+static uint8_t g_mqtt_workspace[AZ_IOT_MOCK_MQTT_WORKSPACE_SIZE];
+
+/** @brief A @p version mock client the mock adapter builds in g_mqtt_workspace. */
+static az_iot_mqtt_client* build_mock_client(az_iot_mqtt_version version)
 {
-  (void)state;
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  assert_non_null(f);
-  assert_int_equal(f->version, AZ_IOT_MQTT_VERSION_3_1_1);
-  az_iot_mock_mqtt_factory_destroy(f);
+  az_iot_mqtt_client* c = NULL;
+  assert_int_equal(
+      az_iot_mock_mqtt_get_adapter()->init(
+          version, &az_iot_mock_mqtt_limits, g_mqtt_workspace, sizeof(g_mqtt_workspace), &c),
+      AZ_IOT_OK);
+  assert_non_null(c);
+  return c;
 }
 
 static void client_carries_iface_pointer_with_version(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  az_iot_mqtt_client* c = build_mock_client(AZ_IOT_MQTT_VERSION_3_1_1);
   assert_non_null(c);
   assert_non_null(c->iface);
-  assert_int_equal(c->iface->version, AZ_IOT_MQTT_VERSION_5);
+  assert_int_equal(c->iface->version, AZ_IOT_MQTT_VERSION_3_1_1);
   /* Every vtable slot must be populated. */
   assert_non_null(c->iface->connect);
   assert_non_null(c->iface->disconnect);
@@ -91,14 +95,13 @@ static void client_carries_iface_pointer_with_version(void** state)
   assert_non_null(c->iface->process_loop);
   assert_non_null(c->iface->set_inbound_cb);
   assert_non_null(c->iface->destroy);
-  az_iot_mock_mqtt_factory_destroy(f);
+  c->iface->destroy(c);
 }
 
 static void publish_records_topic_payload_and_assigns_packet_id(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  az_iot_mqtt_client* c = build_mock_client(AZ_IOT_MQTT_VERSION_3_1_1);
 
   az_iot_mqtt_message msg = { 0 };
   msg.topic = "devices/dev1/messages/events/";
@@ -121,14 +124,13 @@ static void publish_records_topic_payload_and_assigns_packet_id(void** state)
   assert_int_equal(call->qos, AZ_IOT_MQTT_QOS_1);
   assert_int_equal(call->packet_id, pid);
 
-  az_iot_mock_mqtt_factory_destroy(f);
+  c->iface->destroy(c);
 }
 
 static void scripted_failure_propagates_to_caller(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  az_iot_mqtt_client* c = build_mock_client(AZ_IOT_MQTT_VERSION_3_1_1);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_client_from(c);
 
   az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_CONNECT, AZ_IOT_ERR_MQTT);
@@ -138,14 +140,13 @@ static void scripted_failure_propagates_to_caller(void** state)
   /* Override is one-shot; second call returns AZ_IOT_OK again. */
   assert_int_equal(c->iface->connect(c, &copts), AZ_IOT_OK);
 
-  az_iot_mock_mqtt_factory_destroy(f);
+  c->iface->destroy(c);
 }
 
 static void process_loop_drains_one_event_per_call(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  az_iot_mqtt_client* c = build_mock_client(AZ_IOT_MQTT_VERSION_3_1_1);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_client_from(c);
 
   collected_events col = { 0 };
@@ -173,19 +174,17 @@ static void process_loop_drains_one_event_per_call(void** state)
   assert_int_equal(c->iface->process_loop(c, 0), AZ_IOT_OK);
   assert_int_equal(col.count, 2);
 
-  az_iot_mock_mqtt_factory_destroy(f);
+  c->iface->destroy(c);
 }
 
 static void destroy_via_iface_is_recorded(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_3_1_1);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
-  /* Calling destroy through the iface frees the client; the factory's
+  az_iot_mqtt_client* c = build_mock_client(AZ_IOT_MQTT_VERSION_3_1_1);
+  /* Calling destroy through the iface ends the client; the adapter's
    * last_client back-pointer is cleared. */
   c->iface->destroy(c);
-  assert_null(az_iot_mock_mqtt_factory_last_client(f));
-  az_iot_mock_mqtt_factory_destroy(f);
+  assert_null(az_iot_mock_mqtt_adapter_last_client());
 }
 
 /* ---- CONNACK code mapping -------------------------------------------------
@@ -197,7 +196,6 @@ static void connack_success_maps_to_ok(void** state)
 {
   (void)state;
   assert_int_equal(az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_3_1_1, 0), AZ_IOT_OK);
-  assert_int_equal(az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_5, 0), AZ_IOT_OK);
 }
 
 static void connack_v3_identity_codes_map_to_identity_rejected(void** state)
@@ -226,46 +224,18 @@ static void connack_v3_transport_codes_map_to_mqtt(void** state)
   }
 }
 
-static void connack_v5_identity_codes_map_to_identity_rejected(void** state)
-{
-  (void)state;
-  /* 0x85 client identifier not valid, 0x86 bad user name or password,
-   * 0x87 not authorized, 0x8C bad authentication method. */
-  static const int codes[] = { 0x85, 0x86, 0x87, 0x8C };
-  for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
-  {
-    assert_int_equal(
-        az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_5, codes[i]), AZ_IOT_ERR_IDENTITY_REJECTED);
-  }
-}
-
-static void connack_v5_transport_codes_map_to_mqtt(void** state)
-{
-  (void)state;
-  /* 0x80 unspecified, 0x88 server unavailable, 0x89 server busy,
-   * 0x97 quota exceeded -- all retryable against the same identity. */
-  static const int codes[] = { 0x80, 0x88, 0x89, 0x97 };
-  for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
-  {
-    assert_int_equal(az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_5, codes[i]), AZ_IOT_ERR_MQTT);
-  }
-}
-
 static void connack_negative_codes_map_to_mqtt(void** state)
 {
   (void)state;
   /* Adapters report their own failures (socket refused, TLS handshake) with
    * negative codes. Those never reached a broker, so they say nothing about
-   * the identity no matter which MQTT version is in play. */
+   * the identity. */
   assert_int_equal(az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_3_1_1, -1), AZ_IOT_ERR_MQTT);
-  assert_int_equal(az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_5, -1), AZ_IOT_ERR_MQTT);
 }
 
-/* An unrecognized version must not be interpreted as either scheme. The codes
- * overlap numerically -- 2, 4 and 5 are identity refusals in v3.1.1 and mean
- * something else in v5 -- so picking a scheme would be picking whether to
- * re-provision. The values below are exactly the ones that WOULD map to
- * IDENTITY_REJECTED if an unknown version silently fell through to v3.1.1. */
+/* An unrecognized version must not be interpreted as the v3.1.1 scheme: picking
+ * a scheme would be picking whether to re-provision. The values below are exactly the ones that
+ * WOULD map to IDENTITY_REJECTED if an unknown version silently fell through to v3.1.1. */
 static void connack_unknown_version_never_rejects_the_identity(void** state)
 {
   (void)state;
@@ -285,25 +255,24 @@ static void connack_unknown_version_never_rejects_the_identity(void** state)
 static void mapped_connack_status_reaches_the_inbound_callback(void** state)
 {
   (void)state;
-  az_iot_mqtt_factory* f = az_iot_mock_mqtt_factory_create(AZ_IOT_MQTT_VERSION_5);
-  az_iot_mqtt_client* c = f->create(f->factory_ctx);
+  az_iot_mqtt_client* c = build_mock_client(AZ_IOT_MQTT_VERSION_3_1_1);
   az_iot_mock_mqtt_client* m = az_iot_mock_mqtt_client_from(c);
 
   collected_events col = { 0 };
   c->iface->set_inbound_cb(c, on_event, &col);
 
-  /* Stand in for an adapter that saw CONNACK 0x87 and mapped it before
+  /* Stand in for an adapter that saw CONNACK 5 and mapped it before
    * reporting: the discriminated status must survive the event plumbing
    * intact, since that is the only thing the core gets to look at. */
   assert_true(az_iot_mock_mqtt_client_inject_connected(
-      m, az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_5, 0x87)));
+      m, az_iot_mqtt_connack_result(AZ_IOT_MQTT_VERSION_3_1_1, 5)));
   assert_int_equal(c->iface->process_loop(c, 0), AZ_IOT_OK);
 
   assert_int_equal(col.count, 1);
   assert_int_equal(col.kinds[0], AZ_IOT_MQTT_EVT_CONNECTED);
   assert_int_equal(col.statuses[0], AZ_IOT_ERR_IDENTITY_REJECTED);
 
-  az_iot_mock_mqtt_factory_destroy(f);
+  c->iface->destroy(c);
 }
 
 /* ---- SUBACK code mapping ---------------------------------------------------
@@ -322,7 +291,6 @@ static void suback_granted_qos_maps_to_ok(void** state)
   for (int code = 0; code <= 2; ++code)
   {
     assert_int_equal(az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_3_1_1, code), AZ_IOT_OK);
-    assert_int_equal(az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_5, code), AZ_IOT_OK);
   }
 }
 
@@ -336,49 +304,20 @@ static void suback_v3_failure_maps_to_subscription_refused(void** state)
       az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_3_1_1, 0x80), AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
 }
 
-static void suback_v5_permanent_codes_map_to_subscription_refused(void** state)
-{
-  (void)state;
-  /* 0x87 not authorized, 0x8F topic filter invalid, 0x9E shared subscriptions
-   * not supported, 0xA1 subscription identifiers not supported, 0xA2 wildcard
-   * subscriptions not supported. Re-issuing any of these is refused again. */
-  static const int codes[] = { 0x87, 0x8F, 0x9E, 0xA1, 0xA2 };
-  for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
-  {
-    assert_int_equal(
-        az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_5, codes[i]),
-        AZ_IOT_ERR_SUBSCRIPTION_REFUSED);
-  }
-}
-
-static void suback_v5_transient_codes_map_to_mqtt(void** state)
-{
-  (void)state;
-  /* 0x80 unspecified, 0x83 implementation specific, 0x91 packet identifier in
-   * use, 0x97 quota exceeded -- how a service-side fault presents, and
-   * re-subscribing is the right answer to every one of them. */
-  static const int codes[] = { 0x80, 0x83, 0x91, 0x97 };
-  for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
-  {
-    assert_int_equal(az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_5, codes[i]), AZ_IOT_ERR_MQTT);
-  }
-}
-
 static void suback_negative_codes_map_to_mqtt(void** state)
 {
   (void)state;
   /* Adapter-internal failures never reached a broker, so they carry no verdict
    * about the filter and must not fail the session. */
   assert_int_equal(az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_3_1_1, -1), AZ_IOT_ERR_MQTT);
-  assert_int_equal(az_iot_mqtt_suback_result(AZ_IOT_MQTT_VERSION_5, -1), AZ_IOT_ERR_MQTT);
 }
 
 static void suback_unknown_version_never_fails_the_session(void** state)
 {
   (void)state;
   const az_iot_mqtt_version bogus = (az_iot_mqtt_version)99;
-  /* 0x80 is a permanent refusal in v3.1.1 and a transient one in v5, so an
-   * unknown version cannot score it either way. Retrying is the safe half. */
+  /* 0x80 is a permanent refusal in v3.1.1, but an unknown version cannot score
+   * it. Retrying is the safe half. */
   assert_int_equal(az_iot_mqtt_suback_result(bogus, 0x80), AZ_IOT_ERR_MQTT);
   assert_int_equal(az_iot_mqtt_suback_result(bogus, 0x87), AZ_IOT_ERR_MQTT);
   /* A grant carries no scheme-specific meaning. */
@@ -387,53 +326,11 @@ static void suback_unknown_version_never_fails_the_session(void** state)
 
 /* ---- PUBACK code mapping -------------------------------------------------- */
 
-static void puback_v5_success_codes_map_to_ok(void** state)
-{
-  (void)state;
-  /* 0x10 no matching subscribers is a success: the broker accepted the message. */
-  static const int codes[] = { 0x00, 0x10, 0x7F };
-  for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
-  {
-    assert_int_equal(az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, codes[i]), AZ_IOT_OK);
-  }
-}
-
-static void puback_v5_permanent_codes_map_to_publish_refused(void** state)
-{
-  (void)state;
-  /* 0x87 not authorized, 0x90 topic name invalid, 0x99 payload format invalid; 0x95 packet too
-   * large, which az_mqtt reports for a publish over the server's Maximum Packet Size. */
-  static const int codes[] = { 0x87, 0x90, 0x95, 0x99 };
-  for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
-  {
-    assert_int_equal(
-        az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, codes[i]), AZ_IOT_ERR_PUBLISH_REFUSED);
-  }
-}
-
-static void puback_v5_quota_exceeded_maps_to_busy(void** state)
-{
-  (void)state;
-  assert_int_equal(az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, 0x97), AZ_IOT_ERR_BUSY);
-}
-
-static void puback_v5_other_failures_map_to_mqtt(void** state)
-{
-  (void)state;
-  /* 0x80 unspecified, 0x83 implementation specific, 0x91 packet identifier in use, and codes
-   * this SDK does not name. */
-  static const int codes[] = { 0x80, 0x83, 0x91, 0x9A, 0xFF, 0x100 };
-  for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
-  {
-    assert_int_equal(az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, codes[i]), AZ_IOT_ERR_MQTT);
-  }
-}
-
 static void puback_v3_maps_only_zero_to_ok(void** state)
 {
   (void)state;
   assert_int_equal(az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_3_1_1, 0), AZ_IOT_OK);
-  /* No reason code exists in MQTT 3.1.1: v5 meanings must not leak in. */
+  /* No reason code exists in MQTT 3.1.1: any other code is the adapter's own failure. */
   static const int codes[] = { 0x10, 0x80, 0x87, 0x97 };
   for (size_t i = 0; i < sizeof(codes) / sizeof(codes[0]); ++i)
   {
@@ -447,7 +344,6 @@ static void puback_negative_codes_and_unknown_version_map_to_mqtt(void** state)
   (void)state;
   const az_iot_mqtt_version bogus = (az_iot_mqtt_version)99;
   assert_int_equal(az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_3_1_1, -1), AZ_IOT_ERR_MQTT);
-  assert_int_equal(az_iot_mqtt_puback_result(AZ_IOT_MQTT_VERSION_5, -1), AZ_IOT_ERR_MQTT);
   assert_int_equal(az_iot_mqtt_puback_result(bogus, 0x87), AZ_IOT_ERR_MQTT);
   assert_int_equal(az_iot_mqtt_puback_result(bogus, 0x10), AZ_IOT_ERR_MQTT);
   assert_int_equal(az_iot_mqtt_puback_result(bogus, 0), AZ_IOT_OK);
@@ -460,204 +356,9 @@ static void publish_refused_has_a_name(void** state)
       az_iot_result_to_string(AZ_IOT_ERR_PUBLISH_REFUSED), "AZ_IOT_ERR_PUBLISH_REFUSED");
 }
 
-/* ------------------------------------------------------------------------- */
-/* User Property views                                                       */
-/* ------------------------------------------------------------------------- */
-
-static void user_properties_from_array_yields_every_entry_in_order(void** state)
-{
-  (void)state;
-  az_iot_mqtt_user_property array[24];
-  char keys[24][8];
-  for (int i = 0; i < 24; ++i)
-  {
-    snprintf(keys[i], sizeof(keys[i]), "k%02d", i);
-    array[i].key = keys[i];
-    array[i].value = (i == 5) ? NULL : "v";
-  }
-  array[7].key = NULL; /* skipped */
-  az_iot_mqtt_user_properties props = az_iot_mqtt_user_properties_from_array(array, 24);
-
-  size_t cursor = 0;
-  size_t seen = 0;
-  az_iot_mqtt_user_property_view p;
-  az_iot_result r;
-  while ((r = az_iot_mqtt_user_properties_next(&props, &cursor, &p)) == AZ_IOT_OK)
-  {
-    size_t expected = seen < 7 ? seen : seen + 1;
-    assert_int_equal(p.key_len, 3);
-    assert_memory_equal(p.key, keys[expected], 3);
-    assert_non_null(p.value);
-    assert_int_equal(p.value_len, expected == 5 ? 0 : 1);
-    seen++;
-  }
-  assert_int_equal(r, AZ_IOT_ERR_NOT_FOUND);
-  assert_int_equal(seen, 23);
-  /* The end is sticky. */
-  assert_int_equal(az_iot_mqtt_user_properties_next(&props, &cursor, &p), AZ_IOT_ERR_NOT_FOUND);
-}
-
-static void user_properties_empty_views_have_none(void** state)
-{
-  (void)state;
-  az_iot_mqtt_user_properties zero = { 0 };
-  az_iot_mqtt_user_properties none = az_iot_mqtt_user_properties_from_array(NULL, 3);
-  az_iot_mqtt_user_property one = { "k", "v" };
-  az_iot_mqtt_user_properties counted_zero = az_iot_mqtt_user_properties_from_array(&one, 0);
-  az_iot_mqtt_user_property_view p;
-  size_t cursor = 0;
-  assert_int_equal(az_iot_mqtt_user_properties_next(&zero, &cursor, &p), AZ_IOT_ERR_NOT_FOUND);
-  assert_int_equal(az_iot_mqtt_user_properties_next(&none, &cursor, &p), AZ_IOT_ERR_NOT_FOUND);
-  assert_int_equal(
-      az_iot_mqtt_user_properties_next(&counted_zero, &cursor, &p), AZ_IOT_ERR_NOT_FOUND);
-  assert_int_equal(az_iot_mqtt_user_properties_find(&zero, "k", &p), AZ_IOT_ERR_NOT_FOUND);
-}
-
-static void user_properties_find_matches_whole_keys_and_the_first(void** state)
-{
-  (void)state;
-  az_iot_mqtt_user_property array[] = {
-    { "typ", "short" },  { "types", "long" },  { "", "empty-key" },
-    { "type", "first" }, { "type", "second" },
-  };
-  az_iot_mqtt_user_properties props = az_iot_mqtt_user_properties_from_array(array, 5);
-  az_iot_mqtt_user_property_view p;
-
-  assert_int_equal(az_iot_mqtt_user_properties_find(&props, "type", &p), AZ_IOT_OK);
-  assert_int_equal(p.value_len, 5);
-  assert_memory_equal(p.value, "first", 5);
-
-  assert_int_equal(az_iot_mqtt_user_properties_find(&props, "", &p), AZ_IOT_OK);
-  assert_memory_equal(p.value, "empty-key", 9);
-
-  assert_int_equal(az_iot_mqtt_user_properties_find(&props, "ty", &p), AZ_IOT_ERR_NOT_FOUND);
-  assert_int_equal(az_iot_mqtt_user_properties_find(&props, "TYPE", &p), AZ_IOT_ERR_NOT_FOUND);
-}
-
-/* A producer reporting malformed data stops the iteration; find reports it
- * rather than "not found". */
-static az_iot_result malformed_after_one(
-    const void* source,
-    size_t source_len,
-    size_t* cursor,
-    az_iot_mqtt_user_property_view* out)
-{
-  (void)source;
-  (void)source_len;
-  if ((*cursor)++ == 0)
-  {
-    out->key = "a";
-    out->key_len = 1;
-    out->value = "";
-    out->value_len = 0;
-    return AZ_IOT_OK;
-  }
-  return AZ_IOT_ERR_PROTOCOL;
-}
-
-/* A producer handing out a NULL pointer breaks the view's contract. */
-static az_iot_result null_key(
-    const void* source,
-    size_t source_len,
-    size_t* cursor,
-    az_iot_mqtt_user_property_view* out)
-{
-  (void)source;
-  (void)source_len;
-  (*cursor)++;
-  out->key = NULL;
-  out->key_len = 0;
-  out->value = "";
-  out->value_len = 0;
-  return AZ_IOT_OK;
-}
-
-/* A producer that returns a property without advancing would loop forever. */
-static az_iot_result stuck(
-    const void* source,
-    size_t source_len,
-    size_t* cursor,
-    az_iot_mqtt_user_property_view* out)
-{
-  (void)source;
-  (void)source_len;
-  (void)cursor;
-  out->key = "k";
-  out->key_len = 1;
-  out->value = "";
-  out->value_len = 0;
-  return AZ_IOT_OK;
-}
-
-/* A producer that moves the cursor back would loop forever too. */
-static az_iot_result backward(
-    const void* source,
-    size_t source_len,
-    size_t* cursor,
-    az_iot_mqtt_user_property_view* out)
-{
-  (void)source;
-  (void)source_len;
-  *cursor = (*cursor == 0) ? 1 : 0;
-  out->key = "k";
-  out->key_len = 1;
-  out->value = "";
-  out->value_len = 0;
-  return AZ_IOT_OK;
-}
-
-static void user_properties_malformed_sources_are_reported(void** state)
-{
-  (void)state;
-  az_iot_mqtt_user_properties props = { malformed_after_one, NULL, 0 };
-  az_iot_mqtt_user_property_view p;
-  size_t cursor = 0;
-  assert_int_equal(az_iot_mqtt_user_properties_next(&props, &cursor, &p), AZ_IOT_OK);
-  assert_int_equal(az_iot_mqtt_user_properties_next(&props, &cursor, &p), AZ_IOT_ERR_PROTOCOL);
-  assert_int_equal(az_iot_mqtt_user_properties_find(&props, "a", &p), AZ_IOT_OK);
-  assert_int_equal(az_iot_mqtt_user_properties_find(&props, "b", &p), AZ_IOT_ERR_PROTOCOL);
-
-  az_iot_mqtt_user_properties bad = { null_key, NULL, 0 };
-  cursor = 0;
-  assert_int_equal(az_iot_mqtt_user_properties_next(&bad, &cursor, &p), AZ_IOT_ERR_PROTOCOL);
-
-  az_iot_mqtt_user_properties stuck_props = { stuck, NULL, 0 };
-  cursor = 0;
-  assert_int_equal(
-      az_iot_mqtt_user_properties_next(&stuck_props, &cursor, &p), AZ_IOT_ERR_PROTOCOL);
-  assert_int_equal(az_iot_mqtt_user_properties_find(&stuck_props, "x", &p), AZ_IOT_ERR_PROTOCOL);
-
-  az_iot_mqtt_user_properties back_props = { backward, NULL, 0 };
-  cursor = 0;
-  assert_int_equal(az_iot_mqtt_user_properties_next(&back_props, &cursor, &p), AZ_IOT_OK);
-  assert_int_equal(az_iot_mqtt_user_properties_next(&back_props, &cursor, &p), AZ_IOT_ERR_PROTOCOL);
-  assert_int_equal(az_iot_mqtt_user_properties_find(&back_props, "x", &p), AZ_IOT_ERR_PROTOCOL);
-}
-
-static void user_properties_null_arguments_are_refused(void** state)
-{
-  (void)state;
-  az_iot_mqtt_user_property one = { "k", "v" };
-  az_iot_mqtt_user_properties props = az_iot_mqtt_user_properties_from_array(&one, 1);
-  az_iot_mqtt_user_property_view p;
-  size_t cursor = 0;
-  assert_int_equal(az_iot_mqtt_user_properties_next(NULL, &cursor, &p), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_mqtt_user_properties_next(&props, NULL, &p), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_mqtt_user_properties_next(&props, &cursor, NULL), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_mqtt_user_properties_find(NULL, "k", &p), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_mqtt_user_properties_find(&props, NULL, &p), AZ_IOT_ERR_INVALID_ARG);
-  assert_int_equal(az_iot_mqtt_user_properties_find(&props, "k", NULL), AZ_IOT_ERR_INVALID_ARG);
-}
-
 int main(void)
 {
   const struct CMUnitTest tests[] = {
-    cmocka_unit_test(user_properties_from_array_yields_every_entry_in_order),
-    cmocka_unit_test(user_properties_empty_views_have_none),
-    cmocka_unit_test(user_properties_find_matches_whole_keys_and_the_first),
-    cmocka_unit_test(user_properties_malformed_sources_are_reported),
-    cmocka_unit_test(user_properties_null_arguments_are_refused),
-    cmocka_unit_test(factory_advertises_version),
     cmocka_unit_test(client_carries_iface_pointer_with_version),
     cmocka_unit_test(publish_records_topic_payload_and_assigns_packet_id),
     cmocka_unit_test(scripted_failure_propagates_to_caller),
@@ -666,21 +367,13 @@ int main(void)
     cmocka_unit_test(connack_success_maps_to_ok),
     cmocka_unit_test(connack_v3_identity_codes_map_to_identity_rejected),
     cmocka_unit_test(connack_v3_transport_codes_map_to_mqtt),
-    cmocka_unit_test(connack_v5_identity_codes_map_to_identity_rejected),
-    cmocka_unit_test(connack_v5_transport_codes_map_to_mqtt),
     cmocka_unit_test(connack_negative_codes_map_to_mqtt),
     cmocka_unit_test(connack_unknown_version_never_rejects_the_identity),
     cmocka_unit_test(mapped_connack_status_reaches_the_inbound_callback),
     cmocka_unit_test(suback_granted_qos_maps_to_ok),
     cmocka_unit_test(suback_v3_failure_maps_to_subscription_refused),
-    cmocka_unit_test(suback_v5_permanent_codes_map_to_subscription_refused),
-    cmocka_unit_test(suback_v5_transient_codes_map_to_mqtt),
     cmocka_unit_test(suback_negative_codes_map_to_mqtt),
     cmocka_unit_test(suback_unknown_version_never_fails_the_session),
-    cmocka_unit_test(puback_v5_success_codes_map_to_ok),
-    cmocka_unit_test(puback_v5_permanent_codes_map_to_publish_refused),
-    cmocka_unit_test(puback_v5_quota_exceeded_maps_to_busy),
-    cmocka_unit_test(puback_v5_other_failures_map_to_mqtt),
     cmocka_unit_test(puback_v3_maps_only_zero_to_ok),
     cmocka_unit_test(puback_negative_codes_and_unknown_version_map_to_mqtt),
     cmocka_unit_test(publish_refused_has_a_name),

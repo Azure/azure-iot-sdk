@@ -170,13 +170,38 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         }
 
         /// <summary>
+        /// How long to wait for the response to the given attempt (starting at 1) of a desired properties resync GET
+        /// request before sending it again.
+        /// </summary>
+        internal Func<int, TimeSpan> DesiredResyncTimeoutSchedule
+        {
+            get => _twinClient.DesiredResyncTimeoutSchedule;
+            set => _twinClient.DesiredResyncTimeoutSchedule = value;
+        }
+
+        /// <inheritdoc cref="TwinEngine.GetTwinResponseConnectionChecked"/>
+        internal Action? GetTwinResponseConnectionChecked
+        {
+            get => _twinClient.GetTwinResponseConnectionChecked;
+            set => _twinClient.GetTwinResponseConnectionChecked = value;
+        }
+
+        /// <inheritdoc cref="TwinEngine.GetTwinResponseReceived"/>
+        internal Action? GetTwinResponseReceived
+        {
+            get => _twinClient.GetTwinResponseReceived;
+            set => _twinClient.GetTwinResponseReceived = value;
+        }
+
+        /// <summary>
         /// Get the full twin.
         /// </summary>
         /// <param name="cancellationToken">The cancellation token.</param>
         /// <returns>The returned twin.</returns>
         /// <remarks>
-        /// Concurrent calls share a single request to IoT hub and all receive its response. If IoT hub doesn't respond within a
-        /// defensive timeout (5 to 15 minutes, growing with each attempt), the request is sent again.
+        /// Concurrent calls share a single request to IoT hub (which this client also uses for its own desired properties
+        /// resync and, for MQTTv3 IoT hubs, for the twin it gets upon connecting), and each receives its own copy of the response. If IoT hub doesn't
+        /// respond within a defensive timeout (5 to 15 minutes, growing with each attempt), the request is sent again.
         /// </remarks>
         /// <exception cref="DeviceException">
         /// Thrown if this get twin request could not be sent or IoT hub rejected it, or with
@@ -253,6 +278,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
         /// </summary>
         public void Dispose()
         {
+            GC.SuppressFinalize(this);
+
             _twinClient.Dispose();
         }
     }

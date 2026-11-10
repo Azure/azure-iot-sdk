@@ -342,6 +342,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
         /// </summary>
         public void Dispose()
         {
+            GC.SuppressFinalize(this);
+
             _underlyingClient.ApplicationMessageReceivedAsync -= DelegateReceivedPublishAsync;
             _underlyingClient.ConnectedAsync -= DelegateConnectedAsync;
             _underlyingClient.DisconnectedAsync -= DelegateDisconnectedAsync;

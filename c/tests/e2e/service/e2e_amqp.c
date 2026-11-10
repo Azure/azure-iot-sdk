@@ -483,10 +483,14 @@ static bool bytes_contain(const uint8_t* data, size_t size, const char* needle)
   return false;
 }
 
-/** @brief The Event Hubs sequence number of @p message within its partition, or -1 if absent. */
-static int64_t message_sequence_number(az_amqp_message const* message)
+/** @brief Decodes into @p value the message annotation @p key_name of @p message; false if absent.
+ */
+static bool message_annotation(
+    az_amqp_message const* message,
+    const char* key_name,
+    az_amqp_value* value)
 {
-  static const char key_name[] = "x-opt-sequence-number";
+  const size_t key_size = strlen(key_name);
   az_span annotations;
   az_amqp_decoder decoder;
   az_amqp_value map;
@@ -496,25 +500,49 @@ static int64_t message_sequence_number(az_amqp_message const* message)
       || az_result_failed(az_amqp_decoder_decode(&decoder, &map))
       || az_result_failed(az_amqp_value_get_map_decoder(&map, &pairs, NULL)))
   {
-    return -1;
+    return false;
   }
   while (az_amqp_decoder_has_next(&pairs))
   {
     az_amqp_value key;
-    az_amqp_value value;
     if (az_result_failed(az_amqp_decoder_decode(&pairs, &key))
-        || az_result_failed(az_amqp_decoder_decode(&pairs, &value)))
+        || az_result_failed(az_amqp_decoder_decode(&pairs, value)))
     {
-      return -1;
+      return false;
     }
-    if (key.kind == AZ_AMQP_VALUE_KIND_SYMBOL
-        && az_span_size(key.payload) == (int32_t)(sizeof(key_name) - 1)
-        && memcmp(az_span_ptr(key.payload), key_name, sizeof(key_name) - 1) == 0)
+    if (key.kind == AZ_AMQP_VALUE_KIND_SYMBOL && az_span_size(key.payload) == (int32_t)key_size
+        && memcmp(az_span_ptr(key.payload), key_name, key_size) == 0)
     {
-      return value.kind == AZ_AMQP_VALUE_KIND_LONG ? value.scalar.i64 : -1;
+      return true;
     }
   }
-  return -1;
+  return false;
+}
+
+/** @brief The Event Hubs sequence number of @p message within its partition, or -1 if absent. */
+static int64_t message_sequence_number(az_amqp_message const* message)
+{
+  az_amqp_value value;
+  return message_annotation(message, "x-opt-sequence-number", &value)
+          && value.kind == AZ_AMQP_VALUE_KIND_LONG
+      ? value.scalar.i64
+      : -1;
+}
+
+/** @brief Whether @p t watches every device, or @p message is from the device it watches. */
+static bool message_is_from_watched_device(
+    const e2e_amqp_telemetry* t,
+    az_amqp_message const* message)
+{
+  if (t->device_filter[0] == '\0')
+  {
+    return true;
+  }
+  az_amqp_value value;
+  const size_t size = strlen(t->device_filter);
+  return message_annotation(message, "iothub-connection-device-id", &value)
+      && value.kind == AZ_AMQP_VALUE_KIND_STRING && az_span_size(value.payload) == (int32_t)size
+      && memcmp(az_span_ptr(value.payload), t->device_filter, size) == 0;
 }
 
 static void on_message_received(
@@ -525,7 +553,8 @@ static void on_message_received(
 {
   e2e_amqp_telemetry* t = (e2e_amqp_telemetry*)user_data;
   if (!e2e_amqp_telemetry_record_sequence_number(
-          t, (int)(link - t->receivers), message_sequence_number(message)))
+          t, (int)(link - t->receivers), message_sequence_number(message))
+      || !message_is_from_watched_device(t, message))
   {
     E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
     return;
@@ -579,6 +608,21 @@ bool e2e_amqp_telemetry_set_capture_filter(e2e_amqp_telemetry* t, const char* ca
     memcpy(t->capture_filter, capture_filter, n);
   }
   t->capture_filter[n] = '\0';
+  return true;
+}
+
+bool e2e_amqp_telemetry_set_device_filter(e2e_amqp_telemetry* t, const char* device_id)
+{
+  const size_t n = device_id != NULL ? strlen(device_id) : 0;
+  if (n >= sizeof(t->device_filter))
+  {
+    return false;
+  }
+  if (n > 0)
+  {
+    memcpy(t->device_filter, device_id, n);
+  }
+  t->device_filter[n] = '\0';
   return true;
 }
 
@@ -1574,16 +1618,14 @@ static void on_filenotify_received(
 
   /* The notification node is hub-wide. A notification for someone else is
    * RELEASED so the hub redelivers it to the leg that is waiting for it --
-   * unless it is too old for any leg to be waiting. Nobody settles those, so on
-   * a long-lived hub they pile up and are redelivered to every watcher ahead of
-   * its own; accept them instead. Unparseable times are released, as before. */
+   * unless no leg waits for it: a blob the tests do not watch, or one too old
+   * for any leg to still be waiting. Nobody settles those, and the hub
+   * redelivers them to every watcher ahead of its own; accept them instead. */
   if (f->match[0] != '\0' && strstr(text, f->match) == NULL)
   {
-    int64_t enqueued_s;
-    if (e2e_notify_enqueued_time(text, &enqueued_s)
-        && (int64_t)time(NULL) - enqueued_s > E2E_AMQP_NOTIFY_STALE_S)
+    if (e2e_notify_has_no_watcher(text, (int64_t)time(NULL), E2E_AMQP_NOTIFY_STALE_S))
     {
-      f->stale_count++;
+      f->unwatched_count++;
       E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
       return;
     }
@@ -1845,7 +1887,7 @@ void e2e_amqp_filenotify_stats(
     int* out_delivered,
     int* out_captured,
     int* out_released,
-    int* out_stale,
+    int* out_unwatched,
     int* out_unparsed)
 {
   if (out_delivered != NULL)
@@ -1860,9 +1902,9 @@ void e2e_amqp_filenotify_stats(
   {
     *out_released = f->released_count;
   }
-  if (out_stale != NULL)
+  if (out_unwatched != NULL)
   {
-    *out_stale = f->stale_count;
+    *out_unwatched = f->unwatched_count;
   }
   if (out_unparsed != NULL)
   {

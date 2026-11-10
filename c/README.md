@@ -8,8 +8,7 @@
 A C99 device SDK for Azure IoT Hub and the Azure IoT Hub Device Provisioning Service (DPS),
 built for constrained and embedded devices.
 
-> **Preview** (1.0.0-preview). APIs may change before the first stable release. See the
-> [changelog](CHANGELOG.md).
+> Version 1.0.0. See the [changelog](CHANGELOG.md).
 
 ## Table of Contents
 
@@ -27,10 +26,10 @@ built for constrained and embedded devices.
 
 ## Features
 
-- **Both IoT Hub generations:** mqttv3 (MQTT 3.1.1) and mqttv5 (MQTT 5). DPS tells the device which
-  one it was assigned to, and the SDK picks the protocol.
+- **IoT Hub mqttv3:** MQTT 3.1.1. DPS tells the device which connection profile it was assigned;
+  one this SDK does not support fails the connection.
 - **X.509 authentication:** certificates from files, certificates issued by DPS from a CSR,
-  renewal over IoT Hub (mqttv3 only), and private keys held in a PKCS#11 token or TPM.
+  renewal over IoT Hub, and private keys held in a PKCS#11 token or TPM.
 - **DPS TPM attestation:** registration over HTTPS with any HTTPS stack and TPM software stack
   ([connecting](docs/connecting.md#authentication)).
 - **Resilient connections:** reconnection with backoff, re-provisioning, WebSockets and HTTP
@@ -42,17 +41,16 @@ built for constrained and embedded devices.
   thread) with `AZ_IOT_WITH_AZ_MQTT=ON`; or bring your own MQTT client through a small adapter
   interface.
 
-Device features by IoT Hub generation:
+Device features:
 
-| Feature | mqttv3 | mqttv5 |
-| --- | --- | --- |
-| Telemetry | Yes | Yes |
-| Device twin | Yes | Yes |
-| Direct methods | Yes | Yes |
-| Cloud-to-device messages | Yes | No |
-| File upload | Yes | No |
-| Certificate renewal over IoT Hub | Yes | No |
-| Software updates | Yes, over DPS | Yes, over DPS |
+| Feature | mqttv3 |
+| --- | --- |
+| Telemetry | Yes |
+| Device twin | Yes |
+| Direct methods | Yes |
+| Cloud-to-device messages | Yes |
+| File upload | Yes |
+| Certificate renewal over IoT Hub | Yes |
 
 ## Getting Started
 
@@ -65,7 +63,7 @@ or install it and use `find_package(azure-iot-sdk)`. See
 ### Quickstart
 
 On Linux, with the [build tools](samples/README.md#build-tools) installed (a C compiler, CMake
-3.21+, Ninja, OpenSSL 3 development files), from this directory:
+3.25+, Ninja, OpenSSL 3 development files), from this directory:
 
 ```sh
 cmake --preset linux-gcc-debug
@@ -87,7 +85,7 @@ sample has its own README.
 | --- | --- |
 | Understand how the SDK fits together | [Architecture](docs/architecture.md) |
 | Connect a device: states, provisioning, reconnection, proxies, certificates | [Connecting a device](docs/connecting.md) |
-| Know what a telemetry send guarantees: completion, offline, reconnect, QoS, mqttv5 properties | [Sending telemetry](docs/telemetry.md) |
+| Know what a telemetry send guarantees: completion, offline, reconnect, QoS | [Sending telemetry](docs/telemetry.md) |
 | Set build options, buffer limits, logging and other settings | [Client configuration](docs/client-configuration.md) |
 | Collect logs for troubleshooting or support | [Logging](docs/logging.md) |
 | Use my own MQTT client library | [Bring your own MQTT client](docs/how_to_byo_mqtt_client.md) |
@@ -108,10 +106,7 @@ in its header.
 - A [Yocto layer](platforms/yocto/meta-azure-iot-sdk/README.md) (scarthgap) builds the libraries,
   headers, CMake package and pkg-config files.
 - To port to another platform, supply an MQTT adapter
-  ([Bring your own MQTT client](docs/how_to_byo_mqtt_client.md)) and, for software updates, a
-  crypto backend and either the platform hooks ([ESP32 sample](samples/software_update/esp32/README.md))
-  or, in library mode, an application that installs the updates itself
-  ([library_mode sample](samples/software_update/pc/library_mode/README.md)).
+  ([Bring your own MQTT client](docs/how_to_byo_mqtt_client.md)).
 
 ## Getting Help
 

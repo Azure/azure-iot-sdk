@@ -192,7 +192,6 @@ static void connection_profile_to_string_covers_every_profile(void** state)
     const char* text;
   } all[] = {
     { AZ_IOT_CONNECTION_PROFILE_MQTT_V3, "AZ_IOT_CONNECTION_PROFILE_MQTT_V3" },
-    { AZ_IOT_CONNECTION_PROFILE_MQTT_V5, "AZ_IOT_CONNECTION_PROFILE_MQTT_V5" },
     { AZ_IOT_CONNECTION_PROFILE_UNKNOWN, "AZ_IOT_CONNECTION_PROFILE_UNKNOWN" },
   };
   const size_t n = sizeof(all) / sizeof(all[0]);
@@ -220,14 +219,9 @@ static void mqtt_version_to_string_covers_every_version(void** state)
 {
   (void)state;
   assert_mapped(az_iot_mqtt_version_to_string(AZ_IOT_MQTT_VERSION_3_1_1), "MQTT?", "v3.1.1");
-  assert_mapped(az_iot_mqtt_version_to_string(AZ_IOT_MQTT_VERSION_5), "MQTT?", "v5");
-  assert_string_not_equal(
-      az_iot_mqtt_version_to_string(AZ_IOT_MQTT_VERSION_3_1_1),
-      az_iot_mqtt_version_to_string(AZ_IOT_MQTT_VERSION_5));
   /* The wire version is what a reader correlates against a packet capture, so
    * the strings name the protocol rather than the enumerator. */
   assert_string_equal(az_iot_mqtt_version_to_string(AZ_IOT_MQTT_VERSION_3_1_1), "MQTTv3.1.1");
-  assert_string_equal(az_iot_mqtt_version_to_string(AZ_IOT_MQTT_VERSION_5), "MQTTv5");
 }
 
 static void mqtt_version_to_string_reports_unknown_for_an_unmapped_version(void** state)
@@ -246,7 +240,6 @@ static void mqtt_role_to_string_covers_every_role(void** state)
   } all[] = {
     { AZ_IOT_MQTT_ROLE_DPS, "DPS" },
     { AZ_IOT_MQTT_ROLE_HUB_MQTT_V3, "HUB_MQTT_V3" },
-    { AZ_IOT_MQTT_ROLE_HUB_MQTT_V5, "HUB_MQTT_V5" },
   };
   const size_t n = sizeof(all) / sizeof(all[0]);
   const char* got[sizeof(all) / sizeof(all[0])];

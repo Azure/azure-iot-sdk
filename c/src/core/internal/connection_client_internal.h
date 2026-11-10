@@ -57,122 +57,6 @@ extern "C"
    */
   size_t az_iot_connection_client__sas_token_area(size_t buffer_size, size_t key_count);
 
-  /* Test seam: force any in-flight MQTTv5 presence (birth) handshake to time
-   * out on the next do_work(). No-op when no handshake is active. Lets unit tests
-   * exercise the SUBACK and birth-ack timeout paths without waiting them out. */
-  void az_iot_connection_client__presence_force_timeout(az_iot_connection_client* client);
-
-  /**
-   * @brief Replace the random source of defensive-timeout jitter.
-   *
-   * Test seam: makes az_iot_connection_client__defensive_timeout_ms()
-   * deterministic.
-   *
-   * @param[in,out] client The client.
-   * @param[in] source Returns a uniformly distributed value; NULL restores the
-   *                   default (the client's PRNG).
-   * @param[in] context Passed to @p source.
-   */
-  void az_iot_connection_client__set_defensive_timeout_random_source(
-      az_iot_connection_client* client,
-      uint64_t (*source)(void* context),
-      void* context);
-
-  /**
-   * @brief Replace the defensive-timeout schedule.
-   *
-   * Test seam: e2e tests use a seconds-scale schedule so a missed birth-ack
-   * recovers within their connect windows.
-   *
-   * @param[in,out] client The client.
-   * @param[in] base_ms_by_attempt Base of attempts 1..@p attempt_count; the last
-   *                               entry repeats. Must outlive the client. NULL
-   *                               restores the spec's schedule.
-   * @param[in] attempt_count Entries in @p base_ms_by_attempt; 0 only with NULL.
-   * @param[in] jitter_max_ms Largest jitter added to the base.
-   * @return AZ_IOT_OK; AZ_IOT_ERR_INVALID_ARG for a NULL @p client, or when
-   *         exactly one of @p base_ms_by_attempt and @p attempt_count is
-   *         NULL / 0.
-   */
-  az_iot_result az_iot_connection_client__set_defensive_timeout_schedule(
-      az_iot_connection_client* client,
-      const uint32_t* base_ms_by_attempt,
-      size_t attempt_count,
-      uint32_t jitter_max_ms);
-
-  /**
-   * @brief mqttv5 defensive timeout of 1-based @p attempt, with jitter drawn
-   * from the client's random source.
-   *
-   * Arms the presence birth-ack timeout; for any wait on a service message
-   * that must follow the same schedule (see internal/defensive_timeout.h).
-   *
-   * @param[in,out] client The client; its PRNG advances unless a source is set.
-   * @param[in] attempt Attempt number (0 is treated as 1).
-   * @return The timeout in milliseconds; 5 to 15 min unless
-   *         az_iot_connection_client__set_defensive_timeout_schedule() replaced
-   *         the schedule.
-   */
-  uint32_t az_iot_connection_client__defensive_timeout_ms(
-      az_iot_connection_client* client,
-      uint32_t attempt);
-
-  /* Authoritative twin versions the service reported on the most recent MQTTv5
-   * birth-ack, as of birth admission on the current connection. The twin client
-   * uses `reported_version` as the if_match anchor for its next reported patch
-   * and `desired_version` as its view of the current desired version. Both are 0
-   * before the first birth-ack, on MQTTv3/DPS sessions, and when the service
-   * omits the fields. Returns AZ_IOT_ERR_INVALID_ARG on NULL arguments. */
-  az_iot_result az_iot_connection_client__presence_twin_versions(
-      const az_iot_connection_client* client,
-      uint64_t* out_desired_version,
-      uint64_t* out_reported_version);
-
-/* Width of the MQTT v5 Correlation Data every MQTTv5 flow uses: a 16-byte UUID,
- * for the connection's birth nonce and for per-request correlation ids alike. */
-#define AZ_IOT_CORRELATION_UUID_LEN 16u
-
-  /* Fill `out` with a fresh RFC 4122 version 4 UUID from the client's PRNG.
-   * Feature clients use this for the per-attempt Correlation Data that the MQTTv5
-   * request/response flows (twin GET, reported patch, ...) require. */
-  void az_iot_connection_client__gen_uuid(
-      az_iot_connection_client* client,
-      uint8_t out[AZ_IOT_CORRELATION_UUID_LEN]);
-
-  /* Copy the current connection's birth nonce into `out`. Backend-initiated
-   * dev-bound messages (twin-push, desired-patch) carry it as Correlation Data
-   * so the device can tell traffic for this connection from traffic left over
-   * from a defunct one. Returns AZ_IOT_ERR_NOT_CONNECTED when no presence
-   * handshake has completed on this connection (MQTTv3/DPS sessions included). */
-  az_iot_result az_iot_connection_client__presence_nonce(
-      const az_iot_connection_client* client,
-      uint8_t out[AZ_IOT_CORRELATION_UUID_LEN]);
-
-  /* As az_iot_connection_client__presence_nonce(), but available once the birth is
-   * sent: the service may send dev-bound messages before the birth-ack. Not available
-   * once close() is requested. */
-  az_iot_result az_iot_connection_client__birth_nonce(
-      const az_iot_connection_client* client,
-      uint8_t out[AZ_IOT_CORRELATION_UUID_LEN]);
-
-  /** @brief Whether options.twin_push.push_desired asks the service to push desired state. */
-  bool az_iot_connection_client__twin_push_desired(const az_iot_connection_client* client);
-
-  /** @brief Whether options.twin_push.push_reported asks the service to push reported state. */
-  bool az_iot_connection_client__twin_push_reported(const az_iot_connection_client* client);
-
-  /** @brief Whether options.twin_push asks the service for a twin-push on each connect. */
-  bool az_iot_connection_client__twin_push_expected(const az_iot_connection_client* client);
-
-  /**
-   * @brief Whether @p deadline had passed when the current do_work() pass began. Input that pass
-   * dispatches arrived by then or during its waits, which end by the deadline, so it is in time
-   * unless this is true.
-   */
-  bool az_iot_connection_client__deadline_passed_before_pass(
-      const az_iot_connection_client* client,
-      const az_iot_deadline* deadline);
-
   /**
    * @brief End the CONNECTED hub session on a feature client's behalf: send
    * DISCONNECT, then reconnect with @p reason, or fault with it without a
@@ -188,9 +72,17 @@ extern "C"
       az_iot_connection_client* client,
       az_iot_result reason);
 
-  /** @brief Test seam: make a planned hub session end's disconnect bound pass. */
+  /** @brief Test seam: make a planned hub session end's settle and disconnect bounds pass. */
   void az_iot_connection_client__planned_hub_session_end_force_timeout(
       az_iot_connection_client* client);
+
+  /**
+   * @brief Whether new tracked sends wait: the hub session is being ended on purpose, and a SAS
+   *        renewal or a pause for a provisioning session first lets its deliveries settle (see
+   *        AZ_IOT_CONNECTION_FEATURE_EVENT_UNSETTLED_QUERY).
+   */
+  bool az_iot_connection_client__holds_sends_for_session_end(
+      const az_iot_connection_client* client);
 
   /* Test seam: force a pending subscription gate to expire on the next
    * do_work(). No-op when no gate is armed. Lets unit tests exercise the
@@ -282,13 +174,13 @@ extern "C"
 
   /* --- Provisioning-session seam ------------------------------------------- */
   /*
-   * The device-update operations ride the device's PROVISIONING session, not the
-   * hub session, and the bootstrap check runs BEFORE the device is registered --
-   * so az_iot_connection_client__publish() cannot serve them: it publishes on
-   * the active hub client and requires CONNECTED.
+   * A feature client that rides the device's PROVISIONING session, not the hub
+   * session, and runs BEFORE the device is registered cannot use
+   * az_iot_connection_client__publish(): it publishes on the active hub client
+   * and requires CONNECTED.
    *
-   * These expose the provisioning session directly, for the one feature that
-   * legitimately needs it. Not for general use.
+   * These expose the provisioning session directly, for such a feature. Not for
+   * general use.
    */
 
   /* True when a provisioning session exists and is far enough along to carry a
@@ -296,8 +188,9 @@ extern "C"
    * outcome has not yet torn the session down. */
   bool az_iot_connection_client__dps_session_ready(const az_iot_connection_client* client);
 
-  /* Publish on the provisioning session. Returns ERR_NOT_CONNECTED when no such
-   * session is ready. */
+  /* Publish on the provisioning session, which is then kept for the response
+   * until az_iot_connection_client__dps_session_release(). Returns
+   * ERR_NOT_CONNECTED when no such session is ready. */
   az_iot_result az_iot_connection_client__dps_publish(
       az_iot_connection_client* client,
       const az_iot_mqtt_message* msg);
@@ -327,39 +220,6 @@ extern "C"
   bool az_iot_connection_client__dps_hold_is_active(const az_iot_connection_client* client);
 
   /**
-   * @brief Take a standing interest in the provisioning session.
-   *
-   * The session exists exactly while somebody holds it -- these interests plus
-   * the connection client's own registration ref -- so a holder keeps it alive
-   * across registration, and the last release ends it.
-   *
-   * Acquire at initialize, release at deinit. Distinct from the
-   * pre-registration hold, which delays a registration that is about to happen
-   * rather than asking for the session itself; a caller usually wants both.
-   *
-   * @param[in] client The connection client. Must not be NULL.
-   *
-   * @return AZ_IOT_OK on success.
-   * @retval AZ_IOT_ERR_INVALID_ARG @p client is NULL.
-   * @retval AZ_IOT_ERR_NOT_ENOUGH_SPACE The interest count is saturated.
-   */
-  az_iot_result az_iot_connection_client__dps_user_acquire(az_iot_connection_client* client);
-
-  /**
-   * @brief Give up a standing interest taken with
-   *        az_iot_connection_client__dps_user_acquire().
-   *
-   * Does not close the session, even when this is the last interest: this is
-   * reachable from inside a message callback, where freeing the adapter would
-   * free the object being dispatched on. az_iot_connection_client_do_work()
-   * closes it at a safe point.
-   *
-   * @param[in] client The connection client. NULL, and an interest count
-   *                   already at zero, are both ignored.
-   */
-  void az_iot_connection_client__dps_user_release(az_iot_connection_client* client);
-
-  /**
    * @brief Whether a registration is pending on the provisioning session.
    *
    * Answers "is there a registration for my pre-registration hold to hold
@@ -373,28 +233,52 @@ extern "C"
   bool az_iot_connection_client__dps_registration_pending(const az_iot_connection_client* client);
 
   /**
-   * @brief Report whether the provisioning session is usable, opening one if
-   *        there is none.
+   * @brief Ask for the provisioning session: report whether it is usable,
+   *        opening one if there is none.
    *
-   * The caller is not requesting a session so much as asking about the one its
-   * interest already entitles it to.
+   * The session is then kept, across a registration too, until
+   * az_iot_connection_client__dps_session_release(). No hub session runs while
+   * it exists, so ask only while there is work for the session.
    *
-   * Registration is NOT implied: a session opened through this call carries its
-   * users' messages, and registers only if the connection client separately
-   * holds the registration ref, which az_iot_connection_client_open() raises.
+   * Registration is NOT implied: a session opened through this call carries
+   * the feature client's messages, and registers only if the connection client
+   * separately holds the registration ref, which
+   * az_iot_connection_client_open() raises.
+   *
+   * The two sessions never coexist: a connected hub session is ended first (a
+   * planned end; feature clients see AZ_IOT_CONNECTION_SESSION_END_PLANNED) and
+   * waits at HUB:RETRY_PENDING, reason AZ_IOT_OK, until no provisioning session
+   * is in use. It then reconnects to the cached assignment, without
+   * registering.
    *
    * @param[in] client The connection client. Must not be NULL.
    *
    * @return AZ_IOT_OK when a publish can be made now.
    * @retval AZ_IOT_ERR_INVALID_ARG @p client is NULL.
-   * @retval AZ_IOT_ERR_BUSY A session is coming up, or a retry is scheduled;
-   *         call again on a later tick.
-   * @retval AZ_IOT_ERR_NOT_SUPPORTED The caller holds no interest, DPS is not
-   *         configured, or a lifecycle has settled into FAULTED -- opening a
-   *         session from there would drag it out of its terminal state and
-   *         hide the fault from the application.
+   * @retval AZ_IOT_ERR_BUSY A session is coming up, the hub session is being
+   *         ended or set up, or a retry is scheduled; call again on a later
+   *         tick.
+   * @retval AZ_IOT_ERR_NOT_SUPPORTED DPS is not configured, the session's
+   *         retries are spent, or a lifecycle has settled into FAULTED --
+   *         opening a session from there would drag it out of its terminal
+   *         state and hide the fault from the application.
    */
   az_iot_result az_iot_connection_client__dps_session_ensure(az_iot_connection_client* client);
+
+  /**
+   * @brief Give the provisioning session back: no longer wanted after
+   *        az_iot_connection_client__dps_session_ensure() or
+   *        az_iot_connection_client__dps_publish().
+   *
+   * Does not close the session: this is reachable from inside a message
+   * callback, where freeing the adapter would free the object being dispatched
+   * on. az_iot_connection_client_do_work() closes it at a safe point, then
+   * starts a hub session that waited for it.
+   *
+   * @param[in] client The connection client. NULL, and a session not wanted,
+   *                   are both ignored.
+   */
+  void az_iot_connection_client__dps_session_release(az_iot_connection_client* client);
 
   /* Register the observer for inbound provisioning-session messages the
    * provisioning flow does not claim. At most one: registering a second observer over a live one is
@@ -413,9 +297,11 @@ extern "C"
    * @param ack_cb QoS 1: called from do_work() with the PUBLISH_ACK result; without one, a
    *               failed PUBLISH_ACK is only logged. QoS 0: called here with AZ_IOT_OK.
    *
-   * @retval AZ_IOT_ERR_NOT_CONNECTED Not in CONNECTED state.
+   * @retval AZ_IOT_ERR_NOT_CONNECTED Not in CONNECTED state, or the session is being ended on
+   *         purpose (DISCONNECT sent).
    * @retval AZ_IOT_ERR_BUSY QoS 1 with @p ack_cb and every slot of the pool it draws from is in
-   *         use. Nothing was sent.
+   *         use, or any QoS 1 while a SAS renewal or a pause for a provisioning session lets the
+   *         session's deliveries settle (at most 5 s). Nothing was sent.
    * @return Otherwise the adapter's result.
    */
   az_iot_result az_iot_connection_client__publish(
@@ -544,17 +430,7 @@ extern "C"
   /* Withdraw every persistent subscription registered by `owner`. Returns the
    * number removed.
    *
-   * Each removed entry is also UNSUBSCRIBEd when connected, on both
-   * generations. MQTTv5's device-wide `ih/{device_id}/dev/#` subscription is not
-   * at risk from this: the presence handshake takes it out directly rather than
-   * through the persistent-subscription registry, so it has no owner and this
-   * function can never select it. Withdrawing an entry underneath it does not
-   * disturb it either -- the wildcard keeps matching.
-   *
-   * On MQTTv5 this is now a registry removal in practice, because no feature
-   * client registers a filter there any more: the wildcard covers them all. It
-   * still issues the UNSUBSCRIBE for anything that is registered, which is what
-   * an application custom topic will be.
+   * Each removed entry is also UNSUBSCRIBEd when connected.
    *
    * Safe to call when disconnected: the entries are dropped either way, so a
    * later reconnect does not resurrect them. */
@@ -563,11 +439,10 @@ extern "C"
       const void* owner);
 
   /* Build the topics a feature client needs, once the connection knows the
-   * device id and generation it will actually use.
+   * device id and profile it will actually use.
    *
-   * A feature client cannot build `devices/{device_id}/...` or
-   * `ih/{device_id}/...` at _init(): on a DPS connection the assigned device id
-   * is not authoritative until ASSIGNED, and an enrollment may hand back a
+   * A feature client cannot build `devices/{device_id}/...` at _init(): on a DPS connection the
+   * assigned device id is not authoritative until ASSIGNED, and an enrollment may hand back a
    * device id that differs from the registration id. The connection therefore
    * calls this back before each connect attempt, after provisioning has settled.
    *
@@ -580,7 +455,7 @@ extern "C"
 
   /* Attach a bind callback for `owner`, replacing any previous one. Feature
    * clients call this from _init() and withdraw it in _deinit() --
-   * __release_profile only drops the generation refcount and leaves the bind
+   * __release_profile only drops the profile refcount and leaves the bind
    * in place, so a client that skips the withdrawal leaves the connection
    * holding a callback into freed storage. */
   az_iot_result az_iot_connection_client__register_feature_client_bind(
@@ -594,7 +469,7 @@ extern "C"
       az_iot_connection_client* client,
       const void* owner);
 
-  /* Declare the hub generation a feature client needs, refcounted per client.
+  /* Declare the hub profile a feature client needs, refcounted per client.
    *
    * Records the requirement rather than reading the connection, so a feature
    * client can be constructed before open(); the connection verifies it when the
@@ -602,8 +477,8 @@ extern "C"
    * DPS connection past ASSIGNED -- the answer is given here instead.
    *
    * Returns AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH if the connection already
-   * carries a requirement for the other generation, or is already known to be
-   * the other generation. */
+   * carries a requirement for another profile, or is already known to be
+   * another profile. */
   az_iot_result az_iot_connection_client__require_profile(
       az_iot_connection_client* client,
       az_iot_connection_profile profile);
@@ -612,18 +487,11 @@ extern "C"
    * from _deinit(); the pin clears when the last one goes. */
   void az_iot_connection_client__release_profile(az_iot_connection_client* client);
 
-  /* Map session role to required MQTT version (SDK-internal knowledge). */
+  /* MQTT version a session role requires: every role speaks v3.1.1. */
   static inline az_iot_mqtt_version az_iot_mqtt_required_version_for_role(az_iot_mqtt_role role)
   {
-    switch (role)
-    {
-      case AZ_IOT_MQTT_ROLE_HUB_MQTT_V5:
-        return AZ_IOT_MQTT_VERSION_5;
-      case AZ_IOT_MQTT_ROLE_DPS:
-      case AZ_IOT_MQTT_ROLE_HUB_MQTT_V3:
-      default:
-        return AZ_IOT_MQTT_VERSION_3_1_1;
-    }
+    (void)role;
+    return AZ_IOT_MQTT_VERSION_3_1_1;
   }
 
   const char* az_iot_mqtt_role_to_string(az_iot_mqtt_role r);

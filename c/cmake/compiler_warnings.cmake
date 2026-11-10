@@ -1,6 +1,20 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
+# Warning level for fetched dependencies (azure-sdk-for-c, Paho) built into SDK binaries.
+# MSVC: /W3. Without it they build at Visual Studio's default /W1, as CMP0092 drops CMake's
+# default /W3 and azure-sdk-for-c sets warning flags only for its own unit tests. BinSkim
+# (BA2007) rejects binaries containing modules built below /W3. Warnings stay non-fatal.
+function(az_iot_apply_dependency_warnings)
+    if(MSVC)
+        foreach(_target IN LISTS ARGN)
+            if(TARGET ${_target})
+                target_compile_options(${_target} PRIVATE /W3)
+            endif()
+        endforeach()
+    endif()
+endfunction()
+
 # Apply strict-but-portable C warning flags to a target.
 function(az_iot_apply_warnings target)
     if(MSVC)

@@ -4,18 +4,19 @@
 # File upload
 
 Uploads a small text file (`sample-data/test.txt`) to the Azure Storage account linked to the
-IoT Hub, then notifies the hub. File upload is an **mqttv3** IoT Hub feature; there is no mqttv5
-counterpart.
+IoT Hub, then notifies the hub. File upload is an **mqttv3** IoT Hub feature.
 
 ## Sample features
 
-- Hub generation: mqttv3 (MQTT 3.1.1) only.
+- Hub: mqttv3 (MQTT 3.1.1).
 - Three steps: `az_iot_mqttv3_file_upload_client_get_sas_uri()` returns a SAS URI and a correlation ID; the application PUTs the file to that URI on Azure Storage; `az_iot_mqttv3_file_upload_client_notify_complete()` reports the result to the hub.
 - The SDK ships no HTTP client. The hub calls go through an application HTTP hook, required at `init()`; this sample implements it, and the Storage PUT, with libcurl.
 - The hub calls authenticate with the device's X.509 certificate (mutual TLS), the same as MQTT. For a device that authenticates with a SAS key (`hub_auth.sas`), the SDK passes a hub SAS token to the hook as `authorization`, which the hook sends as the `Authorization` header. The Storage PUT is authenticated by the SAS token in the URI.
-- `init()` needs the assigned hub, so the client is built once `CONNECTED`, the way [`connect_first`](../connect_first/README.md) does. On an mqttv5 hub the sample reports that file upload is unavailable and exits 1.
+- `init()` needs the assigned hub, so the client is built once `CONNECTED`, the way [`connect_first`](../connect_first/README.md) does.
 - One-shot: it uploads once and exits.
 - Platforms: Linux and Windows.
+- libcurl gets the device certificate and key as a PKCS#12 the sample builds in memory with OpenSSL from `AZ_IOT_CLIENT_CERT` and `AZ_IOT_CLIENT_KEY` (`CURLOPT_SSLCERT_BLOB`, type `P12`): libcurl over Schannel, its Windows TLS, takes no PEM client certificate; over OpenSSL it takes this form too.
+- The HTTPS calls check the hub and Storage server certificates against libcurl's default trust: the system CA bundle with OpenSSL, the Windows certificate store with Schannel. `AZ_IOT_TRUSTED_CA` is for the MQTT connections.
 
 ## Service requirements
 
@@ -79,9 +80,10 @@ cmake --build --preset windows-msvc-debug --target az_iot_sample_unified_file_up
 .\build\windows-msvc-debug\samples\unified\Debug\az_iot_sample_file_upload.exe
 ```
 
-The upload needs **libcurl**. Linux: install `libcurl4-openssl-dev` (Debian/Ubuntu). Windows: use
-vcpkg through the manifest in `c/vcpkg.json` by adding these to the configure command (vcpkg
-then builds libcurl and OpenSSL; `vcpkg install curl` alone is not enough):
+The upload needs **libcurl** 7.71 or newer with OpenSSL or Schannel TLS (the client certificate goes to it as an
+in-memory PKCS#12), and OpenSSL. Linux: install `libcurl4-openssl-dev` (Debian/Ubuntu). Windows:
+use vcpkg through the manifest in `c/vcpkg.json` by adding these to the configure command (vcpkg
+then builds libcurl over Schannel, and OpenSSL; `vcpkg install curl` alone is not enough):
 
 ```powershell
 cmake --preset windows-msvc-debug `
@@ -89,8 +91,8 @@ cmake --preset windows-msvc-debug `
   "-DVCPKG_MANIFEST_FEATURES=paho;curl"
 ```
 
-Without libcurl, configure prints
-`az_iot_sample_unified_file_upload: libcurl not found; building without the HTTPS upload path.`
+Without libcurl or OpenSSL, configure prints
+`az_iot_sample_unified_file_upload: libcurl 7.71+ or OpenSSL not found; building without the HTTPS upload path.`
 and the sample connects but cannot upload.
 
 ## How it ends
@@ -119,9 +121,10 @@ If the Storage PUT fails, the sample notifies the hub of the failure, prints
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. DPS verdicts are retried until the sample's run time ends. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
-| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK version does not know. |
+| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK does not support. |
 | `SAS URI request did not succeed: ...` | File upload is not configured on the hub, or the storage account is not linked. |
 | `libcurl not built in; cannot perform HTTPS ...` | The sample was built without libcurl; see Build and run. |
+| `Failed to read the device certificate and key for HTTPS.`, exit 1 | `AZ_IOT_CLIENT_CERT` or `AZ_IOT_CLIENT_KEY` is not a readable PEM file, or the key does not match the certificate. |
 
 ## Where to look in `main.c`
 
@@ -132,3 +135,4 @@ If the Storage PUT fails, the sample notifies the hub of the failure, prints
 | Request the SAS URI | `az_iot_mqttv3_file_upload_client_get_sas_uri()`, `on_sas()` |
 | Notify completion | `az_iot_mqttv3_file_upload_client_notify_complete()`, `on_notify()` |
 | HTTP hook and Storage PUT (libcurl) | code under `AZ_IOT_SAMPLE_WITH_CURL` |
+| Device certificate for libcurl, as PKCS#12 | `client_certificate_to_pkcs12()`, `CURLOPT_SSLCERT_BLOB` in `https_request()` |

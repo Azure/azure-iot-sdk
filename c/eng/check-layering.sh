@@ -36,50 +36,24 @@ report_pattern() {
 }
 
 report_pattern \
-    "mqttv3 source must not reference mqttv5" \
-    "mqttv5_" \
-    "${root_dir}/src/mqttv3"
-report_pattern \
-    "mqttv5 source must not reference mqttv3" \
-    "mqttv3_" \
-    "${root_dir}/src/mqttv5"
-report_pattern \
-    "mqttv3 public headers must not include mqttv5 headers" \
-    "#[[:space:]]*include[^[:cntrl:]]*mqttv5/" \
-    "${root_dir}/inc/azure/iot/mqttv3"
-report_pattern \
-    "mqttv5 public headers must not include mqttv3 headers" \
-    "#[[:space:]]*include[^[:cntrl:]]*mqttv3/" \
-    "${root_dir}/inc/azure/iot/mqttv5"
-report_pattern \
     "core must publish profiles as data, not reference generation clients" \
-    "mqttv[35]_" \
+    "mqttv3_" \
     "${root_dir}/src/core"
 report_pattern \
-    "mqttv3 public headers expose an mqttv5-only construct" \
-    "az_iot_mqtt_user_property|correlation_data|twin_push|method_probe|ready_handshake" \
-    "${root_dir}/inc/azure/iot/mqttv3"
-report_pattern \
-    "mqttv5 public headers expose an mqttv3-only construct" \
-    "az_iot_file_upload_http_transport|sas_uri|property_bag" \
-    "${root_dir}/inc/azure/iot/mqttv5"
-report_pattern \
     "generation symbol names must not contain classic/next/aeg/flavor" \
-    "az_iot_mqttv[35]_[[:alnum:]_]*(classic|next|aeg|flavor)|AZ_IOT_MQTTV[35]_[[:alnum:]_]*(CLASSIC|NEXT|AEG|FLAVOR)" \
+    "az_iot_mqttv3_[[:alnum:]_]*(classic|next|aeg|flavor)|AZ_IOT_MQTTV3_[[:alnum:]_]*(CLASSIC|NEXT|AEG|FLAVOR)" \
     "${root_dir}/src/mqttv3" \
-    "${root_dir}/src/mqttv5" \
-    "${root_dir}/inc/azure/iot/mqttv3" \
-    "${root_dir}/inc/azure/iot/mqttv5"
+    "${root_dir}/inc/azure/iot/mqttv3"
 
 # Teardown naming. A caller-allocated struct is torn down by _deinit(); only
 # something _create() allocated and returned is _destroy()ed. The allow-list is
-# exactly the MQTT factories and the e2e service helper. The az_iot_mqtt_iface
-# vtable hook is a struct member, not an az_iot_* function, so it never matches.
+# exactly the e2e service helper. The az_iot_mqtt_iface vtable hook is a struct
+# member, not an az_iot_* function, so it never matches.
 destroy_hits="$(grep -rnoE '\baz_iot_[a-z0-9_]*_destroy\b' \
     --include='*.c' --include='*.h' \
     "${root_dir}/inc" "${root_dir}/src" "${root_dir}/adapters" \
     "${root_dir}/tests" "${root_dir}/samples" 2>/dev/null \
-    | grep -vxE '.*:az_iot_(mock_mqtt|paho|az_mqtt|esp_mqtt|mymqtt)_factory_destroy|.*:az_iot_e2e_service_destroy' \
+    | grep -vxE '.*:az_iot_e2e_service_destroy' \
     || true)"
 if [ -n "${destroy_hits}" ]; then
     if [ "${violations}" -eq 0 ]; then
@@ -124,7 +98,7 @@ if [ -n "${banned_hits}" ]; then
         echo
     fi
     violations=$((violations + 1))
-    echo "  generation naming must use mqttv3/mqttv5, not gen1/gen2/classic/next/aeg"
+    echo "  generation naming must use mqttv3, not gen1/gen2/classic/next/aeg"
     while IFS= read -r hit; do
         [ -n "${hit}" ] && echo "    ${hit#${root_dir}/}"
     done <<< "${banned_hits}"

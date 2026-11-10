@@ -3,10 +3,9 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* Conformance harness: validates the az_mqtt adapter as an MQTT 3.1.1 client
- * (AZ_IOT_CONFORMANCE_AZ_MQTT_V=3) or an MQTT 5 client (5). Declares the proxy capability, the
- * WebSocket capability when AZ_IOT_CONFORMANCE_WS_PORT names a listener, on MQTT 5 the CONNACK
- * Reason String capability, and, in an OpenSSL build
+/* Conformance harness: validates the az_mqtt adapter as an MQTT 3.1.1 client. Declares the proxy
+ * capability, the WebSocket capability when AZ_IOT_CONFORMANCE_WS_PORT names a listener, and, in
+ * an OpenSSL build
  * (AZ_IOT_AZ_MQTT_OPENSSL), the key-reference custody route with the material from
  * AZ_IOT_CONFORMANCE_KEY_URI, _KEY_ENGINE and _CLIENT_CERT -- as the Paho harnesses do. In an
  * mbedTLS build with PSA keys (AZ_IOT_AZ_MQTT_MBEDTLS), the PSA custody route with the PEM key at
@@ -144,17 +143,7 @@ static uint32_t import_psa_key(const char* path)
 
 int main(void)
 {
-#if AZ_IOT_CONFORMANCE_AZ_MQTT_V == 5
-  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v5();
-  az_iot_conformance_suite const suite = AZ_IOT_CONFORMANCE_SUITE_V5;
-#else
-  az_iot_mqtt_factory* f = az_iot_az_mqtt_factory_create_v3_1_1();
   az_iot_conformance_suite const suite = AZ_IOT_CONFORMANCE_SUITE_V3_1_1;
-#endif
-  if (f == NULL)
-  {
-    return 1;
-  }
   az_iot_conformance_options opts = { 0 };
 #if defined(AZ_IOT_AZ_MQTT_OPENSSL)
   char key_uri[512];
@@ -178,7 +167,6 @@ int main(void)
              &opts.client_cert_path)
           != 0)
   {
-    az_iot_az_mqtt_factory_destroy(f);
     return 1;
   }
 #endif
@@ -188,7 +176,6 @@ int main(void)
   if (env_or_null("AZ_IOT_CONFORMANCE_WS_PORT", ws_port_buf, sizeof(ws_port_buf), &ws_port_str)
       != 0)
   {
-    az_iot_az_mqtt_factory_destroy(f);
     return 1;
   }
   if (ws_port_str != NULL)
@@ -201,7 +188,6 @@ int main(void)
         || p > 65535)
     {
       fprintf(stderr, "conformance: AZ_IOT_CONFORMANCE_WS_PORT is not a port: '%s'\n", ws_port_str);
-      az_iot_az_mqtt_factory_destroy(f);
       return 1;
     }
     {
@@ -211,7 +197,6 @@ int main(void)
               "AZ_IOT_CONFORMANCE_WS_PATH", ws_path_buf, sizeof(ws_path_buf), &opts.websocket_path)
           != 0)
       {
-        az_iot_az_mqtt_factory_destroy(f);
         return 1;
       }
     }
@@ -232,17 +217,12 @@ int main(void)
           != 0
       || (psa_key != NULL && (opts.client_key_psa_id = import_psa_key(psa_key)) == 0))
   {
-    az_iot_az_mqtt_factory_destroy(f);
     return 1;
   }
 #endif
   opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_PROXY;
   opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_TLS_PEM;
-#if AZ_IOT_CONFORMANCE_AZ_MQTT_V == 5
-  opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_CONNACK_REASON_STRING;
-#endif
-  int rc = az_iot_conformance_run_with_options(suite, f, &opts);
-  az_iot_az_mqtt_factory_destroy(f);
+  int rc = az_iot_conformance_run_with_options(suite, az_iot_az_mqtt_get_adapter(), &opts);
 #if defined(AZ_IOT_CONFORMANCE_PSA_KEYS)
   if (opts.client_key_psa_id != 0)
   {

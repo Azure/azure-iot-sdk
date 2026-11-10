@@ -24,8 +24,7 @@ extern "C"
   } az_iot_mqttv3_telemetry_client;
 
   /* Records that the connection must resolve to the MQTTv3 profile; it need
-   * not be open yet. A connection already known to be MQTT_V5, or one an mqttv5
-   * client is already attached to, is rejected with
+   * not be open yet. A connection already resolved to another profile is rejected with
    * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. Otherwise a conflict fails the
    * connection when the profile resolves, before it reports CONNECTED. */
   AZ_NODISCARD az_iot_result az_iot_mqttv3_telemetry_client_init(
@@ -50,9 +49,13 @@ extern "C"
    *
    * @return AZ_IOT_OK if handed to the transport.
    * @return AZ_IOT_ERR_INVALID_ARG if @p callback is NULL, among other arguments.
-   * @return AZ_IOT_ERR_NOT_CONNECTED if the connection is not connected; nothing was sent.
+   * @return AZ_IOT_ERR_NOT_CONNECTED if the connection is not connected, or its session is being
+   *         ended on purpose (a SAS token renewal, a pause for a provisioning session, a failure)
+   *         and its DISCONNECT is sent; nothing was sent.
    * @return AZ_IOT_ERR_BUSY if the limits.max_pending_publishes slots not reserved by other
-   *         feature clients are all awaiting acknowledgement; nothing was sent, retry later.
+   *         feature clients are all awaiting acknowledgement, or a SAS token renewal or a pause for
+   *         a provisioning session is letting the session's deliveries settle before its
+   *         DISCONNECT (at most 5 s; docs/connecting.md); nothing was sent, retry later.
    */
   AZ_NODISCARD az_iot_result az_iot_mqttv3_telemetry_client_send(
       az_iot_mqttv3_telemetry_client* client,

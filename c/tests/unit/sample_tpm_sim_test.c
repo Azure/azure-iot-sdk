@@ -26,7 +26,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <direct.h>
+#else
 #include <sys/stat.h>
 #include <unistd.h>
 #endif
@@ -324,29 +326,53 @@ static void the_client_signs_with_the_imported_key(void** state)
   sample_tpm_sim_destroy(sim);
 }
 
+/** @brief Directory of the state files, in the working directory. */
+#define STATE_DIRECTORY "sample_tpm_sim_test_state.tmp"
+
+static void remove_state_directory(void)
+{
+  (void)remove(STATE_DIRECTORY "/ek.pem");
+  (void)remove(STATE_DIRECTORY "/srk.pem");
+#ifdef _WIN32
+  (void)_rmdir(STATE_DIRECTORY);
+#else
+  (void)rmdir(STATE_DIRECTORY);
+#endif
+}
+
 #ifndef _WIN32
-/** @brief Mode bits of @p dir/@p file; fails the test when it is missing. */
-static mode_t file_mode(const char* dir, const char* file)
+/** @brief Mode bits of @p file in STATE_DIRECTORY; fails the test when it is missing. */
+static mode_t file_mode(const char* file)
 {
   char path[512];
-  int n = snprintf(path, sizeof(path), "%s/%s", dir, file);
+  int n = snprintf(path, sizeof(path), STATE_DIRECTORY "/%s", file);
   assert_true(n > 0 && (size_t)n < sizeof(path));
   struct stat st;
   assert_int_equal(stat(path, &st), 0);
   return st.st_mode & 0777;
 }
+#endif
 
+/* On Windows too, where OpenSSL is a DLL: the keys are written without
+ * handing OpenSSL a FILE*. Owner-only is checked on POSIX. */
 static void state_files_are_owner_only_and_reload(void** state)
 {
   (void)state;
-  char dir[] = "/tmp/az_iot_tpm_sim_XXXXXX";
-  assert_non_null(mkdtemp(dir));
+  remove_state_directory();
+#ifdef _WIN32
+  assert_int_equal(_mkdir(STATE_DIRECTORY), 0);
+  sample_tpm_sim* sim = sample_tpm_sim_create(STATE_DIRECTORY);
+#else
+  assert_int_equal(mkdir(STATE_DIRECTORY, 0700), 0);
   mode_t old_mask = umask(022);
-  sample_tpm_sim* sim = sample_tpm_sim_create(dir);
+  sample_tpm_sim* sim = sample_tpm_sim_create(STATE_DIRECTORY);
   (void)umask(old_mask);
+#endif
   assert_non_null(sim);
-  assert_int_equal(file_mode(dir, "ek.pem"), 0600);
-  assert_int_equal(file_mode(dir, "srk.pem"), 0600);
+#ifndef _WIN32
+  assert_int_equal(file_mode("ek.pem"), 0600);
+  assert_int_equal(file_mode("srk.pem"), 0600);
+#endif
 
   const uint8_t* ek;
   size_t ek_len;
@@ -357,20 +383,14 @@ static void state_files_are_owner_only_and_reload(void** state)
   sample_tpm_sim_destroy(sim);
 
   /* A second start loads the same keys. */
-  sim = sample_tpm_sim_create(dir);
+  sim = sample_tpm_sim_create(STATE_DIRECTORY);
   assert_non_null(sim);
   sample_tpm_sim_ek_public(sim, &ek, &ek_len);
   assert_memory_equal(first, ek, ek_len);
   sample_tpm_sim_destroy(sim);
 
-  char path[512];
-  (void)snprintf(path, sizeof(path), "%s/ek.pem", dir);
-  (void)unlink(path);
-  (void)snprintf(path, sizeof(path), "%s/srk.pem", dir);
-  (void)unlink(path);
-  (void)rmdir(dir);
+  remove_state_directory();
 }
-#endif
 
 int main(void)
 {
@@ -380,9 +400,7 @@ int main(void)
     cmocka_unit_test(another_tpm_cannot_import_the_key),
     cmocka_unit_test(public_areas_are_rsa2048_ek_and_srk),
     cmocka_unit_test(the_client_signs_with_the_imported_key),
-#ifndef _WIN32
     cmocka_unit_test(state_files_are_owner_only_and_reload),
-#endif
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

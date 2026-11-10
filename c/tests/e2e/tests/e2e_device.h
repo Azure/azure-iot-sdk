@@ -5,11 +5,10 @@
 /* SPDX-License-Identifier: MIT */
 /* Shared device-side fixture for the in-process end-to-end suites.
  *
- * Both e2e executables (the fast scenario suite and the software updates suite) need the same
- * "device half": load the DPS/X.509 configuration from the environment, provision
- * via a DPS X.509 individual enrollment, and connect to the assigned IoT Hub over
- * the MQTT adapter of the build (Paho or az_mqtt). This module owns that boilerplate so each suite
- * only adds its scenario-specific code.
+ * The e2e executables need the same "device half": load the DPS/X.509 configuration from
+ * the environment, provision via a DPS X.509 individual enrollment, and connect to the
+ * assigned IoT Hub over the MQTT adapter of the build (Paho or az_mqtt). This module owns that
+ * boilerplate so each suite only adds its scenario-specific code.
  *
  * The device id targeted by the service side is the DPS registration id (the SDK's
  * default: device id == registration id for individual enrollments).
@@ -24,8 +23,8 @@
  *   - Direct hub connect: AZ_IOT_HUB_HOSTNAME + AZ_IOT_DEVICE_ID, for an
  *     environment whose DPS instance cannot hand out an assignment. The hub
  *     half of every scenario is identical either way. AZ_IOT_HUB_CONNECTION_PROFILE
- *     ("mqttv3", the default, or "mqttv5") names the hub's profile, which DPS
- *     would otherwise report.
+ *     ("mqttv3", the default and only value) names the hub's profile, which
+ *     DPS would otherwise report.
  *
  * Egress (optional, both modes, applied to the DPS and the hub connect alike):
  *   AZ_IOT_MQTT_TRANSPORT   "tcp" (default) or "websocket"
@@ -73,8 +72,7 @@ extern "C"
     az_iot_certificate_provider_pem certs;
     az_iot_connection_client conn;
     uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
-    az_iot_mqtt_factory* factory_v3;
-    az_iot_mqtt_factory* factory_v5;
+    uint8_t* mqtt_workspace; /* Heap; freed after deinit(). */
     az_iot_connection_state conn_state;
     bool certs_ok;
     bool conn_ok;
@@ -93,8 +91,6 @@ extern "C"
   /* Options for e2e_device_connect_with(). Zero-initialize. */
   typedef struct e2e_device_connect_options
   {
-    /* Copied to the connection options' twin_push (mqttv5 only). */
-    bool twin_push_desired;
     /* Called after the client is initialized and before open(), e.g. to attach feature
      * clients that must see the first messages. Non-zero aborts the connect. Optional. */
     int (*before_open)(e2e_device* dev, void* ctx);
@@ -111,8 +107,6 @@ extern "C"
     uint32_t max_hub_connect_attempts_before_reprovision;
     /** @brief Seconds to wait for CONNECTED; 0 keeps the default. */
     int connect_timeout_s;
-    /* Copied to the connection options' twin_push (mqttv5 only). */
-    bool twin_push_reported;
     /** @brief Called after each pump while waiting for CONNECTED; optional. */
     void (*during_connect)(void* ctx);
     void* during_connect_ctx;

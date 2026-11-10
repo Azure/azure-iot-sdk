@@ -22,8 +22,6 @@ The infrastructure was designed to satisfy these requirements:
   resource group.
 - **As parallel as possible.** The OS matrix legs run concurrently, each in its
   own isolated resource group.
-- **Long-running suites out of PRs.** Software updates e2e needs a DPS, ADR namespace and
-  Device Update instance linked together, so it runs in its own workflow, not on PRs.
 - **Cross-platform.** Every scenario runs on both Windows and Linux hosts, except those in
   [Not run on Windows](#not-run-on-windows).
 
@@ -54,13 +52,13 @@ single-threaded and non-blocking.
 
 The device is the public SDK over an MQTT adapter, connected exactly like a
 real device: **DPS provisioning with an X.509 individual enrollment**
-(`dps.id_scope` set → the connection client provisions internally, then connects to the assigned hub). Both the MQTT v3.1.1 and v5
-factories are registered. Each suite that connects is built once per adapter in the build:
+(`dps.id_scope` set → the connection client provisions internally, then connects to the assigned hub). The connection
+client builds its MQTT 3.1.1 clients with the adapter's descriptor (`mqtt_adapter`) in a heap workspace, sized in
+[`e2e_mqtt_adapter.h`](../../tests/e2e/tests/e2e_mqtt_adapter.h). Each suite that connects is built once per adapter in the build:
 `<suite>` over Paho and `<suite>_az_mqtt` over az_mqtt, selected in the sources with
 `AZ_IOT_E2E_ADAPTER_PAHO` or `AZ_IOT_E2E_ADAPTER_AZ_MQTT`. The workflows enable both, and their
-`ctest -R` filters run both. The custody suites run over az_mqtt only with OpenSSL TLS. With
-az_mqtt, `AZ_IOT_BUILD_E2E_MQTTV5` needs `-DAZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE=1114112` or more: the telemetry size cases publish just
-over 1 MiB. The connect flow + all four scenarios live in
+`ctest -R` filters run both. The custody suites run over az_mqtt only with OpenSSL TLS. The send
+buffer in those sizes is 1 MiB + 64 KiB: the telemetry size cases publish 1 MiB + 4 KiB, plus MQTT headers. The connect flow + all four scenarios live in
 [`e2e_scenarios_test.c`](../../tests/e2e/tests/e2e_scenarios_test.c); the connect
 is done once for the whole suite via cmocka's group setup.
 
@@ -159,65 +157,6 @@ its policy signs the device delete, sent to the `IOTHUB_CONNECTION_STRING` host)
   API, registers over HTTPS, connects to the assigned mqttv3 hub with TPM-signed SAS tokens and
   sends telemetry. The enrollment, registration and device are deleted. `ci-c-e2e`.
 
-**mqttv5 suites** (`AZ_IOT_BUILD_E2E_MQTTV5`; DPS assigns the device to an mqttv5 hub):
-
-- [`e2e_mqttv5_custom_topic_test.c`](../../tests/e2e/tests/e2e_mqttv5_custom_topic_test.c) — needs the
-  hub's custom topic templates `e2e/{deviceId}/#` and `e2e/shared/#`. Telemetry as a baseline;
-  QoS 1 and QoS 0 publishes to those templates reach the events endpoint; a topic no template
-  allows and another device's id are refused without disconnecting; a `{deviceId}` template formats
-  to the connected id; a topic at exactly 256 bytes or 15 levels is accepted and one past either is
-  refused locally (`AZ_IOT_ERR_INVALID_ARG`); several user properties are accepted (body routed).
-  `ci-c-e2e-mqttv5`.
-  `AZ_IOT_E2E_SKIP_CUSTOM_TOPIC_ROUTING` turns the routed checks into skips when nothing arrives.
-- [`e2e_mqttv5_twin_test.c`](../../tests/e2e/tests/e2e_mqttv5_twin_test.c) — desired properties
-  patched through the service REST API. Without `twin_push.push_desired`, no change arrives while
-  connected and a GET delivers it as a snapshot; with it, the snapshot is pushed on connect and each
-  change arrives as a patch. Reported patches are acked with the version the REST twin shows; a
-  null member deletes; a stale `if_match`, non-JSON and a 40 KiB patch are refused without losing
-  the session. GET returns both sections, or the selected ones, omitting a payload whose version
-  `if_not_match` names. `twin_push.push_reported` pushes the reported section on connect; a desired
-  change made offline, or before a late handler is set, arrives as a snapshot. A second connection
-  with the same identity evicts the session: a GET in flight completes with an error and a desired
-  change made during the outage arrives after the automatic reconnect. A 1 ms request timeout
-  completes a GET `TIMEOUT`; `AZ_IOT_TWIN_MAX_PENDING` GETs are accepted and the next refused; a
-  pushed reported section without a handler is dropped. One connection per test, on one device.
-  `ci-c-e2e-mqttv5`.
-- [`e2e_mqttv5_connection_test.c`](../../tests/e2e/tests/e2e_mqttv5_connection_test.c) — DPS
-  reports the `mqttV5` profile; the saved hub (`iothub_hostname`, `device_id`, `connection_profile`
-  with the `dps` fields) connects without DPS and its telemetry reaches the events endpoint; an
-  unreachable saved hub and a saved hub declared mqttv3 both end on the mqttv5 hub through DPS;
-  three `close()`/`open()` cycles each complete a twin GET; a second connection with the same
-  identity evicts the first, which reconnects and sends telemetry and a twin GET. Every state
-  transition is printed. `ci-c-e2e-mqttv5`.
-- [`e2e_mqttv5_transport_test.c`](../../tests/e2e/tests/e2e_mqttv5_transport_test.c) — DPS and the
-  mqttv5 hub over WebSockets (443, default path), over TCP through an HTTP CONNECT proxy, and over
-  WebSockets through the proxy, each with a telemetry round trip; the proxy's access log
-  (`AZ_IOT_E2E_PROXY_LOG`) must show the CONNECT to DPS, then to the hub. A proxy on a closed port
-  keeps the device off the hub and sends nothing, through DPS and on a direct mqttv5 hub connect
-  to the assigned hub. Needs `AZ_IOT_PROXY_HOST`/`_PORT`; fails without them. `ci-c-e2e-mqttv5`
-  (tinyproxy on Linux; [`eng/e2e-connect-proxy.py`](../../eng/e2e-connect-proxy.py) on Windows,
-  which logs the same CONNECT lines).
-- [`e2e_mqttv5_direct_method_test.c`](../../tests/e2e/tests/e2e_mqttv5_direct_method_test.c) —
-  methods invoked through the service REST API. Answers (200, 500, no payload, a result body of
-  exactly `AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX`) reach the caller; undeclared, wrong-case, withdrawn,
-  busy and too-short-timeout calls are refused at the probe without running the handler; an
-  unanswered call times out and a late answer is not sent; concurrent calls get their own results.
-  One connection for the suite. `ci-c-e2e-mqttv5`.
-- [`e2e_mqttv5_telemetry_test.c`](../../tests/e2e/tests/e2e_mqttv5_telemetry_test.c) — telemetry
-  read back from the events endpoint with its AMQP properties, application properties and
-  annotations: routing; `$.ct` / `$.cid` as AMQP content-type / correlation-id; `$.mid`, `$.ce`,
-  `$.uid`, `$.ctime`, `$.sub`; custom application properties; eight messages in flight keep their
-  order; a 512 KB - 8 KiB body is routed whole and a 1 MiB + 4 KiB body is refused (or the session
-  dropped), never routed, and telemetry flows again after. `ci-c-e2e-mqttv5`.
-- [`e2e_mqttv5_custody_test.c`](../../tests/e2e/tests/e2e_mqttv5_custody_test.c) — the device key
-  inside a SoftHSM2 token (`eng/setup-softhsm.sh`, named by `AZ_IOT_CLIENT_KEY_URI`): DPS and the
-  mqttv5 hub accept it, telemetry reaches the events endpoint, and a reconnect loads the key
-  reference again. Also needs `AZ_IOT_BUILD_E2E_PKCS11`; fails without the token.
-  `ci-c-e2e-mqttv5`.
-
-Direct-hub mode (`AZ_IOT_HUB_HOSTNAME`, `AZ_IOT_DEVICE_ID`) reaches an mqttv5 hub with
-`AZ_IOT_HUB_CONNECTION_PROFILE=mqttv5`; without DPS, nothing else reports the hub's profile.
-
 ---
 
 ## Build & CMake wiring
@@ -249,10 +188,19 @@ ctest --test-dir build/windows-msvc-debug -C Debug -R e2e --output-on-failure
 
 ### Triggers
 
-- `pull_request` touching `c/**` or `common/**` (fast scenarios)
-- `push` to `main`
-- nightly `schedule` (cron `0 11 * * *`, 4am PST)
+- `pull_request`: every pull request; a `changes` job skips the e2e legs unless it touches `c/**` or
+  `common/**` (fast scenarios)
+- `push` to `main` and `releases/public-preview`
+- nightly `schedule` (cron `0 11 * * *`, 4am PST); on `releases/public-preview` at 14:00 UTC, dispatched by
+  [`ci-c-public-preview-nightly.yml`](../../../.github/workflows/ci-c-public-preview-nightly.yml)
 - `workflow_dispatch`
+
+Every C e2e workflow ends with a `<workflow>-gate` job (`ci-c-e2e-gate`, `ci-c-e2e-csr-gate`,
+`ci-c-e2e-mqttv5-gate`, `ci-c-e2e-adu-gate`), the single check name for rulesets to require. Since its
+workflow runs on every pull request (`ci-c-e2e-mqttv5` and `ci-c-e2e-adu`: every pull request to
+`releases/public-preview`), it always reports; it fails only when a job failed or was
+cancelled. The other C workflows end with `ci-c-gate`, `ci-c-static-analysis-gate`, `codeql-c-gate`
+and `ci-c-yocto-gate`.
 
 ### Authentication
 
@@ -286,8 +234,9 @@ recomputes the same name, it cleans up even when `setup` is cancelled or times
 out; `destroy-e2e-resources` no-ops when the group was never created.
 
 [`cleanup-e2e-resources.yml`](../../../.github/workflows/cleanup-e2e-resources.yml)
-is the nightly backstop: it reaps any `CSDKE2E*` (C) or `DotnetE2ETestPipeline-*`
-(dotnet) group older than 6 h (via `Remove-LeftoverAzureResourceGroups`),
+is the nightly backstop: it reaps any `CSDKE2E*` (C), `DotnetE2ETestPipeline-*`
+(dotnet) or `DotnetLonghaul-*` (dotnet longhaul) group older than 8 h (via
+`Remove-LeftoverAzureResourceGroups`),
 covering what teardown structurally cannot — an asynchronous `--no-wait` delete
 failure, or a runner that dies before teardown.
 
@@ -296,9 +245,9 @@ failure, or a runner that dies before teardown.
 | Job | Runs on | Purpose |
 | --- | --- | --- |
 | `setup` | ubuntu | provisions one resource group (IoT Hub + DPS) via the shared `provision-e2e-resources` action and publishes the test-config artifact |
-| `test` | ubuntu + windows, 4 groups each (matrix) | builds the e2e tests, materializes its device's X.509 material, and runs its group: `core` (every e2e suite but the three below, plus custody and the file upload sample on Linux), `transport-paho`, `transport-az_mqtt`, `sas` (both adapters) |
+| `test` | ubuntu + windows, 4 groups each (matrix) | builds the e2e tests, materializes its device's X.509 material, and runs its group: `core` (every e2e suite but the three below, plus custody on Linux), `transport-paho`, `transport-az_mqtt`, `sas` (both adapters) |
 | `coverage` | ubuntu | merges the four Linux groups' tracefiles into `coverage-trace-e2e`, only when every `test` job passed |
-| `esp32-qemu` | ubuntu, esp32 and esp32c3 (matrix) | the ESP32 IoT Hub sample in QEMU, always on the shared environment ([ESP32 in QEMU](#esp32-in-qemu)) |
+| `esp32-qemu` | ubuntu, esp32, esp32c3 and esp32s3 (matrix) | the ESP32 IoT Hub sample in QEMU, always on the shared environment ([ESP32 in QEMU](#esp32-in-qemu)) |
 | `teardown` | ubuntu | `always()` deletes the resource group via `destroy-e2e-resources`, using the run-derived name (not a `setup` output) |
 
 Each `test` job has its own device (index os-index * 4 + group-index; eight DPS
@@ -335,41 +284,7 @@ provisioned run has one bootstrap device, so its legs run one after the other. `
 device endpoint. `E2E_CSR_SHARED_SAS_GROUP_KEY` is the key of a symmetric-key group linked
 to the same certificate policy.
 
-The shared mqttv5 environment (ADR-linked mqttv5 hub and DPS) is kept usable by
-[`ci-c-e2e-mqttv5-adr-namespace.yml`](../../../.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml)
-(every 10 minutes, manual, or `workflow_call` as the first job of a mqttv5 e2e workflow). The ADR namespace
-can disappear from ARM, removing its role assignments; DPS registrations then fail.
-[`c/eng/e2e-mqttv5-adr-namespace.ps1`](../../eng/e2e-mqttv5-adr-namespace.ps1) re-creates it
-(same name, hub region), ensures the 8 role assignments, re-links hub and DPS, and pushes the
-namespace to DPS; when the namespace is healthy it makes one ARM read. Inputs are repository
-variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_HUB_NAME`, `_DPS_NAME`
-and `_ADR_NAMESPACE` (unset `_ADR_NAMESPACE` skips the job); optional `_ADR_API_VERSION`
-(default `2026-11-02-preview`) must match the version the namespace was linked with. Optional
-`_SU_INSTANCE` names the Software Updates instance (same resource group) to keep linked as
-`updating/su-1`: linked by a separate PATCH after hub and DPS, with its 3 role assignments. A rebuild
-re-sends existing updating endpoints, and a namespace still in an operation is waited out, not
-rebuilt. The OIDC identity needs Contributor
-on the resource group. Grant the link's role assignments (hub, DPS and namespace identities) on the
-resource group once: those survive the namespace, so the job creates none and needs no role
-assignment write unless the namespace identity changes.
-
-[`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml) runs the mqttv5 suites on
-that environment, one job per client and OS (Linux, and Windows with MSVC: Paho over OpenSSL 4.1.0,
-az_mqtt over Schannel; custody is Linux only, see [Not run on Windows](#not-run-on-windows)), each
-with its own device. The twin, transport and custom topic suites run one job per
-adapter and per shard instead (`AZ_IOT_TEST_SHARD=<index>/<count>`, see
-[`test_shard.h`](../../tests/support/test_shard.h)), each with its own device, so their cases run in
-parallel. On schedule and manual runs the namespace job runs first; pull
-requests skip it (it logs in to Azure and runs the checked-out script) and rely on its scheduled run (every 10 minutes). Each job issues a device with
-`e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED` from secret `E2E_MQTTV5_SHARED_GROUP_CA`, and
-reads secrets `E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS` and `_EVENTHUB_CS` (`service` policy; the former is passed to the
-script as `E2E_MQTTV5_SHARED_IOTHUB_CS`, as the secret of that name holds `iothubowner` for the .NET e2e), and variables `E2E_MQTTV5_SHARED_ID_SCOPE` (unset skips the workflow) and
-`_DPS_HOST`. No SAS: mqttv5 hubs accept X.509 only. Triggers: pull requests touching mqttv5 or core device code, the e2e harness or the
-workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
-
-> **Software updates e2e** runs in its own workflow
-> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux and Windows) on the same shared mqttv5
-> environment and triggers. See [Software updates e2e](#software-updates-e2e).
+`ci-c-e2e-mqttv5.yml` and `ci-c-e2e-mqttv5-adr-namespace.yml` serve `releases/public-preview` only.
 
 ---
 
@@ -380,6 +295,7 @@ workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 the service. The device is the [ESP32 IoT Hub sample](../../samples/unified/esp32/README.md)
 firmware in Espressif's QEMU. The test starts it with `E2E_ESP32_QEMU_COMMAND` (through
 `/bin/sh -c`, in its own process group) and reads the sample's stable `hub_esp32:` log lines.
+It runs the firmware through the child-process helper below.
 `E2E_ESP32_DEVICE_ID` is the registration id the firmware was built with. Once the firmware
 logs `hub_esp32: ready on`:
 
@@ -395,97 +311,95 @@ runs it all in an ESP-IDF environment with QEMU, a host compiler and OpenSSL hea
    for [`eng/esp-idf-build.sh`](../../eng/esp-idf-build.sh));
 2. writes the identity with [`eng/esp-idf-qemu-identity.sh`](../../eng/esp-idf-qemu-identity.sh):
    - esp32: an `esp_secure_cert` partition holding the certificate and key;
-   - esp32c3: the key goes into the Digital Signature peripheral. The script boots QEMU in
-     download mode, and `configure_esp_secure_cert.py --configure_ds` burns the DS key into an
-     emulated eFuse image and writes the partition with the encrypted DS parameters. DS takes RSA
-     keys of at most 3072 bits;
+   - esp32c3 and esp32s3: the key goes into the Digital Signature peripheral. The script boots
+     QEMU in download mode, and `configure_esp_secure_cert.py --configure_ds` burns the DS key
+     into an emulated eFuse image and writes the partition with the encrypted DS parameters. The
+     esp32c3 DS takes RSA keys of at most 3072 bits;
 3. builds and runs the test, booting the firmware with
    [`eng/esp-idf-qemu.sh`](../../eng/esp-idf-qemu.sh) `--run`.
 
-CI: job `esp32-qemu` in `ci-c-e2e.yml`. It runs esp32 and esp32c3 in `espressif/idf:v6.1`, with
-devices 12 and 13 issued by `e2e-shared-device.ps1`. It uses the shared environment on every run,
-push and nightly included: the per-run enrollments' RSA-4096 keys exceed DS's 3072 bits, while the
-shared group CA issues RSA-2048. Without the shared environment's secrets, the job fails.
+CI: job `esp32-qemu` in `ci-c-e2e.yml`. It runs esp32, esp32c3 and esp32s3 in
+`espressif/idf:v6.1`, with devices 12, 13 and 14 issued by `e2e-shared-device.ps1`. It uses the
+shared environment on every run, push and nightly included: the per-run enrollments' RSA-4096 keys
+exceed the esp32c3 DS's 3072 bits, while the shared group CA issues RSA-2048. Without the shared
+environment's secrets, the job fails.
+
+### Child-process helper
+
+[`tests/support/e2e_process.h`](../../tests/support/e2e_process.h) runs a program as a child, on
+POSIX and Windows, for suites whose device is another process: it starts an argument list or a
+shell command (environment variables set or removed for the child only), captures stdout and stderr through
+one pipe, echoes whole lines with a prefix, waits for a text while calling a pump (here the
+service facade), and stops the child: SIGTERM to its process group (Windows: `CTRL_BREAK_EVENT`
+to its process group), then SIGKILL (Windows: its job object is terminated) after a grace period.
+It is built in every build, not only with `AZ_IOT_BUILD_E2E`, and its test,
+`az_iot_tests_e2e_process`, runs in `ci-c`'s unit-test ctest on Linux and Windows.
 
 ---
 
-## Software updates e2e
+## Samples
 
-Two suites, built with `-DAZ_IOT_BUILD_E2E_SU=ON` and selected by
-`ctest -R e2e_su`. Both run the shipping SDK over each MQTT adapter (Paho, az_mqtt) and X.509 against
-the real service.
+[`e2e_samples_test.c`](../../tests/e2e/tests/e2e_samples_test.c) runs each connecting sample
+against the mqttv3 hub and checks its work from the service side. CMake option
+`AZ_IOT_BUILD_E2E_SAMPLES` (needs `AZ_IOT_BUILD_E2E`, `AZ_IOT_BUILD_SAMPLES` and
+`AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS`) registers one CTest test per sample and adapter,
+`az_iot_samples_e2e_<group>_<name>_<adapter>`, labelled `samples_mqttv3`. A sample in scope that is
+not built fails the configure.
 
-| Suite | What it drives |
+Each test:
+
+1. gives the sample only the variables it reads (its README): the leg's X.509 device, or a
+   registration ID of its own (`<leg registration ID>-<suffix>`), and a work directory. The
+   service connection strings are removed from its environment;
+2. starts it, lets it run to its own end (unified samples 60 s; the one-shot samples their own
+   timeouts), and stops it only past the test's own limit;
+3. requires `sample-pipeline: end rc=0` and exit code 0, then the check below.
+
+| Sample | Check |
 | --- | --- |
-| `az_iot_tests_e2e_su` (`e2e_su_test.c`) | The DPS channel with no update offered: onboarding check, hold release and registration, ETag storage, unknown-workflow report. |
-| `az_iot_tests_e2e_su_offer` (`e2e_su_offer_test.c`) | Offered updates through `az_iot_su_client`: OpenSSL crypto, Microsoft plus test root keys, real download (libcurl) and hash; install/apply recorded, failures injected. A spy around the channel records each report and the service's verdict. |
+| `unified/telemetry`, `connect_first`, `websockets`, `multithreaded_telemetry` | Telemetry of that device reaches the Event Hub endpoint, enqueued after the test started (the watcher filters on `iothub-connection-device-id`). |
+| `unified/proxy` | Same, and the proxy's log shows a `CONNECT` to port 8883 ([proxy.py](https://github.com/abhinavsingh/proxy.py), log in `AZ_IOT_SAMPLES_E2E_PROXY_LOG`). |
+| `unified/twin_get_patch` | A twin GET shows reported `sample` = `hello`, `$lastUpdated` after the start. |
+| `unified/direct_method_responder`, `direct_method_slow_responder` | Once the hub session is up, `echo` (`slowEcho`) answers 200 with the payload echoed; retried while the device is not subscribed. |
+| `unified/c2d_receiver` | Once the hub session is up, one C2D message is sent; the sample prints it and `Received N message(s).`, N >= 1. |
+| `unified/file_upload` | The hub's file-upload notification for that device and `sample-data/test.txt`. |
+| `authentication/dps_sas_key` | Telemetry `"auth":"sas-key"`; the sample gets `AZ_IOT_DPS_ENROLLMENT_GROUP_KEY`. |
+| `authentication/user_provided_sas_token` | rc 0 only; it gets `AZ_IOT_DPS_SYMMETRIC_KEY` derived from the group key. |
+| `authentication/hsm_pkcs11` | Telemetry `"custody":"hardware"`; the device key in a SoftHSM2 token, `OPENSSL_CONF` (from `AZ_IOT_SAMPLES_E2E_PKCS11_OPENSSL_CONF`) for this sample only. |
+| `authentication/dps_tpm`, `dps_tpm_tss` | `--enrollment` first; the test creates the TPM individual enrollment, then telemetry `"attestation":"tpm"`. The enrollment and device are always deleted. `dps_tpm_tss` runs against an swtpm the test starts. |
 
-Offered-update scenarios:
+CI: [`ci-c-samples.yml`](../../../.github/workflows/ci-c-samples.yml), on pull requests and pushes
+to `main` that change `c/` or `common/` (Markdown excluded), and on demand. Not a required check.
 
-| Scenario | Offer |
-| --- | --- |
-| real update downloaded, verified, installed, reported SUCCEEDED | `AZ_IOT_E2E_SU_OFFER_MODEL` |
-| identical terminal report accepted; conflicting one gets 409000 `REPORT_CONFLICT` | same |
-| incompatible device offered nothing | none |
-| install failure rolled back, reported FAILED | `AZ_IOT_E2E_SU_OFFER_MODEL_INSTALL_FAILURE` |
-| already installed, reported SKIPPED | `AZ_IOT_E2E_SU_OFFER_MODEL_ALREADY_INSTALLED` |
-| manifest verified against the wrong keys, reported FAILED | `AZ_IOT_E2E_SU_OFFER_MODEL_UNTRUSTED` |
-| library mode: verified offer handed to the application, which downloads, hashes and reports progress then SUCCEEDED | `AZ_IOT_E2E_SU_OFFER_MODEL_LIBRARY_MODE` |
+- Legs: {ubuntu-24.04, windows-latest} x {paho, az_mqtt} x shard {0, 1}. Shard 0 is
+  telemetry, connect_first, websockets, proxy, multithreaded_telemetry, dps_sas_key and
+  user_provided_sas_token; shard 1 the rest. A leg runs its samples one after the other on its
+  device.
+- Slot = os-index * 4 + adapter-index * 2 + shard (0..7). Each leg reads events on consumer group
+  `samples-<slot>`.
+- Pull requests use the shared environment: device index 20 + slot, registration ID
+  `samples-<run>-<attempt>-<index>` (`e2e-shared-device.ps1`). The hub needs consumer groups
+  `samples-0`..`samples-7`.
+- Pushes and manual runs provision `CSDKE2ESamples-<run>-<attempt>` (8 X.509 enrollments, the SAS
+  group, file upload) and always delete it.
+- Pull requests from forks and Dependabot skip.
+- Each leg uploads its JUnit, each sample's `sample-output.log` and the proxy log.
 
-The device identity is fixed by its certificate, so offers are told apart by compatibility:
-each is an update compatible only with `AZ_IOT_E2E_SU_OFFER_MANUFACTURER` and its model, with
-its own Azure Device Registry `OnboardingUpdate` job. A job offers nothing until it has a run, so
-each gets one run that starts at once; staging waits until every run is `Active`, then 5 more
-minutes (devices got `401000` for about 3 minutes after a run turned `Active`). An onboarding offer
-reaches a device once: a device that reported it is not offered it again, so every execution of the
-offer suite (one per MQTT adapter) needs its own new device.
-[`scripts/SuE2E.psm1`](../../tests/e2e/scripts/SuE2E.psm1) stages them (`New-SuE2EOffers`),
-checks each job's per-device result (`Test-SuE2EOffers`) and deletes them
-(`Remove-SuE2EOffers`). Since each offer reaches each new device, one staged set can serve many
-runs: `New-SuE2EOffers -Reuse` keeps the updates, jobs and `Active` runs that already exist under
-its `-RunId`, and only waits for runs it creates (or for what is left of the 5 minutes of a kept run
-started less than 5 minutes ago). A reused job may hold several runs, so `Test-SuE2EOffers` looks for
-the device in every `Active` run, then in the newest. `Export-SuE2EOfferVariables` sets the offer
-variables for a `-RunId` without contacting Azure. `Get-SuE2EFixtureTag` hashes the code that defines the offers;
-appended to a reused `-RunId`, a change to that code stages a new set. With `-Reuse`, a failed import
-is treated as done if the update now exists (another run imported it), else retried up to 3 times.
-Each REST request is retried on a transient failure (no response; HTTP 408, 429, 500, 502, 503 or
-504; another 5xx with a transient error code such as `BadGatewayConnection`), up to 5 attempts,
-after `Retry-After` or 2, 4, 8, 16 s (at most 60 s), with a warning per retry; a `401` with
-`invalid_token` is retried once with a new token, and other `4xx` are not retried.
+Not in this workflow: the CSR samples (`dps_csr_managed`, `custom_certificate_provider`,
+`dps_persist_assignment`, `hub_renew`, `dps_sas_key_issued_cert`), which need a CA-linked
+enrollment; the samples that do not connect, which are CTest tests of `ci-c` already;
+`unified/esp32` ([ESP32 in QEMU](#esp32-in-qemu)). Windows: see [Not run on Windows](#not-run-on-windows).
 
-CI ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) runs on the shared mqttv5
-environment, whose ADR namespace is linked to a Device Update instance, on pull requests touching
-core, Software Update or adapter code, the e2e harness or the workflow; nightly; manual. Pull requests
-from forks and from Dependabot skip. Scheduled and manual runs first run the namespace repair
-(`ci-c-e2e-mqttv5-adr-namespace.yml`), which also restores the Software Update link. The `offers`
-job then ensures the standing offers (`New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -Reuse`;
-seconds once staged) and passes their state on. The `e2e-su` job, on Linux and on Windows (libcurl
-from [`install-curl-windows`](../../../.github/actions/install-curl-windows/action.yml)), sets the
-offer variables (`Export-SuE2EOfferVariables`), issues a new device per suite execution (4: each
-suite on each adapter) from the enrollment group's CA (`e2e-shared-device.ps1`), runs the suites,
-then checks the offer devices' job results.
-Nothing is deleted per run; offer sets staged by older fixture code are left in place. Inputs:
-variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_ADR_NAMESPACE`, `_ID_SCOPE`,
-`_DPS_HOST`, `_LOCATION`, `_SU_ENDPOINT`, `_SU_STORAGE_ACCOUNT`, `_SU_STORAGE_CONTAINER`, and
-`_SU_INSTANCE` (the Device Update instance the namespace repair links); secrets `E2E_MQTTV5_SHARED_GROUP_CA`,
-`_IOTHUB_SERVICE_CS`, `_EVENTHUB_CS`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`.
+Run locally, with the variables above (as the workflow's "Run the samples" step sets them) and
+proxy.py listening:
 
-Every variable is required; a missing one fails the suite or the scenario that needs it.
-
-| Env var | Meaning |
-| --- | --- |
-| `AZ_IOT_E2E_SU_DPS_HOST` | DPS global endpoint |
-| `AZ_IOT_E2E_SU_ID_SCOPE` | DPS id scope |
-| `AZ_IOT_E2E_SU_REG_ID` | registration id the certificate carries |
-| `AZ_IOT_E2E_SU_CERT` / `_KEY` | device certificate and key PEM paths |
-| `AZ_IOT_E2E_SU_TRUSTED_CA` | CA bundle PEM path |
-| `AZ_IOT_E2E_SU_OFFER_*` | offers, as above (set by `New-SuE2EOffers` or `Export-SuE2EOfferVariables`) |
-
-`https_proxy`, when set, is used for the MQTT connection; libcurl reads it as well.
-
-Test root keys are pinned in `e2e_su_test_roots.c`. Not yet covered: the operational route,
-multi-step updates, and reboot/resume.
+```pwsh
+# from c/
+cmake --preset linux-gcc-debug -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E=ON `
+  -DAZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS=ON -DAZ_IOT_BUILD_E2E_SAMPLES=ON
+cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_samples
+ctest --test-dir build/linux-gcc-debug -L samples_mqttv3 -R '_paho$' --no-tests=error --output-on-failure
+```
 
 ---
 
@@ -496,9 +410,9 @@ Schannel), on every pull request and main run of its workflow.
 
 | Suite | Why |
 | --- | --- |
-| `az_iot_tests_e2e_custody`, `az_iot_tests_e2e_mqttv5_custody` | The device key is in a PKCS#11 token (SoftHSM2) reached through the OpenSSL pkcs11 provider. The provider has no MSVC build (it needs a POSIX `dl` library) and the runner's OpenSSL is an MSVC build. az_mqtt on Windows uses Schannel, which takes no key references. |
+| `az_iot_tests_e2e_custody` | The device key is in a PKCS#11 token (SoftHSM2) reached through the OpenSSL pkcs11 provider. The provider has no MSVC build (it needs a POSIX `dl` library) and the runner's OpenSSL is an MSVC build. az_mqtt on Windows uses Schannel, which takes no key references. |
 | `az_iot_tests_e2e_amqp_transport_sigpipe` | Tests SIGPIPE, which Windows does not have. |
-| File upload sample run (`ci-c-e2e`, built on Windows) | The sample passes its PEM client certificate to libcurl; libcurl over Schannel (the Windows build) takes client certificates from a certificate store or PFX only. |
+| Samples `authentication/hsm_pkcs11`, `authentication/dps_tpm_tss` | As the custody suite: no pkcs11 provider for MSVC. tpm2-tss and swtpm are not built for Windows. |
 
 ---
 
@@ -520,13 +434,6 @@ Schannel), on every pull request and main run of its workflow.
 - **Resource quotas are hard limits.** Provisioning per matrix leg keeps tests
   isolated but multiplies resource usage; keep the matrix lean and always delete
   the RG.
-- **Seconds-scale defensive timeouts.** Every client that can open an mqttv5
-  session (`e2e_device.c`, both custody suites) calls
-  `e2e_use_short_defensive_timeouts()` (`tests/e2e_defensive_timeout.h`): the
-  birth-ack schedule becomes 5/6/8/10 s + 0-5 s jitter instead of minutes, so a
-  missed birth-ack recovers inside the connect windows. It uses the internal
-  `az_iot_connection_client__set_defensive_timeout_schedule()`; clients that
-  do not call it keep the spec's schedule.
 - **HTTPS calls without a response are retried when safe.** A connection can
   stall with no response at all. The service facade sends a request again on a
   new connection (3 attempts, 2 s apart) when none of it was sent, or when it is

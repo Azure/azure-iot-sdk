@@ -67,7 +67,7 @@ function(_az_iot_pc_deps tgt openssl_req)
             list(APPEND _requires_private libssl)
         elseif(_item STREQUAL "OpenSSL::Crypto")
             list(APPEND _requires_private "libcrypto${openssl_req}")
-        elseif(_item MATCHES "^az_mqtt(v3|v5|_core)$")
+        elseif(_item MATCHES "^az_mqtt(v3|_core)$")
             # Bundled az_mqtt (deps/az_mqtt) libraries: link them and their own dependencies.
             list(APPEND _libs_private "-l${_item}")
             get_target_property(_az_mqtt_deps ${_item} LINK_LIBRARIES)
@@ -151,9 +151,8 @@ else()
 endif()
 
 set(_az_iot_pc_descriptions
-    core                          "core: connection client and software updates"
+    core                          "core: connection client"
     mqttv3                        "IoT Hub mqttv3 clients"
-    mqttv5                        "IoT Hub mqttv5 clients"
     adapter_paho                  "Eclipse Paho MQTT adapter"
     adapter_az_mqtt               "az_mqtt MQTT adapter"
     crypto_openssl                "OpenSSL crypto backend"
@@ -177,11 +176,9 @@ foreach(_i RANGE 0 ${_last} 2)
     set(AZ_IOT_PC_DESCRIPTION "Azure IoT SDK C library ${_desc}")
 
     if(_tgt STREQUAL "az_iot_core")
-        list(TRANSFORM AZ_IOT_SU_LIMIT_DEFINITIONS PREPEND " -D" OUTPUT_VARIABLE _su_limits)
-        list(JOIN _su_limits "" _su_limits)
         set(AZ_IOT_PC_REQUIRES "")
         set(AZ_IOT_PC_REQUIRES_PRIVATE "")
-        set(AZ_IOT_PC_CFLAGS "-I\${includedir}${_az_iot_pc_sdk_for_c_cflags}${_su_limits}")
+        set(AZ_IOT_PC_CFLAGS "-I\${includedir}${_az_iot_pc_sdk_for_c_cflags}")
         set(AZ_IOT_PC_LIBS "-l${_tgt}${_az_iot_pc_sdk_for_c_libs}")
         set(AZ_IOT_PC_LIBS_PRIVATE "")
     else()
@@ -227,7 +224,6 @@ unset(_az_iot_pc_requires_private)
 unset(_az_iot_pc_libs_private)
 unset(_openssl_req)
 unset(_defs)
-unset(_su_limits)
 unset(_desc)
 unset(_k)
 unset(_pc)

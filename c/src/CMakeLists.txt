@@ -16,8 +16,6 @@ target_include_directories(az_iot_core
         # of where in src/ the includer lives. Required for GCC's strict
         # quoted-include resolution.
         ${CMAKE_CURRENT_SOURCE_DIR}/core
-        # Software updates' internal header lives under features/su/internal/.
-        ${CMAKE_CURRENT_SOURCE_DIR}/features/su
 )
 
 # mono_time.c uses clock_gettime(CLOCK_MONOTONIC) on POSIX.
@@ -36,9 +34,6 @@ if(AZ_IOT_RACE_ANNOTATIONS)
     endif()
     target_compile_definitions(az_iot_core PRIVATE AZ_IOT_RACE_ANNOTATIONS=1)
 endif()
-
-# Size the manifest structures in az_iot_su.h; the application must use the same values.
-target_compile_definitions(az_iot_core PUBLIC ${AZ_IOT_SU_LIMIT_DEFINITIONS})
 
 # Default connection client limits (az_iot_connection_client_config.h). Each is passed only when
 # set, so a value from AZ_IOT_CONNECTION_CLIENT_CONFIG_FILE applies. PUBLIC: the application's
@@ -83,23 +78,11 @@ target_link_libraries(az_iot_mqttv3 PUBLIC az_iot_core)
 az_iot_apply_warnings(az_iot_mqttv3)
 az_iot_apply_coverage(az_iot_mqttv3)
 
-add_library(az_iot_mqttv5 ${AZ_IOT_MQTTV5_SOURCES})
-add_library(azure::iot::mqttv5 ALIAS az_iot_mqttv5)
-# mqttv5's own internal headers live under mqttv5/internal/; core's are reached
-# through the core entry, exactly as mqttv3 does.
-target_include_directories(az_iot_mqttv5 PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/mqttv5
-)
-target_link_libraries(az_iot_mqttv5 PUBLIC az_iot_core)
-az_iot_apply_warnings(az_iot_mqttv5)
-az_iot_apply_coverage(az_iot_mqttv5)
-
 # Shared builds carry no ABI guarantee (docs/struct_versioning.md). The full
 # version in the soname (Linux) and DLL name (Windows) makes the loader refuse
 # a library from any other release instead of letting it misread our structs.
 # The pre-release label is included: previews may break the ABI between them.
-foreach(_tgt IN ITEMS az_iot_core az_iot_mqttv3 az_iot_mqttv5)
+foreach(_tgt IN ITEMS az_iot_core az_iot_mqttv3)
     set_target_properties(${_tgt} PROPERTIES
         VERSION ${AZ_IOT_VERSION_FULL}
         SOVERSION ${AZ_IOT_VERSION_FULL}

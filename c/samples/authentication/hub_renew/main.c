@@ -6,8 +6,7 @@
 /* authentication/hub_renew
  *
  * Runtime operational-certificate renewal against a connected MQTTv3 hub
- * (D7). Connects to whichever hub DPS assigns; renewal through send_csr() is
- * MQTTv3-only, so on an MQTTv5 hub the sample reports that and exits non-zero.
+ * (D7). Connects to whichever hub DPS assigns.
  * End to end:
  *   1. Connect, then call az_iot_connection_client_send_csr(); the SDK gets the
  *      CSR from the managed provider.
@@ -114,13 +113,19 @@ static void on_csr_event(const az_iot_csr_event* evt, void* user_ctx)
 
 int main(void)
 {
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call.
+  sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_config config = { 0 };
   if (sample_config_load(&config) != 0)
   {
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
 
   char* op_key = sample_env_copy("AZ_IOT_OPERATIONAL_KEY", "operational_key.pem");
@@ -130,8 +135,6 @@ int main(void)
   user_context user_ctx = { 0 };
   az_iot_certificate_provider_managed provider = { 0 };
   az_iot_connection_client connection_client = { 0 };
-  az_iot_mqtt_factory* factory_v3 = NULL;
-  az_iot_mqtt_factory* factory_v5 = NULL;
 
   az_iot_certificate_provider_managed_options mopts
       = az_iot_certificate_provider_managed_options_default();
@@ -158,6 +161,17 @@ int main(void)
   copts.certificate_provider = &provider.base;
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   copts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
 
   if (az_iot_connection_client_init(&connection_client, &copts) != AZ_IOT_OK)
   {
@@ -165,26 +179,6 @@ int main(void)
   }
 
   az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, &user_ctx);
-
-  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory_v3 = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v3) != AZ_IOT_OK)
-  {
-    goto cleanup;
-  }
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&connection_client, factory_v5) != AZ_IOT_OK)
-  {
-    goto cleanup;
-  }
 
   if (az_iot_connection_client_open(&connection_client) != AZ_IOT_OK)
   {
@@ -262,16 +256,12 @@ int main(void)
 
 cleanup:
   az_iot_connection_client_deinit(&connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(factory_v3);
-  az_iot_paho_factory_destroy(factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(factory_v3);
-  az_iot_az_mqtt_factory_destroy(factory_v5);
-#endif
   az_iot_certificate_provider_managed_deinit(&provider);
   free(op_key);
   free(op_cert);
   sample_config_release(&config);
-  return rc;
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call or return the value
+  // directly.
+  return sample_pipeline_checks_end(rc);
 }

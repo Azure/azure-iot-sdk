@@ -3,7 +3,7 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 #
 # Checks that every copy of the SDK version matches AZ_IOT_VERSION_STRING in
-# inc/azure/iot/az_iot_version.h. With a tag argument (e.g. c/1.0.0-preview),
+# inc/azure/iot/az_iot_version.h. With a tag argument (e.g. c/1.0.0),
 # also checks the tag and that CHANGELOG.md has a dated entry for it.
 # The Yocto PV is excluded: it tracks SRCREV_sdk, which lags main.
 # Dependency-free so it can run in the conventions job before configuring.

@@ -31,7 +31,7 @@
  *   - the hook was never actually called: if it were, the route was accepted,
  *     not refused, and this control's premise no longer holds.
  *
- * Runs both suite kinds, and in both adapter build modes: without
+ * Runs in both adapter build modes: without
  * AZ_IOT_PAHO_KEY_CUSTODY the adapter still refuses a sign hook with the same
  * result, so there is no configuration in which this exits green without having
  * dispatched the case.
@@ -93,27 +93,8 @@
 #include <openssl/pem.h>
 #include <openssl/x509.h>
 
+#include "../support/test_env.h"
 #include "../support/test_x509.h"
-
-/* The temporary directory, spelled the way each platform spells it. Windows
- * sets TEMP/TMP and not TMPDIR, and this harness builds there. */
-static const char* temp_dir(void)
-{
-  static const char* const names[] = { "TMPDIR", "TEMP", "TMP" };
-  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
-  {
-    const char* v = getenv(names[i]);
-    if (v != NULL && v[0] != '\0')
-    {
-      return v;
-    }
-  }
-#if defined(_WIN32)
-  return ".";
-#else
-  return "/tmp";
-#endif
-}
 
 /* Delete the certificates the suite leaves behind in the working directory.
  *
@@ -448,15 +429,6 @@ static int run_control(
     const char* cert_path,
     const char* label)
 {
-  az_iot_mqtt_factory* f = (suite_kind == AZ_IOT_CONFORMANCE_SUITE_V5)
-      ? az_iot_paho_factory_create_v5()
-      : az_iot_paho_factory_create_v3_1_1();
-  if (f == NULL)
-  {
-    fprintf(stderr, "sign-negative[%s]: could not create the factory\n", label);
-    return 1;
-  }
-
   az_iot_conformance_options opts = { 0 };
   opts.capabilities |= (uint32_t)AZ_IOT_CONFORMANCE_CAP_KEY_CUSTODY_SIGN;
   opts.sign = negative_sign_stub;
@@ -508,11 +480,10 @@ static int run_control(
       remove(log_path);
     }
     fprintf(stderr, "sign-negative[%s]: could not capture the suite's output\n", label);
-    az_iot_paho_factory_destroy(f);
     return 1;
   }
 
-  int suite_rc = az_iot_conformance_run_with_options(suite_kind, f, &opts);
+  int suite_rc = az_iot_conformance_run_with_options(suite_kind, az_iot_paho_get_adapter(), &opts);
 
   /* The log IS the evidence, so a write that failed means the evidence is
    * incomplete -- and an incomplete log can hold the expected failure while
@@ -536,7 +507,6 @@ static int run_control(
   az_iot_close(saved_out);
   az_iot_close(saved_err);
   const int close_failed = (fclose(log) != 0);
-  az_iot_paho_factory_destroy(f);
   print_sanitizer_reports_from_log(log_path, label);
 
   if (flush_failed || close_failed)
@@ -717,15 +687,11 @@ static int run_control_isolated(
 
 int main(void)
 {
-  /* Both suite kinds. The dispatch is shared, but only a run proves that: a
-   * change that filtered the case out of the v5 list alone would leave
-   * az_iot_conformance_paho_v5 green, since that harness declares the URI route
-   * only. */
   static const struct
   {
     az_iot_conformance_suite kind;
     const char* label;
-  } suites[] = { { AZ_IOT_CONFORMANCE_SUITE_V3_1_1, "v3" }, { AZ_IOT_CONFORMANCE_SUITE_V5, "v5" } };
+  } suites[] = { { AZ_IOT_CONFORMANCE_SUITE_V3_1_1, "v3" } };
 
   char origin[1024];
   if (az_iot_getcwd(origin, sizeof(origin)) == NULL)
@@ -734,10 +700,10 @@ int main(void)
     return 1;
   }
 
+  char work_name[64];
   char work_dir[512];
-  int work_len = snprintf(
-      work_dir, sizeof(work_dir), "%s/az-iot-sign-negative-%ld", temp_dir(), (long)az_iot_getpid());
-  if (work_len < 0 || (size_t)work_len >= sizeof(work_dir))
+  (void)snprintf(work_name, sizeof(work_name), "az-iot-sign-negative-%ld", (long)az_iot_getpid());
+  if (!az_iot_test_temp_path(work_dir, sizeof(work_dir), work_name))
   {
     /* A truncated path names a different directory, so creating it, entering it
      * and removing it would each act on something nobody asked for. */

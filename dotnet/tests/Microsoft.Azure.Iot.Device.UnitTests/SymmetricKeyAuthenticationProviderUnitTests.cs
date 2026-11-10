@@ -14,6 +14,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 {
     public class SymmetricKeyAuthenticationProviderUnitTests
     {
+        private static readonly string[] s_issuedCertificateChain = { "issued-certificate" };
+
         [Theory]
         [InlineData(0, null, null)]
         [InlineData(0, 10, 90)]
@@ -95,7 +97,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             SymmetricKeyAuthenticationProvider authentication = new("registration-id", "0ne00000000", key, null);
 
             var credentials = await authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
-                "some-hub.azure-devices.net", "device-id", new[] { "issued-certificate" }, TestContext.Current.CancellationToken);
+                "some-hub.azure-devices.net", "device-id", s_issuedCertificateChain, TestContext.Current.CancellationToken);
 
             Assert.Null(authentication.IssuedCertificatePrivateKey);
             Assert.Null(authentication.HandleCertificateSigningCompleteAsync);
@@ -113,7 +115,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             using X509Certificate2 certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
             string[] issuedChain = new[] { Convert.ToBase64String(certificate.RawData) };
             byte[] key = new byte[] { 0x00, 0xFF, 0x80, 0x01 };
-            RemoteCertificateValidationCallback remoteValidation = (_, _, _, _) => true;
+            RemoteCertificateValidationCallback remoteValidation = (_, _, _, errors) => errors == SslPolicyErrors.None;
             LocalCertificateSelectionCallback localSelection = (_, _, _, _, _) => certificate;
             SymmetricKeyAuthenticationProvider authentication = useCallback
                 ? new("registration-id", "0ne00000000", key, null, _ => Task.FromResult(certificate), remoteValidation, localSelection)
@@ -155,7 +157,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             // Once a certificate is issued it is presented instead of a SAS token, so there is no secondary to fall back to.
             Assert.Null(await authentication.GetSecondaryOperationalAuthenticationCredentialsAsync(
-                "some-hub.azure-devices.net", "device-id", new[] { "issued-certificate" }, TestContext.Current.CancellationToken));
+                "some-hub.azure-devices.net", "device-id", s_issuedCertificateChain, TestContext.Current.CancellationToken));
         }
 
         [Theory]

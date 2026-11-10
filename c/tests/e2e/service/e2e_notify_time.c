@@ -5,6 +5,8 @@
 /* SPDX-License-Identifier: MIT */
 #include "e2e_notify_time.h"
 
+#include "az_iot_e2e_service.h"
+
 #include <string.h>
 
 /**
@@ -66,29 +68,11 @@ static const char* skip_json_whitespace(const char* p)
   return p;
 }
 
-bool e2e_notify_enqueued_time(const char* body, int64_t* out_epoch_s)
+bool e2e_utc_time_parse(const char* text, int64_t* out_epoch_s, const char** out_end)
 {
-  static const char key[] = "\"enqueuedTimeUtc\"";
-  const char* p = strstr(body, key);
-  if (p == NULL)
-  {
-    return false;
-  }
-  p += sizeof(key) - 1;
-  p = skip_json_whitespace(p);
-  if (*p != ':')
-  {
-    return false;
-  }
-  p = skip_json_whitespace(p + 1);
-  if (*p != '"')
-  {
-    return false;
-  }
-  p++;
-
+  const char* p = text;
   /* Each check runs only if the previous ones matched non-NUL characters, so no
-   * read goes past the terminator of a truncated body. */
+   * read goes past the terminator of a truncated text. */
   int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
   if (!parse_digits(p, 4, &year) || p[4] != '-' || !parse_digits(p + 5, 2, &month) || p[7] != '-'
       || !parse_digits(p + 8, 2, &day) || p[10] != 'T' || !parse_digits(p + 11, 2, &hour)
@@ -124,11 +108,116 @@ bool e2e_notify_enqueued_time(const char* body, int64_t* out_epoch_s)
   {
     return false;
   }
+
+  *out_epoch_s = days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second;
+  *out_end = p;
+  return true;
+}
+
+bool e2e_notify_enqueued_time(const char* body, int64_t* out_epoch_s)
+{
+  static const char key[] = "\"enqueuedTimeUtc\"";
+  const char* p = strstr(body, key);
+  if (p == NULL)
+  {
+    return false;
+  }
+  p += sizeof(key) - 1;
+  p = skip_json_whitespace(p);
+  if (*p != ':')
+  {
+    return false;
+  }
+  p = skip_json_whitespace(p + 1);
   if (*p != '"')
   {
     return false;
   }
+  p++;
 
-  *out_epoch_s = days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second;
+  const char* end = NULL;
+  int64_t epoch_s = 0;
+  if (!e2e_utc_time_parse(p, &epoch_s, &end) || *end != '"')
+  {
+    return false;
+  }
+  *out_epoch_s = epoch_s;
   return true;
+}
+
+/**
+ * @brief Reads the blob name of a notification: its `blobName` string, JSON-decoded, without the
+ * leading "<device id>/".
+ *
+ * @return false if the field is missing, truncated, does not fit @p out_size bytes with its NUL,
+ * uses a `\u` escape, or has no device id prefix.
+ */
+static bool read_blob_name(const char* body, char* out, size_t out_size)
+{
+  static const char key[] = "\"blobName\"";
+  const char* p = strstr(body, key);
+  if (p == NULL)
+  {
+    return false;
+  }
+  p = skip_json_whitespace(p + sizeof(key) - 1);
+  if (*p != ':')
+  {
+    return false;
+  }
+  p = skip_json_whitespace(p + 1);
+  if (*p != '"')
+  {
+    return false;
+  }
+  p++;
+
+  bool in_device_id = true;
+  size_t n = 0;
+  for (; *p != '"'; p++)
+  {
+    char c = *p;
+    if (c == '\0')
+    {
+      return false;
+    }
+    if (c == '\\')
+    {
+      c = *++p;
+      if (c != '"' && c != '\\' && c != '/')
+      {
+        return false;
+      }
+    }
+    if (in_device_id)
+    {
+      in_device_id = c != '/';
+      continue;
+    }
+    if (n + 1 >= out_size)
+    {
+      return false;
+    }
+    out[n++] = c;
+  }
+  out[n] = '\0';
+  return !in_device_id;
+}
+
+bool e2e_notify_has_no_watcher(const char* body, int64_t now_s, int64_t stale_after_s)
+{
+  static const char watched[] = AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY;
+  static const char unwatched[]
+      = AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY AZ_IOT_E2E_UNWATCHED_BLOB_TAG;
+  char blob_name[512];
+  if (read_blob_name(body, blob_name, sizeof(blob_name))
+      && strcmp(blob_name, AZ_IOT_E2E_SAMPLE_FILE_UPLOAD_BLOB_NAME) != 0
+      && (strncmp(blob_name, watched, sizeof(watched) - 1) != 0
+          || strncmp(blob_name, unwatched, sizeof(unwatched) - 1) == 0))
+  {
+    return true;
+  }
+  /* A blob name that cannot be read may be watched: only its age can tell. */
+  int64_t enqueued_s;
+  return e2e_notify_enqueued_time(body, &enqueued_s) && now_s - enqueued_s > stale_after_s;
 }

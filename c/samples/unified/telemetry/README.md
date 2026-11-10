@@ -3,17 +3,15 @@
 
 # Telemetry
 
-Sends a telemetry message (`{"temp":23}`) every 5 seconds for about 60 seconds, to whichever
+Sends a telemetry message (`{"temp":23}`) every 5 seconds for about 60 seconds, to the mqttv3
 IoT Hub DPS assigns the device. It is the shortest example of the build-before-open pattern that
 most `unified/` samples follow; read it first. [`connect_first`](../connect_first/README.md)
-builds after connecting instead, and [`c2d_receiver`](../c2d_receiver/README.md) and
-[`file_upload`](../file_upload/README.md) serve mqttv3 only. For an mqttv5-only device, see
-[`mqttv5/telemetry`](../../mqttv5/telemetry/README.md).
+builds after connecting instead.
 
 ## Sample features
 
-- Hub generations: mqttv3 (MQTT 3.1.1) and mqttv5 (MQTT 5), whichever DPS assigns, including after the device is moved to a hub of the other generation.
-- Builds the telemetry client **before** `open()` for an assumed generation (mqttv3, what DPS assigns when it names no profile). If DPS assigns the other one, the connection stops with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` before the hub is reached; the sample destroys the client, builds the other generation's, and calls `close()` then `open()`.
+- Hub: mqttv3 (MQTT 3.1.1). A DPS assignment to a hub profile this SDK does not support faults with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` before the hub is reached.
+- Builds the telemetry client **before** `open()`.
 - Building before `open()` means `CONNECTED` also says the client's subscriptions were granted. [`connect_first`](../connect_first/README.md) shows the alternative.
 - Platforms: Linux and Windows.
 
@@ -22,7 +20,6 @@ builds after connecting instead, and [`c2d_receiver`](../c2d_receiver/README.md)
 - An Azure IoT Hub Device Provisioning Service (DPS) instance linked to an IoT Hub.
 - An X.509 enrollment (individual or group) for the device. For an mqttv3 hub,
   [Quickstart: Provision an X.509 certificate simulated device](https://learn.microsoft.com/azure/iot-dps/quick-create-simulated-device-x509) walks through the setup.
-- To exercise mqttv5, the device's enrollment must assign it to an mqttv5 IoT Hub.
 
 ## Configure
 
@@ -88,11 +85,10 @@ Runs about 60 seconds. Exit code 0 when at least one message was sent and the co
 The sample prints a summary line at the end; SDK warnings and errors go to stderr.
 
 ```
-Sent 11 message(s) on AZ_IOT_CONNECTION_PROFILE_MQTT_V3, 0 failed.
+Sent 11 message(s), 0 failed.
 ```
 
-The count depends on how long connecting took. When DPS assigns the other generation, the
-sample first prints `DPS assigned AZ_IOT_CONNECTION_PROFILE_MQTT_V5; rebuilding the telemetry client.`
+The count depends on how long connecting took.
 
 ## Troubleshooting
 
@@ -101,14 +97,13 @@ sample first prints `DPS assigned AZ_IOT_CONNECTION_PROFILE_MQTT_V5; rebuilding 
 | `Required env var <NAME> not set.`, exit 1 | A required variable is missing. |
 | SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. DPS verdicts are retried until the sample's run time ends. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
-| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK version does not know. |
+| `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK does not support. |
 
 ## Where to look in `main.c`
 
 | What | Code |
 | --- | --- |
-| Register both MQTT adapters (DPS always uses MQTT 3.1.1) | `az_iot_paho_factory_create_v3_1_1()`, `az_iot_paho_factory_create_v5()`; az_mqtt: `az_iot_az_mqtt_factory_create_v3_1_1()`, `az_iot_az_mqtt_factory_create_v5()` |
-| Build the client for an assumed generation before `open()` | `telemetry_build()` with `AZ_IOT_CONNECTION_PROFILE_MQTT_V3` |
-| Detect that DPS assigned the other generation | `on_conn_state()`: `AZ_IOT_CONN_STATE_FAULTED` with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`; `event->profile` holds the assigned one |
-| Rebuild and reconnect | main loop: `telemetry_destroy()`, `az_iot_connection_client_close()`, `telemetry_build()`, `az_iot_connection_client_open()` |
-| Send | `az_iot_mqttv3_telemetry_client_send()` / `az_iot_mqttv5_telemetry_client_send()`, completion in `on_send_done()` |
+| MQTT adapter and the workspace it builds each MQTT client in | `mqtt_adapter` (`az_iot_paho_get_adapter()`; az_mqtt: `az_iot_az_mqtt_get_adapter()`), `mqtt_limits`, `mqtt_workspace`; sizes in [`sample_utils.h`](../../common/sample_utils.h) |
+| Build the client before `open()` | `telemetry_build()` |
+| Detect an unsupported hub profile | `on_conn_state()`: `AZ_IOT_CONN_STATE_FAULTED` with `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`; `event->profile` holds the assigned one |
+| Send | `az_iot_mqttv3_telemetry_client_send()`, completion in `on_send_done()` |

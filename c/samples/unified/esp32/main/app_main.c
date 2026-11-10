@@ -6,18 +6,16 @@
 /* unified/esp32 - ESP32 IoT Hub sample.
  *
  * Network -> DPS (X.509, identity from the esp_secure_cert partition) -> the assigned hub, on
- * mqttv3 or mqttv5. While connected it:
+ * mqttv3. While connected it:
  *   - sends telemetry every HUB_TELEMETRY_INTERVAL_S seconds ({"deviceId":"<id>","count":n});
  *   - answers the direct method "echo" with its payload (status 200; 413 when too large), any
  *     other with 404;
  *   - acknowledges each desired twin version by patching {"desiredVersion":v} into reported,
- *     including one set while it was offline (mqttv3: a twin GET on connect; mqttv5: the desired
- *     snapshot the hub pushes on connect).
+ *     including one set while it was offline (a twin GET on connect).
  *
- * The feature clients are built for mqttv3 before open(), what DPS assigns when it names no
- * connectionProfile. If DPS assigns mqttv5, the connection stops with
- * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH; the clients are rebuilt for it and the connection
- * reopened, as in samples/unified/telemetry.
+ * The feature clients are built before open(). If DPS assigns a hub generation this SDK does not
+ * support, the connection faults with AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED and the device
+ * restarts.
  *
  * Settings: `idf.py menuconfig` (see Kconfig.projbuild); the network under "Example Connection
  * Configuration", or OpenCores Ethernet in QEMU (sdkconfig.qemu). Lines starting "hub_esp32:"
@@ -49,7 +47,7 @@ static const char* TAG = "hub_esp32";
 
 /** @brief The direct method this device implements. */
 #define ECHO_METHOD "echo"
-/** @brief How long an mqttv3 direct method request stays answerable. */
+/** @brief How long a direct method request stays answerable. */
 #define METHOD_RESPONSE_TIMEOUT_S 60u
 /** @brief The do_work() tick. */
 #define TICK_MS 50u
@@ -59,12 +57,19 @@ static const char* TAG = "hub_esp32";
 #define OFFLINE_RESTART_S 900u
 /** @brief Wait before retrying a failed twin GET or reported patch. */
 #define TWIN_RETRY_MS 5000u
-/** @brief Longest wait for a telemetry acknowledgement or an mqttv3 twin response: those requests
+/** @brief Longest wait for a telemetry acknowledgement or a twin response: those requests
  * end only on their answer or with the session, so the sample reconnects after this. */
 #define RESPONSE_TIMEOUT_S 60u
-/** @brief Largest echoed mqttv3 payload: the response must fit the adapter's send buffer, with
+/** @brief Largest echoed payload: the response must fit the adapter's send buffer, with
  * room for its topic. */
 #define MQTTV3_ECHO_PAYLOAD_MAX (CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE - 256u)
+/** @brief MQTT message store: one full-size message with az_mqtt's 18-byte per-message overhead,
+ * kept for the resumed hub session. */
+#define MQTT_MESSAGE_STORE_SIZE (CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE + 32u)
+/** @brief Copies a connect makes: host, client ID, user name, device certificate and key PEM. */
+#define MQTT_CONNECT_STRINGS_SIZE 8192u
+/** @brief Bound of az_mqtt's TLS state with mbedTLS (about 4.5 KB). */
+#define MQTT_TLS_STATE_SIZE 8192u
 
 /** @brief A wait before the next retry: none, or #TWIN_RETRY_MS from @c started. */
 typedef struct
@@ -91,7 +96,7 @@ static bool retry_wait_over(retry_wait* w)
   return !w->active;
 }
 
-/** @brief An mqttv3 method answer refused with AZ_IOT_ERR_BUSY (the connection still setting
+/** @brief A method answer refused with AZ_IOT_ERR_BUSY (the connection still setting
  * up), retried from the loop. */
 typedef struct
 {
@@ -102,29 +107,24 @@ typedef struct
   size_t length;
 } pending_method_answer;
 
-/** @brief The device: connection, the feature clients of one generation, and what is pending. */
+/** @brief The device: connection, the feature clients, and what is pending. */
 typedef struct
 {
   az_iot_connection_client connection;
-  az_iot_connection_profile profile;
-  bool clients_built;
   az_iot_mqttv3_telemetry_client mqttv3_telemetry;
   az_iot_mqttv3_twin_client mqttv3_twin;
+  uint8_t mqttv3_twin_workspace[AZ_IOT_MQTTV3_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
   az_iot_mqttv3_direct_method_client mqttv3_methods;
-  az_iot_mqttv5_telemetry_client mqttv5_telemetry;
-  az_iot_mqttv5_twin_client mqttv5_twin;
-  az_iot_mqttv5_direct_method_client mqttv5_methods;
-  /* Set by callbacks, acted on by the loop: clients are not rebuilt inside do_work(). */
+  uint8_t mqttv3_methods_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
+  /* Set by callbacks, acted on by the loop. */
   az_iot_connection_state hub_state;
   TickType_t offline_since; /* when hub_state last left CONNECTED, or the loop started */
   bool faulted;
-  bool rebuild;
-  az_iot_connection_profile assigned_profile;
   bool telemetry_pending;
   TickType_t telemetry_sent_at;
   uint32_t telemetry_sent;
   pending_method_answer method_answer;
-  bool twin_get_due; /* mqttv3: read the desired version once connected */
+  bool twin_get_due; /* read the desired version once connected */
   bool twin_get_in_flight;
   TickType_t twin_get_sent;
   retry_wait twin_get_retry;
@@ -141,7 +141,6 @@ typedef struct
 } hub_device;
 
 static hub_device s_device;
-static uint8_t s_mqttv5_twin_encode_buffer[256];
 
 /** @brief On hub CONNECTED: a different hub or device id than before restarts the desired-version
  * tracking, since that twin counts its versions from its own start. */
@@ -162,17 +161,12 @@ static void track_assignment(hub_device* d)
 
 /**
  * @brief Takes @p version as the one to acknowledge unless an equal or newer one was seen: a late
- * twin GET or patch must not move the acknowledgement back. An @p authoritative version (an
- * mqttv5 snapshot, the whole desired document) is taken even when lower, e.g. after the twin was
- * replaced.
+ * twin GET or patch must not move the acknowledgement back.
  */
-static void note_desired_version(hub_device* d, uint64_t version, bool authoritative)
+static void note_desired_version(hub_device* d, uint64_t version)
 {
-  /* First: an mqttv5 snapshot can arrive before hub CONNECTED, and a reset after it would drop
-   * it. */
   track_assignment(d);
-  if (version == d->newest_desired_version
-      || (version < d->newest_desired_version && !authoritative))
+  if (version <= d->newest_desired_version)
   {
     ESP_LOGI(TAG, "desired version %" PRIu64 " is not newer; ignored", version);
     return;
@@ -184,13 +178,6 @@ static void note_desired_version(hub_device* d, uint64_t version, bool authorita
 static void on_connection_state(const az_iot_connection_state_event* event, void* user_ctx)
 {
   hub_device* d = (hub_device*)user_ctx;
-  if (event->state == AZ_IOT_CONN_STATE_FAULTED
-      && event->reason == AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH && event->profile != NULL)
-  {
-    d->assigned_profile = event->profile->connection_profile;
-    d->rebuild = true;
-    return;
-  }
   if (event->state == AZ_IOT_CONN_STATE_FAULTED)
   {
     ESP_LOGE(TAG, "connection faulted: %s", az_iot_result_to_string(event->reason));
@@ -205,9 +192,12 @@ static void on_connection_state(const az_iot_connection_state_event* event, void
     d->hub_state = event->state;
     if (event->state == AZ_IOT_CONN_STATE_CONNECTED)
     {
-      ESP_LOGI(TAG, "ready on %s", az_iot_connection_profile_to_string(d->profile));
+      ESP_LOGI(
+          TAG,
+          "ready on %s",
+          az_iot_connection_profile_to_string(AZ_IOT_CONNECTION_PROFILE_MQTT_V3));
       track_assignment(d);
-      d->twin_get_due = d->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
+      d->twin_get_due = true;
       d->twin_get_retry.active = false;
     }
   }
@@ -247,9 +237,8 @@ static void send_telemetry(hub_device* d)
   message.payload_len = (size_t)length;
   message.properties = properties;
   message.properties_count = sizeof(properties) / sizeof(properties[0]);
-  az_iot_result result = d->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-      ? az_iot_mqttv5_telemetry_client_send(&d->mqttv5_telemetry, &message, on_telemetry_sent, d)
-      : az_iot_mqttv3_telemetry_client_send(&d->mqttv3_telemetry, &message, on_telemetry_sent, d);
+  az_iot_result result
+      = az_iot_mqttv3_telemetry_client_send(&d->mqttv3_telemetry, &message, on_telemetry_sent, d);
   d->telemetry_pending = result == AZ_IOT_OK;
   d->telemetry_sent_at = xTaskGetTickCount();
 }
@@ -259,18 +248,7 @@ static void send_telemetry(hub_device* d)
 static void on_desired_mqttv3(const uint8_t* patch, size_t length, uint64_t version, void* user_ctx)
 {
   ESP_LOGI(TAG, "desired version %" PRIu64 ": %.*s", version, (int)length, (const char*)patch);
-  note_desired_version((hub_device*)user_ctx, version, false);
-}
-
-static void on_desired_mqttv5(
-    az_iot_mqttv5_twin_desired_kind kind,
-    uint64_t version,
-    const uint8_t* payload,
-    size_t length,
-    void* user_ctx)
-{
-  ESP_LOGI(TAG, "desired version %" PRIu64 ": %.*s", version, (int)length, (const char*)payload);
-  note_desired_version((hub_device*)user_ctx, version, kind == AZ_IOT_MQTTV5_TWIN_DESIRED_SNAPSHOT);
+  note_desired_version((hub_device*)user_ctx, version);
 }
 
 /**
@@ -334,7 +312,7 @@ static void on_twin_mqttv3(az_iot_result status, const uint8_t* twin, size_t len
   if (version != 0)
   {
     ESP_LOGI(TAG, "desired version %" PRIu64 ": from the twin", version);
-    note_desired_version(d, version, false); // May be older than a live patch.
+    note_desired_version(d, version); // May be older than a live patch.
   }
 }
 
@@ -364,35 +342,14 @@ static void on_reported_mqttv3(az_iot_result status, uint64_t version, void* use
   finish_report((hub_device*)user_ctx, status == AZ_IOT_OK);
 }
 
-static void on_reported_mqttv5(
-    az_iot_result status,
-    const az_iot_mqttv5_twin_patch_result* result,
-    void* user_ctx)
-{
-  bool const accepted
-      = status == AZ_IOT_OK && result != NULL && result->status == AZ_IOT_MQTTV5_TWIN_PATCH_OK;
-  if (status != AZ_IOT_OK)
-  {
-    ESP_LOGW(TAG, "reported patch failed: %s", az_iot_result_to_string(status));
-  }
-  else if (!accepted)
-  {
-    ESP_LOGW(TAG, "reported patch refused: %d", result != NULL ? (int)result->status : -1);
-  }
-  finish_report((hub_device*)user_ctx, accepted);
-}
-
 static void report_desired_version(hub_device* d)
 {
   char patch[48];
   d->reported_version = d->desired_version;
   int length
       = snprintf(patch, sizeof(patch), "{\"desiredVersion\":%" PRIu64 "}", d->reported_version);
-  az_iot_result result = d->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5
-      ? az_iot_mqttv5_twin_client_patch_reported(
-            &d->mqttv5_twin, (const uint8_t*)patch, (size_t)length, on_reported_mqttv5, d)
-      : az_iot_mqttv3_twin_client_patch_reported(
-            &d->mqttv3_twin, (const uint8_t*)patch, (size_t)length, on_reported_mqttv3, d);
+  az_iot_result result = az_iot_mqttv3_twin_client_patch_reported(
+      &d->mqttv3_twin, (const uint8_t*)patch, (size_t)length, on_reported_mqttv3, d);
   d->report_pending = result == AZ_IOT_OK;
   d->report_sent = xTaskGetTickCount();
   if (result != AZ_IOT_OK)
@@ -404,14 +361,14 @@ static void report_desired_version(hub_device* d)
 
 /* ---- Direct methods ------------------------------------------------------- */
 
-/** @brief Drops the held mqttv3 method answer, if any. */
+/** @brief Drops the held method answer, if any. */
 static void drop_method_answer(hub_device* d)
 {
   free(d->method_answer.payload);
   d->method_answer = (pending_method_answer){ 0 };
 }
 
-/** @brief Sends the held mqttv3 method answer; keeps it while the connection is still setting up
+/** @brief Sends the held method answer; keeps it while the connection is still setting up
  * (AZ_IOT_ERR_BUSY), drops it otherwise (answered, timed out, or its session ended). */
 static void retry_method_answer(hub_device* d)
 {
@@ -469,100 +426,37 @@ static void on_method_mqttv3(
   ESP_LOGI(TAG, "method '%s': answer held until the connection is ready", name);
 }
 
-/* Only called for ECHO_METHOD: mqttv5 refuses undeclared names before they reach the device. */
-static void on_echo_mqttv5(
-    az_iot_direct_method_request request,
-    const char* method_name,
-    const uint8_t* payload,
-    size_t length,
-    void* user_ctx)
-{
-  hub_device* d = (hub_device*)user_ctx;
-  bool const fits = length <= AZ_IOT_MQTTV5_DM_RESULT_BODY_MAX;
-  az_iot_result const r = az_iot_mqttv5_direct_method_respond(
-      &d->mqttv5_methods, request, fits ? 200 : 413, fits ? payload : NULL, fits ? length : 0);
-  if (r != AZ_IOT_OK)
-  {
-    ESP_LOGW(TAG, "method '%s' not answered: %s", method_name, az_iot_result_to_string(r));
-    return;
-  }
-  ESP_LOGI(TAG, "method '%s' answered %d", method_name, fits ? 200 : 413);
-}
-
 /* ---- Feature clients ------------------------------------------------------ */
 
-static void destroy_clients(hub_device* d)
+/** @brief Builds the telemetry, twin and direct method clients. On failure the device must
+ * restart. */
+static az_iot_result build_clients(hub_device* d)
 {
-  if (!d->clients_built)
-  {
-    return;
-  }
-  if (d->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-  {
-    az_iot_mqttv5_direct_method_client_deinit(&d->mqttv5_methods);
-    az_iot_mqttv5_twin_client_deinit(&d->mqttv5_twin);
-    az_iot_mqttv5_telemetry_client_deinit(&d->mqttv5_telemetry);
-  }
-  else
-  {
-    az_iot_mqttv3_direct_method_client_deinit(&d->mqttv3_methods);
-    az_iot_mqttv3_twin_client_deinit(&d->mqttv3_twin);
-    az_iot_mqttv3_telemetry_client_deinit(&d->mqttv3_telemetry);
-  }
-  d->clients_built = false;
-  drop_method_answer(d); // Not answerable by the next clients.
-  d->telemetry_pending = false; // Lost with the old clients.
-  d->report_pending = false;
-  d->twin_get_due = false;
-  d->twin_get_in_flight = false;
-}
-
-/** @brief Builds the telemetry, twin and direct method clients for @p profile. Pins the
- * connection to it: an assignment to the other generation stops it with
- * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. On failure the device must restart. */
-static az_iot_result build_clients(hub_device* d, az_iot_connection_profile profile)
-{
-  az_iot_result r;
-  d->profile = profile;
-  if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V5)
-  {
-    r = az_iot_mqttv5_telemetry_client_init(&d->mqttv5_telemetry, &d->connection);
-    r = r == AZ_IOT_OK ? az_iot_mqttv5_twin_client_init(&d->mqttv5_twin, &d->connection) : r;
-    r = r == AZ_IOT_OK ? az_iot_mqttv5_twin_client_set_encode_buffer(
-                             &d->mqttv5_twin, AZ_SPAN_FROM_BUFFER(s_mqttv5_twin_encode_buffer))
-                       : r;
-    r = r == AZ_IOT_OK
-        ? az_iot_mqttv5_twin_client_set_desired_handler(&d->mqttv5_twin, on_desired_mqttv5, d)
-        : r;
-    r = r == AZ_IOT_OK ? az_iot_mqttv5_direct_method_client_init(&d->mqttv5_methods, &d->connection)
-                       : r;
-    // 0: no declared run time, so any caller timeout is enough.
-    r = r == AZ_IOT_OK ? az_iot_mqttv5_direct_method_client_register_method(
-                             &d->mqttv5_methods, ECHO_METHOD, 0, on_echo_mqttv5, d)
-                       : r;
-  }
-  else if (profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
-  {
-    r = az_iot_mqttv3_telemetry_client_init(&d->mqttv3_telemetry, &d->connection);
-    r = r == AZ_IOT_OK ? az_iot_mqttv3_twin_client_init(&d->mqttv3_twin, &d->connection) : r;
-    r = r == AZ_IOT_OK
-        ? az_iot_mqttv3_twin_client_set_desired_handler(&d->mqttv3_twin, on_desired_mqttv3, d)
-        : r;
-    r = r == AZ_IOT_OK ? az_iot_mqttv3_direct_method_client_init(&d->mqttv3_methods, &d->connection)
-                       : r;
-    r = r == AZ_IOT_OK
-        ? az_iot_mqttv3_direct_method_client_set_handler(&d->mqttv3_methods, on_method_mqttv3, d)
-        : r;
-    r = r == AZ_IOT_OK ? az_iot_mqttv3_direct_method_client_set_response_timeout(
-                             &d->mqttv3_methods, METHOD_RESPONSE_TIMEOUT_S)
-                       : r;
-  }
-  else
-  {
-    return AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED;
-  }
+  az_iot_result r = az_iot_mqttv3_telemetry_client_init(&d->mqttv3_telemetry, &d->connection);
+  r = r == AZ_IOT_OK ? az_iot_mqttv3_twin_client_init(
+                           &d->mqttv3_twin,
+                           &d->connection,
+                           &(az_iot_mqttv3_twin_client_options){
+                               .workspace = d->mqttv3_twin_workspace,
+                               .workspace_size = sizeof(d->mqttv3_twin_workspace) })
+                     : r;
+  r = r == AZ_IOT_OK
+      ? az_iot_mqttv3_twin_client_set_desired_handler(&d->mqttv3_twin, on_desired_mqttv3, d)
+      : r;
+  r = r == AZ_IOT_OK ? az_iot_mqttv3_direct_method_client_init(
+                           &d->mqttv3_methods,
+                           &d->connection,
+                           &(az_iot_mqttv3_direct_method_client_options){
+                               .workspace = d->mqttv3_methods_workspace,
+                               .workspace_size = sizeof(d->mqttv3_methods_workspace) })
+                     : r;
+  r = r == AZ_IOT_OK
+      ? az_iot_mqttv3_direct_method_client_set_handler(&d->mqttv3_methods, on_method_mqttv3, d)
+      : r;
+  r = r == AZ_IOT_OK ? az_iot_mqttv3_direct_method_client_set_response_timeout(
+                           &d->mqttv3_methods, METHOD_RESPONSE_TIMEOUT_S)
+                     : r;
   // A partly built set is left as is: the caller restarts.
-  d->clients_built = r == AZ_IOT_OK;
   return r;
 }
 
@@ -631,28 +525,32 @@ void app_main(void)
   static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
   options.workspace = connection_workspace;
   options.workspace_size = sizeof(connection_workspace);
-  // mqttv5: the hub pushes the desired snapshot on connect and each desired patch.
-  options.twin_push.push_desired = true;
+  /* The az_mqtt adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time:
+   * DPS, then the hub. Sizes: menuconfig. */
+  static uint8_t mqtt_workspace[AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(
+      CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE,
+      CONFIG_AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE,
+      CONFIG_AZ_IOT_AZ_MQTT_INFLIGHT_MAX,
+      MQTT_MESSAGE_STORE_SIZE,
+      MQTT_CONNECT_STRINGS_SIZE,
+      MQTT_TLS_STATE_SIZE)];
+  options.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+  options.mqtt_limits = (az_iot_mqtt_limits){
+    .send_buffer_size = CONFIG_AZ_IOT_AZ_MQTT_SEND_BUFFER_SIZE,
+    .receive_buffer_size = CONFIG_AZ_IOT_AZ_MQTT_RECEIVE_BUFFER_SIZE,
+    .max_in_flight_messages = CONFIG_AZ_IOT_AZ_MQTT_INFLIGHT_MAX,
+    .message_store_size = MQTT_MESSAGE_STORE_SIZE,
+    .connect_strings_size = MQTT_CONNECT_STRINGS_SIZE,
+  };
+  options.mqtt_workspace = mqtt_workspace;
+  options.mqtt_workspace_size = sizeof(mqtt_workspace);
   if (az_iot_connection_client_init(&d->connection, &options) != AZ_IOT_OK)
   {
     restart("connection client init failed");
   }
   az_iot_connection_client_add_state_observer(&d->connection, on_connection_state, d);
 
-  /* MQTT 3.1.1 for DPS and an mqttv3 hub, MQTT 5 for an mqttv5 hub. The factories must outlive
-   * the connection, which lives as long as this task. */
-  if (az_iot_connection_client_register_mqtt_factory(
-          &d->connection, az_iot_az_mqtt_factory_create_v3_1_1())
-          != AZ_IOT_OK
-      || az_iot_connection_client_register_mqtt_factory(
-             &d->connection, az_iot_az_mqtt_factory_create_v5())
-          != AZ_IOT_OK)
-  {
-    restart("registering the MQTT adapters failed");
-  }
-
-  if (build_clients(d, AZ_IOT_CONNECTION_PROFILE_MQTT_V3) != AZ_IOT_OK
-      || az_iot_connection_client_open(&d->connection) != AZ_IOT_OK)
+  if (build_clients(d) != AZ_IOT_OK || az_iot_connection_client_open(&d->connection) != AZ_IOT_OK)
   {
     restart("open failed");
   }
@@ -670,22 +568,6 @@ void app_main(void)
     tick_start = xTaskGetTickCount();
     (void)az_iot_connection_client_do_work(&d->connection, TICK_MS);
 
-    if (d->rebuild)
-    {
-      d->rebuild = false;
-      ESP_LOGI(
-          TAG,
-          "DPS assigned %s; rebuilding the clients",
-          az_iot_connection_profile_to_string(d->assigned_profile));
-      destroy_clients(d);
-      az_iot_connection_client_close(&d->connection);
-      if (build_clients(d, d->assigned_profile) != AZ_IOT_OK
-          || az_iot_connection_client_open(&d->connection) != AZ_IOT_OK)
-      {
-        restart("rebuilding for the assigned hub failed");
-      }
-      continue;
-    }
     if (d->faulted)
     {
       restart("connection faulted"); // Settled until close(): nothing more would be sent.
@@ -713,11 +595,10 @@ void app_main(void)
     }
 
     TickType_t const now = xTaskGetTickCount();
-    bool const mqttv3 = d->profile == AZ_IOT_CONNECTION_PROFILE_MQTT_V3;
     if (!d->reconnecting
         && ((d->telemetry_pending && now - d->telemetry_sent_at >= response_limit)
-            || (mqttv3 && d->twin_get_in_flight && now - d->twin_get_sent >= response_limit)
-            || (mqttv3 && d->report_pending && now - d->report_sent >= response_limit)))
+            || (d->twin_get_in_flight && now - d->twin_get_sent >= response_limit)
+            || (d->report_pending && now - d->report_sent >= response_limit)))
     {
       // close() fails the outstanding requests (AZ_IOT_ERR_NOT_CONNECTED); they retry after.
       ESP_LOGW(

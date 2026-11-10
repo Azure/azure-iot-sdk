@@ -7,8 +7,6 @@
 
 #include "mock_paho_async.h"
 
-#include <MQTTProperties.h>
-
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -22,7 +20,6 @@ static int s_handle_token;
 
 static int s_create_rc;
 static int s_set_callbacks_rc;
-static int s_set_disconnected_rc;
 static int s_connect_rc;
 
 static int s_disconnect_rc;
@@ -50,23 +47,27 @@ static int s_last_connect_timeout;
 static void* s_callback_context;
 static MQTTAsync_messageArrived* s_message_arrived;
 static MQTTAsync_connectionLost* s_connection_lost;
-static MQTTAsync_disconnected* s_disconnected;
-static void* s_disconnected_context;
 
-/* Scripted inbound v5 User Properties. Set up before any producer thread
- * starts and only read after that, so the table is never itself contended. */
-#define MOCK_PAHO_MAX_USER_PROPERTIES 32
-static MQTTProperty s_user_properties[MOCK_PAHO_MAX_USER_PROPERTIES];
-static int s_user_property_count;
 static int s_send_calls;
-static int s_properties_add_fail_at = -1;
-static int s_properties_add_calls;
+static int s_send_rc;
+static bool s_send_completes_at_once;
+static MQTTAsync_responseOptions s_last_send_response;
+
+/* Accepted sends. Paho completes each exactly once: by a callback a test drives, during
+ * MQTTAsync_sendMessage() when s_send_completes_at_once, or else in MQTTAsync_destroy(). */
+#define MOCK_PAHO_MAX_SENDS 64
+typedef struct
+{
+  MQTTAsync_responseOptions response;
+  bool pending;
+} mock_paho_send;
+static mock_paho_send s_sends[MOCK_PAHO_MAX_SENDS];
+static int s_send_count;
 
 void mock_paho_reset(void)
 {
   s_create_rc = MQTTASYNC_SUCCESS;
   s_set_callbacks_rc = MQTTASYNC_SUCCESS;
-  s_set_disconnected_rc = MQTTASYNC_SUCCESS;
   s_connect_rc = MQTTASYNC_SUCCESS;
   s_disconnect_rc = MQTTASYNC_SUCCESS;
   s_disconnect_completion_success = true;
@@ -88,17 +89,16 @@ void mock_paho_reset(void)
   s_callback_context = NULL;
   s_message_arrived = NULL;
   s_connection_lost = NULL;
-  s_disconnected = NULL;
-  s_disconnected_context = NULL;
-  s_user_property_count = 0;
   s_send_calls = 0;
-  s_properties_add_fail_at = -1;
-  s_properties_add_calls = 0;
+  s_send_rc = MQTTASYNC_SUCCESS;
+  s_send_completes_at_once = false;
+  memset(s_sends, 0, sizeof(s_sends));
+  s_send_count = 0;
+  memset(&s_last_send_response, 0, sizeof(s_last_send_response));
 }
 
 void mock_paho_set_create_rc(int rc) { s_create_rc = rc; }
 void mock_paho_set_set_callbacks_rc(int rc) { s_set_callbacks_rc = rc; }
-void mock_paho_set_set_disconnected_rc(int rc) { s_set_disconnected_rc = rc; }
 void mock_paho_set_connect_rc(int rc) { s_connect_rc = rc; }
 
 void mock_paho_set_disconnect_rc(int rc) { s_disconnect_rc = rc; }
@@ -194,18 +194,6 @@ MQTTAsync_messageArrived* mock_paho_message_arrived(void) { return s_message_arr
 
 MQTTAsync_connectionLost* mock_paho_connection_lost(void) { return s_connection_lost; }
 
-MQTTAsync_disconnected* mock_paho_disconnected(void) { return s_disconnected; }
-
-void* mock_paho_disconnected_context(void) { return s_disconnected_context; }
-
-int MQTTAsync_setDisconnected(MQTTAsync handle, void* context, MQTTAsync_disconnected* co)
-{
-  (void)handle;
-  s_disconnected = co;
-  s_disconnected_context = context;
-  return s_set_disconnected_rc;
-}
-
 int MQTTAsync_connect(MQTTAsync handle, const MQTTAsync_connectOptions* options)
 {
   (void)handle;
@@ -282,9 +270,12 @@ int MQTTAsync_isConnected(MQTTAsync handle)
   return 0;
 }
 
+static void mock_paho_fail_pending_sends(int code);
+
 void MQTTAsync_destroy(MQTTAsync* handle)
 {
   ++s_destroy_calls;
+  mock_paho_fail_pending_sends(MQTTASYNC_OPERATION_INCOMPLETE);
   if (handle)
   {
     *handle = NULL;
@@ -312,6 +303,59 @@ int MQTTAsync_unsubscribe(MQTTAsync handle, const char* topic, MQTTAsync_respons
   return MQTTASYNC_SUCCESS;
 }
 
+/* The send a completion is for; aborts on a second completion, which Paho never makes. */
+static mock_paho_send* mock_paho_send_complete(void* context)
+{
+  mock_paho_send* send = (mock_paho_send*)context;
+  if (!send->pending)
+  {
+    fprintf(stderr, "mock_paho: a send was completed twice\n");
+    abort();
+  }
+  send->pending = false;
+  return send;
+}
+
+static void mock_paho_send_success(void* context, MQTTAsync_successData* data)
+{
+  mock_paho_send* send = mock_paho_send_complete(context);
+  send->response.onSuccess(send->response.context, data);
+}
+
+static void mock_paho_send_failure(void* context, MQTTAsync_failureData* data)
+{
+  mock_paho_send* send = mock_paho_send_complete(context);
+  send->response.onFailure(send->response.context, data);
+}
+
+/* Fails @p send with @p code and token 0, as Paho does for a write that fails. */
+static void mock_paho_fail_send(mock_paho_send* send, int code)
+{
+  if (send->response.onFailure != NULL)
+  {
+    MQTTAsync_failureData data;
+    memset(&data, 0, sizeof(data));
+    data.code = code;
+    mock_paho_send_failure(send, &data);
+  }
+  else
+  {
+    send->pending = false;
+  }
+}
+
+static void mock_paho_fail_pending_sends(int code)
+{
+  for (int i = 0; i < s_send_count; ++i)
+  {
+    if (s_sends[i].pending)
+    {
+      mock_paho_fail_send(&s_sends[i], code);
+    }
+  }
+  s_send_count = 0;
+}
+
 int MQTTAsync_sendMessage(
     MQTTAsync handle,
     const char* destinationName,
@@ -322,14 +366,43 @@ int MQTTAsync_sendMessage(
   (void)handle;
   (void)destinationName;
   (void)msg;
-  (void)response;
+  if (s_send_rc != MQTTASYNC_SUCCESS)
+  {
+    return s_send_rc;
+  }
+  if (response != NULL)
+  {
+    if (s_send_count == MOCK_PAHO_MAX_SENDS)
+    {
+      fprintf(
+          stderr,
+          "mock_paho: more than %d sends before MQTTAsync_destroy()\n",
+          MOCK_PAHO_MAX_SENDS);
+      abort();
+    }
+    /* Paho sets the token to the packet id it assigned. */
+    response->token = s_send_calls;
+    mock_paho_send* send = &s_sends[s_send_count++];
+    send->response = *response;
+    send->pending = true;
+    /* What a test drives completes the send through the mock, which counts it. */
+    s_last_send_response = *response;
+    s_last_send_response.context = send;
+    s_last_send_response.onSuccess = response->onSuccess ? mock_paho_send_success : NULL;
+    s_last_send_response.onFailure = response->onFailure ? mock_paho_send_failure : NULL;
+    if (s_send_completes_at_once)
+    {
+      /* As Paho's send thread may, before MQTTAsync_sendMessage() returns. */
+      mock_paho_fail_send(send, MQTTASYNC_FAILURE);
+    }
+  }
   return MQTTASYNC_SUCCESS;
 }
 
 void MQTTAsync_free(void* ptr) { (void)ptr; }
 
 /* Frees the struct only: tests allocate it with malloc() and point its payload
- * and properties at storage they own, as mock_paho_inbound_properties() does. */
+ * at storage they own. */
 void MQTTAsync_freeMessage(MQTTAsync_message** msg)
 {
   if (msg != NULL)
@@ -347,92 +420,16 @@ void MQTTAsync_setTraceCallback(MQTTAsync_traceCallback* callback) { s_trace_cal
 
 MQTTAsync_traceCallback* mock_paho_trace_callback(void) { return s_trace_callback; }
 
-/* ------------------------------------------------------------------------- */
-/* MQTTProperties. The v5 connect() and publish() build and free them;      */
-/* accepting and discarding is enough, except a scripted add() failure.     */
-/* ------------------------------------------------------------------------- */
-
-int MQTTProperties_add(MQTTProperties* props, const MQTTProperty* prop)
-{
-  (void)props;
-  (void)prop;
-  return (s_properties_add_calls++ == s_properties_add_fail_at) ? -1 : 0;
-}
-
-void mock_paho_set_properties_add_fail_at(int call)
-{
-  s_properties_add_fail_at = call;
-  s_properties_add_calls = 0;
-}
-
 int mock_paho_send_calls(void) { return s_send_calls; }
 
-void MQTTProperties_free(MQTTProperties* properties) { (void)properties; }
+void mock_paho_set_send_rc(int rc) { s_send_rc = rc; }
 
-/** @brief Getter argument type of the Paho headers in use (const since Paho 1.3.14). */
-#if defined(AZ_IOT_TEST_PAHO_CONST_PROPERTIES)
-#define MOCK_PAHO_GETTER_PROPERTIES const MQTTProperties
-#else
-#define MOCK_PAHO_GETTER_PROPERTIES MQTTProperties
-#endif
-
-/* The getters walk props->array as Paho's do, so an adapter reading a malformed set (count > 0,
- * array NULL) crashes here as it would with Paho. */
-int MQTTProperties_propertyCount(MOCK_PAHO_GETTER_PROPERTIES* props, enum MQTTPropertyCodes propid)
+void mock_paho_set_send_completes_at_once(bool completes_at_once)
 {
-  int n = 0;
-  for (int i = 0; i < props->count; ++i)
-  {
-    n += props->array[i].identifier == propid;
-  }
-  return n;
+  s_send_completes_at_once = completes_at_once;
 }
 
-MQTTProperty* MQTTProperties_getPropertyAt(
-    MOCK_PAHO_GETTER_PROPERTIES* props,
-    enum MQTTPropertyCodes propid,
-    int index)
+const MQTTAsync_responseOptions* mock_paho_last_send_response(void)
 {
-  for (int i = 0; i < props->count; ++i)
-  {
-    if (props->array[i].identifier == propid && index-- == 0)
-    {
-      return &props->array[i];
-    }
-  }
-  return NULL;
-}
-
-void mock_paho_set_inbound_user_properties(const char* const* pairs, int count)
-{
-  if (pairs == NULL || count <= 0)
-  {
-    s_user_property_count = 0;
-    return;
-  }
-  if (count > MOCK_PAHO_MAX_USER_PROPERTIES)
-  {
-    count = MOCK_PAHO_MAX_USER_PROPERTIES;
-  }
-  for (int i = 0; i < count; ++i)
-  {
-    /* Length-delimited and NOT NUL-terminated, exactly as the real client
-     * reports them. An adapter that treats value.data as a C string reads past
-     * the end here just as it would on the wire. */
-    s_user_properties[i].identifier = MQTTPROPERTY_CODE_USER_PROPERTY;
-    s_user_properties[i].value.data.data = (char*)(uintptr_t)pairs[2 * i];
-    s_user_properties[i].value.data.len = (int)strlen(pairs[2 * i]);
-    s_user_properties[i].value.value.data = (char*)(uintptr_t)pairs[2 * i + 1];
-    s_user_properties[i].value.value.len = (int)strlen(pairs[2 * i + 1]);
-  }
-  s_user_property_count = count;
-}
-
-MQTTProperties mock_paho_inbound_properties(void)
-{
-  MQTTProperties props = MQTTProperties_initializer;
-  props.count = s_user_property_count;
-  props.max_count = s_user_property_count;
-  props.array = s_user_properties;
-  return props;
+  return &s_last_send_response;
 }

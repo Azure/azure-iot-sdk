@@ -1,8 +1,7 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# Each serves an MQTTv3 or an MQTTv5 hub, whichever DPS assigns, so each links
-# both generations.
+# Each serves the mqttv3 hub DPS assigns.
 foreach(sample
         telemetry
         connect_first
@@ -13,26 +12,30 @@ foreach(sample
         # is exactly the feature: MQTT over WebSockets, and an HTTP CONNECT proxy.
         websockets
         proxy)
-    az_iot_add_sample(unified ${sample} az_iot_mqttv3 az_iot_mqttv5)
+    az_iot_add_sample(unified ${sample} az_iot_mqttv3)
 endforeach()
 
-# C2D and file upload exist on MQTTv3 IoT Hub only; on an MQTTv5 hub each sample says so.
+# C2D and file upload: mqttv3 features.
 az_iot_add_sample(unified c2d_receiver az_iot_mqttv3)
 az_iot_add_sample(unified file_upload az_iot_mqttv3)
 set(_file_upload_targets ${AZ_IOT_SAMPLE_TARGETS})
 # File upload is HTTPS-only and the SDK ships no HTTP client, so the sample
 # uses libcurl (when available) to perform the SAS-URI request, the blob PUT
-# to Azure Storage, and the completion notification. Optional: without curl
-# the sample still provisions, connects, and prints the request it built.
-find_package(CURL QUIET)
-if(CURL_FOUND)
+# to Azure Storage, and the completion notification. OpenSSL turns the PEM device
+# certificate and key into the PKCS#12 libcurl takes on every TLS backend,
+# Schannel (Windows) included. Optional: without both the sample still
+# provisions, connects, and prints the request it built.
+find_package(CURL 7.71 QUIET)
+find_package(OpenSSL QUIET)
+if(CURL_FOUND AND OpenSSL_FOUND)
     foreach(_t IN LISTS _file_upload_targets)
         target_compile_definitions(${_t} PRIVATE AZ_IOT_SAMPLE_WITH_CURL)
-        target_link_libraries(${_t} PRIVATE CURL::libcurl)
+        target_link_libraries(${_t} PRIVATE CURL::libcurl OpenSSL::Crypto)
     endforeach()
 else()
-    message(STATUS "az_iot_sample_unified_file_upload: libcurl not found; building without the "
-                   "HTTPS upload path. Install libcurl (e.g. 'vcpkg install curl') to enable it.")
+    message(STATUS "az_iot_sample_unified_file_upload: libcurl 7.71+ or OpenSSL not found; "
+                   "building without the HTTPS upload path. Install libcurl (e.g. "
+                   "'vcpkg install curl') to enable it.")
 endif()
 
 # unified/telemetry with readings produced on other threads: the application's
@@ -45,4 +48,4 @@ az_iot_add_adapter_sample(az_iot_sample_unified_multithreaded_telemetry
             ${CMAKE_CURRENT_SOURCE_DIR}/multithreaded_telemetry/reading_queue.c
             ${AZ_IOT_SAMPLES_COMMON_DIR}/sample_utils.c
     INCLUDES ${CMAKE_CURRENT_SOURCE_DIR}/multithreaded_telemetry
-    LIBS az_iot_mqttv3 az_iot_mqttv5 Threads::Threads)
+    LIBS az_iot_mqttv3 Threads::Threads)

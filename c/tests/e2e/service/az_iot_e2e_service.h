@@ -56,6 +56,15 @@ extern "C"
       az_iot_e2e_service* svc,
       const char* capture_filter);
 
+  /** @brief As az_iot_e2e_service_telemetry_watch_begin(), for every message the hub received
+   * from @p device_id (its `iothub-connection-device-id` annotation) and enqueued after
+   * @p enqueued_after_s (Unix time), whatever its body: for a device whose bodies do not name it.
+   * Always starts a new watcher. An empty needle then finds any of its messages. */
+  bool az_iot_e2e_service_telemetry_watch_device_begin(
+      az_iot_e2e_service* svc,
+      const char* device_id,
+      int64_t enqueued_after_s);
+
   /* Pump the service transport for up to @p timeout_ms. Call this interleaved with
    * the device's own do_work while waiting for telemetry or a file-upload
    * notification. Returns false if a service connection has failed. */
@@ -119,13 +128,25 @@ extern "C"
 
   /* ---- File-upload notifications (AMQP receive, pumped like telemetry) ------ */
 
+/* File-upload test blobs are named AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY "<tag>-<time>.txt", or
+ * AZ_IOT_E2E_SAMPLE_FILE_UPLOAD_BLOB_NAME, and a watcher waits only for such blobs. It accepts,
+ * rather than releases, another device's notification for any other blob, or for one whose tag
+ * starts with AZ_IOT_E2E_UNWATCHED_BLOB_TAG: no watcher waits for those, and the hub redelivers
+ * released ones ahead of the notification a watcher waits for. Tag a blob whose upload is reported
+ * successful and not watched with it. */
+#define AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY "e2e-fileupload/"
+#define AZ_IOT_E2E_UNWATCHED_BLOB_TAG "unwatched-"
+/* The blob samples/unified/file_upload uploads, which its test (e2e_samples_test.c) watches. */
+#define AZ_IOT_E2E_SAMPLE_FILE_UPLOAD_BLOB_NAME "sample-data/test.txt"
+
   /* Begin watching the IoT Hub file-upload notification endpoint. IoT Hub posts
    * one notification per upload a device reported as SUCCESSFUL, so this is the
    * only cloud-side proof that a file-upload round trip really completed -- the
    * device itself only sees the hub accept its completion notification.
    *
    * The endpoint is HUB-WIDE: only notifications mentioning @p device_id are
-   * consumed, the rest are released back for other watchers. Start watching BEFORE
+   * consumed; those no watcher waits for (see AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY) are
+   * accepted, and the rest are released back for other watchers. Start watching BEFORE
    * the device notifies completion; notifications are delivered once and are not
    * replayed to a later watcher. Returns false on setup failure (see
    * az_iot_e2e_service_last_error).
@@ -152,7 +173,7 @@ extern "C"
       int* out_delivered,
       int* out_captured,
       int* out_released,
-      int* out_stale,
+      int* out_unwatched,
       int* out_unparsed);
 
   /* Stop watching file-upload notifications. Safe to call when not watching. */

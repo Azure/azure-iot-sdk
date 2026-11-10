@@ -35,7 +35,7 @@
  * Takes no configuration and always runs.
  */
 #include <stdio.h>
-#include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 
 #include "azure/iot/az_iot.h"
@@ -239,17 +239,42 @@ static void standin_set_inbound_cb(
   (void)user_ctx;
 }
 
-static void standin_destroy(az_iot_mqtt_client* self) { free(self); }
+/* Frees nothing: the client lives in the application's workspace. */
+static void standin_destroy(az_iot_mqtt_client* self) { (void)self; }
 
-static az_iot_mqtt_client* standin_create(void* factory_ctx)
+/** @brief Workspace bytes for one standin_client at any alignment of the workspace. */
+#define STANDIN_WORKSPACE_SIZE (sizeof(standin_client) + 15u)
+
+/** @brief az_iot_mqtt_adapter::get_workspace_size. The stand-in has no buffers to size. */
+static size_t standin_get_workspace_size(const az_iot_mqtt_limits* limits)
 {
-  (void)factory_ctx;
-  standin_client* c = (standin_client*)calloc(1, sizeof(*c));
-  if (!c)
+  (void)limits;
+  return STANDIN_WORKSPACE_SIZE;
+}
+
+/** @brief az_iot_mqtt_adapter::init: builds a standin_client in @p workspace. */
+static az_iot_result standin_init(
+    az_iot_mqtt_version mqtt_version,
+    const az_iot_mqtt_limits* limits,
+    uint8_t* workspace,
+    size_t workspace_size,
+    az_iot_mqtt_client** out_client)
+{
+  if (workspace == NULL || out_client == NULL)
   {
-    return NULL;
+    return AZ_IOT_ERR_INVALID_ARG;
   }
-  c->iface_storage.version = AZ_IOT_MQTT_VERSION_3_1_1;
+  if (mqtt_version != AZ_IOT_MQTT_VERSION_3_1_1) /* DPS: the only connect the sample reaches */
+  {
+    return AZ_IOT_ERR_NOT_SUPPORTED;
+  }
+  if (workspace_size < standin_get_workspace_size(limits))
+  {
+    return AZ_IOT_ERR_NOT_ENOUGH_SPACE;
+  }
+  standin_client* c = (standin_client*)(void*)(((uintptr_t)workspace + 15u) & ~(uintptr_t)15u);
+  memset(c, 0, sizeof(*c));
+  c->iface_storage.version = mqtt_version;
   c->iface_storage.connect = standin_connect;
   c->iface_storage.disconnect = standin_disconnect;
   c->iface_storage.subscribe = standin_subscribe;
@@ -259,8 +284,14 @@ static az_iot_mqtt_client* standin_create(void* factory_ctx)
   c->iface_storage.set_inbound_cb = standin_set_inbound_cb;
   c->iface_storage.destroy = standin_destroy;
   c->base.iface = &c->iface_storage;
-  return &c->base;
+  *out_client = &c->base;
+  return AZ_IOT_OK;
 }
+
+static const az_iot_mqtt_adapter k_standin_adapter = {
+  .get_workspace_size = standin_get_workspace_size,
+  .init = standin_init,
+};
 
 /* ------------------------------------------------------------------------- */
 
@@ -291,8 +322,6 @@ int main(void)
 
   sign_provider provider = { .base = { .vtable = &k_sign_vtable }, .sign_calls = 0 };
   az_iot_connection_client connection_client = { 0 };
-  az_iot_mqtt_factory factory
-      = { .version = AZ_IOT_MQTT_VERSION_3_1_1, .create = standin_create, .factory_ctx = NULL };
 
   /* Memory for the connection client's entries, sized for the default limits. */
   static uint8_t connection_workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
@@ -304,6 +333,12 @@ int main(void)
   copts.dps.id_scope = "0ne00000000";
   copts.dps.registration_id = "hsm-sign-callback-sample";
   copts.certificate_provider = &provider.base;
+  /* The stand-in adapter builds its client in this workspace. It has no buffers, so it
+   * ignores mqtt_limits. */
+  static uint8_t mqtt_workspace[STANDIN_WORKSPACE_SIZE];
+  copts.mqtt_adapter = &k_standin_adapter;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
 
   int rc = 1;
   if (az_iot_connection_client_init(&connection_client, &copts) != AZ_IOT_OK)
@@ -311,10 +346,6 @@ int main(void)
     goto cleanup;
   }
   az_iot_connection_client_add_state_observer(&connection_client, on_conn_state, NULL);
-  if (az_iot_connection_client_register_mqtt_factory(&connection_client, &factory) != AZ_IOT_OK)
-  {
-    goto cleanup;
-  }
 
   /* open() reaches the adapter's connect(), which is where the hook is used.
    * The stand-in adapter has no transport, so the expected outcome is

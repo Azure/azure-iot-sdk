@@ -15,12 +15,9 @@
  * required at init(). The blob PUT to Azure Storage is always the application's
  * own HTTPS call.
  *
- * There is no MQTT v5 counterpart: file upload is not carried on that hub, and
- * this client pins MQTTv3, so init() on an MQTT v5 connection is refused with
- * AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH. init() also needs the assigned hub,
- * so this sample builds its client the way unified/connect_first does: once
- * CONNECTED, after reading the profile. On an MQTTv5 hub it reports that and
- * exits non-zero. One-shot: it does not wait for the device to be moved.
+ * init() needs the assigned hub, so this sample builds its client the way
+ * unified/connect_first does: once CONNECTED, after reading the profile.
+ * One-shot: it does not wait for the device to be moved.
  *
  * This sample uses libcurl (compiled in when CMake's find_package(CURL) succeeds
  * and defines AZ_IOT_SAMPLE_WITH_CURL) both as the HTTP hook and for the Storage
@@ -28,10 +25,11 @@
  * unavailable and the sample explains how to enable them.
  *
  * Authentication: the hub REST calls use the X.509 device certificate (mutual
- * TLS) -- the same cert/key used for MQTT. For a SAS-key device the SDK passes a
- * hub SAS token as `authorization`, which the hook sends as the Authorization
- * header. The Storage PUT is authenticated by the SAS token embedded in the blob
- * URI.
+ * TLS) -- the same cert/key used for MQTT. libcurl gets them as one PKCS#12 built
+ * in memory, the form both its OpenSSL and its Schannel (Windows) TLS take. For a
+ * SAS-key device the SDK passes a hub SAS token as `authorization`, which the hook
+ * sends as the Authorization header. The Storage PUT is authenticated by the SAS
+ * token embedded in the blob URI.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -51,19 +49,28 @@
 
 #ifdef AZ_IOT_SAMPLE_WITH_CURL
 #include <curl/curl.h>
+#include <openssl/pem.h>
+#include <openssl/pkcs12.h>
 #endif
 
 /* The blob to create and the content to upload. */
 static const char k_blob_name[] = "sample-data/test.txt";
 static const char k_blob_content[] = "Hello from the Azure IoT C SDK file upload sample.\n";
 
+/* The device certificate and key the HTTP hook authenticates the MQTTv3 hub REST
+ * calls with (mTLS), as one PKCS#12. */
+typedef struct
+{
+  unsigned char* client_pkcs12;
+  size_t client_pkcs12_size;
+} hub_http_ctx;
+
 typedef struct
 {
   sample_config config;
   az_iot_certificate_provider_pem certs;
+  hub_http_ctx hub_http;
   az_iot_connection_client connection_client;
-  az_iot_mqtt_factory* factory_v3;
-  az_iot_mqtt_factory* factory_v5;
   az_iot_mqttv3_file_upload_client file_upload_client;
 } sample_state;
 
@@ -71,12 +78,8 @@ static void sample_state_destroy(sample_state* s)
 {
   az_iot_mqttv3_file_upload_client_deinit(&s->file_upload_client);
   az_iot_connection_client_deinit(&s->connection_client);
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  az_iot_paho_factory_destroy(s->factory_v3);
-  az_iot_paho_factory_destroy(s->factory_v5);
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  az_iot_az_mqtt_factory_destroy(s->factory_v3);
-  az_iot_az_mqtt_factory_destroy(s->factory_v5);
+#ifdef AZ_IOT_SAMPLE_WITH_CURL
+  OPENSSL_free(s->hub_http.client_pkcs12);
 #endif
   az_iot_certificate_provider_pem_deinit(&s->certs);
   sample_config_release(&s->config);
@@ -163,9 +166,60 @@ static bool append_header(struct curl_slist** list, const char* name, const char
   return true;
 }
 
+/* The PKCS#12 below is never stored: its password only satisfies the format. */
+static const char k_pkcs12_password[] = "az-iot-file-upload-sample";
+
+/**
+ * @brief Builds one PKCS#12 in memory from the PEM device certificate chain (leaf
+ * first) and private key: Schannel, the TLS of libcurl on Windows, takes no PEM
+ * files; OpenSSL takes this form too.
+ * @return 0 on success; sample_state_destroy() frees @p out's PKCS#12.
+ */
+static int client_certificate_to_pkcs12(
+    const char* cert_path,
+    const char* key_path,
+    hub_http_ctx* out)
+{
+  int rc = 1;
+  BIO* cert_file = BIO_new_file(cert_path, "r");
+  BIO* key_file = BIO_new_file(key_path, "r");
+  EVP_PKEY* key = (key_file != NULL) ? PEM_read_bio_PrivateKey(key_file, NULL, NULL, NULL) : NULL;
+  X509* leaf = (cert_file != NULL) ? PEM_read_bio_X509(cert_file, NULL, NULL, NULL) : NULL;
+  STACK_OF(X509)* issuers = sk_X509_new_null();
+  PKCS12* pkcs12 = NULL;
+  if (key != NULL && leaf != NULL && issuers != NULL)
+  {
+    X509* issuer;
+    while ((issuer = PEM_read_bio_X509(cert_file, NULL, NULL, NULL)) != NULL)
+    {
+      if (sk_X509_push(issuers, issuer) <= 0)
+      {
+        X509_free(issuer);
+        break;
+      }
+    }
+    pkcs12 = PKCS12_create(k_pkcs12_password, NULL, key, leaf, issuers, 0, 0, 0, 0, 0);
+    unsigned char* der = NULL;
+    int der_size = (pkcs12 != NULL) ? i2d_PKCS12(pkcs12, &der) : -1;
+    if (der_size > 0)
+    {
+      out->client_pkcs12 = der;
+      out->client_pkcs12_size = (size_t)der_size;
+      rc = 0;
+    }
+  }
+  PKCS12_free(pkcs12);
+  sk_X509_pop_free(issuers, X509_free);
+  X509_free(leaf);
+  EVP_PKEY_free(key);
+  BIO_free(key_file);
+  BIO_free(cert_file);
+  return rc;
+}
+
 /* Perform one HTTPS request with libcurl. Returns the HTTP status code, or -1 on
- * a transport failure. When client_cert/client_key are non-NULL, mutual-TLS auth
- * is used (required for the IoT Hub REST calls). */
+ * a transport failure. When client_pkcs12 is non-NULL, mutual-TLS auth is used
+ * (required for the IoT Hub REST calls). */
 static long https_request(
     const char* method,
     const char* url,
@@ -174,8 +228,8 @@ static long https_request(
     const void* body,
     size_t body_len,
     const char* extra_header,
-    const char* client_cert,
-    const char* client_key,
+    const unsigned char* client_pkcs12,
+    size_t client_pkcs12_size,
     char* resp,
     size_t resp_cap,
     size_t* resp_len)
@@ -216,12 +270,12 @@ static long https_request(
   }
   curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, on_curl_write);
   curl_easy_setopt(curl, CURLOPT_WRITEDATA, &sink);
-  if (client_cert && client_key)
+  if (client_pkcs12)
   {
-    curl_easy_setopt(curl, CURLOPT_SSLCERT, client_cert);
-    curl_easy_setopt(curl, CURLOPT_SSLCERTTYPE, "PEM");
-    curl_easy_setopt(curl, CURLOPT_SSLKEY, client_key);
-    curl_easy_setopt(curl, CURLOPT_SSLKEYTYPE, "PEM");
+    struct curl_blob certificate = { (void*)client_pkcs12, client_pkcs12_size, CURL_BLOB_NOCOPY };
+    curl_easy_setopt(curl, CURLOPT_SSLCERT_BLOB, &certificate);
+    curl_easy_setopt(curl, CURLOPT_SSLCERTTYPE, "P12");
+    curl_easy_setopt(curl, CURLOPT_KEYPASSWD, k_pkcs12_password);
   }
 
   long status = -1;
@@ -249,13 +303,6 @@ static long https_request(
 
 #endif /* AZ_IOT_SAMPLE_WITH_CURL */
 
-/* Paths used by the HTTP hook to authenticate the MQTTv3 hub REST calls (mTLS). */
-typedef struct
-{
-  const char* cert;
-  const char* key;
-} hub_http_ctx;
-
 /* HTTP transport hook the SDK calls for the MQTTv3 control plane (SAS-URI
  * request + completion notification). Always defined so the file upload client
  * can be initialized on MQTTv3 even in a build without libcurl. */
@@ -279,8 +326,8 @@ static az_iot_result curl_http_send(
       body,
       body_len,
       NULL,
-      hc->cert,
-      hc->key,
+      hc->client_pkcs12,
+      hc->client_pkcs12_size,
       (char*)response->body,
       response->body_capacity,
       &response->body_len);
@@ -383,7 +430,7 @@ static int run_file_upload(sample_state* state)
       strlen(k_blob_content),
       "x-ms-blob-type: BlockBlob",
       NULL,
-      NULL,
+      0,
       NULL,
       0,
       NULL);
@@ -418,13 +465,19 @@ static int run_file_upload(sample_state* state)
 
 int main(void)
 {
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call.
+  sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_state state = { 0 };
   if (sample_config_load(&state.config) != 0)
   {
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
 
   int rc = 1;
@@ -439,8 +492,24 @@ int main(void)
   if (az_iot_certificate_provider_pem_init(&state.certs, &pem) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
+
+#ifdef AZ_IOT_SAMPLE_WITH_CURL
+  /* The same certificate and key, for the HTTPS calls to the hub. */
+  if (client_certificate_to_pkcs12(state.config.cert, state.config.key, &state.hub_http) != 0)
+  {
+    printf("Failed to read the device certificate and key for HTTPS.\n");
+    sample_state_destroy(&state);
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
+  }
+#endif
 
   /* Connection client (DPS provisioning is internal). */
   /* Memory for the connection client's entries, sized for the default limits. */
@@ -452,43 +521,36 @@ int main(void)
   copts.dps.registration_id = state.config.reg_id;
   copts.dps.global_endpoint = state.config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &state.certs.base;
+  /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
+   * then the hub. Limits: sample_utils.h. */
+  static uint8_t mqtt_workspace[SAMPLE_MQTT_WORKSPACE_SIZE];
+#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
+  copts.mqtt_adapter = az_iot_paho_get_adapter();
+#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
+  copts.mqtt_adapter = az_iot_az_mqtt_get_adapter();
+#endif
+  copts.mqtt_limits = SAMPLE_MQTT_LIMITS;
+  copts.mqtt_workspace = mqtt_workspace;
+  copts.mqtt_workspace_size = sizeof(mqtt_workspace);
 
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
-
-  /* Both adapters: v3.1.1 serves DPS and an MQTTv3 hub, v5 serves an MQTTv5 hub. */
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state.factory_v3 = az_iot_paho_factory_create_v3_1_1();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state.factory_v3 = az_iot_az_mqtt_factory_create_v3_1_1();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v3)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
-#if defined(AZ_IOT_SAMPLE_ADAPTER_PAHO)
-  state.factory_v5 = az_iot_paho_factory_create_v5();
-#elif defined(AZ_IOT_SAMPLE_ADAPTER_AZ_MQTT)
-  state.factory_v5 = az_iot_az_mqtt_factory_create_v5();
-#endif
-  if (az_iot_connection_client_register_mqtt_factory(&state.connection_client, state.factory_v5)
-      != AZ_IOT_OK)
-  {
-    sample_state_destroy(&state);
-    return 1;
-  }
 
   /* Open (internally provisions via DPS then connects to the assigned hub). */
   if (az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
 
   for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED; ++i)
@@ -512,8 +574,7 @@ int main(void)
   }
   else if (hub_profile.connection_profile != AZ_IOT_CONNECTION_PROFILE_MQTT_V3)
   {
-    /* No mqttv5 file upload client exists; the mqttv3 one would refuse this
-     * connection at init(). */
+    /* The mqttv3 file upload client would refuse this connection at init(). */
     printf("File upload is not available on this hub generation.\n");
   }
   else
@@ -524,8 +585,7 @@ int main(void)
 
     /* The control plane needs an app HTTP transport (mTLS with the device
      * cert); the SDK ships no HTTP client, so init() requires it. */
-    hub_http_ctx http_ctx = { state.config.cert, state.config.key };
-    az_iot_file_upload_http_transport http = { curl_http_send, &http_ctx };
+    az_iot_file_upload_http_transport http = { curl_http_send, &state.hub_http };
 
     if (az_iot_mqttv3_file_upload_client_init(
             &state.file_upload_client, &state.connection_client, &http)
@@ -555,5 +615,8 @@ int main(void)
 
   sample_state_destroy(&state);
 
-  return rc;
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call or return the value
+  // directly.
+  return sample_pipeline_checks_end(rc);
 }

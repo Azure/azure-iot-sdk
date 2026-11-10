@@ -21,7 +21,7 @@ if(NOT AZ_IOT_SAMPLE_ADAPTERS)
         "AZ_IOT_WITH_PAHO=ON or AZ_IOT_WITH_AZ_MQTT=ON (or AZ_IOT_BUILD_SAMPLES=OFF).")
 endif()
 
-# The crypto backend for samples that sign or verify (SAS tokens, software updates): OpenSSL, else mbedTLS.
+# The crypto backend for samples that sign SAS tokens: OpenSSL, else mbedTLS.
 set(AZ_IOT_SAMPLE_CRYPTO "")
 if(TARGET az_iot_crypto_openssl)
     set(AZ_IOT_SAMPLE_CRYPTO openssl)
@@ -34,6 +34,7 @@ endif()
 #                           [CRYPTO])
 # One executable per adapter in AZ_IOT_SAMPLE_ADAPTERS (ADAPTERS narrows it), linked to that
 # adapter and, with CRYPTO, to the AZ_IOT_SAMPLE_CRYPTO backend. Sets AZ_IOT_SAMPLE_TARGETS.
+# With AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS, compiles in the pipeline hooks (sample_utils.h).
 function(az_iot_add_adapter_sample target)
     cmake_parse_arguments(PARSE_ARGV 1 arg "CRYPTO" "OUTPUT_NAME"
         "SOURCES;LIBS;INCLUDES;DEFINES;ADAPTERS")
@@ -63,6 +64,9 @@ function(az_iot_add_adapter_sample target)
         endif()
         target_include_directories(${t} PRIVATE ${AZ_IOT_SAMPLES_COMMON_DIR} ${arg_INCLUDES})
         target_compile_definitions(${t} PRIVATE AZ_IOT_SAMPLE_ADAPTER_${ADAPTER} ${arg_DEFINES})
+        if(AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS)
+            target_compile_definitions(${t} PRIVATE SAMPLE_PIPELINE_HOOKS)
+        endif()
         target_link_libraries(${t} PRIVATE ${arg_LIBS} az_iot_adapter_${adapter})
         # Windows finds DLLs next to the executable: the SDK's stay in the shared bin/.
         if(WIN32 AND BUILD_SHARED_LIBS AND NOT adapter STREQUAL "paho")
@@ -91,12 +95,8 @@ macro(az_iot_add_sample group name)
         LIBS ${ARGN})
 endmacro()
 
-# MQTTv3 or MQTTv5, picked from the DPS assignment.
+# mqttv3, from the DPS assignment.
 add_subdirectory(unified)
-# MQTTv5 hubs only.
-add_subdirectory(mqttv5)
-# Software Update PC samples; they need a crypto backend.
-add_subdirectory(software_update)
 # Authentication / certificate-management samples. The subdirectory decides
 # per-sample which other dependencies (managed provider, OpenSSL, libcurl) are required.
 add_subdirectory(authentication)

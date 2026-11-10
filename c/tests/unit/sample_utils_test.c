@@ -5,7 +5,7 @@
 /* SPDX-License-Identifier: MIT */
 /**
  * @file sample_utils_test.c
- * @brief The samples' file helpers (samples/common/sample_utils.c). Files are
+ * @brief The samples' helpers (samples/common/sample_utils.c). Files are
  * created in the working directory and removed by each test.
  */
 #if !defined(_WIN32)
@@ -26,9 +26,13 @@
 #include <string.h>
 
 #if !defined(_WIN32)
+#include <dirent.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#else
+#include <process.h>
+#include <windows.h>
 #endif
 
 #include "sample_utils.h"
@@ -37,12 +41,14 @@
 #define DESTINATION_FILE "sample_utils_test_destination.tmp"
 #define LINK_FILE "sample_utils_test_link.tmp"
 #define DIRECTORY "sample_utils_test_directory.tmp"
+#define PIPELINE_OUTPUT_FILE "sample_utils_test_pipeline_output.tmp"
 
 static void remove_test_files(void)
 {
   (void)remove(SOURCE_FILE);
   (void)remove(DESTINATION_FILE);
   (void)remove(LINK_FILE);
+  (void)remove(PIPELINE_OUTPUT_FILE);
 #if !defined(_WIN32)
   (void)chmod(DIRECTORY, 0700);
   (void)remove(DIRECTORY "/" DESTINATION_FILE);
@@ -83,6 +89,53 @@ static void assert_file_holds(const char* path, const char* expected)
   assert_int_equal(fclose(file), 0);
   assert_int_equal(read, strlen(expected));
   assert_string_equal(contents, expected);
+}
+
+static void file_delete_removes_the_file(void** state)
+{
+  (void)state;
+  write_text_file(DESTINATION_FILE, "old");
+
+  assert_true(sample_file_delete(DESTINATION_FILE));
+
+  assert_null(sample_file_open_read_no_follow(DESTINATION_FILE));
+}
+
+static void file_delete_treats_a_missing_file_as_deleted(void** state)
+{
+  (void)state;
+  assert_true(sample_file_delete(DESTINATION_FILE));
+  assert_false(sample_file_delete(NULL));
+}
+
+static void file_delete_fails_when_the_file_stays(void** state)
+{
+  (void)state;
+#if !defined(_WIN32)
+  /* A directory that is not empty cannot be removed. */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  write_text_file(DIRECTORY "/" DESTINATION_FILE, "old");
+
+  assert_false(sample_file_delete(DIRECTORY));
+
+  assert_file_holds(DIRECTORY "/" DESTINATION_FILE, "old");
+#endif
+}
+
+static void file_delete_reports_a_done_removal_when_the_directory_sync_fails(void** state)
+{
+  (void)state;
+#if !defined(_WIN32)
+  /* Write and search but no read: the removal succeeds, opening the directory
+   * for its sync does not (unless run as root). */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  write_text_file(DIRECTORY "/" DESTINATION_FILE, "old");
+  assert_int_equal(chmod(DIRECTORY, 0300), 0);
+  bool deleted = sample_file_delete(DIRECTORY "/" DESTINATION_FILE);
+  assert_int_equal(chmod(DIRECTORY, 0700), 0);
+  assert_true(deleted);
+  assert_null(sample_file_open_read_no_follow(DIRECTORY "/" DESTINATION_FILE));
+#endif
 }
 
 static void file_replace_overwrites_the_destination(void** state)
@@ -138,6 +191,95 @@ static void file_replace_reports_a_done_rename_when_the_directory_sync_fails(voi
   assert_file_holds(DESTINATION_FILE, "new");
 #endif
 }
+
+static void file_remove_durably_removes_and_accepts_a_missing_file(void** state)
+{
+  (void)state;
+  write_text_file(DESTINATION_FILE, "old");
+
+  assert_true(sample_file_remove_durably(DESTINATION_FILE));
+  assert_null(sample_file_open_read_no_follow(DESTINATION_FILE));
+  assert_true(sample_file_remove_durably(DESTINATION_FILE));
+  /* Nothing stored, and no directory to sync: still a success. */
+  assert_true(sample_file_remove_durably("missing_directory.tmp/name"));
+  assert_false(sample_file_remove_durably(NULL));
+#if !defined(_WIN32)
+  /* Write and search but no read: the removal succeeds, the directory sync does not. */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  write_text_file(DIRECTORY "/" DESTINATION_FILE, "old");
+  assert_int_equal(chmod(DIRECTORY, 0300), 0);
+  bool removed = sample_file_remove_durably(DIRECTORY "/" DESTINATION_FILE);
+  assert_int_equal(chmod(DIRECTORY, 0700), 0);
+  assert_true(removed);
+  assert_null(sample_file_open_read_no_follow(DIRECTORY "/" DESTINATION_FILE));
+#endif
+}
+
+static void file_remove_durably_fails_when_the_path_cannot_be_removed(void** state)
+{
+  (void)state;
+#if !defined(_WIN32)
+  /* A directory that is not empty. */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  write_text_file(DIRECTORY "/" DESTINATION_FILE, "kept");
+  assert_false(sample_file_remove_durably(DIRECTORY));
+  assert_file_holds(DIRECTORY "/" DESTINATION_FILE, "kept");
+#endif
+}
+
+#if defined(AZ_IOT_TEST_WRAP_FSYNC)
+/* fsync() seam (GNU ld --wrap; registered only where CMake can ask for it).
+ * Records each directory synced and whether the watched file existed then.
+ * File syncs pass through uncounted. */
+int __real_fsync(int fd);
+int __wrap_fsync(int fd);
+
+static size_t s_directory_sync_count;
+static struct stat s_synced_directory;
+static const char* s_watched_file;
+static bool s_watched_file_existed_at_sync;
+
+int __wrap_fsync(int fd)
+{
+  struct stat st;
+  if (fstat(fd, &st) == 0 && S_ISDIR(st.st_mode))
+  {
+    struct stat watched;
+    s_directory_sync_count++;
+    s_synced_directory = st;
+    s_watched_file_existed_at_sync = s_watched_file != NULL && stat(s_watched_file, &watched) == 0;
+  }
+  return __real_fsync(fd);
+}
+
+/** @brief Assert sample_file_remove_durably(@p path) synced @p directory once, with
+ *  @p path already gone. */
+static void assert_removal_syncs_directory(const char* path, const char* directory)
+{
+  struct stat expected;
+  s_directory_sync_count = 0;
+  s_watched_file = path;
+  s_watched_file_existed_at_sync = true;
+  assert_true(sample_file_remove_durably(path));
+  s_watched_file = NULL;
+  assert_int_equal(s_directory_sync_count, 1);
+  assert_false(s_watched_file_existed_at_sync);
+  assert_int_equal(stat(directory, &expected), 0);
+  assert_true(expected.st_dev == s_synced_directory.st_dev);
+  assert_true(expected.st_ino == s_synced_directory.st_ino);
+}
+
+static void file_remove_durably_syncs_the_directory_also_for_a_missing_file(void** state)
+{
+  (void)state;
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  write_text_file(DIRECTORY "/" DESTINATION_FILE, "old");
+
+  assert_removal_syncs_directory(DIRECTORY "/" DESTINATION_FILE, DIRECTORY);
+  /* Missing: an earlier removal may not have reached storage. */
+  assert_removal_syncs_directory(DIRECTORY "/" DESTINATION_FILE, DIRECTORY);
+}
+#endif
 
 static void file_flush_to_storage_writes_through_the_buffer(void** state)
 {
@@ -264,6 +406,34 @@ static void file_create_private_unique_creates_a_new_name_beside_the_path(void**
   assert_null(none);
 }
 
+static void file_rewrite_existing_no_follow_keeps_the_file_and_refuses_a_link(void** state)
+{
+  (void)state;
+  assert_null(sample_file_rewrite_existing_no_follow(NULL));
+  assert_null(sample_file_rewrite_existing_no_follow(DESTINATION_FILE));
+  assert_null(sample_file_open_read_no_follow(DESTINATION_FILE));
+
+  write_text_file(DESTINATION_FILE, "old contents");
+#if !defined(_WIN32)
+  struct stat before;
+  assert_int_equal(stat(DESTINATION_FILE, &before), 0);
+#endif
+  FILE* file = sample_file_rewrite_existing_no_follow(DESTINATION_FILE);
+  assert_non_null(file);
+  assert_int_equal(fputs("new", file) >= 0, 1);
+  assert_int_equal(fclose(file), 0);
+  assert_file_holds(DESTINATION_FILE, "new");
+#if !defined(_WIN32)
+  struct stat after;
+  assert_int_equal(stat(DESTINATION_FILE, &after), 0);
+  assert_true(before.st_ino == after.st_ino && before.st_dev == after.st_dev);
+
+  assert_int_equal(symlink(DESTINATION_FILE, LINK_FILE), 0);
+  assert_null(sample_file_rewrite_existing_no_follow(LINK_FILE));
+  assert_file_holds(DESTINATION_FILE, "new");
+#endif
+}
+
 static void file_open_read_no_follow_refuses_a_link_and_a_missing_file(void** state)
 {
   (void)state;
@@ -274,6 +444,99 @@ static void file_open_read_no_follow_refuses_a_link_and_a_missing_file(void** st
   assert_int_equal(symlink(DESTINATION_FILE, LINK_FILE), 0);
   assert_null(sample_file_open_read_no_follow(LINK_FILE));
 #endif
+}
+
+#if !defined(_WIN32)
+/** @brief Number of entries in @p directory, "." and ".." excluded. */
+static int count_directory_entries(const char* directory)
+{
+  DIR* opened = opendir(directory);
+  assert_non_null(opened);
+  int count = 0;
+  struct dirent* entry;
+  while ((entry = readdir(opened)) != NULL)
+  {
+    if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0)
+    {
+      ++count;
+    }
+  }
+  assert_int_equal(closedir(opened), 0);
+  return count;
+}
+#endif
+
+static void file_write_atomically_replaces_the_destination(void** state)
+{
+  (void)state;
+  assert_true(sample_file_write_atomically(DESTINATION_FILE, "old", 3));
+  assert_file_holds(DESTINATION_FILE, "old");
+  assert_true(sample_file_write_atomically(DESTINATION_FILE, "new", 3));
+  assert_file_holds(DESTINATION_FILE, "new");
+  assert_true(sample_file_write_atomically(DESTINATION_FILE, NULL, 0));
+  assert_file_holds(DESTINATION_FILE, "");
+#if !defined(_WIN32)
+  struct stat st;
+  assert_int_equal(stat(DESTINATION_FILE, &st), 0);
+  assert_int_equal(st.st_mode & 0777, 0600);
+  /* No temporary file is left beside the destination. */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  assert_true(sample_file_write_atomically(DIRECTORY "/" DESTINATION_FILE, "new", 3));
+  assert_true(sample_file_write_atomically(DIRECTORY "/" DESTINATION_FILE, "newer", 5));
+  assert_file_holds(DIRECTORY "/" DESTINATION_FILE, "newer");
+  assert_int_equal(count_directory_entries(DIRECTORY), 1);
+#endif
+}
+
+static void file_write_atomically_fails_and_keeps_the_destination(void** state)
+{
+  (void)state;
+  write_text_file(DESTINATION_FILE, "old");
+
+  assert_false(sample_file_write_atomically(DESTINATION_FILE, NULL, 3));
+  assert_false(sample_file_write_atomically(NULL, "new", 3));
+  assert_false(sample_file_write_atomically("missing_directory.tmp/name", "new", 3));
+
+  assert_file_holds(DESTINATION_FILE, "old");
+#if !defined(_WIN32)
+  /* The rename fails over a directory: the temporary file is removed. */
+  assert_int_equal(mkdir(DIRECTORY, 0700), 0);
+  assert_int_equal(mkdir(DIRECTORY "/" DESTINATION_FILE, 0700), 0);
+  assert_false(sample_file_write_atomically(DIRECTORY "/" DESTINATION_FILE, "new", 3));
+  assert_int_equal(count_directory_entries(DIRECTORY), 1);
+#endif
+}
+
+/** @brief Write @p text to a new file from sample_file_create_private_unique(), then
+ *  complete it with sample_file_complete_atomic_write(); returns that call's result
+ *  and checks that the new file is gone either way. */
+static bool write_unique_and_complete(const char* text, bool contents_written)
+{
+  char* temporary_path = NULL;
+  FILE* file = sample_file_create_private_unique(DESTINATION_FILE, &temporary_path);
+  assert_non_null(file);
+  char temporary_name[128];
+  assert_true(sample_string_copy(temporary_name, sizeof(temporary_name), temporary_path));
+  assert_int_equal(fputs(text, file) >= 0, 1);
+  bool replaced
+      = sample_file_complete_atomic_write(file, temporary_path, DESTINATION_FILE, contents_written);
+  assert_null(sample_file_open_read_no_follow(temporary_name));
+  return replaced;
+}
+
+static void file_complete_atomic_write_replaces_only_complete_contents(void** state)
+{
+  (void)state;
+  write_text_file(DESTINATION_FILE, "old");
+
+  assert_false(write_unique_and_complete("partial", false));
+  assert_file_holds(DESTINATION_FILE, "old");
+
+  assert_true(write_unique_and_complete("new", true));
+  assert_file_holds(DESTINATION_FILE, "new");
+
+  assert_false(sample_file_complete_atomic_write(NULL, NULL, DESTINATION_FILE, true));
+  assert_file_holds(DESTINATION_FILE, "new");
 }
 
 #if !defined(_WIN32)
@@ -319,6 +582,97 @@ static void stop_handler_records_sigterm_and_sigint(void** state)
 #endif
 }
 
+/**
+ * @brief Pipeline scenario: begin installs the stop handler without requesting a stop, and end
+ * returns its argument.
+ */
+static bool pipeline_begin_and_end_holds(void)
+{
+#if defined(_WIN32)
+  const int stop_signal = SIGBREAK; /* CTRL_BREAK_EVENT */
+#else
+  const int stop_signal = SIGTERM;
+#endif
+  bool before = sample_is_stop_requested();
+  sample_pipeline_checks_begin();
+  bool after_begin = sample_is_stop_requested();
+  bool raised = raise(stop_signal) == 0;
+  return !before && !after_begin && raised && sample_is_stop_requested()
+      && sample_pipeline_checks_end(7) == 7;
+}
+
+/** @brief Pipeline scenario: request_stop moves the stop request from false to true. */
+static bool pipeline_request_stop_holds(void)
+{
+  bool before = sample_is_stop_requested();
+  sample_pipeline_checks_request_stop("test reason");
+  return !before && sample_is_stop_requested();
+}
+
+/** @brief A pipeline scenario, run in a new process so the stop request starts false. */
+typedef struct pipeline_scenario
+{
+  const char* name; /**< Command-line argument that runs it on Windows. */
+  bool (*holds)(void);
+} pipeline_scenario;
+
+static const pipeline_scenario s_pipeline_begin_and_end
+    = { "pipeline-begin-and-end", pipeline_begin_and_end_holds };
+static const pipeline_scenario s_pipeline_request_stop
+    = { "pipeline-request-stop", pipeline_request_stop_holds };
+
+/** @brief Run @p scenario with stdout written to PIPELINE_OUTPUT_FILE. @return true if it holds. */
+static bool pipeline_scenario_run(const pipeline_scenario* scenario)
+{
+#if defined(_WIN32)
+  FILE* output = NULL;
+  bool redirected = freopen_s(&output, PIPELINE_OUTPUT_FILE, "wb", stdout) == 0;
+#else
+  bool redirected = freopen(PIPELINE_OUTPUT_FILE, "wb", stdout) != NULL;
+#endif
+  return redirected && scenario->holds() && fflush(stdout) == 0;
+}
+
+/**
+ * @brief Run @p scenario in a new process: fork() on POSIX, this executable again on Windows.
+ * @return true if it holds.
+ */
+static bool pipeline_scenario_holds_in_new_process(const pipeline_scenario* scenario)
+{
+  (void)remove(PIPELINE_OUTPUT_FILE);
+  (void)fflush(stdout);
+  (void)fflush(stderr);
+#if defined(_WIN32)
+  char path[MAX_PATH];
+  DWORD length = GetModuleFileNameA(NULL, path, (DWORD)sizeof(path));
+  return length > 0 && length < sizeof(path)
+      && _spawnl(_P_WAIT, path, "sample_utils_test", scenario->name, NULL) == 0;
+#else
+  pid_t child = fork();
+  if (child == 0)
+  {
+    _exit(pipeline_scenario_run(scenario) ? 0 : 1);
+  }
+  int status = 0;
+  return child > 0 && waitpid(child, &status, 0) == child && WIFEXITED(status)
+      && WEXITSTATUS(status) == 0;
+#endif
+}
+
+static void pipeline_begin_and_end_print_markers_and_return_rc(void** state)
+{
+  (void)state;
+  assert_true(pipeline_scenario_holds_in_new_process(&s_pipeline_begin_and_end));
+  assert_file_holds(PIPELINE_OUTPUT_FILE, "sample-pipeline: begin\nsample-pipeline: end rc=7\n");
+}
+
+static void pipeline_request_stop_prints_reason_and_requests_stop(void** state)
+{
+  (void)state;
+  assert_true(pipeline_scenario_holds_in_new_process(&s_pipeline_request_stop));
+  assert_file_holds(PIPELINE_OUTPUT_FILE, "sample-pipeline: stop test reason\n");
+}
+
 static void sleep_until_tick_end_waits_out_the_rest_of_the_tick(void** state)
 {
   (void)state;
@@ -339,16 +693,59 @@ static void sleep_until_tick_end_returns_at_once_after_the_tick(void** state)
   assert_true(sample_now_ms() - start < 50u);
 }
 
-int main(void)
+/* Manifest file ids that would leave the download directory are refused. */
+static void is_plain_file_name_refuses_names_that_leave_the_directory(void** state)
 {
+  (void)state;
+  assert_true(sample_is_plain_file_name(AZ_SPAN_FROM_STR("firmware.swu")));
+  assert_true(sample_is_plain_file_name(AZ_SPAN_FROM_STR("..swu")));
+  assert_true(sample_is_plain_file_name(AZ_SPAN_FROM_STR("...")));
+
+  assert_false(sample_is_plain_file_name(AZ_SPAN_EMPTY));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR(".")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("..")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("../outside")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("/etc/passwd")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("a\\b")));
+  assert_false(sample_is_plain_file_name(AZ_SPAN_FROM_STR("C:file")));
+  char with_nul[] = "a\0b";
+  assert_false(
+      sample_is_plain_file_name(az_span_create((uint8_t*)with_nul, (int32_t)sizeof(with_nul) - 1)));
+}
+
+int main(int argc, char** argv)
+{
+  /* Windows: a pipeline scenario's new process. */
+  const pipeline_scenario* scenarios[] = { &s_pipeline_begin_and_end, &s_pipeline_request_stop };
+  for (size_t i = 0; argc == 2 && i < sizeof(scenarios) / sizeof(scenarios[0]); i++)
+  {
+    if (strcmp(argv[1], scenarios[i]->name) == 0)
+    {
+      return pipeline_scenario_run(scenarios[i]) ? 0 : 1;
+    }
+  }
+
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_setup_teardown(file_replace_overwrites_the_destination, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_delete_removes_the_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_delete_treats_a_missing_file_as_deleted, setup, teardown),
+    cmocka_unit_test_setup_teardown(file_delete_fails_when_the_file_stays, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_delete_reports_a_done_removal_when_the_directory_sync_fails, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_replace_creates_a_missing_destination_given_with_a_directory, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_replace_fails_without_a_source_and_keeps_the_destination, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_replace_reports_a_done_rename_when_the_directory_sync_fails, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_remove_durably_removes_and_accepts_a_missing_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_remove_durably_fails_when_the_path_cannot_be_removed, setup, teardown),
+#if defined(AZ_IOT_TEST_WRAP_FSYNC)
+    cmocka_unit_test_setup_teardown(
+        file_remove_durably_syncs_the_directory_also_for_a_missing_file, setup, teardown),
+#endif
     cmocka_unit_test_setup_teardown(
         file_flush_to_storage_writes_through_the_buffer, setup, teardown),
     cmocka_unit_test_setup_teardown(file_open_private_creates_an_owner_only_file, setup, teardown),
@@ -359,7 +756,20 @@ int main(void)
         file_create_private_unique_creates_a_new_name_beside_the_path, setup, teardown),
     cmocka_unit_test_setup_teardown(
         file_open_read_no_follow_refuses_a_link_and_a_missing_file, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_rewrite_existing_no_follow_keeps_the_file_and_refuses_a_link, setup, teardown),
+    cmocka_unit_test(is_plain_file_name_refuses_names_that_leave_the_directory),
+    cmocka_unit_test_setup_teardown(
+        file_write_atomically_replaces_the_destination, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_write_atomically_fails_and_keeps_the_destination, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        file_complete_atomic_write_replaces_only_complete_contents, setup, teardown),
     cmocka_unit_test(stop_handler_records_sigterm_and_sigint),
+    cmocka_unit_test_setup_teardown(
+        pipeline_begin_and_end_print_markers_and_return_rc, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        pipeline_request_stop_prints_reason_and_requests_stop, setup, teardown),
     cmocka_unit_test(sleep_until_tick_end_waits_out_the_rest_of_the_tick),
     cmocka_unit_test(sleep_until_tick_end_returns_at_once_after_the_tick),
   };

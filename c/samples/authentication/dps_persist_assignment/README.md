@@ -15,7 +15,8 @@ flowchart TD
     E --> F[hub connect]
     B -- yes --> G[opts.iothub_hostname, device_id, connection_profile from the file]
     G --> F
-    F -- identity refused --> C
+    F -- identity refused --> H[invalidated callback: delete the file]
+    H --> C
 ```
 
 See [`main.c`](main.c) and [connecting.md](../../../docs/connecting.md#saved-hub-with-dps-fallback).
@@ -26,7 +27,7 @@ As [`dps_csr_managed`](../dps_csr_managed/README.md): the same Azure resources, 
 identity, enrollment group and environment variables.
 
 The assignment is saved to `dps_assignment.txt` in the working directory: three lines, hub
-hostname, device id, and `mqttv3` or `mqttv5`. Delete it to
+hostname, device id, and `mqttv3`. Delete it to
 register again. Keep it with `AZ_IOT_OPERATIONAL_KEY` and `AZ_IOT_OPERATIONAL_CERT`: the
 saved identity is only usable with the certificate issued alongside it. Key files are for
 development; see [Production keys](../../../docs/connecting.md#production-keys).
@@ -45,18 +46,25 @@ cmake --build --preset linux-gcc-debug --target az_iot_sample_auth_dps_persist_a
 With az_mqtt (`-DAZ_IOT_WITH_AZ_MQTT=ON`), target `az_iot_sample_auth_dps_persist_assignment_az_mqtt` builds the same sample in
 `az_mqtt/` next to that binary ([adapters](../../README.md#build)).
 
-Built when OpenSSL 3.0+ is available (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`). Connects to mqttv3 and
-mqttv5 hubs.
+Built when OpenSSL 3.0+ is available (`AZ_IOT_WITH_CERT_PROVIDER_MANAGED`). Connects to mqttv3 hubs.
 
 ## Behavior
 
 - Identity recovery is `AZ_IOT_IDENTITY_RECOVERY_REPROVISION`, paced by the reconnection policy
   instead of the 5 minute default: if the hub refuses the saved identity, the client registers
   with DPS and the new assignment is saved. The refusal does not end the run.
-- Exit code 0 when the hub connects and any new assignment was saved; otherwise 1.
-- The record is written to `dps_assignment.txt.tmp`, flushed, and renamed over
-  `dps_assignment.txt` (on POSIX the directory is then synced). The file always holds one
-  complete record, the previous or the new one; never a partial one.
+- When the client gives up on the saved assignment (the hub refused it, stopped answering, or DPS
+  returned an assignment the client rejected), the invalidated callback deletes
+  `dps_assignment.txt` (on POSIX the directory is then synced), so the next run registers with DPS
+  even if this one ends first. A deletion that fails is retried at exit; if the file still holds
+  the invalidated record and no new assignment replaced it, the run reports it and exits with 1.
+- Exit code 0 when the hub connects, any new assignment was saved and no invalidated assignment
+  was left in place; otherwise 1.
+- The record is written to a new file beside `dps_assignment.txt`, named after it plus a unique
+  suffix, flushed to storage, and renamed over it (on POSIX the directory is then synced), through
+  `sample_file_write_atomically()`. The file always holds one complete record, the previous or the
+  new one; never a partial one. A failed save removes the new file; one left by a crash mid-save
+  can be deleted.
 - The managed provider writes the issued chain to `AZ_IOT_OPERATIONAL_CERT` before the assignment
   callback runs.
 

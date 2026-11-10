@@ -62,7 +62,7 @@ Rules:
 5. **Under `dps.provision_only` (§4) `HUB` never leaves `IDLE`.**
 6. **`DPS:CONNECTED` is the provisioning SUBACK.** A normal DPS device reports
    `DPS:SETTING_UP → CONNECTING → CONNECTED → DISCONNECTING → IDLE` around its registration. `profile` is NULL on
-   `DPS:CONNECTED`; the hub generation comes from the assignment and is carried on `HUB:CONNECTED`.
+   `DPS:CONNECTED`; the hub profile comes from the assignment and is carried on `HUB:CONNECTED`.
 7. **Duplicate transitions are suppressed per scope.**
 8. **Every attempt starts in `SETTING_UP`**, before any step that can fail on the device, so a
    failed attempt is always a transition and is never suppressed. A failure there goes straight to
@@ -71,7 +71,7 @@ Rules:
    session that is already up reports `SETTING_UP → CONNECTED`.
 9. **`open()` validates its configuration before any attempt starts**: the state, the
    credential setup, CSR support, and the registration payload and its buffer. A refusal there is
-   returned and raises no event. Every later `open()` failure (no factory, credential `load()`,
+   returned and raises no event. Every later `open()` failure (the adapter's `init()`, credential `load()`,
    SAS signing, adapter `connect()`) belongs to the attempt: it reports `SETTING_UP`, then `IDLE`
    with the reason and LOCAL detail, and is also returned.
 
@@ -82,17 +82,21 @@ is a re-registration leaves `HUB` in `RETRY_PENDING` while the attempt runs on `
 
 ## 3. Shared provisioning sessions
 
-A feature client (for example software updates) can hold the provisioning session open past
-registration; the session is reference-counted. When such a session fails, the connection client
-does **not** run its normal reconnect path, because that tears down the active hub connection.
-`DPS` settles at `IDLE` instead, and the next session attempt is paced by its own retry counter:
+A feature client can hold the provisioning session open past
+registration, or open one after it; the session is reference-counted. Only one MQTT session runs at
+a time: while a provisioning session is in use the hub session waits at `HUB:RETRY_PENDING` with
+reason `AZ_IOT_OK` and no retry scheduled (a connected hub session is first ended as planned), and
+it reconnects to its assignment once the session ends. These ends count toward no ladder or
+re-provisioning threshold. When such a session fails, the connection client does **not** run its
+normal reconnect path, which is the registration ladder. `DPS` settles at `IDLE` instead, the
+waiting hub session reconnects, and the next session attempt is paced by its own retry counter:
 
 - The delays come from `opts.reconnection_policy`, on a counter separate from the registration
   ladder, so a user-held session's outage cannot spend a later re-provisioning's budget.
 - With retries disabled, or `max_attempts` spent, the client refuses further session attempts with
   `AZ_IOT_ERR_NOT_SUPPORTED` instead of retrying on every pump tick.
 - The refusal clears when a session comes up, a registration succeeds, on `open()` or `close()`,
-  or when the last holder releases its reference.
+  or when the feature client releases the session.
 - A synchronous session-start failure is paced at the call site.
 
 The core paces the transport. Whether an operation is still worth re-issuing is the feature
@@ -104,7 +108,7 @@ client's decision.
 
 For a device that never connects to an IoT Hub: the client brings up a provisioning session, keeps
 it up, and never registers or connects to a hub. Feature clients that work over the provisioning
-session (software updates) use it.
+session use it.
 
 - Settled state is `DPS:CONNECTED` + `HUB:IDLE`. `HUB` is never announced.
 - Registration is skipped, not attempted: an enrollment with no linked hub fails registration, and
@@ -214,7 +218,7 @@ static void on_state(const az_iot_connection_state_event* e, void* ctx)
 }
 ```
 
-After a generation change: rebuild feature clients.
+After a profile mismatch: rebuild feature clients.
 
 ```c
 if (e->state == AZ_IOT_CONN_STATE_FAULTED

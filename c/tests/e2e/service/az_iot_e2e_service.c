@@ -230,17 +230,16 @@ const char* az_iot_e2e_service_last_error(const az_iot_e2e_service* svc)
   return svc->last_error;
 }
 
-bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc, const char* capture_filter)
+/**
+ * @brief Starts a telemetry watcher for messages enqueued after @p enqueued_after_ms (Unix ms),
+ * from @p device_id (NULL: any device), capturing the bodies containing @p capture_filter.
+ */
+static bool telemetry_watch_start(
+    az_iot_e2e_service* svc,
+    const char* capture_filter,
+    const char* device_id,
+    int64_t enqueued_after_ms)
 {
-  if (svc->telemetry != NULL)
-  {
-    if (strcmp(svc->telemetry->capture_filter, capture_filter != NULL ? capture_filter : "") == 0)
-    {
-      return true; /* already watching */
-    }
-    az_iot_e2e_service_telemetry_watch_end(svc);
-  }
-
   /* Event Hubs authorizes the entity audience with a SAS whose HMAC key is the
    * raw key string (NOT base64-decoded) — the Event Hubs/Service Bus convention. */
   /* Sized for the widest possible "amqps://<host>/<entity>": host[256] + entity[128]
@@ -263,9 +262,16 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc, const cha
     return false;
   }
 
+  if (!e2e_amqp_telemetry_set_device_filter(svc->telemetry, device_id))
+  {
+    set_error(svc, "telemetry: device ID too long");
+    free(svc->telemetry);
+    svc->telemetry = NULL;
+    return false;
+  }
+
   svc->telemetry_reconnect_at = 0;
   const char* err = NULL;
-  int64_t enqueued_after_ms = ((int64_t)time(NULL) - E2E_TELEMETRY_CLOCK_SKEW_S) * 1000;
   if (!e2e_amqp_telemetry_begin(
           svc->telemetry,
           svc->eh_info.host,
@@ -283,6 +289,36 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc, const cha
     return false;
   }
   return true;
+}
+
+bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc, const char* capture_filter)
+{
+  if (svc->telemetry != NULL)
+  {
+    if (svc->telemetry->device_filter[0] == '\0'
+        && strcmp(svc->telemetry->capture_filter, capture_filter != NULL ? capture_filter : "")
+            == 0)
+    {
+      return true; /* already watching */
+    }
+    az_iot_e2e_service_telemetry_watch_end(svc);
+  }
+  return telemetry_watch_start(
+      svc, capture_filter, NULL, ((int64_t)time(NULL) - E2E_TELEMETRY_CLOCK_SKEW_S) * 1000);
+}
+
+bool az_iot_e2e_service_telemetry_watch_device_begin(
+    az_iot_e2e_service* svc,
+    const char* device_id,
+    int64_t enqueued_after_s)
+{
+  if (device_id == NULL || device_id[0] == '\0')
+  {
+    set_error(svc, "telemetry: no device ID");
+    return false;
+  }
+  az_iot_e2e_service_telemetry_watch_end(svc);
+  return telemetry_watch_start(svc, NULL, device_id, enqueued_after_s * 1000);
 }
 
 /**
@@ -513,13 +549,13 @@ void az_iot_e2e_service_file_notification_stats(
     int* out_delivered,
     int* out_captured,
     int* out_released,
-    int* out_stale,
+    int* out_unwatched,
     int* out_unparsed)
 {
   if (svc->filenotify != NULL)
   {
     e2e_amqp_filenotify_stats(
-        svc->filenotify, out_delivered, out_captured, out_released, out_stale, out_unparsed);
+        svc->filenotify, out_delivered, out_captured, out_released, out_unwatched, out_unparsed);
     return;
   }
   if (out_delivered != NULL)
@@ -534,9 +570,9 @@ void az_iot_e2e_service_file_notification_stats(
   {
     *out_released = 0;
   }
-  if (out_stale != NULL)
+  if (out_unwatched != NULL)
   {
-    *out_stale = 0;
+    *out_unwatched = 0;
   }
   if (out_unparsed != NULL)
   {
@@ -795,8 +831,7 @@ bool az_iot_e2e_service_twin_patch_desired_begin(
   }
   char path[256];
   snprintf(path, sizeof(path), "/twins/%s?api-version=%s", device_id, E2E_API_VERSION);
-  /* Large enough for a software updates deployment desired PATCH (~3 KB: signed JWS +
-   * escaped v5 manifest) wrapped in the properties/desired envelope. */
+  /* Large enough for a ~3 KB desired PATCH wrapped in the properties/desired envelope. */
   char body[4096];
   snprintf(
       body,
@@ -1219,7 +1254,12 @@ static bool dps_service_auth(e2e_conn_info* info, char* sas, size_t sas_size)
              info->host, info->key_name, info->key, true, sas_expiry(), sas, sas_size);
 }
 
-/** @brief A DPS service REST call; true for a 2xx (or 404 when @p allow_404). */
+/**
+ * @brief A DPS service REST call; true for a 2xx (or 404 when @p allow_404).
+ *
+ * PUT (create or replace with the same body) and DELETE are idempotent, so a stalled attempt is
+ * sent again.
+ */
 static bool dps_service_call(const char* method, const char* path, const char* body, bool allow_404)
 {
   e2e_conn_info info;
@@ -1241,7 +1281,7 @@ static bool dps_service_call(const char* method, const char* path, const char* b
       strcmp(method, "DELETE") == 0 ? "If-Match: *" : NULL,
       body,
       body != NULL ? strlen(body) : 0,
-      strcmp(method, "DELETE") == 0,
+      strcmp(method, "PUT") == 0 || strcmp(method, "DELETE") == 0,
       &status,
       resp,
       sizeof(resp),

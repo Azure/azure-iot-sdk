@@ -11,28 +11,30 @@ option in full.
 
 ```c
 static uint8_t workspace[AZ_IOT_CONNECTION_CLIENT_DEFAULT_WORKSPACE_SIZE];
+/* Last argument: TLS state bound, 8 KB for OpenSSL or mbedTLS; about 197 KB for Schannel. */
+static uint8_t mqtt_workspace[AZ_IOT_AZ_MQTT_WORKSPACE_SIZE(4096, 4096, 8, 8192, 4096, 8192)];
 az_iot_connection_client_options opts = az_iot_connection_client_options_default();
 opts.workspace = workspace; /* required; see client-configuration.md */
 opts.workspace_size = sizeof(workspace);
+opts.mqtt_adapter = az_iot_az_mqtt_get_adapter(); /* or az_iot_paho_get_adapter() */
+opts.mqtt_limits = (az_iot_mqtt_limits){ .send_buffer_size = 4096,
+                                         .receive_buffer_size = 4096,
+                                         .max_in_flight_messages = 8,
+                                         .message_store_size = 8192, /* resumed hub session */
+                                         .connect_strings_size = 4096 };
+opts.mqtt_workspace = mqtt_workspace; /* wiped by deinit() */
+opts.mqtt_workspace_size = sizeof(mqtt_workspace);
 opts.dps.id_scope = "<id-scope>";
 opts.dps.registration_id = "<registration-id>";
 opts.certificate_provider = &certs.base; /* e.g. az_iot_certificate_provider_pem */
 
-az_iot_mqtt_factory* v3 = az_iot_paho_factory_create_v3_1_1();
-az_iot_mqtt_factory* v5 = az_iot_paho_factory_create_v5();
 if (az_iot_connection_client_init(&client, &opts) != AZ_IOT_OK)
 {
-  az_iot_paho_factory_destroy(v3);
-  az_iot_paho_factory_destroy(v5);
   return 1;
 }
-if (az_iot_connection_client_add_state_observer(&client, on_state, ctx) != AZ_IOT_OK
-    || az_iot_connection_client_register_mqtt_factory(&client, v3) != AZ_IOT_OK
-    || az_iot_connection_client_register_mqtt_factory(&client, v5) != AZ_IOT_OK)
+if (az_iot_connection_client_add_state_observer(&client, on_state, ctx) != AZ_IOT_OK)
 {
   az_iot_connection_client_deinit(&client);
-  az_iot_paho_factory_destroy(v3); /* NULL: no-op */
-  az_iot_paho_factory_destroy(v5);
   return 1;
 }
 
@@ -41,8 +43,6 @@ if (az_iot_connection_client_open(&client) != AZ_IOT_OK)
 {
   /* deinit feature clients, then: */
   az_iot_connection_client_deinit(&client);
-  az_iot_paho_factory_destroy(v3);
-  az_iot_paho_factory_destroy(v5);
   return 1;
 }
 for (;;)
@@ -54,17 +54,18 @@ for (;;)
 Start from `az_iot_connection_client_options_default()`. A zero-initialized options struct has
 reconnection disabled.
 
-## MQTT factory ownership
+### MQTT clients in application memory
 
-- The application owns every factory it creates with `az_iot_paho_factory_create_*()`.
-- `az_iot_connection_client_register_mqtt_factory()` lends the factory to the connection client.
-  Keep it alive until `az_iot_connection_client_deinit()` returns, then destroy it with
-  `az_iot_paho_factory_destroy()`. Destroying it earlier is a use-after-free.
-- A factory that was never registered, or whose registration failed, can be destroyed at any time.
-- Registering the same factory twice returns `AZ_IOT_OK` and keeps one registration.
+`mqtt_adapter`, `mqtt_limits` and `mqtt_workspace` are required: the connection client builds each
+session's MQTT client in the workspace with the adapter, with nothing to create or destroy and,
+with az_mqtt, no allocation. `init()` returns `AZ_IOT_ERR_INVALID_ARG` without an adapter. Sizing
+and rules: [client configuration](client-configuration.md#connection-client-az_iot_connection_clienth).
 
-The same rules apply to the az_mqtt adapter factories, and match the certificate providers:
-the application creates them, and destroys them after the connection client.
+The workspace holds one MQTT client at a time, which is enough because the client runs
+[one MQTT session at a time](#one-mqtt-session-at-a-time).
+
+The adapters are constants; like the certificate providers, the workspace is the application's
+again once `az_iot_connection_client_deinit()` returns, which wipes it.
 Each sample that connects is also built on az_mqtt, from the same `main.c`
 ([samples](../samples/README.md#build)).
 
@@ -73,13 +74,11 @@ Teardown:
 ```c
 /* deinit feature clients, then: */
 az_iot_connection_client_deinit(&client);
-az_iot_paho_factory_destroy(v3);
-az_iot_paho_factory_destroy(v5);
 ```
 
-To skip DPS and connect straight to a hub, set `iothub_hostname` and `device_id` instead of the `dps` fields,
-and set `connection_profile` to `AZ_IOT_CONNECTION_PROFILE_MQTT_V5` for an mqttv5 hub (the default
-is mqttv3). To connect to a saved hub and fall back to DPS, set both; see
+To skip DPS and connect straight to a hub, set `iothub_hostname` and `device_id` instead of the `dps` fields
+(`connection_profile` stays `AZ_IOT_CONNECTION_PROFILE_MQTT_V3`, the default and the only one
+accepted). To connect to a saved hub and fall back to DPS, set both; see
 [Saved hub with DPS fallback](#saved-hub-with-dps-fallback).
 
 [`samples/unified/telemetry`](../samples/unified/telemetry/main.c) is a complete example, but not
@@ -96,7 +95,7 @@ Values of `az_iot_connection_state` (`AZ_IOT_CONN_STATE_*`):
 | `SETTING_UP` | A connection or registration attempt's local steps: feature-client binds, adapter creation, credential load or SAS signing, registration body. Entered by every attempt, including each retry. |
 | `CONNECTING` | The network connect is starting: announced just before it is issued, then held while the handshake is in flight. |
 | `CONNECTED` | Ready. Every required subscription is in place. |
-| `RETRY_PENDING` | A retry is scheduled; nothing is in flight. The next attempt starts in `SETTING_UP`. |
+| `RETRY_PENDING` | A retry is scheduled; nothing is in flight. The next attempt starts in `SETTING_UP`. On the hub scope, reason `AZ_IOT_OK` without `is_credential_renewal` means the hub session waits for a provisioning session (see [One MQTT session at a time](#one-mqtt-session-at-a-time)). |
 | `DISCONNECTING` | A session is closing: `close()` was called, or the provisioning session ends after registration. |
 | `FAULTED` | Stopped after a failure. The SDK does not retry from here. Call `close()` to return to `IDLE`, then `open()` again. |
 
@@ -114,10 +113,7 @@ with no `CONNECTING`, since nothing new is connected.
 So each failed attempt produces an event, including under a policy that retries forever. A step that
 fails on the device carries `error->source == AZ_IOT_CONN_ERR_SRC_LOCAL`, the step's `az_iot_result`
 as `code`, and the step as `message`, for example `certificate provider load() failed`. A refused
-MQTT 5 CONNACK or a server DISCONNECT with a nonzero reason code carries
-`error->source == AZ_IOT_CONN_ERR_SRC_MQTT`, the reason code as `code`, and the server's Reason
-String, if it sent one, as `message` (at most `AZ_IOT_CONN_ERROR_MESSAGE_MAX` bytes). The Paho
-adapter cannot report a refused CONNACK's Reason String.
+CONNACK carries `error->source == AZ_IOT_CONN_ERR_SRC_MQTT` and its return code as `code`.
 `open()` first validates the configuration (credential shape, CSR support, registration payload
 and its buffer); a refusal there starts no attempt, raises no event, and is reported only by
 `open()`'s return value.
@@ -129,9 +125,10 @@ and its buffer); a refusal there starts no attempt, raises no event, and is repo
 - `close()` then `open()` reconnects after `FAULTED`. Feature clients and observers survive it.
 - `open()`, `close()` and `deinit()` cannot be called from a callback the client runs: state
   observers, publish completion callbacks, the SAS token callback, the DPS operational-certificate,
-  registration-payload and assignment callbacks, CSR callbacks, subscription-failure callbacks,
-  and feature clients' message and response handlers. There they return `AZ_IOT_ERR_BUSY` and
-  change nothing. Record the decision in the callback and call them after `do_work()` returns.
+  registration-payload, assignment and assignment-invalidated callbacks, CSR callbacks,
+  subscription-failure callbacks, and feature clients' message and response handlers. There they
+  return `AZ_IOT_ERR_BUSY` and change nothing. Record the decision in the callback and call them
+  after `do_work()` returns.
   Feature clients' own `deinit()` stays callable from callbacks.
 - The client reconnects by itself under `reconnection_policy`. To decide yourself, use
   `az_iot_connection_client_get_disabled_retry_policy()`: a failure then ends in `FAULTED`.
@@ -167,8 +164,8 @@ for (;;)
 ## Provisioning and the hub profile
 
 On `open()`, the client registers with DPS over MQTT 3.1.1, receives the assigned hub, device id
-and connection profile, and then connects to the hub. It picks MQTT 3.1.1 or 5 from the profile.
-See [Architecture](architecture.md#hub-generations-mqttv3-and-mqttv5).
+and connection profile, and then connects to the hub over MQTT 3.1.1.
+See [Architecture](architecture.md#hub-connection-profile).
 
 - `az_iot_connection_client_get_hub_profile()` reports the assigned profile once the hub is
   `CONNECTED`.
@@ -176,7 +173,7 @@ See [Architecture](architecture.md#hub-generations-mqttv3-and-mqttv5).
   return the assigned hub and device id once the assignment is adopted (`NULL` before). The device
   id can differ from the registration id (e.g. custom allocation); save these two values, not the
   registration id, to connect directly later.
-- Feature clients may be created before or after `open()`. Creating one for the wrong generation
+- Feature clients may be created before or after `open()`. Creating one for another profile
   fails with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
 - A custom registration payload (one JSON object) can be sent with `dps.registration_payload`,
   built into `dps.registration_body_buffer`. The service's reply is delivered through
@@ -210,13 +207,25 @@ opts.dps.registration_id = "<registration-id>";
   `az_iot_connection_client_set_dps_assignment_callback()`. It fires each time an assignment is
   adopted (first registration and every re-provision), before the hub connect. A rejected
   assignment is not reported, and its issued certificate is not stored.
+- Delete the saved values in the callback set with
+  `az_iot_connection_client_set_dps_assignment_invalidated_callback()`. It fires once when the
+  client decides the assignment it holds (saved or adopted) must not be used again: DPS returned
+  an assignment the client rejected (`AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED`, `_MISMATCH`), the
+  hub refused the identity in `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` mode
+  (`AZ_IOT_ERR_IDENTITY_REJECTED`), or `dps.max_hub_connect_attempts_before_reprovision` connects
+  failed (the last failure). Without it, a restart before a new assignment is adopted restores
+  the old one. Until one is adopted, the client itself does not go back to that hub, even when a
+  registration fails to start or `close()` and `open()` interrupt it. It does not fire for
+  `az_iot_connection_client_request_reprovision()`, which the application decided, nor on a first
+  registration. It runs at the end of `do_work()`, after that call's other callbacks; `open()`,
+  `close()` and `deinit()` return `AZ_IOT_ERR_BUSY` there.
 - `open()` connects to the saved hub; DPS is not contacted while it accepts the device.
 - It goes to DPS under the same conditions as a cached assignment (above). With
   `options_default()`, `identity_recovery.mode` is `RETRY_HUB`, so a hub that refuses the identity
   is retried; set `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` to register again instead.
 - A registration replaces the hub, device id and profile; the callback reports the new values.
-- `connection_profile` is declared, as for a direct connect: a feature client for the other
-  generation fails with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
+- `connection_profile` is declared, as for a direct connect: a feature client for another
+  profile fails with `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH`.
 - An empty `iothub_hostname`, or one without `device_id`, fails `open()` with `AZ_IOT_ERR_INVALID_ARG`.
 - Certificates issued earlier are the provider's to keep: when `load(AZ_IOT_CRED_OPERATIONAL)`
   returns the stored chain, the saved hub is connected with it and no certificate is requested.
@@ -225,6 +234,11 @@ opts.dps.registration_id = "<registration-id>";
   the callback runs (the managed provider writes it to `operational_cert_pem_path`).
 
 Sample: [`samples/authentication/dps_persist_assignment`](../samples/authentication/dps_persist_assignment/README.md).
+
+### One MQTT session at a time
+
+The client runs one MQTT session at a time: the provisioning session and the hub session never
+overlap.
 
 ## Reconnection
 
@@ -249,11 +263,10 @@ build the common shapes.
 
 ### Identity recovery
 
-When the hub refuses the identity (a CONNACK with `AZ_IOT_ERR_IDENTITY_REJECTED`, or an mqttv5
-`Not authorized` DISCONNECT with `AZ_IOT_ERR_AUTH`), the cause is unknown: the device may be
-disabled, its certificate revoked, or its assignment moved. `identity_recovery` controls what
-happens next. For a CONNACK refusal with more than one credential source, this applies once every
-source of a pass is refused (see Fallback); an mqttv5 DISCONNECT refusal applies at once.
+When the hub refuses the identity (a CONNACK with `AZ_IOT_ERR_IDENTITY_REJECTED`), the cause is
+unknown: the device may be disabled, its certificate revoked, or its assignment moved.
+`identity_recovery` controls what happens next. With more than one credential source, this applies
+once every source of a pass is refused (see Fallback).
 
 | Field | `options_default()` | Zeroed | Meaning |
 | --- | --- | --- | --- |
@@ -265,7 +278,7 @@ source of a pass is refused (see Fallback); an mqttv5 DISCONNECT refusal applies
 | `mode` | Next attempt after a refusal |
 | --- | --- |
 | `AZ_IOT_IDENTITY_RECOVERY_RETRY_HUB` | The cached hub. No DPS registration, no certificate request. |
-| `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` | A DPS registration after a CONNACK refusal (the earlier behaviour); the hub after an mqttv5 DISCONNECT refusal. With `dps.request_operational_certificate`, every registration requests a new certificate. |
+| `AZ_IOT_IDENTITY_RECOVERY_REPROVISION` | A DPS registration (the earlier behaviour). With `dps.request_operational_certificate`, every registration requests a new certificate. |
 | `AZ_IOT_IDENTITY_RECOVERY_NONE` | None: the refusal faults. |
 
 - The schedule is separate from the reconnection ladders, and DPS registrations do not reset it.
@@ -277,8 +290,7 @@ source of a pass is refused (see Fallback); an mqttv5 DISCONNECT refusal applies
   DPS registrations do not restore them. `mode` still decides where each attempt goes.
 - When a limit is reached the client goes to `FAULTED` with the refusal as `reason`, on the HUB scope
   and, if a re-registration was pending, on the DPS scope as well.
-- With `reconnection_policy` disabled, the first mqttv5 DISCONNECT refusal faults, as does the
-  CONNACK refusal that ends a credential pass.
+- With `reconnection_policy` disabled, the CONNACK refusal that ends a credential pass faults.
 - `az_iot_connection_client_request_reprovision()` makes the next attempt a DPS registration.
   A pending hub retry runs on the next `do_work()`; a pending DPS retry keeps its schedule.
 
@@ -291,11 +303,12 @@ What survives a reconnect:
 | Kept | Lost |
 | --- | --- |
 | The hub assignment and connection profile | In-flight QoS 1 publishes that were not yet acknowledged |
-| Subscriptions registered by feature clients | Pending twin requests and direct-method responses |
-| The operational certificate | Desired-property updates sent while disconnected (mqttv3). Call the twin client's `get()` to resynchronize. |
-| Software update progress and unsent reports | |
+| Subscriptions registered by feature clients | Pending twin reported-property patches, and direct-method invocations not yet answered |
+| The operational certificate | Desired-property updates sent while disconnected. Call the twin client's `get()` to resynchronize. |
 
-Re-send anything in the "Lost" column once the connection is back.
+Re-send the publishes and patches once the connection is back. The SDK resends pending twin get
+requests itself: see
+[Resumed sessions and retries](#resumed-sessions-and-retries).
 
 ## Network: WebSockets and proxies
 
@@ -321,17 +334,42 @@ Examples: [`samples/unified/websockets`](../samples/unified/websockets/main.c),
 
 | Option | Effect |
 | --- | --- |
-| `session_continuity` | `DEFAULT` / `RESUME` / `CLEAN`. The hub session resumes by default. DPS sessions are always clean. |
-| `session_expiry_seconds` | mqttv5 only. How long the broker keeps the session after a disconnect. Default 1 hour. |
+| `session_continuity` | `DEFAULT` / `RESUME` / `CLEAN`. The hub session resumes on every connect, including the first after a reboot, unless `CLEAN`. DPS sessions are always clean. See [Resumed sessions and retries](#resumed-sessions-and-retries). |
 | `lwt` | Optional Last Will. The SDK sets none of its own. |
 | `keep_alive_seconds`, `connect_timeout_seconds` | Default 30 s each. |
-| `twin_push` | mqttv5 only. Fixed for the client's lifetime. `push_desired` (default `false`): the service pushes the desired snapshot on connect and each desired patch while connected. When `false`, no desired patches are sent; the twin client fetches the snapshot on connect when behind, and later changes are seen only on reconnect or after `az_iot_mqttv5_twin_client_get()`. `push_reported` (default `false`): the service pushes the reported section on connect. With either set, a twin-push is expected after each connect for the requested sections the birth-ack shows out of sync (none when both are in sync); if none arrives within 5 to 15 minutes (longer after consecutive misses), the twin client ends the session with a DISCONNECT and the connection reconnects, or faults with `AZ_IOT_ERR_TIMEOUT` without a reconnection policy. `az_iot_connection_client_do_work()` checks it. |
 
-A device that does not use twin initializes no twin client and leaves both `twin_push` bits `false`.
-On an mqttv5 hub its birth then requests no twin session and the service sends it no twin traffic;
-`ih/{device_id}/dev/#` covers the twin topic, but nothing is published there. On an mqttv3 hub, only
-an initialized twin client subscribes to twin topics. A `twin_push` bit set without a twin client
-makes the service push sections that the device drops.
+A device that does not use twin initializes no twin client; only an initialized twin client
+subscribes to twin topics.
+
+### Resumed sessions and retries
+
+**Resume policy.** The hub session asks to resume (MQTT 3.1.1 Clean Session 0) on every connect
+unless `session_continuity` is `AZ_IOT_SESSION_CONTINUITY_CLEAN`,
+including the first connect after a reboot. Why:
+
+- mqttv3 IoT Hub keeps the device's subscriptions and in-flight QoS 1 deliveries only for a
+  session that is not clean. A clean connect discards them; it does not lose the hub's
+  cloud-to-device queue, which is delivered once the device re-subscribes.
+
+DPS sessions are always clean. A resumed session needs an az_mqtt message store:
+with `message_store_size` 0, `init()` fails with `AZ_IOT_ERR_INVALID_ARG` unless
+`session_continuity` is `CLEAN` ([Message store](client-configuration.md#message-store)).
+
+**Retries.** Each session gets a new MQTT client, destroyed when the session ends. What was sent
+on it and not yet confirmed (by a PUBACK or a response) is retried on a later session by the
+layer above, as a new PUBLISH:
+
+- the application: telemetry publishes and twin reported-property patches
+  (the service may have applied them), complete with `AZ_IOT_ERR_NOT_CONNECTED`;
+- the SDK: twin get requests are resent.
+
+This deliberately deviates from MQTT section 4.4, `MQTT-4.4.0-1`
+([3.1.1](https://docs.oasis-open.org/mqtt/mqtt/v3.1.1/os/mqtt-v3.1.1-os.html),
+[5.0](https://docs.oasis-open.org/mqtt/mqtt/v5.0/os/mqtt-v5.0-os.html)): on a resumed session the
+SDK does not resend unacknowledged PUBLISH packets with their original packet identifiers. A retry
+may therefore arrive twice, which QoS 1 allows; for SDK messages the service ignores the duplicate
+by correlation id. The SDK sends no QoS 2 PUBLISH. Adapter requirements:
+[Bring your own MQTT client](how_to_byo_mqtt_client.md#resumed-sessions-no-resend).
 
 ## Certificates
 
@@ -349,7 +387,7 @@ Operational certificates:
   issued chain is stored with the provider's `store_issued_certificate()`, then passed with the
   store result to the callback set with `az_iot_connection_client_set_operational_cert_callback()`,
   if set. If storage fails, the registration fails.
-- **Renewed over the hub** (mqttv3 only). Call `az_iot_connection_client_send_csr()` while
+- **Renewed over the hub**. Call `az_iot_connection_client_send_csr()` while
   `CONNECTED`; the CSR comes from the provider (same three hooks). One renewal can be in flight
   at a time. The renewed chain is stored with the provider's `store_issued_certificate()` before
   the callback, which reports the result in `store_status`. The session is kept either way. If
@@ -382,7 +420,7 @@ storage still yields the key.
 | The key | The provider returns | Adapter | Sample |
 | --- | --- | --- | --- |
 | Can be named (PKCS#11 URI, TPM 2.0 object) and has an OpenSSL 3.x provider | `client_key_uri` + `crypto_engine_id` | Paho (`AZ_IOT_PAHO_KEY_CUSTODY`); az_mqtt with OpenSSL TLS | [`hsm_pkcs11`](../samples/authentication/hsm_pkcs11/README.md) |
-| Is a PSA Crypto key (e.g. the ESP32 Digital Signature peripheral) | `client_key_psa_id` | az_mqtt with mbedTLS TLS (ESP-IDF); others refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | [ESP32 software updates](../samples/software_update/esp32/README.md#device-identity) |
+| Is a PSA Crypto key (e.g. the ESP32 Digital Signature peripheral) | `client_key_psa_id` | az_mqtt with mbedTLS TLS (ESP-IDF); others refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | [ESP32 sample](../samples/unified/esp32/README.md#device-identity) |
 | Can only be asked to sign | A `sign()` hook | Your own ([Bring your own MQTT client](how_to_byo_mqtt_client.md)); Paho and az_mqtt refuse it with `AZ_IOT_ERR_NOT_SUPPORTED` | [`hsm_sign_callback`](../samples/authentication/hsm_sign_callback/README.md) |
 
 - **Bootstrap keys** authenticate to DPS; keep them in hardware too.
@@ -451,7 +489,7 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   re-initialize the client and its feature clients. Use `on_sas_token_required` to rotate without
   re-initializing.
 - **Token callback.** `on_sas_token_required` only notifies: it receives the role, hub
-  generation, resource URI, key name and `is_renewal`, and must not block. It is called from
+  profile, resource URI, key name and `is_renewal`, and must not block. It is called from
   `do_work()`, never from `open()`; the attempt waits in `SETTING_UP` (no `auth_source` yet) until
   a token is supplied with `az_iot_connection_client_update_sas_token()`, from the callback or
   later, within `connect_timeout_seconds`; otherwise it fails with `AZ_IOT_ERR_TIMEOUT` and is
@@ -483,11 +521,16 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
   `token_lifetime_seconds` (key-signed, default one hour) or of the supplied `lifetime_seconds`,
   by the monotonic clock or Unix time, whichever comes first (the former may stop in suspend).
   MQTT 3.1.1 cannot re-authenticate a live session, so the SDK
-  disconnects and reconnects at once, with or without a `reconnection_policy`: `RETRY_PENDING`,
+  ends it and reconnects at once, with or without a `reconnection_policy`: `RETRY_PENDING`,
   `SETTING_UP`, `CONNECTING`, `CONNECTED`, each with `is_credential_renewal` and reason
-  `AZ_IOT_OK`. Publishes awaiting a PUBACK complete with `AZ_IOT_ERR_NOT_CONNECTED`. A failed
+  `AZ_IOT_OK`. Before a hub session's DISCONNECT, its deliveries settle for up to 5 s (not past the
+  token's expiry by either clock): publishes awaiting a PUBACK, and SDK requests awaiting a
+  response. Meanwhile a new QoS 1 publish returns `AZ_IOT_ERR_BUSY` (QoS 0 is sent), and once the
+  DISCONNECT is sent any publish returns `AZ_IOT_ERR_NOT_CONNECTED`. Publishes still awaiting a
+  PUBACK then complete with `AZ_IOT_ERR_NOT_CONNECTED`. A failed
   reconnect is an ordinary failure (fallback, policy). A provisioning session kept open without a
-  registration (`provision_only`, or held by a feature client) is renewed the same way, reporting
+  registration (`provision_only`, or held by a feature client) is also ended and reconnected, but
+  at once: nothing settles before its DISCONNECT. It reports
   `DISCONNECTING`, `SETTING_UP`, `CONNECTING`, `CONNECTED`, each flagged; its feature clients see
   `DISCONNECTING` as for any loss of the session. A registration in progress is not interrupted.
 - **Multiple certificates.** `load()` takes an index: certificate 0, 1, ... of the role, until
@@ -503,25 +546,21 @@ copts.trusted_ca.path = "ca.pem";         /* server trust, any credential */
 - **DPS-issued certificate.** With `dps.request_operational_certificate`, the hub tries the issued
   certificate first; DPS can still use SAS. See
   [`dps_sas_key_issued_cert`](../samples/authentication/dps_sas_key_issued_cert/README.md).
-- **mqttv5 hubs** do not accept SAS yet; the design allows for it. The token request carries the
-  hub generation, and renewal can use MQTT 5 in-session re-authentication instead of a reconnect.
-  Until then, a rejection is `AZ_IOT_ERR_IDENTITY_REJECTED`.
 - **Server trust.** `trusted_ca` applies to every connection. Without it, the X.509 provider's CA
   is used if there is one, otherwise the adapter's default store.
 - **TPM attestation.** DPS takes it over HTTPS or AMQP, not MQTT, so it is a separate step before the
   connection client: [`az_iot_dps_tpm_client.h`](../inc/azure/iot/az_iot_dps_tpm_client.h) builds
   the registration requests and parses the responses; the application sends them over HTTPS and
-  runs the TPM (import the DPS key, HMAC-SHA256). For an mqttv3 hub, then connect directly to the
+  runs the TPM (import the DPS key, HMAC-SHA256). Then connect directly to the
   assigned hub (`iothub_hostname`, `device_id`, `connection_profile` from the assignment) and sign hub tokens
-  with the TPM key from `on_sas_token_required`. mqttv5 hubs do not accept SAS and need an X.509
-  certificate, which DPS does not document issuing under TPM attestation. The connection client does not re-provision such a device; on
+  with the TPM key from `on_sas_token_required`. The connection client does not re-provision such a device; on
   `AZ_IOT_ERR_IDENTITY_REJECTED`, register again. See
   [`dps_tpm`](../samples/authentication/dps_tpm/README.md).
 
 ## Crypto backend
 
-`crypto` supplies SHA-256 and RS256 verification to every feature that needs them; today that
-is software updates. Set it once:
+`crypto` supplies SHA-256 to every feature that needs it; today that is SAS token signing. Set
+it once:
 
 ```c
 copts.crypto = az_iot_crypto_openssl(); /* or az_iot_crypto_mbedtls() */
@@ -534,7 +573,7 @@ copts.crypto = az_iot_crypto_openssl(); /* or az_iot_crypto_mbedtls() */
 
 To bring your own, fill an `az_iot_crypto` with your functions
 ([az_iot_crypto.h](../inc/azure/iot/az_iot_crypto.h)). `init()` rejects a backend without
-SHA-256 or with another `version`; software updates also need `verify_rs256`. A client that uses
+SHA-256 or with another `version`. A client that uses
 no crypto can leave `crypto` NULL.
 
 ## Common results
@@ -542,12 +581,10 @@ no crypto can leave `crypto` NULL.
 | Result | Meaning |
 | --- | --- |
 | `AZ_IOT_ERR_IDENTITY_REJECTED` | The hub refused the device identity. Retried on `identity_recovery`. |
-| `AZ_IOT_ERR_AUTH` | The hub ended an mqttv5 session as `Not authorized`. Retried on `identity_recovery`. |
-| `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | DPS assigned a profile this SDK does not support. The next `open()` re-provisions. |
-| `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` | Feature clients do not match the assigned generation. Rebuild them, then `close()` and `open()`; the next `open()` re-provisions. |
+| `AZ_IOT_ERR_CONNECTION_PROFILE_UNSUPPORTED` | DPS assigned a profile this SDK does not support (e.g. `"mqttV5"`). The next `open()` re-provisions. |
+| `AZ_IOT_ERR_CONNECTION_PROFILE_MISMATCH` | Feature clients do not match the assigned profile. `close()` and `open()`; the next `open()` re-provisions. |
 | `AZ_IOT_ERR_SUBSCRIPTION_REFUSED` | The hub refused a subscription the session needs. Terminal, since a retry would be refused again. |
 | `AZ_IOT_ERR_CREDENTIAL_INCOMPLETE` | The certificate provider returned unusable material, such as a certificate without a key. |
-| `AZ_IOT_ERR_PUBLISH_REFUSED` | Publish callback: the hub refused the message and will refuse it again (mqttv5 `0x87`, `0x90`, `0x99`), or it is over the hub's Maximum Packet Size (`0x95`). Do not resend unchanged. |
 | `AZ_IOT_ERR_MQTT` | Transport, TLS or broker failure. The adapter log has the detail. |
 | `AZ_IOT_ERR_TIMEOUT` | A handshake step or CSR operation timed out. |
 

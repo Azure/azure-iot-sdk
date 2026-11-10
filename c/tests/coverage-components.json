@@ -8,28 +8,12 @@
         "comment": "Core: connection, dispatch, reconnect, protocol profile, cert helpers. Measured 78.4/66.1/86.6 on unit+conformance."
     },
     {
-        "name": "features",
-        "prefix": "src/features/",
-        "line": 65,
-        "branch": 50,
-        "function": 85,
-        "comment": "Feature clients not yet split: twin, direct method, c2d, file upload, su. Measured 68.6/54.6/87.7 on unit+conformance before telemetry moved to generation libraries."
-    },
-    {
         "name": "mqttv3",
         "prefix": "src/mqttv3/",
         "line": 75,
         "branch": 55,
         "function": 100,
         "comment": "MQTTv3 hub generation clients. The telemetry suite covers topic encoding, lifecycle, profile mismatch and publish completion."
-    },
-    {
-        "name": "mqttv5",
-        "prefix": "src/mqttv5/",
-        "line": 70,
-        "branch": 55,
-        "function": 100,
-        "comment": "MQTT v5 generation clients. The telemetry suite covers the flat topic, native content type, user properties, lifecycle and profile mismatch. The custom topic suite covers topic validation, {deviceId} expansion and publish completion."
     },
     {
         "name": "adapter-paho",

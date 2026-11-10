@@ -8,10 +8,8 @@
 # eclipse-paho-mqtt-c CMake package. Builds a static lib only (no DLL). TLS is
 # enabled when OpenSSL is available (required for Azure IoT connections on port 8883).
 #
-# Registers two factories:
-#   - v3.1.1, supported roles: { DPS, HUB_MQTT_V3 }
-#   - v5,     supported roles: { HUB_MQTT_V5 }
-# Each factory creates a fresh Paho client object per session (no sharing).
+# az_iot_paho_get_adapter() builds one Paho client per session in the application's
+# mqtt_workspace: v3.1.1 for DPS and the MQTTv3 hub.
 
 if(AZ_IOT_USE_INSTALLED_PAHO)
     # Upstream's package config does not load OpenSSL, which its SSL targets link.
@@ -162,9 +160,11 @@ else()
     endif()
     if(NOT _paho_patched)
         message(WARNING "Paho at ${paho_mqtt_c_SOURCE_DIR} is not v1.3.16 with "
-            "adapters/paho/patches applied, so it keeps the data races those patches fix "
-            "(eclipse-paho/paho.mqtt.c#1709, #1714). See docs/dependencies.md.")
+            "adapters/paho/patches applied, so it keeps the data races and the double free those "
+            "patches fix (eclipse-paho/paho.mqtt.c#1709, #1714, #1592). See docs/dependencies.md.")
     endif()
+    # Tests of what the patches fix need them (tests/CMakeLists.txt). Unset: an installed Paho.
+    set_property(GLOBAL PROPERTY AZ_IOT_PAHO_PATCHED ${_paho_patched})
 
     # Paho v1.3.x warnings are not fatal and the known ones are silenced, so strict
     # CMAKE_C_FLAGS (-Wall -Wextra -Werror) do not break it. Not -w: that would also
@@ -183,6 +183,10 @@ else()
             endif()
         endforeach()
     endif()
+    az_iot_apply_dependency_warnings(
+        paho-mqtt3a-static paho-mqtt3as-static
+        paho-mqtt3c-static paho-mqtt3cs-static
+        common_obj_static common_ssl_obj_static)
 
     # Paho < v1.3.15 is not C23-clean (MQTTPacket.h: `typedef unsigned int bool;`).
     # Pin its sources to C99 so a CMAKE_C_STANDARD override applies to first-party
