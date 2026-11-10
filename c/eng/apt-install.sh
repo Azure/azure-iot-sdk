@@ -41,6 +41,8 @@ retry() {
     return 1
 }
 
-retry 120 apt-get update -q -o Acquire::Retries=3
+# Error-Mode=any: a fetch that fails transiently fails the update (and is retried) instead of
+# leaving old or no index files behind with exit status 0.
+retry 120 apt-get update -q -o Acquire::Retries=3 -o APT::Update::Error-Mode=any
 # dpkg --configure -a finishes an install a previous attempt was killed in (a no-op otherwise).
 retry 300 env DEBIAN_FRONTEND=noninteractive sh -c 'dpkg --configure -a && exec apt-get install -y -q -o Acquire::Retries=3 "$@"' sh "$@"
