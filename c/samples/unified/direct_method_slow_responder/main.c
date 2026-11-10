@@ -369,13 +369,19 @@ static void pump(sample_state* s, uint32_t timeout_ms)
 
 int main(void)
 {
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call.
+  sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_state state = { 0 };
   if (sample_config_load(&state.config) != 0)
   {
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
 
   user_context user_ctx = { .state = &state };
@@ -389,7 +395,10 @@ int main(void)
   if (az_iot_certificate_provider_pem_init(&state.certs, &pem) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
 
   /* Connection client (DPS provisioning is internal). The default reconnection
@@ -418,7 +427,10 @@ int main(void)
   if (az_iot_connection_client_init(&state.connection_client, &copts) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
   az_iot_connection_client_add_state_observer(&state.connection_client, on_conn_state, &user_ctx);
 
@@ -427,7 +439,10 @@ int main(void)
       || az_iot_connection_client_open(&state.connection_client) != AZ_IOT_OK)
   {
     sample_state_destroy(&state);
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
 
   uint64_t end_ms = sample_now_ms() + SAMPLE_RUN_MS;
@@ -465,5 +480,8 @@ int main(void)
 
   sample_state_destroy(&state);
 
-  return rc;
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call or return the value
+  // directly.
+  return sample_pipeline_checks_end(rc);
 }

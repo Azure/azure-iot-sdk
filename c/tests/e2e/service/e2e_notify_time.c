@@ -68,29 +68,11 @@ static const char* skip_json_whitespace(const char* p)
   return p;
 }
 
-bool e2e_notify_enqueued_time(const char* body, int64_t* out_epoch_s)
+bool e2e_utc_time_parse(const char* text, int64_t* out_epoch_s, const char** out_end)
 {
-  static const char key[] = "\"enqueuedTimeUtc\"";
-  const char* p = strstr(body, key);
-  if (p == NULL)
-  {
-    return false;
-  }
-  p += sizeof(key) - 1;
-  p = skip_json_whitespace(p);
-  if (*p != ':')
-  {
-    return false;
-  }
-  p = skip_json_whitespace(p + 1);
-  if (*p != '"')
-  {
-    return false;
-  }
-  p++;
-
+  const char* p = text;
   /* Each check runs only if the previous ones matched non-NUL characters, so no
-   * read goes past the terminator of a truncated body. */
+   * read goes past the terminator of a truncated text. */
   int year = 0, month = 0, day = 0, hour = 0, minute = 0, second = 0;
   if (!parse_digits(p, 4, &year) || p[4] != '-' || !parse_digits(p + 5, 2, &month) || p[7] != '-'
       || !parse_digits(p + 8, 2, &day) || p[10] != 'T' || !parse_digits(p + 11, 2, &hour)
@@ -126,12 +108,40 @@ bool e2e_notify_enqueued_time(const char* body, int64_t* out_epoch_s)
   {
     return false;
   }
+
+  *out_epoch_s = days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second;
+  *out_end = p;
+  return true;
+}
+
+bool e2e_notify_enqueued_time(const char* body, int64_t* out_epoch_s)
+{
+  static const char key[] = "\"enqueuedTimeUtc\"";
+  const char* p = strstr(body, key);
+  if (p == NULL)
+  {
+    return false;
+  }
+  p += sizeof(key) - 1;
+  p = skip_json_whitespace(p);
+  if (*p != ':')
+  {
+    return false;
+  }
+  p = skip_json_whitespace(p + 1);
   if (*p != '"')
   {
     return false;
   }
+  p++;
 
-  *out_epoch_s = days_from_civil(year, month, day) * 86400 + hour * 3600 + minute * 60 + second;
+  const char* end = NULL;
+  int64_t epoch_s = 0;
+  if (!e2e_utc_time_parse(p, &epoch_s, &end) || *end != '"')
+  {
+    return false;
+  }
+  *out_epoch_s = epoch_s;
   return true;
 }
 
@@ -201,6 +211,7 @@ bool e2e_notify_has_no_watcher(const char* body, int64_t now_s, int64_t stale_af
       = AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY AZ_IOT_E2E_UNWATCHED_BLOB_TAG;
   char blob_name[512];
   if (read_blob_name(body, blob_name, sizeof(blob_name))
+      && strcmp(blob_name, AZ_IOT_E2E_SAMPLE_FILE_UPLOAD_BLOB_NAME) != 0
       && (strncmp(blob_name, watched, sizeof(watched) - 1) != 0
           || strncmp(blob_name, unwatched, sizeof(unwatched) - 1) == 0))
   {

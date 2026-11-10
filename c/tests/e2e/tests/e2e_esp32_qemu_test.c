@@ -18,142 +18,46 @@
 #include <cmocka.h>
 
 #include <errno.h>
-#include <fcntl.h>
 #include <inttypes.h>
-#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/types.h>
-#include <sys/wait.h>
 #include <time.h>
-#include <unistd.h>
-
-#include <azure/core/az_json.h>
 
 #include "az_iot_e2e_service.h"
+#include "e2e_json.h"
+#include "support/e2e_process.h"
 
 #define E2E_READY_TIMEOUT_S 420 /* boot, DHCP, DPS and hub, TLS emulated */
 #define E2E_TELEMETRY_TIMEOUT_S 180
 #define E2E_REQUEST_TIMEOUT_S 120
 #define E2E_WATCH_TIMEOUT_S 90 /* the Event Hub AMQP handshake can fail transiently */
 #define E2E_PUMP_MS 50
-
-/** @brief The firmware's QEMU process and what it has printed. */
-typedef struct
-{
-  pid_t pid;
-  int output; /* read end of its stdout and stderr, non-blocking */
-  char log[128 * 1024]; /* most recent output, NUL-terminated */
-  size_t log_length;
-  size_t echoed; /* log bytes already echoed to stdout */
-} firmware_process;
+#define E2E_STOP_GRACE_MS 5000
 
 static az_iot_e2e_service* s_service;
-static firmware_process s_firmware;
+static az_iot_e2e_process s_firmware;
 static char s_device_id[129];
 
-/** @brief Starts @p command through /bin/sh in its own process group, output piped to us. */
-static bool firmware_start(firmware_process* f, const char* command)
+/** @brief The service transport, one step. */
+static void pump_service(void* context)
 {
-  int fds[2];
-  if (pipe(fds) != 0)
-  {
-    return false;
-  }
-  f->pid = fork();
-  if (f->pid == 0)
-  {
-    (void)setpgid(0, 0);
-    (void)dup2(fds[1], STDOUT_FILENO);
-    (void)dup2(fds[1], STDERR_FILENO);
-    (void)close(fds[0]);
-    (void)close(fds[1]);
-    execl("/bin/sh", "sh", "-c", command, (char*)NULL);
-    _exit(127);
-  }
-  (void)close(fds[1]);
-  if (f->pid < 0)
-  {
-    (void)close(fds[0]);
-    return false;
-  }
-  f->output = fds[0];
-  return fcntl(f->output, F_SETFL, O_NONBLOCK) == 0;
-}
-
-/** @brief Reads what the firmware printed and echoes whole lines, prefixed, to stdout. */
-static void firmware_read(firmware_process* f)
-{
-  for (;;)
-  {
-    if (f->log_length + 1 >= sizeof(f->log)) // Full: keep the newer half.
-    {
-      size_t const keep = sizeof(f->log) / 2;
-      memmove(f->log, f->log + f->log_length - keep, keep);
-      f->echoed = f->echoed > f->log_length - keep ? f->echoed - (f->log_length - keep) : 0;
-      f->log_length = keep;
-    }
-    ssize_t n = read(f->output, f->log + f->log_length, sizeof(f->log) - 1 - f->log_length);
-    if (n <= 0)
-    {
-      break;
-    }
-    f->log_length += (size_t)n;
-  }
-  f->log[f->log_length] = '\0';
-  char* line_end;
-  while ((line_end = memchr(f->log + f->echoed, '\n', f->log_length - f->echoed)) != NULL)
-  {
-    printf("[esp32] %.*s\n", (int)(line_end - (f->log + f->echoed)), f->log + f->echoed);
-    f->echoed = (size_t)(line_end - f->log) + 1;
-  }
-  (void)fflush(stdout);
-}
-
-/** @brief Whether the firmware printed @p text (in the retained log). */
-static bool firmware_printed(const firmware_process* f, const char* text)
-{
-  return strstr(f->log, text) != NULL;
-}
-
-/** @brief Stops the process group (sh, the script and QEMU). */
-static void firmware_stop(firmware_process* f)
-{
-  if (f->pid <= 0)
-  {
-    return;
-  }
-  (void)kill(-f->pid, SIGTERM);
-  for (int i = 0; i < 50 && waitpid(f->pid, NULL, WNOHANG) == 0; ++i)
-  {
-    struct timespec t = { 0, 100 * 1000 * 1000 };
-    (void)nanosleep(&t, NULL);
-  }
-  (void)kill(-f->pid, SIGKILL);
-  (void)waitpid(f->pid, NULL, 0);
-  firmware_read(f);
-  (void)close(f->output);
-  f->pid = 0;
+  (void)context;
+  (void)az_iot_e2e_service_do_work(s_service, E2E_PUMP_MS);
 }
 
 /** @brief One step: the firmware's output, then the service transport. */
 static void pump(void)
 {
-  firmware_read(&s_firmware);
-  (void)az_iot_e2e_service_do_work(s_service, E2E_PUMP_MS);
+  az_iot_e2e_process_read_output(&s_firmware);
+  pump_service(NULL);
 }
 
 /** @brief Pumps until the firmware printed @p text or @p seconds pass. */
 static bool wait_for_firmware(const char* text, int seconds)
 {
-  time_t const end = time(NULL) + seconds;
-  while (!firmware_printed(&s_firmware, text) && time(NULL) < end)
-  {
-    pump();
-  }
-  return firmware_printed(&s_firmware, text);
+  return az_iot_e2e_process_wait_for_output(&s_firmware, text, seconds * 1000, pump_service, NULL);
 }
 
 /** @brief Pumps until the REST request in flight completes; returns 1, or 0 on timeout, -1 on
@@ -170,72 +74,6 @@ static int wait_for_request(int* status, char* body, size_t body_size)
   return rc;
 }
 
-/** @brief Moves @p r, on an object's BEGIN_OBJECT, to the value of member @p name. */
-static bool json_enter(az_json_reader* r, const char* name)
-{
-  if (r->token.kind != AZ_JSON_TOKEN_BEGIN_OBJECT)
-  {
-    return false;
-  }
-  while (az_json_reader_next_token(r) == AZ_OK && r->token.kind == AZ_JSON_TOKEN_PROPERTY_NAME)
-  {
-    bool const match = az_json_token_is_text_equal(
-        &r->token, az_span_create((uint8_t*)(uintptr_t)name, (int32_t)strlen(name)));
-    if (az_json_reader_next_token(r) != AZ_OK)
-    {
-      return false;
-    }
-    if (match)
-    {
-      return true;
-    }
-    if (az_json_reader_skip_children(r) != AZ_OK)
-    {
-      return false;
-    }
-  }
-  return false;
-}
-
-/**
- * @brief Moves @p r to the value at @p path (member names, outermost first, NULL-terminated) in
- * the JSON object @p json.
- */
-static bool json_find(const char* json, const char* const* path, az_json_reader* r)
-{
-  if (az_json_reader_init(r, az_span_create((uint8_t*)(uintptr_t)json, (int32_t)strlen(json)), NULL)
-          != AZ_OK
-      || az_json_reader_next_token(r) != AZ_OK)
-  {
-    return false;
-  }
-  for (; *path != NULL; ++path)
-  {
-    if (!json_enter(r, *path))
-    {
-      return false;
-    }
-  }
-  return true;
-}
-
-/** @brief Reads the unsigned integer at @p path (see json_find()); false when it is not one. */
-static bool json_read_uint64(const char* json, const char* const* path, uint64_t* out)
-{
-  az_json_reader r;
-  return json_find(json, path, &r) && r.token.kind == AZ_JSON_TOKEN_NUMBER
-      && az_json_token_get_uint64(&r.token, out) == AZ_OK;
-}
-
-/** @brief Reads the string at @p path (see json_find()), unescaped, into @p out; false when it is
- * not a string or does not fit. */
-static bool json_read_string(const char* json, const char* const* path, char* out, size_t size)
-{
-  az_json_reader r;
-  return json_find(json, path, &r) && r.token.kind == AZ_JSON_TOKEN_STRING
-      && az_json_token_get_string(&r.token, out, (int32_t)size, NULL) == AZ_OK;
-}
-
 /** @brief Writes "<tag>-<time><random>" to @p out, unique per run. */
 static void make_marker(char* out, size_t size, const char* tag)
 {
@@ -246,7 +84,7 @@ static void make_marker(char* out, size_t size, const char* tag)
 static int group_teardown(void** state)
 {
   (void)state;
-  firmware_stop(&s_firmware);
+  (void)az_iot_e2e_process_stop(&s_firmware, E2E_STOP_GRACE_MS);
   if (s_service != NULL)
   {
     az_iot_e2e_service_telemetry_watch_end(s_service);
@@ -307,14 +145,15 @@ static int group_setup(void** state)
   }
 
   printf("[e2e] starting the firmware: %s\n", command);
-  if (!firmware_start(&s_firmware, command))
+  if (!az_iot_e2e_process_start_shell(&s_firmware, command, NULL, "[esp32] "))
   {
     fprintf(stderr, "[e2e] could not start the firmware: %s\n", strerror(errno));
     return fail_group_setup();
   }
   if (!wait_for_firmware("hub_esp32: ready on ", E2E_READY_TIMEOUT_S))
   {
-    fprintf(stderr, "[e2e] the firmware did not connect within %d s\n", E2E_READY_TIMEOUT_S);
+    fprintf(
+        stderr, "[e2e] the firmware did not connect within %d s, or exited\n", E2E_READY_TIMEOUT_S);
     return fail_group_setup();
   }
   return 0;
@@ -352,11 +191,11 @@ static void the_echo_method_returns_its_payload(void** state)
   // The HTTP status is the service's; the body's "status" is the device's.
   static const char* const method_status[] = { "status", NULL };
   uint64_t device_status = 0;
-  assert_true(json_read_uint64(response, method_status, &device_status));
+  assert_true(e2e_json_read_uint64(response, method_status, &device_status));
   assert_int_equal(device_status, 200);
   static const char* const method_payload[] = { "payload", NULL };
   char echoed[64] = { 0 };
-  assert_true(json_read_string(response, method_payload, echoed, sizeof(echoed)));
+  assert_true(e2e_json_read_string(response, method_payload, echoed, sizeof(echoed)));
   assert_string_equal(echoed, marker);
 }
 
@@ -375,7 +214,7 @@ static void a_desired_patch_is_acknowledged_in_reported(void** state)
   assert_int_equal(status, 200);
   static const char* const desired_version_path[] = { "properties", "desired", "$version", NULL };
   uint64_t version = 0;
-  assert_true(json_read_uint64(twin, desired_version_path, &version));
+  assert_true(e2e_json_read_uint64(twin, desired_version_path, &version));
   printf("[e2e] desired patch: version %" PRIu64 "\n", version);
   assert_true(version > 0);
 
@@ -390,7 +229,8 @@ static void a_desired_patch_is_acknowledged_in_reported(void** state)
     assert_true(az_iot_e2e_service_twin_get_begin(s_service, s_device_id));
     assert_int_equal(wait_for_request(&status, twin, sizeof(twin)), 1);
     uint64_t reported = 0;
-    seen = status == 200 && json_read_uint64(twin, reported_path, &reported) && reported == version;
+    seen = status == 200 && e2e_json_read_uint64(twin, reported_path, &reported)
+        && reported == version;
     for (int i = 0; !seen && i < 100; ++i) // About 5 s between reads.
     {
       pump();

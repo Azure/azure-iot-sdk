@@ -111,6 +111,19 @@ static void test_separator(void** state)
   assert_false(e2e_notify_enqueued_time("{\"enqueuedTimeUtc\": :\"1970-01-01T00:00:01Z\"}", &s));
 }
 
+/* A time alone, as a twin's $lastUpdated; the caller checks what follows it. */
+static void test_utc_time_alone(void** state)
+{
+  (void)state;
+  int64_t s = 0;
+  const char* end = NULL;
+  assert_true(e2e_utc_time_parse("1970-01-02T00:00:01.9474867Z", &s, &end));
+  assert_int_equal(86401, s);
+  assert_int_equal('\0', *end);
+  assert_false(e2e_utc_time_parse("1970-01-02T00:00:01", &s, &end));
+  assert_false(e2e_utc_time_parse("", &s, &end));
+}
+
 /** @brief A notification body for blob @p blob_name of device "dev", enqueued at the epoch + 60 s.
  */
 static const char* notification(const char* blob_name)
@@ -138,7 +151,11 @@ static void test_no_watcher_for_unwatched_or_stale_blobs(void** state)
       notification(AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY AZ_IOT_E2E_UNWATCHED_BLOB_TAG "sas-5.txt"),
       60,
       600));
-  assert_true(e2e_notify_has_no_watcher(notification("sample-data/test.txt"), 60, 600));
+  assert_true(e2e_notify_has_no_watcher(notification("sample-data/other.txt"), 60, 600));
+  /* The file upload sample's blob is watched by its test until stale. */
+  const char* sample = notification(AZ_IOT_E2E_SAMPLE_FILE_UPLOAD_BLOB_NAME);
+  assert_false(e2e_notify_has_no_watcher(sample, 660, 600));
+  assert_true(e2e_notify_has_no_watcher(sample, 661, 600));
   /* The directory counts only at the start of the blob name. */
   assert_true(e2e_notify_has_no_watcher(
       notification("archive/" AZ_IOT_E2E_FILE_UPLOAD_BLOB_DIRECTORY "sample.txt"), 60, 600));
@@ -193,6 +210,7 @@ int main(void)
     cmocka_unit_test(test_truncated_rejected),
     cmocka_unit_test(test_missing_field_rejected),
     cmocka_unit_test(test_separator),
+    cmocka_unit_test(test_utc_time_alone),
     cmocka_unit_test(test_no_watcher_for_unwatched_or_stale_blobs),
     cmocka_unit_test(test_blob_name_is_decoded_or_decides_nothing),
   };
