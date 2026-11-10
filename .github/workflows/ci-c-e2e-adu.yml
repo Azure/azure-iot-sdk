@@ -224,7 +224,8 @@ jobs:
       - name: Install build dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev
+          sudo apt-get update -o Acquire::Retries=3
+          sudo apt-get install -y ninja-build libcurl4-openssl-dev
           python3 -m pip install --upgrade 'gcovr==7.2'
 
       # The real delta processor for the MICROSOFT_DELTA offer (POSIX only, as the
