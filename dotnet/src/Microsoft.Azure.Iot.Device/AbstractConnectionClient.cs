@@ -19,6 +19,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.FileUpload;
 using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Unified.Models;
 
@@ -366,6 +367,19 @@ namespace Microsoft.Azure.Iot.Device
         private CancellationTokenSource? _currentProvisioningFlowCancellation;
         private CancellationToken _provisioningFlowParentCancellationToken;
 
+        // Cancels a registration that is in progress over HTTPS, which has no MQTT connection for a deliberate disconnect
+        // or disposal to close.
+        private CancellationTokenSource? _httpProvisioningCancellation;
+
+        // How long to wait for each HTTPS request to Device Provisioning Service, the same as each MQTT connection attempt.
+        private readonly TimeSpan _connectionAttemptTimeout;
+
+        /// <summary>
+        /// Creates the handler that sends HTTPS requests to Device Provisioning Service with the given boot credentials.
+        /// Replaceable so that tests can intercept the requests.
+        /// </summary>
+        internal Func<AuthenticationCredentials, HttpMessageHandler> CreateProvisioningHttpMessageHandler { get; set; } = FileUploadClient.CreateHttpMessageHandler;
+
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
         /// </summary>
@@ -387,6 +401,7 @@ namespace Microsoft.Azure.Iot.Device
 
             _connectionRetryPolicy = options.ConnectionRetryPolicy;
             _useCleanSession = options.UseCleanSession;
+            _connectionAttemptTimeout = options.ConnectionAttemptTimeout;
 
             // This is the basic MQTT client that has no reconnection/retry logic
             MqttNetClientOptions mqttNetClientOptions = new()
@@ -639,6 +654,7 @@ namespace Microsoft.Azure.Iot.Device
                 // The application is closing this connection deliberately, so any recovery that an earlier identity fault
                 // started is no longer wanted.
                 CancelCurrentReprovisioning();
+                CancelHttpProvisioning();
 
                 // Wait for the cancelled re-provisioning attempt to stop, so that it cannot re-establish a connection
                 // (or change the endpoint this client targets) after this disconnect completes. This is skipped only
@@ -697,6 +713,7 @@ namespace Microsoft.Azure.Iot.Device
         public virtual void Dispose(bool disposing)
         {
             CancelOperationLifetime();
+            CancelHttpProvisioning();
             DetachConnectionCallbacks();
 
             if (disposing)
@@ -717,6 +734,7 @@ namespace Microsoft.Azure.Iot.Device
         public virtual void Dispose()
         {
             CancelOperationLifetime();
+            CancelHttpProvisioning();
             DetachConnectionCallbacks();
 
             ManagedMqttConnection.Dispose();
@@ -918,17 +936,7 @@ namespace Microsoft.Azure.Iot.Device
                 AuthenticationProvider? provisioningAuthentication = _provisioningAuthentication;
                 if (provisioningAuthentication != null)
                 {
-                    AuthenticationCredentials? bootCredentials = null;
-                    if (_usesSecondaryBootCredentials)
-                    {
-                        bootCredentials = await provisioningAuthentication.GetSecondaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false);
-                        if (bootCredentials == null)
-                        {
-                            _usesSecondaryBootCredentials = false;
-                        }
-                    }
-
-                    bootCredentials ??= await provisioningAuthentication.GetPrimaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false);
+                    AuthenticationCredentials bootCredentials = await GetCurrentBootCredentialsAsync(provisioningAuthentication, cancellationToken).ConfigureAwait(false);
                     connectPacketToEdit = ApplyAuthentication(bootCredentials, connectPacketToEdit);
                 }
 
@@ -1544,6 +1552,21 @@ namespace Microsoft.Azure.Iot.Device
             _usesSecondaryBootCredentials = false;
             _provisioningAuthentication = authentication;
 
+            if (provisioningSettings.Transport == ProvisioningTransport.Http)
+            {
+                try
+                {
+                    return await ProvisionOverHttpAsync(provisioningSettings, authentication, deliberateDisconnectCount, cancellationToken);
+                }
+                finally
+                {
+                    _provisioningRequestPayload = null;
+                    _provisioningAuthentication = null;
+                    Trace.TraceInformation("ConnectionClient's current endpoint is now neither Hub or DPS");
+                    CurrentEndpoint = ConnectionEndpoint.None;
+                }
+            }
+
             MqttConnect connect = CreateProvisioningConnectPacket(
                 authentication,
                 provisioningSettings.IdScope,
@@ -1617,6 +1640,149 @@ namespace Microsoft.Azure.Iot.Device
                 // re-established against the assigned IoT hub.
                 await DisconnectFromDpsAsync();
             }
+        }
+
+        /// <summary>
+        /// Register this device with Device Provisioning Service over its HTTPS REST API.
+        /// </summary>
+        /// <remarks>
+        /// With no MQTT connection to DPS, the connection layer cannot retry this, so this method does: a request that
+        /// fails transiently is retried under the connection retry policy (floored by any Retry-After the service sent),
+        /// and a registration that DPS rejects as an identity failure is tried once more with the other boot credentials.
+        /// </remarks>
+        private async Task<DeviceRegistrationResult> ProvisionOverHttpAsync(
+            ProvisioningSettings provisioningSettings,
+            AuthenticationProvider authentication,
+            int deliberateDisconnectCount,
+            CancellationToken cancellationToken)
+        {
+            using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            Volatile.Write(ref _httpProvisioningCancellation, cancellation);
+
+            try
+            {
+                // A disconnect that started before the source above was published could not cancel it, so check for one.
+                ThrowIfDeliberatelyDisconnectedSince(deliberateDisconnectCount);
+
+                string registrationId = authentication.GetRegistrationId();
+                string userAgent = GetProvisioningUserAgentString();
+                bool switchedCredentialsAfterRejectedRegistration = false;
+                uint attempt = 0;
+
+                while (true)
+                {
+                    try
+                    {
+                        // Fetch the credentials again for each attempt so that a SAS token is never presented after it expires.
+                        AuthenticationCredentials credentials = await GetCurrentBootCredentialsAsync(authentication, cancellation.Token);
+                        using var provisioningHttpClient = new ProvisioningHttpClient(
+                            CreateProvisioningHttpMessageHandler(credentials),
+                            credentials,
+                            provisioningSettings.GlobalEndpointAddress,
+                            provisioningSettings.IdScope,
+                            registrationId,
+                            ProvisioningApiVersion,
+                            userAgent,
+                            _connectionAttemptTimeout,
+                            s_defaultOperationPollingInterval,
+                            CaptureProvisioningServiceRetryAfter);
+
+                        return await provisioningHttpClient.RegisterAsync(
+                            provisioningSettings.ProvisioningPayload,
+                            provisioningSettings.CertificateSigningRequest?.Base64CertificateSigningRequest,
+                            cancellation.Token);
+                    }
+                    catch (DeviceException e) when (e.Retryability == ErrorRetryability.IdentityTerminal
+                        && !switchedCredentialsAfterRejectedRegistration
+                        && !cancellation.IsCancellationRequested)
+                    {
+                        if (!await TrySwitchCredentialsAsync(cancellation.Token))
+                        {
+                            throw;
+                        }
+
+                        Trace.TraceWarning("Device Provisioning Service rejected the device's credentials, retrying with its other credentials. {0}", e);
+                        switchedCredentialsAfterRejectedRegistration = true;
+                    }
+                    catch (DeviceException e) when (e.Retryability == ErrorRetryability.Retryable && !cancellation.IsCancellationRequested)
+                    {
+                        if (attempt < uint.MaxValue)
+                        {
+                            attempt++;
+                        }
+
+                        RetryGuidance guidance = _connectionRetryPolicy.GetRetryGuidance(attempt, e, ConnectionEndpoint.DeviceProvisioningService, out TimeSpan retryDelay);
+                        if (guidance == RetryGuidance.AbandonRetry)
+                        {
+                            throw;
+                        }
+
+                        TimeSpan serviceRetryAfter = GetProvisioningServiceRetryAfter();
+                        if (serviceRetryAfter > retryDelay)
+                        {
+                            retryDelay = serviceRetryAfter;
+                        }
+
+                        Trace.TraceWarning("Registering with Device Provisioning Service over HTTPS failed on attempt {0}; retrying in {1}. {2}", attempt, retryDelay, e);
+
+                        if (retryDelay > TimeSpan.Zero)
+                        {
+                            await Task.Delay(retryDelay, cancellation.Token);
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && cancellation.IsCancellationRequested)
+            {
+                throw new OperationCanceledException("Provisioning was canceled because the connection client was deliberately disconnected or disposed.");
+            }
+            finally
+            {
+                Interlocked.CompareExchange(ref _httpProvisioningCancellation, null, cancellation);
+            }
+        }
+
+        private void ThrowIfDeliberatelyDisconnectedSince(int deliberateDisconnectCount)
+        {
+            if (Volatile.Read(ref _deliberateDisconnectCount) != deliberateDisconnectCount
+                || Volatile.Read(ref _deliberateDisconnectsInProgress) != 0)
+            {
+                throw new OperationCanceledException("Provisioning was canceled because the connection client was deliberately disconnected.");
+            }
+        }
+
+        private void CancelHttpProvisioning()
+        {
+            CancellationTokenSource? httpProvisioningCancellation = Interlocked.Exchange(ref _httpProvisioningCancellation, null);
+
+            try
+            {
+                httpProvisioningCancellation?.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // The registration already ended and disposed its own cancellation source, so there is nothing left to cancel.
+            }
+        }
+
+        /// <summary>
+        /// The boot credentials that provisioning presents now: the secondary ones once DPS rejected the primary ones
+        /// (falling back to the primary ones if there are no secondary ones), otherwise the primary ones.
+        /// </summary>
+        private async Task<AuthenticationCredentials> GetCurrentBootCredentialsAsync(AuthenticationProvider provisioningAuthentication, CancellationToken cancellationToken)
+        {
+            if (_usesSecondaryBootCredentials)
+            {
+                AuthenticationCredentials? secondaryCredentials = await provisioningAuthentication.GetSecondaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false);
+                if (secondaryCredentials != null)
+                {
+                    return secondaryCredentials;
+                }
+
+                _usesSecondaryBootCredentials = false;
+            }
+
+            return await provisioningAuthentication.GetPrimaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false);
         }
 
         private async Task DisconnectFromDpsAsync()
