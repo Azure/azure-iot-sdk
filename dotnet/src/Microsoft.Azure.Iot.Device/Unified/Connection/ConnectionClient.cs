@@ -215,7 +215,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                     anySubscribeFailed |= (topicSuback.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS1);
                 }
                 else
-                { 
+                {
                     anySubscribeFailed |= (topicSuback.ReasonCode != MqttClientSubscribeReasonCode.GrantedQoS0);
                 }
             }
