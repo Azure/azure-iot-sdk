@@ -200,13 +200,19 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 
 int main(void)
 {
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call.
+  sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
   sample_config config = { 0 };
   if (sample_config_load(&config) != 0)
   {
-    return 1;
+    // Used only by automatic ci-pipeline verification of this sample.
+    // When porting this code to your own application, please ignore this call or return the value
+    // directly.
+    return sample_pipeline_checks_end(1);
   }
 
   /* Every string cleanup frees is assigned before the first goto. */
@@ -367,5 +373,8 @@ cleanup:
   free(op_key);
   free(op_cert);
   sample_config_release(&config);
-  return rc;
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call or return the value
+  // directly.
+  return sample_pipeline_checks_end(rc);
 }

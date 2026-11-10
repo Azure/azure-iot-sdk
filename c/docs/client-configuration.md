@@ -26,6 +26,7 @@ it adds `c/`.
 | `AZ_IOT_WITH_SU_DELTA` | `OFF` (`ON` in the Linux presets) | Build the reference `microsoft/delta:1` software updates download handler (`az_iot_su_delta.h`), POSIX only. See [delta updates](eng/software-updates.md#82-delta-updates-the-reference-microsoftdelta1-handler). |
 | `AZ_IOT_SU_DELTA_TEST_LIBRARY` | empty | Path of `libadudiffapi.so`: also builds the handler's interop test with it. Configuring fails when the file is missing. |
 | `AZ_IOT_BUILD_SAMPLES` | `ON` | Build the samples. |
+| `AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS` | `OFF` | Compile the samples' CI pipeline hooks in. See [Pipeline hooks](../samples/README.md#pipeline-hooks). |
 | `AZ_IOT_BUILD_TESTS` | `OFF` | Build the unit tests (the presets turn it on). |
 | `AZ_IOT_INSTALL` | `ON` when `c/` is the top-level project | Generate install rules and the `azure-iot-sdk` CMake package. |
 | `BUILD_SHARED_LIBS` | `OFF` | Build `core`, `mqttv3` and `mqttv5` as shared libraries. Adapters are always static. See [Struct versioning](struct_versioning.md). |

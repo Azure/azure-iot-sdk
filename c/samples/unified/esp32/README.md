@@ -132,9 +132,8 @@ QEMU_FLASH_EXTRA="0xd000 /tmp/id/esp_secure_cert.bin" \
 ```
 
 esp32c3 and esp32s3 builds use the Digital Signature peripheral by default
-(`CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL`). For esp32c3 the script burns the key into an emulated
-eFuse: add `QEMU_EFUSE=/tmp/id/qemu_efuse.bin`. DS takes RSA keys of at most 3072 bits. The
-script does not write DS identities for esp32s3.
+(`CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL`). The script burns the key into an emulated eFuse: add
+`QEMU_EFUSE=/tmp/id/qemu_efuse.bin`. The esp32c3 DS takes RSA keys of at most 3072 bits.
 
 ## CI
 
@@ -143,6 +142,6 @@ CI (`ci-c`, job `esp-idf`) builds this sample for esp32, esp32c3, esp32s3 and es
 address, with ESP-IDF v6.1; the default profile for esp32 also with v6.0, the minimum. Any compiler
 warning fails the build.
 
-`ci-c-e2e` (job `esp32-qemu`) runs it in QEMU on esp32 and esp32c3 (key in DS) against an IoT
-Hub: telemetry, the `echo` method and a desired-version acknowledgement
+`ci-c-e2e` (job `esp32-qemu`) runs it in QEMU on esp32, esp32c3 and esp32s3 (the last two with the
+key in DS) against an IoT Hub: telemetry, the `echo` method and a desired-version acknowledgement
 ([ESP32 in QEMU](../../../docs/eng/end-to-end-tests.md#esp32-in-qemu)).
