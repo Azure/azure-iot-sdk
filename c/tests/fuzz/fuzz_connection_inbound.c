@@ -14,11 +14,18 @@
  *
  * Input layout:
  * - byte 0: mode. Bit 0 set: provision through DPS first; clear: connect to the hub directly.
+ *   Bit 1 set: leave the first connection's subscriptions to the script's SUBACK records.
  * - byte 1: file upload HTTP status selector; bytes 2-3: body length (little endian); body.
  * - then records, one per event, until the input ends:
  *   - op byte: op % 8 selects the event (0-4 message, 5 SUBACK, 6 disconnect, 7 connect),
  *     op / 8 the topic prefix of a message;
  *   - message: suffix length, suffix, payload length (2 bytes, little endian), payload.
+ *   - SUBACK: one byte choosing which recorded SUBSCRIBE it answers; op bit 3 makes it a
+ *     refusal, followed by its reason code byte.
+ *   - connect: CONNACK for the current connection, or reopen first if it has ended. Op bit 3
+ *     refuses it; op bit 4 leaves its subscriptions to the script.
+ *
+ * The file upload client needs a resolved hub, so with DPS it starts after the assignment.
  */
 
 #include <stdbool.h>
@@ -167,6 +174,41 @@ static void on_c2d(const az_iot_c2d_message* msg, void* user_ctx)
 {
   (void)user_ctx;
   touch(msg->payload, msg->payload_len);
+  /* Properties are percent-decoded only on request, so decode all of them. Small buffers also
+   * reach the not-enough-space path. */
+  char key[32];
+  char value[64];
+  size_t cursor = 0;
+  az_iot_result result;
+  do
+  {
+    size_t key_length = 0;
+    size_t value_length = 0;
+    result = az_iot_c2d_properties_next(
+        &msg->properties,
+        &cursor,
+        key,
+        sizeof(key),
+        &key_length,
+        value,
+        sizeof(value),
+        &value_length,
+        NULL);
+    if (result == AZ_IOT_OK)
+    {
+      touch((const uint8_t*)key, key_length);
+      touch((const uint8_t*)value, value_length);
+    }
+  } while (result != AZ_IOT_ERR_NOT_FOUND && result != AZ_IOT_ERR_INVALID_ARG);
+  size_t value_length = 0;
+  if (az_iot_c2d_message_get_message_id(msg, value, sizeof(value), &value_length) == AZ_IOT_OK)
+  {
+    touch((const uint8_t*)value, value_length);
+  }
+  if (az_iot_c2d_message_get_correlation_id(msg, value, sizeof(value), &value_length) == AZ_IOT_OK)
+  {
+    touch((const uint8_t*)value, value_length);
+  }
 }
 
 static void on_method(
@@ -220,6 +262,7 @@ typedef struct fuzz_device
   uint8_t twin_workspace[AZ_IOT_MQTTV3_TWIN_CLIENT_DEFAULT_WORKSPACE_SIZE];
   uint8_t methods_workspace[AZ_IOT_MQTTV3_DIRECT_METHOD_CLIENT_DEFAULT_WORKSPACE_SIZE];
   bool connection_initialized;
+  bool file_upload_initialized;
 } fuzz_device;
 
 /** @brief Initialize the connection and its clients; false if any refused. */
@@ -251,15 +294,11 @@ static bool fuzz_device_init(fuzz_device* device, bool use_dps)
       = az_iot_mqttv3_direct_method_client_options_default();
   method_options.workspace = device->methods_workspace;
   method_options.workspace_size = sizeof(device->methods_workspace);
-  static const az_iot_file_upload_http_transport k_transport = { on_http_send, NULL };
 
   if (az_iot_mqttv3_twin_client_init(&device->twin, &device->connection, &twin_options) != AZ_IOT_OK
       || az_iot_mqttv3_c2d_client_init(&device->c2d, &device->connection) != AZ_IOT_OK
       || az_iot_mqttv3_direct_method_client_init(
              &device->methods, &device->connection, &method_options)
-          != AZ_IOT_OK
-      || az_iot_mqttv3_file_upload_client_init(
-             &device->file_upload, &device->connection, &k_transport)
           != AZ_IOT_OK)
   {
     return false;
@@ -271,10 +310,34 @@ static bool fuzz_device_init(fuzz_device* device, bool use_dps)
   return true;
 }
 
+/**
+ * @brief Initialize the file upload client once the hub is known (at once without DPS, after
+ * the assignment with it), then request a SAS URI and the twin for the script to answer.
+ */
+static void fuzz_device_start_file_upload_once_hub_known(fuzz_device* device)
+{
+  static const az_iot_file_upload_http_transport k_transport = { on_http_send, NULL };
+  if (device->file_upload_initialized
+      || az_iot_mqttv3_file_upload_client_init(
+             &device->file_upload, &device->connection, &k_transport)
+          != AZ_IOT_OK)
+  {
+    return;
+  }
+  device->file_upload_initialized = true;
+  /* Refused while not connected yet; the script may connect and answer later ones. */
+  g_sink += (uint32_t)az_iot_mqttv3_file_upload_client_get_sas_uri(
+      &device->file_upload, "fuzz.bin", on_sas_uri, NULL);
+  g_sink += (uint32_t)az_iot_mqttv3_twin_client_get(&device->twin, on_twin, NULL);
+}
+
 /** @brief Tear down everything fuzz_device_init() set up; safe after a partial init. */
 static void fuzz_device_deinit(fuzz_device* device)
 {
-  az_iot_mqttv3_file_upload_client_deinit(&device->file_upload);
+  if (device->file_upload_initialized)
+  {
+    az_iot_mqttv3_file_upload_client_deinit(&device->file_upload);
+  }
   az_iot_mqttv3_direct_method_client_deinit(&device->methods);
   az_iot_mqttv3_c2d_client_deinit(&device->c2d);
   az_iot_mqttv3_twin_client_deinit(&device->twin);
@@ -284,21 +347,54 @@ static void fuzz_device_deinit(fuzz_device* device)
   }
 }
 
-/** @brief Accept the current MQTT connection and every subscription it has asked for. */
-static void fuzz_device_accept(fuzz_device* device, az_iot_result status)
+/**
+ * @brief Answer the current MQTT connection with @p status, reopening the connection first if
+ * it has ended. Acknowledge every subscription it asks for if @p ack_subscriptions, else leave
+ * them to the script's SUBACK records.
+ */
+static void fuzz_device_accept(fuzz_device* device, az_iot_result status, bool ack_subscriptions)
 {
   az_iot_mock_mqtt_client* mqtt = az_iot_mock_mqtt_adapter_last_client();
   if (mqtt == NULL)
   {
-    return;
+    g_sink += (uint32_t)az_iot_connection_client_close(&device->connection);
+    g_sink += (uint32_t)az_iot_connection_client_open(&device->connection);
+    mqtt = az_iot_mock_mqtt_adapter_last_client();
+    if (mqtt == NULL)
+    {
+      return;
+    }
   }
+  az_iot_mock_mqtt_client_clear_calls(mqtt);
   (void)az_iot_mock_mqtt_client_inject_connected(mqtt, status);
   (void)az_iot_connection_client_do_work(&device->connection, 0);
-  az_iot_test_ack_subscriptions(&device->connection, mqtt);
-  az_iot_mock_mqtt_client_clear_calls(mqtt);
+  if (ack_subscriptions)
+  {
+    az_iot_test_ack_subscriptions(&device->connection, mqtt);
+  }
 }
 
-/** @brief Deliver one scripted inbound message. */
+/**
+ * @brief The packet ID of the @p index-th (modulo their number) SUBSCRIBE the mock recorded since
+ * the last accept, or @p index itself when there is none, which reaches the untracked-ACK path.
+ */
+static uint16_t fuzz_device_subscribe_packet_id(const az_iot_mock_mqtt_client* mqtt, uint8_t index)
+{
+  uint16_t packet_ids[16];
+  size_t count = 0;
+  size_t calls = az_iot_mock_mqtt_client_call_count(mqtt);
+  for (size_t i = 0; i < calls && count < sizeof(packet_ids) / sizeof(packet_ids[0]); ++i)
+  {
+    const az_iot_mock_call* call = az_iot_mock_mqtt_client_call_at(mqtt, i);
+    if (call != NULL && call->kind == AZ_IOT_MOCK_CALL_SUBSCRIBE)
+    {
+      packet_ids[count++] = call->packet_id;
+    }
+  }
+  return count > 0 ? packet_ids[index % count] : index;
+}
+
+/** @brief Read one scripted inbound message and deliver it, if there is a connection. */
 static void fuzz_device_message(fuzz_input* in, uint8_t op, az_iot_mock_mqtt_client* mqtt)
 {
   const char* prefix = k_topic_prefixes
@@ -315,6 +411,10 @@ static void fuzz_device_message(fuzz_input* in, uint8_t op, az_iot_mock_mqtt_cli
   memcpy(topic, prefix, prefix_length);
   memcpy(topic + prefix_length, suffix, suffix_length);
   topic[prefix_length + suffix_length] = '\0';
+  if (mqtt == NULL)
+  {
+    return;
+  }
   (void)az_iot_mock_mqtt_client_inject_message(
       mqtt, topic, payload, payload_length, (op & 1) ? AZ_IOT_MQTT_QOS_1 : AZ_IOT_MQTT_QOS_0);
 }
@@ -323,7 +423,8 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
 {
   fuzz_input in = { data, size, 0 };
   fuzz_abort_on_precondition_failure();
-  bool use_dps = (fuzz_input_next_byte(&in) & 1) != 0;
+  uint8_t mode = fuzz_input_next_byte(&in);
+  bool use_dps = (mode & 1) != 0;
   g_http_response.status = k_http_statuses
       [fuzz_input_next_byte(&in) % (sizeof(k_http_statuses) / sizeof(k_http_statuses[0]))];
   g_http_response.body_length = fuzz_input_next_bytes(
@@ -337,45 +438,51 @@ int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size)
     fuzz_device_deinit(&device);
     return 0;
   }
-  fuzz_device_accept(&device, AZ_IOT_OK);
-  /* Requests the script may answer; refused ones (not connected yet) are fine. */
-  g_sink += (uint32_t)az_iot_mqttv3_twin_client_get(&device.twin, on_twin, NULL);
-  g_sink += (uint32_t)az_iot_mqttv3_file_upload_client_get_sas_uri(
-      &device.file_upload, "fuzz.bin", on_sas_uri, NULL);
+  fuzz_device_accept(&device, AZ_IOT_OK, (mode & 2) == 0);
+  fuzz_device_start_file_upload_once_hub_known(&device);
   (void)az_iot_connection_client_do_work(&device.connection, 0);
 
   for (int event = 0; event < FUZZ_INBOUND_MAX_EVENTS && in.position < in.size; ++event)
   {
     uint8_t op = fuzz_input_next_byte(&in);
     az_iot_mock_mqtt_client* mqtt = az_iot_mock_mqtt_adapter_last_client();
-    if (mqtt == NULL)
-    {
-      break;
-    }
     switch (op % 8)
     {
       case 5:
+      {
+        uint16_t packet_id = mqtt != NULL
+            ? fuzz_device_subscribe_packet_id(mqtt, fuzz_input_next_byte(&in))
+            : fuzz_input_next_byte(&in);
+        int32_t reason_code = (op & 8) != 0 ? (int32_t)fuzz_input_next_byte(&in) : 0;
+        if (mqtt == NULL)
+        {
+          break;
+        }
         if ((op & 8) != 0)
         {
-          (void)az_iot_mock_mqtt_client_inject_suback_refusal(
-              mqtt, fuzz_input_next_u16(&in), (int32_t)fuzz_input_next_byte(&in));
+          (void)az_iot_mock_mqtt_client_inject_suback_refusal(mqtt, packet_id, reason_code);
         }
         else
         {
-          (void)az_iot_mock_mqtt_client_inject_suback(mqtt, fuzz_input_next_u16(&in), AZ_IOT_OK);
+          (void)az_iot_mock_mqtt_client_inject_suback(mqtt, packet_id, AZ_IOT_OK);
         }
         break;
+      }
       case 6:
-        (void)az_iot_mock_mqtt_client_inject_disconnected(mqtt);
+        if (mqtt != NULL)
+        {
+          (void)az_iot_mock_mqtt_client_inject_disconnected(mqtt);
+        }
         break;
       case 7:
-        fuzz_device_accept(&device, (op & 8) != 0 ? AZ_IOT_ERR_AUTH : AZ_IOT_OK);
+        fuzz_device_accept(&device, (op & 8) != 0 ? AZ_IOT_ERR_AUTH : AZ_IOT_OK, (op & 16) == 0);
         break;
       default:
         fuzz_device_message(&in, op, mqtt);
         break;
     }
     (void)az_iot_connection_client_do_work(&device.connection, 0);
+    fuzz_device_start_file_upload_once_hub_known(&device);
   }
 
   fuzz_device_deinit(&device);
