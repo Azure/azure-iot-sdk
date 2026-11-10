@@ -197,26 +197,16 @@ jobs:
             }
           }
 
-      - name: Start the HTTP proxy
+      - name: Install the HTTP proxy
         shell: pwsh
-        # proxy.py, for unified/proxy; its log shows the tunnels the sample opened.
+        # proxy.py, for unified/proxy; its log shows the tunnels the sample opened. Started by the
+        # step that runs the samples: Windows ends what a step started when the step ends.
         run: |
           $venv = Join-Path $env:RUNNER_TEMP 'proxy-venv'
           & ($IsWindows ? 'python' : 'python3') -m venv $venv
           $python = Join-Path $venv ($IsWindows ? 'Scripts/python.exe' : 'bin/python')
           & $python -m pip install --quiet 'proxy.py==2.4.10'
           if ($LASTEXITCODE -ne 0) { throw "pip install proxy.py failed" }
-          $log = Join-Path $env:RUNNER_TEMP 'proxy.log'
-          Start-Process -FilePath $python -ArgumentList @('-m', 'proxy', '--hostname', '127.0.0.1',
-            '--port', '8899', '--log-level', 'INFO', '--log-file', $log) `
-            -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'proxy.out') `
-            -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'proxy.err')
-          for ($i = 0; $i -lt 60; $i++) {
-            $client = [System.Net.Sockets.TcpClient]::new()
-            try { $client.Connect('127.0.0.1', 8899); break } catch { Start-Sleep -Milliseconds 500 } finally { $client.Dispose() }
-          }
-          if ($i -eq 60) { throw "proxy.py did not listen on 8899" }
-          "AZ_IOT_SAMPLES_E2E_PROXY_LOG=$log" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Select the device
         shell: bash
@@ -318,6 +308,21 @@ jobs:
             $env:PATH = "$($env:CURL_PREFIX)/debug/bin;$($env:CURL_PREFIX)/bin;$($env:PATH)"
           }
 
+          # The HTTP proxy, for this step's lifetime.
+          $venv = Join-Path $env:RUNNER_TEMP 'proxy-venv'
+          $python = Join-Path $venv ($IsWindows ? 'Scripts/python.exe' : 'bin/python')
+          $env:AZ_IOT_SAMPLES_E2E_PROXY_LOG = Join-Path $env:RUNNER_TEMP 'proxy.log'
+          $proxy = Start-Process -FilePath $python -PassThru -ArgumentList @('-m', 'proxy',
+            '--hostname', '127.0.0.1', '--port', $env:AZ_IOT_PROXY_PORT, '--log-level', 'INFO',
+            '--log-file', $env:AZ_IOT_SAMPLES_E2E_PROXY_LOG) `
+            -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'proxy.out') `
+            -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'proxy.err')
+          for ($i = 0; $i -lt 60; $i++) {
+            $client = [System.Net.Sockets.TcpClient]::new()
+            try { $client.Connect('127.0.0.1', [int]$env:AZ_IOT_PROXY_PORT); break } catch { Start-Sleep -Milliseconds 500 } finally { $client.Dispose() }
+          }
+          if ($i -eq 60) { throw "proxy.py did not listen on $($env:AZ_IOT_PROXY_PORT)" }
+
           New-Item -ItemType Directory -Path results -Force | Out-Null
           $select = if ($env:SAMPLES_SHARD -eq '0') {
             @('-R', "$($env:SAMPLES_SHARD_0)$($env:SAMPLES_ADAPTER)$")
@@ -328,6 +333,7 @@ jobs:
             --verbose --no-tests=error `
             --output-junit "$PWD/results/samples-$($env:SAMPLES_LEG).xml"
           $rc = $LASTEXITCODE
+          Stop-Process -Id $proxy.Id -ErrorAction SilentlyContinue
           Remove-Item -Recurse -Force $dir
           exit $rc
 
@@ -340,6 +346,7 @@ jobs:
             results/*.xml
             c/build/${{ matrix.preset }}/tests/e2e/samples/*/sample-output.log
             ${{ runner.temp }}/proxy.log
+            ${{ runner.temp }}/proxy.err
           if-no-files-found: ignore
 
   teardown:

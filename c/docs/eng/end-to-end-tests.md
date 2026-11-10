@@ -414,6 +414,7 @@ Schannel), on every pull request and main run of its workflow.
 | `az_iot_tests_e2e_amqp_transport_sigpipe` | Tests SIGPIPE, which Windows does not have. |
 | Samples `unified/file_upload` (`ci-c-samples`, built on Windows) | The sample passes its PEM client certificate to libcurl; libcurl over Schannel (the Windows build) takes client certificates from a certificate store or PFX only. |
 | Samples `authentication/hsm_pkcs11`, `authentication/dps_tpm_tss` | As the custody suite: no pkcs11 provider for MSVC. tpm2-tss and swtpm are not built for Windows. |
+| Sample `authentication/dps_tpm` | The simulated TPM (`samples/common/sample_tpm_sim.c`) writes its keys through `BIO_new_fp()`; with OpenSSL as a DLL that needs `OPENSSL_Applink`, which the sample does not link, so it aborts. |
 
 ---
 
