@@ -412,14 +412,16 @@ static int wait_for_request(int* status, char* body, size_t body_size)
 }
 
 /** @brief Invokes @p method until the device answers 200 with the payload echoed, or the sample
- * ends: the device may not be subscribed yet (404). */
+ * ends, exits or runs past its limit: the device may not be subscribed yet (404). */
 static void invoke_method_until_echoed(const char* method)
 {
   char marker[48];
   make_marker(marker, sizeof(marker), method);
   char payload[64];
   (void)snprintf(payload, sizeof(payload), "\"%s\"", marker);
-  while (!s_run.action_succeeded && !sample_has_ended())
+  time_t const end = s_run.start + s_run.sample->run_timeout_s;
+  while (!s_run.action_succeeded && !sample_has_ended()
+         && !az_iot_e2e_process_wait_for_exit(&s_sample, 0, NULL) && time(NULL) < end)
   {
     int status = 0;
     char response[1024] = { 0 };
