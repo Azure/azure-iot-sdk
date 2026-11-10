@@ -230,7 +230,10 @@ int main(void)
       {
         (void)az_iot_connection_client_do_work(&connection_client, 50);
       }
+      /* Only this request's result drives the recovery below. */
       user_ctx.csr_done = 0;
+      user_ctx.csr_status = AZ_IOT_OK;
+      user_ctx.csr_service_code = 0;
       if (user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED
           || az_iot_connection_client_send_csr(
                  &connection_client, request_id, replace, on_csr_event, &user_ctx)
