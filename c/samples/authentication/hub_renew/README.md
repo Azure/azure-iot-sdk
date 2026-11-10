@@ -11,7 +11,7 @@ the hub is an **mqttv3** feature.
 
 - Hub: mqttv3 (MQTT 3.1.1).
 - Uses the OpenSSL-backed managed certificate provider for the operational key, the CSR and the files.
-- Connects with the operational certificate when the files hold one (for example from a previous [`dps_csr_managed`](../dps_csr_managed/README.md) run with the same files), otherwise with the bootstrap certificate.
+- Registers with DPS with a CSR (`opts.dps.request_operational_certificate`), as [`dps_csr_managed`](../dps_csr_managed/README.md) does, and connects with the operational certificate DPS issues. The hub accepts that certificate only for a device DPS registered with a CSR.
 - `az_iot_connection_client_send_csr()` gets the CSR from the provider and is two-phase: the hub answers `202 Accepted`, then `200` with the issued chain.
 - The SDK stores the renewed chain in the provider before the callback, which reports the result in `store_status`. It does not reconnect: the sample calls `close()` and `open()`, because a new client certificate needs a new TLS handshake.
 - Platforms: Linux and Windows.

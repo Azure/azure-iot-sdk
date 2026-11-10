@@ -383,7 +383,7 @@ jobs:
 
       # Emits every group identity (IOT_DPS_GROUP_X509_*_<i>) from Azure/iot-sdks-e2e-fx#462.
       - name: Provision cert-management resources
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@c35f362441eb1c88ba482e2580d17797ccece238 # provision-emit-every-group-identity (#462)
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@52376889064b3ec77aa3fc5775f68f4ed1b3f8a9 # main after #462
         with:
           rg-name: ${{ env.E2E_CSR_RESOURCE_GROUP }}
           azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
@@ -424,13 +424,16 @@ jobs:
     timeout-minutes: 50
     strategy:
       fail-fast: false
+      # Two legs at a time: with all four registering with a CSR at once, DPS left some
+      # registrations unanswered past the samples' 60 s. The Windows legs, the slower builds, first.
+      max-parallel: 2
       # Slot: the leg's group identity and consumer group.
       matrix:
         include:
-          - { os: ubuntu-24.04, preset: linux-gcc-debug, adapter: paho, slot: 0 }
-          - { os: ubuntu-24.04, preset: linux-gcc-debug, adapter: az_mqtt, slot: 1 }
           - { os: windows-latest, preset: windows-msvc-debug, adapter: paho, slot: 2 }
           - { os: windows-latest, preset: windows-msvc-debug, adapter: az_mqtt, slot: 3 }
+          - { os: ubuntu-24.04, preset: linux-gcc-debug, adapter: paho, slot: 0 }
+          - { os: ubuntu-24.04, preset: linux-gcc-debug, adapter: az_mqtt, slot: 1 }
     env:
       AZ_IOT_PRESET: ${{ matrix.preset }}
       SAMPLES_ADAPTER: ${{ matrix.adapter }}

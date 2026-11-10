@@ -8,7 +8,8 @@
  * Runtime operational-certificate renewal against a connected MQTTv3 hub
  * (D7). Connects to whichever hub DPS assigns.
  * End to end:
- *   1. Connect, then call az_iot_connection_client_send_csr(); the SDK gets the
+ *   1. Register with DPS with a CSR, connect with the operational certificate DPS
+ *      issues, then call az_iot_connection_client_send_csr(); the SDK gets the
  *      CSR from the managed provider.
  *   2. The hub responds in two phases - ACCEPTED (202) then ISSUED (200) with
  *      the new chain - and the SDK stores it in the provider before the
@@ -159,6 +160,8 @@ int main(void)
   copts.dps.registration_id = config.reg_id;
   copts.dps.global_endpoint = config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &provider.base;
+  /* The hub accepts the issued certificate only for a device DPS registered with a CSR. */
+  copts.dps.request_operational_certificate = true;
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   copts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
   /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,

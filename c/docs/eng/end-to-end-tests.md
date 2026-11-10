@@ -369,8 +369,8 @@ Each test:
 | `authentication/hsm_pkcs11` | Telemetry `"custody":"hardware"`; the device key in a SoftHSM2 token, `OPENSSL_CONF` (from `AZ_IOT_SAMPLES_E2E_PKCS11_OPENSSL_CONF`) for this sample only. |
 | `authentication/dps_csr_managed` (`samples_csr`) | Prints `[dps_csr] telemetry sent with operational certificate`; telemetry `"source":"dps_csr_managed"`. |
 | `authentication/custom_certificate_provider` (`samples_csr`) | Prints `[custom_cert] connected with operational identity`. |
-| `authentication/dps_persist_assignment` (`samples_csr`) | Two runs in one work directory: the first registers with DPS and saves the assignment, the second prints `[persist] restoring hub=`. |
-| `authentication/hub_renew` (`samples_csr`) | `dps_csr_managed` first, in the same work directory, for the operational certificate (the sample's README); then hub_renew prints `[hub_renew] reconnected with the renewed operational certificate`. |
+| `authentication/dps_persist_assignment` (`samples_csr`) | Two runs in one work directory: the first registers with DPS and saves the assignment, the second prints `(restored assignment)` once connected to the saved hub. |
+| `authentication/hub_renew` (`samples_csr`) | Registers with a CSR, renews over the hub and prints `[hub_renew] reconnected with the renewed operational certificate`. |
 | `authentication/dps_sas_key_issued_cert` (`samples_csr`) | Telemetry `"auth":"sas-key,x509-issued"`; the sample gets the certificate-management environment's `AZ_IOT_DPS_ENROLLMENT_GROUP_KEY`. |
 | `authentication/dps_tpm`, `dps_tpm_tss` | `--enrollment` first; the test creates the TPM individual enrollment, then telemetry `"attestation":"tpm"`. The enrollment and device are always deleted. `dps_tpm_tss` runs against an swtpm the test starts. |
 
@@ -394,7 +394,8 @@ to `main` that change `c/` or `common/` (Markdown excluded), and on demand. Not 
   pull requests included, provisions `CSDKE2ESamplesCert-<run>-<attempt>` (certificate management,
   an X.509 enrollment group with four devices, the SAS group, both linked to the signing CA) and
   always deletes it. A leg uses group identity `IOT_DPS_GROUP_X509_*_<slot>` as its bootstrap
-  device and consumer group `samples-<slot>` on that hub.
+  device and consumer group `samples-<slot>` on that hub. Two legs run at a time: with all four
+  registering with a CSR at once, DPS left some registrations unanswered past the samples' 60 s.
 
 Not in this workflow: the samples that do not connect, which are CTest tests of `ci-c` already;
 `unified/esp32` ([ESP32 in QEMU](#esp32-in-qemu)). Windows: see [Not run on Windows](#not-run-on-windows).

@@ -7,14 +7,12 @@
  * side (az_iot_e2e_service).
  *
  * Usage: az_iot_tests_e2e_samples <sample> <executable> <work directory>
- *        [<dps_csr_managed executable>]
  *
  * <sample> names an entry of k_samples ("<group>_<name>"); tests/e2e/CMakeLists.txt registers one
  * CTest test per sample and adapter, labelled samples_mqttv3 or, for the CSR samples, samples_csr.
  * The sample runs to its own end, in <work directory>, with the variables it reads; this test then
  * checks its end marker, its exit code and what the service saw. Nothing is skipped: a missing
- * variable fails the test. hub_renew is given dps_csr_managed, which issues the operational
- * certificate it renews.
+ * variable fails the test.
  *
  * Environment:
  *   service (not passed to the sample): IOTHUB_CONNECTION_STRING,
@@ -116,9 +114,6 @@ static struct
   const e2e_sample* sample;
   const char* executable;
   const char* work_directory;
-  /** @brief authentication/dps_csr_managed, which hub_renew needs an operational certificate
-   * from; NULL for the other samples. */
-  const char* provisioning_executable;
   time_t start; /**< Before the sample started, runner clock. */
   char registration_id[129]; /**< Also its device ID: no enrollment here sets another. */
   az_iot_e2e_service* service;
@@ -308,11 +303,12 @@ static void make_child_environment(void)
   }
 }
 
-/** @brief Starts @p executable with @p argument (may be NULL) and waits for its begin marker. */
-static void start_executable(const char* executable, const char* argument)
+/** @brief Starts the sample with @p argument (may be NULL) and waits for its begin marker. */
+static void start_sample(const char* argument)
 {
-  const char* const arguments[] = { executable, argument, NULL };
-  printf("[e2e] starting %s%s%s\n", executable, argument ? " " : "", argument ? argument : "");
+  const char* const arguments[] = { s_run.executable, argument, NULL };
+  printf(
+      "[e2e] starting %s%s%s\n", s_run.executable, argument ? " " : "", argument ? argument : "");
   assert_true(az_iot_e2e_process_start(&s_sample, arguments, s_child_environment, "[sample] "));
   if (!az_iot_e2e_process_wait_for_output(
           &s_sample,
@@ -324,9 +320,6 @@ static void start_executable(const char* executable, const char* argument)
     fail_msg("the sample did not print \"%s\"", E2E_SAMPLE_BEGIN_MARKER);
   }
 }
-
-/** @brief Starts the sample under test: see start_executable(). */
-static void start_sample(const char* argument) { start_executable(s_run.executable, argument); }
 
 /** @brief Pumps until the sample exits, stopping it after @p timeout_s; checks it ended with 0. */
 static void wait_for_sample_success(int timeout_s)
@@ -743,20 +736,6 @@ static void register_and_save_assignment(void)
   require_output("[persist] no saved assignment");
 }
 
-/** @brief hub_renew: dps_csr_managed, run in the same work directory, leaves the operational
- * certificate the run under test renews (its README). */
-static void issue_operational_certificate(void)
-{
-  remove_certificate_files();
-  if (s_run.provisioning_executable == NULL)
-  {
-    fail_msg("no authentication/dps_csr_managed executable given");
-  }
-  start_executable(s_run.provisioning_executable, NULL);
-  wait_for_sample_success(s_run.sample->run_timeout_s);
-  require_output("[dps_csr] telemetry sent with operational certificate");
-}
-
 /* What each sample does and how long it runs: samples/<group>/<name>/main.c. */
 static const e2e_sample k_samples[] = {
   /* Telemetry every 5 s for 60 s: {"temp":23}, multithreaded {"sensor":n,"temp":t}. */
@@ -918,12 +897,12 @@ static const e2e_sample k_samples[] = {
     NULL,
     NULL,
     180,
-    "[persist] restoring hub=" },
+    "(restored assignment)" },
   { "authentication_hub_renew",
     E2E_SAMPLE_IDENTITY_X509,
     NULL,
     NULL,
-    issue_operational_certificate,
+    remove_certificate_files,
     NULL,
     NULL,
     300,
@@ -1068,12 +1047,9 @@ static int teardown(void** state)
 
 int main(int argc, char** argv)
 {
-  if (argc != 4 && argc != 5)
+  if (argc != 4)
   {
-    fprintf(
-        stderr,
-        "usage: %s <sample> <executable> <work directory> [<dps_csr_managed executable>]\n",
-        argv[0]);
+    fprintf(stderr, "usage: %s <sample> <executable> <work directory>\n", argv[0]);
     return 2;
   }
   for (size_t i = 0; i < sizeof(k_samples) / sizeof(k_samples[0]); ++i)
@@ -1091,7 +1067,6 @@ int main(int argc, char** argv)
   (void)setvbuf(stdout, NULL, _IONBF, 0); // In order with the sample's and cmocka's output.
   s_run.executable = argv[2];
   s_run.work_directory = argv[3];
-  s_run.provisioning_executable = argc == 5 ? argv[4] : NULL;
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_teardown(the_sample_runs_and_the_service_sees_its_work, teardown),
   };

@@ -322,20 +322,14 @@ if(AZ_IOT_BUILD_E2E_SAMPLES)
             set(_work_directory ${CMAKE_CURRENT_BINARY_DIR}/samples/${_test})
             file(MAKE_DIRECTORY ${_work_directory})
             set(_label samples_mqttv3)
-            set(_extra_arguments "")
             if(_sample IN_LIST _csr_samples)
                 set(_label samples_csr)
             endif()
-            if(_sample STREQUAL "authentication/hub_renew")
-                # dps_csr_managed issues the operational certificate hub_renew renews.
-                set(_extra_arguments $<TARGET_FILE:az_iot_sample_auth_dps_csr_managed${_suffix}>)
-            endif()
             add_test(NAME ${_test}
                 COMMAND az_iot_tests_e2e_samples ${_group}_${_name} $<TARGET_FILE:${_target}>
-                    ${_work_directory} ${_extra_arguments}
+                    ${_work_directory}
                 WORKING_DIRECTORY ${_work_directory})
-            # The test stops the sample first: its own limit is at most 300 s, plus the checks;
-            # hub_renew runs dps_csr_managed first.
+            # The test stops the sample first: its own limit is at most 300 s, plus the checks.
             set_tests_properties(${_test} PROPERTIES LABELS ${_label} TIMEOUT 600)
         endforeach()
     endforeach()
@@ -343,7 +337,6 @@ if(AZ_IOT_BUILD_E2E_SAMPLES)
     unset(_optional_samples)
     unset(_csr_samples)
     unset(_label)
-    unset(_extra_arguments)
 endif()
 
 # ---------------------------------------------------------------------------
