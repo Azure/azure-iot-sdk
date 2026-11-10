@@ -136,15 +136,18 @@ extends:
             steps:
               - checkout: self
                 submodules: false
-              # CMake from PATH, else the copy bundled with Visual Studio (Build Tools included: -products *).
+              # CMake from PATH, else the copy bundled with Visual Studio or Build Tools (-products *) that has
+              # the CMake component.
               - powershell: |
                   $ErrorActionPreference = 'Stop'
                   $cmd = Get-Command cmake -ErrorAction SilentlyContinue
                   if ($cmd) { $cmake = $cmd.Source } else {
-                    $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -products * -latest -property installationPath
+                    $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -products '*' -latest `
+                      -requires Microsoft.VisualStudio.Component.VC.CMake.Project -property installationPath
+                    if (-not $vs) { throw "cmake not on PATH; vswhere found no installation with Microsoft.VisualStudio.Component.VC.CMake.Project" }
                     $cmake = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
                   }
-                  if (-not (Test-Path $cmake)) { throw "cmake not found" }
+                  if (-not (Test-Path $cmake)) { throw "cmake not found at $cmake (installation: $vs)" }
                   $ctest = Join-Path (Split-Path $cmake) 'ctest.exe'
                   Write-Host "##vso[task.setvariable variable=CMAKE]$cmake"
                   Write-Host "##vso[task.setvariable variable=CTEST]$ctest"
