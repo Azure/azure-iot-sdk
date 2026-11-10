@@ -155,6 +155,29 @@ static void extra_environment_is_set_for_the_child_only(void** state)
   assert_null(parent_value);
 }
 
+static void a_variable_named_alone_is_removed_for_the_child_only(void** state)
+{
+  (void)state;
+#ifdef _WIN32
+  assert_int_equal(_putenv_s(ENVIRONMENT_NAME, "inherited"), 0);
+#else
+  assert_int_equal(setenv(ENVIRONMENT_NAME, "inherited", 1), 0);
+#endif
+  const char* const environment[] = { ENVIRONMENT_NAME, NULL };
+  start_child("environment", ENVIRONMENT_NAME, environment);
+  assert_true(az_iot_e2e_process_wait_for_exit(&s_process, START_TIMEOUT_MS, NULL));
+  assert_true(az_iot_e2e_process_has_printed(&s_process, ENVIRONMENT_NAME "=(unset)"));
+  char* parent_value = az_iot_test_env_dup(ENVIRONMENT_NAME);
+  assert_non_null(parent_value);
+  assert_string_equal(parent_value, "inherited");
+  free(parent_value);
+#ifdef _WIN32
+  assert_int_equal(_putenv_s(ENVIRONMENT_NAME, ""), 0);
+#else
+  assert_int_equal(unsetenv(ENVIRONMENT_NAME), 0);
+#endif
+}
+
 static void a_shell_command_runs(void** state)
 {
   (void)state;
@@ -296,6 +319,7 @@ int main(void)
     cmocka_unit_test_teardown(waiting_finds_a_line_the_same_read_drops_from_the_log, teardown),
     cmocka_unit_test_teardown(a_child_that_writes_without_end_cannot_hold_waits_or_stop, teardown),
     cmocka_unit_test_teardown(extra_environment_is_set_for_the_child_only, teardown),
+    cmocka_unit_test_teardown(a_variable_named_alone_is_removed_for_the_child_only, teardown),
     cmocka_unit_test_teardown(a_shell_command_runs, teardown),
     cmocka_unit_test_teardown(
         waiting_pumps_until_printed_or_timed_out_then_stop_asks_first, teardown),

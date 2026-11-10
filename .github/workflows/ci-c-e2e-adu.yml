@@ -84,6 +84,7 @@ jobs:
               - 'c/adapters/cert_openssl/**'
               - 'c/adapters/su/**'
               - 'c/eng/install-su-delta-processor.sh'
+              - 'c/eng/apt-install.sh'
               - 'c/deps/az_mqtt/**'
               - 'c/CMakeLists.txt'
               - 'c/CMakePresets.json'
@@ -224,7 +225,7 @@ jobs:
       - name: Install build dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev
+          bash "$GITHUB_WORKSPACE/c/eng/apt-install.sh" ninja-build libcurl4-openssl-dev
           python3 -m pip install --upgrade 'gcovr==7.2'
 
       # The real delta processor for the MICROSOFT_DELTA offer (POSIX only, as the
