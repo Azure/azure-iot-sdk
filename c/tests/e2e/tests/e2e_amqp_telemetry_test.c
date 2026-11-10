@@ -310,24 +310,33 @@ static void peer_on_close(e2e_amqp_test_peer* io)
   peer->next_delivery_id = 0;
 }
 
-/** @brief Sends an event with @p body on @p partition, annotated with @p sequence_number. */
+/** @brief Sends an event with @p body on @p partition, annotated with @p sequence_number and,
+ * unless NULL, the @p device_id that sent it. */
 static void peer_send_event(
     event_hubs_peer* peer,
     int partition,
     int64_t sequence_number,
+    const char* device_id,
     const char* body)
 {
   char name[32];
   (void)snprintf(name, sizeof(name), "e2e-recv-%d", partition);
   int const handle = peer_find_link(peer, name);
   assert_true(handle >= 0);
-  uint8_t annotations[64];
+  uint8_t annotations[128];
   az_amqp_encoder e;
   assert_int_equal(AZ_OK, az_amqp_encoder_init(&e, AZ_SPAN_FROM_BUFFER(annotations)));
   assert_int_equal(AZ_OK, az_amqp_encoder_begin_map(&e));
   assert_int_equal(
       AZ_OK, az_amqp_encoder_append_symbol(&e, AZ_SPAN_FROM_STR("x-opt-sequence-number")));
   assert_int_equal(AZ_OK, az_amqp_encoder_append_long(&e, sequence_number));
+  if (device_id != NULL)
+  {
+    assert_int_equal(
+        AZ_OK, az_amqp_encoder_append_symbol(&e, AZ_SPAN_FROM_STR("iothub-connection-device-id")));
+    assert_int_equal(
+        AZ_OK, az_amqp_encoder_append_string(&e, az_span_create_from_str((char*)device_id)));
+  }
   assert_int_equal(AZ_OK, az_amqp_encoder_end_map(&e));
   az_amqp_message message;
   assert_int_equal(AZ_OK, az_amqp_message_init(&message));
@@ -364,11 +373,22 @@ static void watcher_end(e2e_amqp_telemetry* t)
   free(t);
 }
 
+/** @brief Delivers @p body, sent by @p device_id (NULL: unnamed), to the watcher. */
+static void deliver_from(
+    e2e_amqp_telemetry* t,
+    int partition,
+    int64_t sequence_number,
+    const char* device_id,
+    const char* body)
+{
+  peer_send_event(&g_peer, partition, sequence_number, device_id, body);
+  assert_true(e2e_amqp_telemetry_do_work(t, 0));
+}
+
 /** @brief Delivers @p body to the watcher. */
 static void deliver(e2e_amqp_telemetry* t, int partition, int64_t sequence_number, const char* body)
 {
-  peer_send_event(&g_peer, partition, sequence_number, body);
-  assert_true(e2e_amqp_telemetry_do_work(t, 0));
+  deliver_from(t, partition, sequence_number, NULL, body);
 }
 
 /**
@@ -417,6 +437,35 @@ static void test_replayed_transfers_are_dropped_by_partition_sequence_number(voi
   const e2e_amqp_capture* capture = e2e_amqp_telemetry_find(t, "p0-b");
   assert_non_null(capture);
   assert_int_equal(2, capture->seq);
+  watcher_end(t);
+}
+
+/* With a device filter, only that device's messages are watched and captured, whatever their
+ * bodies; the others still advance the sequence numbers, so a replay of them is dropped too. */
+static void test_a_device_filter_keeps_only_that_devices_messages(void** state)
+{
+  (void)state;
+  e2e_amqp_telemetry* t = watcher_begin(1);
+  assert_true(e2e_amqp_telemetry_set_device_filter(t, "dev-a"));
+  assert_true(e2e_amqp_telemetry_watch_needle(t, "temp"));
+
+  deliver_from(t, 0, 1, "dev-b", "{\"temp\":1}");
+  deliver_from(t, 0, 2, NULL, "{\"temp\":2}");
+  deliver_from(t, 0, 3, "dev-a-other", "{\"temp\":3}");
+  assert_int_equal(0, t->captured_count);
+  assert_false(e2e_amqp_telemetry_watched_seen(t, "temp"));
+
+  deliver_from(t, 0, 4, "dev-a", "{\"temp\":4}");
+  assert_int_equal(1, t->captured_count);
+  assert_true(e2e_amqp_telemetry_watched_seen(t, "temp"));
+  assert_true(e2e_amqp_telemetry_seen(t, ""));
+  assert_true(e2e_amqp_telemetry_seen(t, "\"temp\":4"));
+
+  char too_long[E2E_AMQP_DEVICE_FILTER_MAX + 1];
+  memset(too_long, 'x', sizeof(too_long) - 1);
+  too_long[sizeof(too_long) - 1] = '\0';
+  assert_false(e2e_amqp_telemetry_set_device_filter(t, too_long));
+  assert_string_equal("dev-a", t->device_filter);
   watcher_end(t);
 }
 
@@ -497,6 +546,7 @@ int main(void)
 {
   const struct CMUnitTest tests[] = {
     cmocka_unit_test(test_replayed_transfers_are_dropped_by_partition_sequence_number),
+    cmocka_unit_test(test_a_device_filter_keeps_only_that_devices_messages),
     cmocka_unit_test(test_a_detached_receiver_reconnects_and_keeps_its_state),
     cmocka_unit_test(test_the_setup_times_out_while_a_receiver_is_still_attaching),
     cmocka_unit_test(test_a_refused_receiver_ends_the_setup_and_is_found),

@@ -239,6 +239,9 @@ static void on_conn_state(const az_iot_connection_state_event* event, void* user
 
 int main(void)
 {
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call.
+  sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
@@ -336,5 +339,8 @@ cleanup:
   free(key_b64);
   free(ca);
   free(endpoint);
-  return rc;
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call or return the value
+  // directly.
+  return sample_pipeline_checks_end(rc);
 }
