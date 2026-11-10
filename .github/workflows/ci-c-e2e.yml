@@ -317,7 +317,7 @@ jobs:
         # eng/setup-pkcs11-provider.sh for why the packaged one will not do),
         # which is what meson and pkg-config are for.
         run: |
-          bash "$GITHUB_WORKSPACE/c/eng/apt-install.sh" ninja-build softhsm2 opensc meson pkg-config
+          bash "$GITHUB_WORKSPACE/c/eng/apt-install.sh" ninja-build libcurl4-openssl-dev softhsm2 opensc meson pkg-config
           python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build e2e tests
