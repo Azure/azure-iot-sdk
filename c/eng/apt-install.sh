@@ -21,7 +21,8 @@ as_root=()
 
 deadline=$((SECONDS + 600))
 
-# retry <seconds> <command>...: run with a time limit, up to 3 attempts, all before the deadline.
+# retry <seconds> <command>...: run as root with a time limit (killed 15 s after SIGTERM if still
+# running), up to 3 attempts, all before the deadline.
 retry() {
     local limit="$1" attempt remaining
     shift
@@ -30,7 +31,7 @@ retry() {
         if [ "${remaining}" -le 0 ]; then
             break
         fi
-        if timeout "$((remaining < limit ? remaining : limit))" "$@"; then
+        if "${as_root[@]}" timeout --kill-after=15 "$((remaining < limit ? remaining : limit))" "$@"; then
             return 0
         fi
         echo "attempt ${attempt} failed: $*" 1>&2
@@ -40,5 +41,6 @@ retry() {
     return 1
 }
 
-retry 120 "${as_root[@]}" apt-get update -q -o Acquire::Retries=3
-retry 300 "${as_root[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y -q -o Acquire::Retries=3 "$@"
+retry 120 apt-get update -q -o Acquire::Retries=3
+# dpkg --configure -a finishes an install a previous attempt was killed in (a no-op otherwise).
+retry 300 env DEBIAN_FRONTEND=noninteractive sh -c 'dpkg --configure -a && exec apt-get install -y -q -o Acquire::Retries=3 "$@"' sh "$@"
