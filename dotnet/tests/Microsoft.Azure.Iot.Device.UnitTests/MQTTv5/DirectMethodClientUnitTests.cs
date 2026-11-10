@@ -22,7 +22,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
         private const string DeviceId = "someDeviceId";
         private const string IncomingMethodsTopic = "ih/someDeviceId/dev/methods";
         // The device ID is left for the connection client to fill in when it actually sends the publish.
-        private const string OutgoingMethodsTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/srv/methods";
+        private const string OutgoingMethodsTopic = "ih/srv/" + IConnectionClient.DeviceIdPlaceholder;
 
         [Fact]
         public void DirectMethodInvokedAsync_RejectsMultipleHandlers()
@@ -243,7 +243,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                     lock (mqttClient.SentMqttTrafficInOrder)
                     {
                         probeAckPublish = mqttClient.SentMqttTrafficInOrder
-                            .Where(traffic => traffic.Publish?.Topic == "ih/" + DeviceId + "/srv/methods")
+                            .Where(traffic => traffic.Publish?.Topic == "ih/srv/" + DeviceId && GetType(traffic.Publish) == "probe-ack:1")
                             .Select(traffic => traffic.Publish!)
                             .SingleOrDefault();
                     }

@@ -135,6 +135,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         bool IConnectionClient.IsDesiredPushRequested => Mqttv5TwinVersions.IsDesiredPushRequested;
 
+        MQTTv5.Models.ServiceBoundTopicFormat IConnectionClient.ServiceBoundTopicFormat => Mqttv5TwinVersions.ServiceBoundTopicFormat;
+
         void IConnectionClient.ObserveDesiredPropertiesVersion(ulong version) => Mqttv5TwinVersions.ObserveDesiredPropertiesVersion(version);
 
         void IConnectionClient.ObserveReportedPropertiesVersion(ulong version) => Mqttv5TwinVersions.ObserveReportedPropertiesVersion(version);
@@ -180,6 +182,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
                 SessionExpiryInterval = options.SessionExpiryInterval,
                 ReceiveDesiredPropertyUpdates = options.ReceiveDesiredPropertyUpdates,
                 ReceiveReportedPropertiesUponConnect = options.ReceiveReportedPropertiesUponConnect,
+                ServiceBoundTopicFormat = options.ServiceBoundTopicFormat,
                 // MqttClient = options.MqttClient, //TODO See above for why this isn't passed to the MQTTv5 client, but this design feels a bit off, but needs testing of websocket + proxy support when using unified client to connect to MQTTv5 hub
             });
 

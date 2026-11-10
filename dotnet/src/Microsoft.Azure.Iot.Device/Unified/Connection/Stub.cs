@@ -82,6 +82,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         bool MQTTv5.Connection.IConnectionClient.IsDesiredPushRequested => _unifiedConnectionClient.IsDesiredPushRequested;
 
+        MQTTv5.Models.ServiceBoundTopicFormat MQTTv5.Connection.IConnectionClient.ServiceBoundTopicFormat => _unifiedConnectionClient.ServiceBoundTopicFormat;
+
         void MQTTv5.Connection.IConnectionClient.ObserveDesiredPropertiesVersion(ulong version) => _unifiedConnectionClient.ObserveDesiredPropertiesVersion(version);
 
         void MQTTv5.Connection.IConnectionClient.ObserveReportedPropertiesVersion(ulong version) => _unifiedConnectionClient.ObserveReportedPropertiesVersion(version);

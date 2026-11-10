@@ -76,6 +76,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         internal bool IsDesiredPushRequested => true;
 
         /// <summary>
+        /// The topics that feature clients publish direct method responses and twin requests on, as configured by
+        /// <see cref="Models.ConnectionClientOptions.ServiceBoundTopicFormat"/>.
+        /// </summary>
+        internal Models.ServiceBoundTopicFormat ServiceBoundTopicFormat => Models.ServiceBoundTopicFormat.PerDevice;
+
+        /// <summary>
         /// Raised whenever the connection to IoT hub is lost or closed, before any reconnection starts.
         /// </summary>
         /// <remarks>

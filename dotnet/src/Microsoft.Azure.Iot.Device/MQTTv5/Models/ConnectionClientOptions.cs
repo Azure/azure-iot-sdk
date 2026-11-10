@@ -64,6 +64,16 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Models
         /// </remarks>
         public bool ReceiveReportedPropertiesUponConnect { get; set; }
 
+        /// <summary>
+        /// The topics that the device publishes its births, direct method responses and twin requests on.
+        /// Defaults to <see cref="ServiceBoundTopicFormat.PerDevice"/>.
+        /// </summary>
+        /// <remarks>
+        /// Set this to <see cref="ServiceBoundTopicFormat.Legacy"/> to connect to an IoT hub that doesn't support the
+        /// per-device topic. Telemetry topics are not affected. This value is read once when the connection client is constructed.
+        /// </remarks>
+        public ServiceBoundTopicFormat ServiceBoundTopicFormat { get; set; } = ServiceBoundTopicFormat.PerDevice;
+
         internal Unified.Models.ConnectionClientOptions ToCommonOptions()
         {
             return new()

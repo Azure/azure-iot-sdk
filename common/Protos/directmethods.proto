@@ -19,6 +19,8 @@ message Probe {
 // Probe acknowledgement: Device → Service
 // type = "probe-ack:1"
 // Device responds to the probe with acceptance or rejection.
+// Published on ih/srv/{deviceId} (or on ih/{deviceId}/srv/methods by
+// devices that use the legacy service bound topics).
 message ProbeAck {
   oneof result {
     Ready ready = 1;
@@ -46,6 +48,8 @@ enum RejectedReason {
 // Advisory control signal that the device terminated the
 // current ready token before execution began. Applies only
 // to the current ready state.
+// Published on ih/srv/{deviceId} (or on ih/{deviceId}/srv/methods by
+// devices that use the legacy service bound topics).
 message Abandon {
   bytes ready_id = 1;          // must match the current ready state token
   AbandonReason reason = 2;
@@ -72,6 +76,8 @@ message Exec {
 
 // Method result: Device → Service
 // type = "result:1"
+// Published on ih/srv/{deviceId} (or on ih/{deviceId}/srv/methods by
+// devices that use the legacy service bound topics).
 message Result {
   int32 status = 1;     // application-defined status code
   bytes body = 2;       // opaque result payload (caller-defined)

@@ -33,7 +33,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
 
         // The connection client substitutes this device's current ID for the placeholder when it sends each request, so a
         // pending request still goes to the right topic if the device ID changes (for example, after re-provisioning).
-        private const string AzureEventGridOutgoingTwinPublishTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/srv/twin";
+        private string AzureEventGridOutgoingTwinPublishTopic =>
+            MQTTv5.Models.ServiceBoundTopics.Get(_connection.ServiceBoundTopicFormat, IConnectionClient.DeviceIdPlaceholder, MQTTv5.Models.ServiceBoundTopics.Twin);
         private const string AzureEventGridIncomingTwinPublishTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/twin";
         private const string AzureEventGridIncomingPresencePublishTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/presence";
 
@@ -2313,7 +2314,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
             }
         }
 
-        private static MqttPublish CreateGetTwinPublish(Guid getId, Sections sections, ulong ifNotMatchDesired, ulong ifNotMatchReported)
+        private MqttPublish CreateGetTwinPublish(Guid getId, Sections sections, ulong ifNotMatchDesired, ulong ifNotMatchReported)
         {
             MqttPublish publish = new MqttPublish()
             {

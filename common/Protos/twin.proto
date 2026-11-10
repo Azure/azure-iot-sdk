@@ -41,7 +41,8 @@ message DesiredPatch {
 
 // GET request: Device → Service
 // type = "get:1"
-// Published on ih/{deviceId}/srv/twin at QoS 0.
+// Published on ih/srv/{deviceId} at QoS 0 (or on ih/{deviceId}/srv/twin by
+// devices that use the legacy service bound topics).
 // Correlation Data = device-generated 16-byte UUID, unique per GET attempt.
 message TwinGet {
   // Which section(s) to retrieve. Required.
@@ -84,7 +85,8 @@ message TwinGetResponse {
 
 // Reported-properties patch: Device → Service
 // type = "reported-patch:1"
-// Published on ih/{deviceId}/srv/twin at QoS 0.
+// Published on ih/srv/{deviceId} at QoS 0 (or on ih/{deviceId}/srv/twin by
+// devices that use the legacy service bound topics).
 // Correlation Data = device-generated 16-byte UUID, unique per patch attempt.
 message ReportedPatch {
   // The device's current view of the authoritative reported version. The

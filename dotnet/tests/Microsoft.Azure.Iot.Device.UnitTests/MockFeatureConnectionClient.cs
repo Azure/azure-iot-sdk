@@ -51,6 +51,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         bool global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.IsDesiredPushRequested => IsDesiredPushRequested;
 
+        /// <summary>The topics that feature clients publish direct method responses and twin requests on.</summary>
+        public global::Microsoft.Azure.Iot.Device.MQTTv5.Models.ServiceBoundTopicFormat ServiceBoundTopicFormat { get; set; }
+
+        global::Microsoft.Azure.Iot.Device.MQTTv5.Models.ServiceBoundTopicFormat global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ServiceBoundTopicFormat => ServiceBoundTopicFormat;
+
+        global::Microsoft.Azure.Iot.Device.MQTTv5.Models.ServiceBoundTopicFormat global::Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.ServiceBoundTopicFormat => ServiceBoundTopicFormat;
+
         public event Action? ConnectionLost;
 
         event Action? global::Microsoft.Azure.Iot.Device.MQTTv5.Connection.IConnectionClient.ConnectionLost

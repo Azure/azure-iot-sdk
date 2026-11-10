@@ -4,7 +4,8 @@ option csharp_namespace = "Microsoft.Azure.Iot.Device.MQTTv5.Connection";
 
 // Birth: Device → Service
 // type = "birth:1"
-// Published on ih/{deviceId}/srv/presence at QoS 0. See §9.6 for why birth
+// Published on ih/srv/{deviceId} at QoS 0 (or on ih/{deviceId}/srv/presence by
+// devices that use the legacy service bound topics). See §9.6 for why birth
 // is QoS 0 (avoids stale redelivery from a prior session interfering with the
 // always-birth rule).
 // The broker stamps the connection epoch on the CloudEvent envelope (§4.2);

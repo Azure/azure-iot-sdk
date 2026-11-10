@@ -42,6 +42,36 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
         // Optional; the MQTTv5 DPS instance may not be reachable through the public global endpoint.
         public static string? MQTTv5DpsGlobalEndpoint => Environment.GetEnvironmentVariable("IOT_DPS_GLOBAL_ENDPOINT_MQTTV5");
 
+        // Optional; "PerDevice" or "Legacy". When set, every MQTTv5 connection client these tests create publishes births,
+        // direct method responses and twin requests in this format, so the suite can run against IoT hubs that do or don't
+        // support the per-device topic. When not set, the connection client options decide.
+        public static Device.MQTTv5.Models.ServiceBoundTopicFormat? MQTTv5ServiceBoundTopicFormat =>
+            Enum.TryParse(Environment.GetEnvironmentVariable("IOT_SERVICE_BOUND_TOPIC_FORMAT_MQTTV5"), ignoreCase: true, out Device.MQTTv5.Models.ServiceBoundTopicFormat format)
+                ? format
+                : null;
+
+        private static Device.MQTTv5.Models.ConnectionClientOptions? WithServiceBoundTopicFormat(Device.MQTTv5.Models.ConnectionClientOptions? options)
+        {
+            if (MQTTv5ServiceBoundTopicFormat is { } format)
+            {
+                options ??= new();
+                options.ServiceBoundTopicFormat = format;
+            }
+
+            return options;
+        }
+
+        private static ConnectionClientOptions? WithServiceBoundTopicFormat(ConnectionClientOptions? options)
+        {
+            if (MQTTv5ServiceBoundTopicFormat is { } format)
+            {
+                options ??= new();
+                options.ServiceBoundTopicFormat = format;
+            }
+
+            return options;
+        }
+
         public const string TestCertificatesPassword = "some fake password";
 
         private static string GetRequiredEnvironmentVariable(string name)
@@ -137,7 +167,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx, null);
 
-            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(options);
+            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(WithServiceBoundTopicFormat(options));
 
             return new MQTTv5DeviceTestContext()
             {
@@ -177,7 +207,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx, null);
 
-            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(options);
+            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(WithServiceBoundTopicFormat(options));
 
             return new MQTTv5DeviceTestContext()
             {
@@ -209,7 +239,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx, null);
 
-            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(options);
+            Device.MQTTv5.Connection.ConnectionClient connectionClient = new(WithServiceBoundTopicFormat(options));
             ProvisioningSettings provisioningSettings = CreateProvisioningSettings(testAgainstClassicHub: false);
 
             ConnectionContext connectionContext = await RetryAroundAuthorizationAsync<ConnectionContext>(
@@ -252,7 +282,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             X509AuthenticationProvider x509AuthenticationProvider = new(pfx, null);
 
-            ConnectionClient connectionClient = new(options);
+            ConnectionClient connectionClient = new(WithServiceBoundTopicFormat(options));
             ProvisioningSettings provisioningSettings = CreateProvisioningSettings(testAgainstClassicHub);
 
             try
@@ -307,7 +337,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
             var (csrBase64, privateKey) = CertificateUtilities.GenerateCsrAndPrivateKey(registrationId, CertificateUtilities.CsrAlgorithm.RSA);
 
-            ConnectionClient connectionClient = new(options);
+            ConnectionClient connectionClient = new(WithServiceBoundTopicFormat(options));
             ProvisioningSettings provisioningSettings = CreateProvisioningSettings(testAgainstClassicHub);
             provisioningSettings.CertificateSigningRequest = new(privateKey, csrBase64);
 
@@ -386,7 +416,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
                 ? new(registrationId, idScope, symmetricKey, null)
                 : new(registrationId, idScope, symmetricKey, null, issuedCertificatePrivateKey);
 
-            ConnectionClient connectionClient = new(options);
+            ConnectionClient connectionClient = new(WithServiceBoundTopicFormat(options));
             ProvisioningSettings provisioningSettings = CreateProvisioningSettings(testAgainstClassicHub);
             provisioningSettings.CertificateSigningRequest = issuedCertificatePrivateKey == null
                 ? null

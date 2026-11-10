@@ -63,6 +63,9 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.IsDesiredPushRequested"/>
         internal bool IsDesiredPushRequested => true;
 
+        /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.ServiceBoundTopicFormat"/>
+        internal MQTTv5.Models.ServiceBoundTopicFormat ServiceBoundTopicFormat => MQTTv5.Models.ServiceBoundTopicFormat.PerDevice;
+
         /// <inheritdoc cref="MQTTv5.Connection.IConnectionClient.ObserveDesiredPropertiesVersion"/>
         internal void ObserveDesiredPropertiesVersion(ulong version) { }
 

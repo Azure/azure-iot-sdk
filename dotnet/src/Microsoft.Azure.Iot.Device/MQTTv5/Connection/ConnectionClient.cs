@@ -12,6 +12,8 @@ using System.Reflection;
 using System.Text;
 using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using ConnectionClientOptions = Microsoft.Azure.Iot.Device.MQTTv5.Models.ConnectionClientOptions;
+using ServiceBoundTopicFormat = Microsoft.Azure.Iot.Device.MQTTv5.Models.ServiceBoundTopicFormat;
+using ServiceBoundTopics = Microsoft.Azure.Iot.Device.MQTTv5.Models.ServiceBoundTopics;
 
 namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 {
@@ -45,6 +47,10 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         BirthAckVersions? IConnectionClient.LatestBirthAck => _latestBirthAck;
 
         bool IConnectionClient.IsDesiredPushRequested => _receiveDesiredPropertyUpdates;
+
+        private readonly ServiceBoundTopicFormat _serviceBoundTopicFormat;
+
+        ServiceBoundTopicFormat IConnectionClient.ServiceBoundTopicFormat => _serviceBoundTopicFormat;
 
         Task<MqttPublishAck> IConnectionClient.PublishAsync(MqttPublish publish, Action<string> validateTopic, CancellationToken cancellationToken)
             => PublishAsync(publish, validateTopic, cancellationToken);
@@ -168,6 +174,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
             _receiveDesiredPropertyUpdates = options.ReceiveDesiredPropertyUpdates;
             _receiveReportedPropertiesUponConnect = options.ReceiveReportedPropertiesUponConnect;
             _sessionExpiryInterval = options.SessionExpiryInterval;
+            _serviceBoundTopicFormat = options.ServiceBoundTopicFormat;
             DeliberatelyDisconnected += () => ConnectionAbandoned?.Invoke(new OperationCanceledException(
                 "Operation canceled because the connection client was deliberately disconnected while this operation was waiting for the connection to be re-established."));
             UnrecoverablyFaulted += () => ConnectionAbandoned?.Invoke(CreateUnrecoverablyFaultedException());
@@ -328,7 +335,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
             MqttPublish birthMessage = new MqttPublish()
             {
-                Topic = string.Format(System.Globalization.CultureInfo.InvariantCulture, "ih/{0}/srv/presence", deviceId),
+                Topic = ServiceBoundTopics.Get(_serviceBoundTopicFormat, deviceId, ServiceBoundTopics.Presence),
                 CorrelationData = connectNonce.ToByteArray(bigEndian: true),
                 Payload = birth.ToByteArray(),
                 ContentType = ProtobufContentType,

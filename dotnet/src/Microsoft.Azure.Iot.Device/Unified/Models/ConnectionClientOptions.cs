@@ -137,5 +137,16 @@ namespace Microsoft.Azure.Iot.Device.Unified.Models
         /// This value is read once when the connection client is constructed.
         /// </remarks>
         public uint SessionExpiryInterval { get; set; } = 3600;
+
+        /// <summary>
+        /// When connected to an IoT hub over MQTTv5, the topics that the device publishes its births, direct method responses
+        /// and twin requests on. Defaults to <see cref="MQTTv5.Models.ServiceBoundTopicFormat.PerDevice"/>.
+        /// </summary>
+        /// <remarks>
+        /// Set this to <see cref="MQTTv5.Models.ServiceBoundTopicFormat.Legacy"/> to connect to an IoT hub that doesn't support
+        /// the per-device topic. Telemetry topics are not affected. This value is ignored for IoT hubs that use MQTTv3.
+        /// This value is read once when the connection client is constructed.
+        /// </remarks>
+        public MQTTv5.Models.ServiceBoundTopicFormat ServiceBoundTopicFormat { get; set; } = MQTTv5.Models.ServiceBoundTopicFormat.PerDevice;
     }
 }

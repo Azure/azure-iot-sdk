@@ -166,7 +166,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.All(connectAttempts, attempt => Assert.StartsWith("correlationId=", attempt.Username));
             Assert.Equal(3, connectAttempts.Select(attempt => attempt.Username).Distinct().Count());
             Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic =>
-                traffic.Publish?.Topic == "ih/someDeviceId/srv/presence"));
+                ServiceBoundTestTopics.IsBirth(traffic.Publish, "someDeviceId")));
         }
 
         // Matches the C SDK: the MQTTv5 hub serves MQTT over WebSockets at "/mqtt" on port 443.
@@ -255,7 +255,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(new[] { (useCleanSession, sessionExpiryInterval), (useCleanSession, sessionExpiryInterval) }, connectSettings);
             Assert.Equal(useCleanSession || sessionExpiryInterval == 0 ? 2 : 1,
                 mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
-            Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Publish?.Topic.EndsWith("/srv/presence", StringComparison.Ordinal) == true));
+            Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => ServiceBoundTestTopics.IsBirth(traffic.Publish)));
         }
 
         [Theory]
@@ -379,7 +379,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             // the subscriptions and only the birth is sent again.
             Assert.Equal(s_expectedTwoResumedSessionFlags, cleanStartFlags);
             Assert.Equal(1, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
-            Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Publish?.Topic.EndsWith("/srv/presence", StringComparison.Ordinal) == true));
+            Assert.Equal(2, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => ServiceBoundTestTopics.IsBirth(traffic.Publish)));
         }
 
         // A publish attempt that fails only after the reconnect and its birth flow have already completed must still be
@@ -679,7 +679,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             int birthCount = 0;
             mockMqttClient.OnPublish = publish =>
             {
-                if (publish.Topic == "ih/someDeviceId/srv/presence" && Interlocked.Increment(ref birthCount) > 2)
+                if (ServiceBoundTestTopics.IsBirth(publish, "someDeviceId") && Interlocked.Increment(ref birthCount) > 2)
                 {
                     MqttPublish birthAck = new()
                     {
@@ -740,7 +740,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             int birthCount = 0;
             mockMqttClient.OnPublish = publish =>
             {
-                if (publish.Topic == "ih/someDeviceId/srv/presence" && Interlocked.Increment(ref birthCount) > 1)
+                if (ServiceBoundTestTopics.IsBirth(publish, "someDeviceId") && Interlocked.Increment(ref birthCount) > 1)
                 {
                     _ = Task.Run(() => mockMqttClient.SimulatePublishReceivedAsync(CreateBirthAck("birth-ack:1", publish.CorrelationData, Array.Empty<byte>())));
                 }
@@ -790,7 +790,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             int birthCount = 0;
             mockMqttClient.OnPublish = publish =>
             {
-                if (publish.Topic == "ih/someDeviceId/srv/presence")
+                if (ServiceBoundTestTopics.IsBirth(publish, "someDeviceId"))
                 {
                     MqttPublish birthAck = Interlocked.Increment(ref birthCount) == 1
                         ? CreateBirthAck(
@@ -836,7 +836,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             int birthCount = 0;
             mockMqttClient.OnPublish = publish =>
             {
-                if (publish.Topic == "ih/someDeviceId/srv/presence")
+                if (ServiceBoundTestTopics.IsBirth(publish, "someDeviceId"))
                 {
                     byte[] payload = Interlocked.Increment(ref birthCount) == 1 ? new byte[] { 0xFF } : Array.Empty<byte>();
                     MqttPublish birthAck = CreateBirthAck("birth-ack:1", publish.CorrelationData, payload);
@@ -906,7 +906,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             bool answerBirths = false;
             mockMqttClient.OnPublish = publish =>
             {
-                if (publish.Topic == "ih/someDeviceId/srv/presence" && Volatile.Read(ref answerBirths))
+                if (ServiceBoundTestTopics.IsBirth(publish, "someDeviceId") && Volatile.Read(ref answerBirths))
                 {
                     _ = Task.Run(() => mockMqttClient.SimulatePublishReceivedAsync(CreateBirthAck("birth-ack:1", publish.CorrelationData, Array.Empty<byte>())));
                 }

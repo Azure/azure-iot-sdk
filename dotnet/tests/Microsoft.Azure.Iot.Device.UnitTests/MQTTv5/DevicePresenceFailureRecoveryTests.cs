@@ -212,7 +212,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             Birth[] births = mockMqttClient.SentMqttTrafficInOrder
                 .Select(traffic => traffic.Publish).OfType<MqttPublish>()
-                .Where(publish => publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                .Where(publish => ServiceBoundTestTopics.IsBirth(publish))
                 .Select(publish => Birth.Parser.ParseFrom(publish.Payload))
                 .ToArray();
             Assert.Equal(2, births.Length);
@@ -252,7 +252,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             Birth[] births = mockMqttClient.SentMqttTrafficInOrder
                 .Select(traffic => traffic.Publish).OfType<MqttPublish>()
-                .Where(publish => publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                .Where(publish => ServiceBoundTestTopics.IsBirth(publish))
                 .Select(publish => Birth.Parser.ParseFrom(publish.Payload))
                 .ToArray();
             Assert.Equal(2, births.Length);
@@ -311,7 +311,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             using MockConnectionMqttClient mockMqttClient = new();
             mockMqttClient.OnPublish = async publish =>
             {
-                if (publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                if (ServiceBoundTestTopics.IsBirth(publish))
                 {
                     // IoT hub usually sends the twin push before the birth ack.
                     MqttPublish push = new()
@@ -370,7 +370,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             using MockConnectionMqttClient mockMqttClient = new();
             mockMqttClient.OnPublish = async publish =>
             {
-                if (publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                if (ServiceBoundTestTopics.IsBirth(publish))
                 {
                     // The twin client ignores twin pushes that it can't apply, so they don't count as the expected push.
                     MqttPublish push = new()
@@ -430,7 +430,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             using MockConnectionMqttClient mockMqttClient = new();
             mockMqttClient.OnPublish = async publish =>
             {
-                if (publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                if (ServiceBoundTestTopics.IsBirth(publish))
                 {
                     // Only the second birth's versions match IoT hub's, so it is the only one that needs no twin push.
                     BirthAck ack = Interlocked.Increment(ref birthCount) == 2
@@ -556,7 +556,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             Birth[] births = mockMqttClient.SentMqttTrafficInOrder
                 .Select(traffic => traffic.Publish).OfType<MqttPublish>()
-                .Where(publish => publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+                .Where(publish => ServiceBoundTestTopics.IsBirth(publish))
                 .Select(publish => Birth.Parser.ParseFrom(publish.Payload))
                 .ToArray();
             Assert.Equal(2, births.Length);
@@ -576,7 +576,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
                 lock (mockMqttClient.SentMqttTrafficInOrder)
                 {
                     if (mockMqttClient.SentMqttTrafficInOrder.Count(traffic =>
-                        traffic.Publish?.Topic.EndsWith("/srv/presence", StringComparison.Ordinal) == true) >= count)
+                        ServiceBoundTestTopics.IsBirth(traffic.Publish)) >= count)
                     {
                         return;
                     }
@@ -654,7 +654,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(0, Volatile.Read(ref disconnectCount));
             Assert.Equal(1, mockMqttClient.SentMqttTrafficInOrder.Count(traffic => traffic.Subscribe != null));
             Assert.Equal(1, mockMqttClient.SentMqttTrafficInOrder.Count(traffic =>
-                traffic.Publish?.Topic.EndsWith("/srv/presence", StringComparison.Ordinal) == true));
+                ServiceBoundTestTopics.IsBirth(traffic.Publish)));
         }
 
         [Fact]
@@ -873,7 +873,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             mockMqttClient.OnPublish = async (publish) =>
             {
                 // Only the birth message is published in this test, so every publish here is a device presence publish.
-                if (publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal) && birthPublishInjector != null)
+                if (ServiceBoundTestTopics.IsBirth(publish) && birthPublishInjector != null)
                 {
                     int attempt = Interlocked.Increment(ref birthPublishCount);
                     MqttPublishAck? injected = birthPublishInjector.Invoke(publish, attempt);
@@ -902,7 +902,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             // last traffic on the wire once device presence has been announced.
             var lastTraffic = mockMqttClient.SentMqttTrafficInOrder[^1];
             Assert.NotNull(lastTraffic.Publish);
-            Assert.EndsWith("/srv/presence", lastTraffic.Publish.Topic);
+            Assert.True(ServiceBoundTestTopics.IsBirth(lastTraffic.Publish));
         }
     }
 }

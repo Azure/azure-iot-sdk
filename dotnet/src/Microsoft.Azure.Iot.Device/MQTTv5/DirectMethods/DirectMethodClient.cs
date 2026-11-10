@@ -29,7 +29,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
         // The connection client substitutes this device's current ID for the placeholder when it sends each response, so a
         // response still goes to the right topic if the device ID changes (for example, after re-provisioning).
-        private const string DirectMethodsResponseTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/srv/methods";
+        private string DirectMethodsResponseTopic =>
+            ServiceBoundTopics.Get(_connection.ServiceBoundTopicFormat, IConnectionClient.DeviceIdPlaceholder, ServiceBoundTopics.Methods);
         private const string DirectMethodsRequestTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/dev/methods";
 
         private static readonly TimeSpan MinimumDefaultSafetyMargin = TimeSpan.FromSeconds(1);
