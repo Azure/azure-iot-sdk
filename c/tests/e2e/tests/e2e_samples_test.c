@@ -693,7 +693,7 @@ static void create_tpm_enrollment(void)
   (void)az_iot_e2e_process_stop(&s_sample, 0);
   assert_true(endorsement_key[0] != '\0');
   s_run.enrollment_created = true; // Deleted by teardown() even if this fails part way.
-  assert_true(az_iot_e2e_dps_tpm_enrollment_create(s_run.registration_id, endorsement_key));
+  assert_true(az_iot_e2e_dps_tpm_enrollment_create(s_run.registration_id, endorsement_key, NULL));
 }
 
 /* What each sample does and how long it runs: samples/<group>/<name>/main.c. */
