@@ -201,3 +201,6 @@ are no-ops and the samples are unchanged. With it, the sample writes unbuffered 
 SIGINT, SIGTERM and (Windows) CTRL_BREAK as a stop request for a loop that checks
 `sample_is_stop_requested()`; a signal prints no marker. Only a call to
 `sample_pipeline_checks_request_stop(reason)` prints `sample-pipeline: stop <reason>`.
+
+CI runs the connecting samples against a real hub this way: see
+[Samples in the end-to-end tests](../docs/eng/end-to-end-tests.md#samples).
