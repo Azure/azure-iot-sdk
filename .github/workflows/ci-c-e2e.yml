@@ -313,8 +313,7 @@ jobs:
         # eng/setup-pkcs11-provider.sh for why the packaged one will not do),
         # which is what meson and pkg-config are for.
         run: |
-          sudo apt-get update && sudo apt-get install -y ninja-build \
-                                                          softhsm2 opensc meson pkg-config
+          bash "$GITHUB_WORKSPACE/c/eng/apt-install.sh" ninja-build softhsm2 opensc meson pkg-config
           python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build e2e tests
@@ -640,7 +639,7 @@ jobs:
             espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c \
             bash -c 'set -e
               git config --global --add safe.directory /work
-              apt-get update -qq && apt-get install -y -qq gcc libc6-dev libssl-dev > /dev/null
+              bash eng/apt-install.sh gcc libc6-dev libssl-dev
               bash eng/esp-idf-qemu-e2e.sh "$0" /device/cert.pem /device/key.pem /tmp/esp32-qemu-e2e' \
             "$TARGET"
 
