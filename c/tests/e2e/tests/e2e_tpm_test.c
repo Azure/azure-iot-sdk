@@ -393,11 +393,19 @@ static void test_dps_tpm_registration_hub_sas_and_reregistration(void** state)
   /* Enroll the device again under a new device ID (DPS refuses, errorCode 409000, to re-create
    * a device ID deleted from the hub); registering again creates it and imports a new key. DPS
    * may still refuse while the deletion propagates. */
-  int written_id
-      = snprintf(reenrolled_device_id, sizeof(reenrolled_device_id), "%s-reenrolled", device_id);
-  bool reenrolled = refused == AZ_IOT_ERR_IDENTITY_REJECTED && written_id > 0
-      && (size_t)written_id < sizeof(reenrolled_device_id)
-      && az_iot_e2e_dps_tpm_enrollment_create(reg_id, ek_b64, reenrolled_device_id);
+  bool reenrolled = false;
+  if (refused == AZ_IOT_ERR_IDENTITY_REJECTED)
+  {
+    /* Set only here, so cleanup deletes no device this run did not enroll. */
+    int written_id
+        = snprintf(reenrolled_device_id, sizeof(reenrolled_device_id), "%s-reenrolled", device_id);
+    if (written_id <= 0 || (size_t)written_id >= sizeof(reenrolled_device_id))
+    {
+      reenrolled_device_id[0] = '\0';
+    }
+    reenrolled = reenrolled_device_id[0] != '\0'
+        && az_iot_e2e_dps_tpm_enrollment_create(reg_id, ek_b64, reenrolled_device_id);
+  }
   deadline = sample_now_ms() + E2E_TPM_DELETE_PROPAGATION_MS;
   while (reenrolled && reregistered != AZ_IOT_OK && sample_now_ms() < deadline)
   {
