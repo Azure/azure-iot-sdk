@@ -5,6 +5,7 @@ using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using System.Text;
 
 namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
@@ -155,6 +156,8 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.CustomTopics
         }
 
         // Catches locally what IoT hub would refuse anyway, some of it by closing the connection.
+        // The exceptions name the caller's publish parameter, which is where the topic came from.
+        [SuppressMessage("Usage", "CA2208:Instantiate argument exceptions correctly", Justification = "The topic comes from the public method's publish parameter.")]
         private static void ValidateResolvedTopic(string resolvedTopic)
         {
             const string ParamName = "publish";

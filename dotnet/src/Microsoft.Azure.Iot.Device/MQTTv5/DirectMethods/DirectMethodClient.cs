@@ -195,7 +195,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
 
         private Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
         {
-            if (!args.Publish.Topic.StartsWith("ih/") || !args.Publish.Topic.EndsWith("/dev/methods"))
+            if (!args.Publish.Topic.StartsWith("ih/", StringComparison.Ordinal) || !args.Publish.Topic.EndsWith("/dev/methods", StringComparison.Ordinal))
             {
                 // The publish is not relevant to this client, so ignore it. This check needs to happen prior to checking the deviceId within the topic b/c deviceId is
                 // not available until after provisioning finishes and this client may be setup prior to provisioning. This allows this client to ignore DPS
@@ -212,7 +212,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
                 return Task.CompletedTask;
             }
 
-            if (!args.Publish.Topic.Equals(DirectMethodsRequestTopic.Replace(IConnectionClient.DeviceIdPlaceholder, currentConnectionContext.DeviceId, StringComparison.Ordinal)))
+            if (!args.Publish.Topic.Equals(DirectMethodsRequestTopic.Replace(IConnectionClient.DeviceIdPlaceholder, currentConnectionContext.DeviceId, StringComparison.Ordinal), StringComparison.Ordinal))
             {
                 // Message isn't relevant to this device. Ignore it.
                 return Task.CompletedTask;
@@ -899,6 +899,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.DirectMethods
         /// </summary>
         public void Dispose()
         {
+            GC.SuppressFinalize(this);
             DisposeCore();
             _connection.Dispose();
         }

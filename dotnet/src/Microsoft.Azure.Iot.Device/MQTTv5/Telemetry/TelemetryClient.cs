@@ -130,6 +130,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Telemetry
         /// </summary>
         public void Dispose()
         {
+            GC.SuppressFinalize(this);
             _connection.Dispose();
 
             _isDisposed = true;

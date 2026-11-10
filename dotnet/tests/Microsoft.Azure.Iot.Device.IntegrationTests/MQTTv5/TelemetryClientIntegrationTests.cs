@@ -19,7 +19,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestDeviceToCloudTelemetry()
         {
-            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, null, cancellationToken: TestContext.Current.CancellationToken);
 
             using TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
 
@@ -36,7 +36,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
         public async Task TestDeviceToCloudTelemetryWithAllUserProperties()
         {
-            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, null, cancellationToken: TestContext.Current.CancellationToken);
 
             using TelemetryClient telemetryClient = new TelemetryClient(testDeviceContext.ConnectionClient);
 

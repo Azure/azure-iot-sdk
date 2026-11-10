@@ -288,7 +288,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             {
                 MqttNetClient mqttClient = new();
                 MQTTv5DeviceTestContext context = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(
-                    null, new ConnectionClientOptions { MqttClient = mqttClient }, TestContext.Current.CancellationToken);
+                    null, new ConnectionClientOptions { MqttClient = mqttClient }, cancellationToken: TestContext.Current.CancellationToken);
                 return new CustomTopicsTestDevice(context, mqttClient);
             }
 

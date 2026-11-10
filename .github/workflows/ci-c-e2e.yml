@@ -35,7 +35,7 @@
 #                 builds the native e2e tests, gets its test-config, materializes
 #                 the device X.509 material to files, and runs its group.
 #      coverage : merges the Linux groups' tracefiles into coverage-trace-e2e.
-#      esp32-qemu: the ESP32 IoT Hub sample in QEMU (esp32, esp32c3), always on
+#      esp32-qemu: the ESP32 IoT Hub sample in QEMU (esp32, esp32c3, esp32s3), always on
 #                 the shared environment (see the job).
 #   3. teardown : always() deletes the shared resource group (via the reusable
 #                 destroy-e2e-resources step). It recomputes the group name from
@@ -311,18 +311,13 @@ jobs:
 
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
-        # libcurl backs the file upload sample's HTTP hook; without it CMake builds
-        # the sample with a stub hook that cannot perform the Classic control-plane
-        # calls, and the sample run below would prove nothing.
-        #
         # softhsm2 + opensc back the non-extractable-key custody suite: a token
         # to hold the device key and the tool that writes it there. The OpenSSL
         # pkcs11 provider the handshake signs through is built from source (see
         # eng/setup-pkcs11-provider.sh for why the packaged one will not do),
         # which is what meson and pkg-config are for.
         run: |
-          sudo apt-get update && sudo apt-get install -y ninja-build libcurl4-openssl-dev \
-                                                          softhsm2 opensc meson pkg-config
+          bash "$GITHUB_WORKSPACE/c/eng/apt-install.sh" ninja-build libcurl4-openssl-dev softhsm2 opensc meson pkg-config
           python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build e2e tests
@@ -332,13 +327,8 @@ jobs:
         # Windows runner image does not carry.
         run: |
           cmake --preset ${{ matrix.preset }} -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON ${{ runner.os == 'Linux' && '-DAZ_IOT_BUILD_E2E_PKCS11=ON' || '' }}
-          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport az_iot_tests_e2e_amqp_link az_iot_tests_e2e_notify_time az_iot_tests_e2e_http_headers az_iot_tests_e2e_amqp_capture az_iot_tests_e2e_amqp_telemetry az_iot_tests_e2e_sas az_iot_tests_e2e_tpm az_iot_tests_e2e_az_mqtt az_iot_tests_e2e_fileupload_az_mqtt az_iot_tests_e2e_transport_az_mqtt az_iot_tests_e2e_sas_az_mqtt az_iot_tests_e2e_tpm_az_mqtt
+          cmake --build --preset ${{ matrix.preset }} ${{ runner.os == 'Windows' && '--config Debug' || '' }} --target az_iot_tests_e2e az_iot_tests_e2e_process az_iot_tests_e2e_fileupload az_iot_tests_e2e_transport az_iot_tests_e2e_amqp_link az_iot_tests_e2e_notify_time az_iot_tests_e2e_http_headers az_iot_tests_e2e_amqp_capture az_iot_tests_e2e_amqp_telemetry az_iot_tests_e2e_sas az_iot_tests_e2e_tpm az_iot_tests_e2e_az_mqtt az_iot_tests_e2e_fileupload_az_mqtt az_iot_tests_e2e_transport_az_mqtt az_iot_tests_e2e_sas_az_mqtt az_iot_tests_e2e_tpm_az_mqtt
           ${{ runner.os == 'Linux' && format('cmake --build --preset {0} --target az_iot_tests_e2e_custody az_iot_tests_e2e_custody_az_mqtt az_iot_tests_e2e_amqp_transport_sigpipe', matrix.preset) || '' }}
-
-      - name: Build the file upload sample (Linux)
-        if: runner.os == 'Linux'
-        working-directory: c
-        run: cmake --build --preset ${{ matrix.preset }} --target az_iot_sample_unified_file_upload
 
       # Provisioned runs read events on this job's own consumer group (created
       # by setup). On the shared environment the generated test config sets it.
@@ -442,7 +432,7 @@ jobs:
           $env:AZ_IOT_DPS_SAS_REGISTRATION_ID = "sas-${{ github.run_id }}-${{ github.run_attempt }}-$idx"
 
           # Republish the DEVICE-side configuration (an id scope, a registration id
-          # and three file paths -- no secrets) so the sample step below can reuse
+          # and three file paths -- no secrets) so the custody step below can reuse
           # this leg's device without re-materializing the X.509 material.
           foreach ($name in @('AZ_IOT_DPS_ID_SCOPE', 'AZ_IOT_DPS_REGISTRATION_ID',
                               'AZ_IOT_CLIENT_CERT', 'AZ_IOT_CLIENT_KEY',
@@ -457,7 +447,8 @@ jobs:
           # suite and the transport suite (WebSockets, and MQTT through an HTTP
           # proxy; its proxy scenarios skip themselves when no proxy is
           # configured for the leg), the DPS TPM suite, and the AMQP link,
-          # notification-time, HTTP header parsing and telemetry capture tests (no Azure resources).
+          # notification-time, HTTP header parsing and telemetry capture tests, and the child-process
+          # helper's test (no Azure resources).
           # The mocked ADU suite retired with ADU's twin delivery channel
           # and is not built. The CSR enrollment test is not built
           # here -- it needs a DPS enrollment linked to a signing CA, which only
@@ -542,20 +533,6 @@ jobs:
             --output-junit ./test_config/results/e2e-custody-${{ matrix.os }}.xml
           if ($LASTEXITCODE -ne 0) { throw "custody e2e failed ($LASTEXITCODE)" }
 
-      - name: Run the file upload sample (Linux)
-        if: runner.os == 'Linux' && matrix.group == 'core'
-        shell: pwsh
-        # The sample is the reference integration of the application HTTP hook the
-        # Classic file-upload control plane requires (this SDK ships no HTTP
-        # client). Building it proves nothing about that hook, so run it against
-        # the real hub: it provisions, requests a SAS URI, PUTs the blob with
-        # libcurl and reports completion, exiting non-zero if any step fails.
-        run: |
-          $exe = "c/build/${{ matrix.preset }}/samples/unified/az_iot_sample_file_upload"
-          if (-not (Test-Path $exe)) { throw "sample not built at $exe" }
-          & $exe
-          if ($LASTEXITCODE -ne 0) { throw "file upload sample failed ($LASTEXITCODE)" }
-
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -585,11 +562,12 @@ jobs:
   # coverage, and merging it would understate coverage for an unrelated reason.
   # The ESP32 IoT Hub sample (samples/unified/esp32) in QEMU: the firmware is the
   # device, az_iot_tests_e2e_esp32_qemu the service (eng/esp-idf-qemu-e2e.sh).
-  # esp32 keeps its key in flash; esp32c3 in the Digital Signature peripheral,
-  # its key burned into an emulated eFuse. Always on the shared environment, on
-  # push and nightly too: the per-run enrollments' RSA-4096 keys exceed the DS
-  # peripheral's 3072 bits, and the shared group CA issues RSA-2048. Device
-  # index 12 (esp32) and 13 (esp32c3), after the test legs' 0..11.
+  # esp32 keeps its key in flash; esp32c3 and esp32s3 in the Digital Signature
+  # peripheral, its key burned into an emulated eFuse. Always on the shared
+  # environment, on push and nightly too: the per-run enrollments' RSA-4096 keys
+  # exceed the esp32c3 DS peripheral's 3072 bits, and the shared group CA issues
+  # RSA-2048. Device index 12 (esp32), 13 (esp32c3) and 14 (esp32s3), after the
+  # test legs' 0..11.
   esp32-qemu:
     name: esp32 qemu / ${{ matrix.target }}
     needs: changes
@@ -607,6 +585,8 @@ jobs:
             device-index: 12
           - target: esp32c3
             device-index: 13
+          - target: esp32s3
+            device-index: 14
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -664,7 +644,7 @@ jobs:
             espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c \
             bash -c 'set -e
               git config --global --add safe.directory /work
-              apt-get update -qq && apt-get install -y -qq gcc libc6-dev libssl-dev > /dev/null
+              bash eng/apt-install.sh gcc libc6-dev libssl-dev
               bash eng/esp-idf-qemu-e2e.sh "$0" /device/cert.pem /device/key.pem /tmp/esp32-qemu-e2e' \
             "$TARGET"
 

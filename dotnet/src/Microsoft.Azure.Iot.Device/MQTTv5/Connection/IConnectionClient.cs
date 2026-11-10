@@ -84,6 +84,18 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         internal event Action? ConnectionLost { add { } remove { } }
 
         /// <summary>
+        /// Raised when nothing will bring the connection to IoT hub back unless the application connects again: the
+        /// application deliberately disconnects, or this client hits a fault it will not recover from. When raised for a
+        /// deliberate disconnect, it is raised before <see cref="ConnectionLost"/>. The argument is the exception that
+        /// operations waiting for the connection to come back fail with.
+        /// </summary>
+        /// <remarks>
+        /// The twin client uses this to fail requests it would otherwise send again once reconnected, including ones whose
+        /// resend is queued but not yet handed to <see cref="PublishAsync"/>.
+        /// </remarks>
+        internal event Action<Exception>? ConnectionAbandoned { add { } remove { } }
+
+        /// <summary>
         /// Raised when the device connects to IoT hub as a different identity (IoT hub or device ID) than on its previous
         /// connection, for example after re-provisioning, before the device announces its presence with that identity.
         /// </summary>

@@ -48,7 +48,7 @@ namespace Microsoft.Azure.Iot.Device.Mqtt
                 type = split[0];
                 try
                 {
-                    value = int.Parse(split[1]);
+                    value = int.Parse(split[1], System.Globalization.CultureInfo.InvariantCulture);
                     return true;
                 }
                 catch

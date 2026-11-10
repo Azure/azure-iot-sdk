@@ -27,7 +27,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
                 MqttClient = new MqttNetClient(mqttClientOptions)
             };
 
-            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, connectionClientOptions, TestContext.Current.CancellationToken);
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, connectionClientOptions, cancellationToken: TestContext.Current.CancellationToken);
 
             await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
         }
@@ -53,7 +53,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
                 MqttClient = new MqttNetClient(mqttClientOptions)
             };
 
-            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, connectionClientOptions, TestContext.Current.CancellationToken);
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, connectionClientOptions, cancellationToken: TestContext.Current.CancellationToken);
 
             await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
 

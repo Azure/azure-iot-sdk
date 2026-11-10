@@ -230,17 +230,16 @@ const char* az_iot_e2e_service_last_error(const az_iot_e2e_service* svc)
   return svc->last_error;
 }
 
-bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc, const char* capture_filter)
+/**
+ * @brief Starts a telemetry watcher for messages enqueued after @p enqueued_after_ms (Unix ms),
+ * from @p device_id (NULL: any device), capturing the bodies containing @p capture_filter.
+ */
+static bool telemetry_watch_start(
+    az_iot_e2e_service* svc,
+    const char* capture_filter,
+    const char* device_id,
+    int64_t enqueued_after_ms)
 {
-  if (svc->telemetry != NULL)
-  {
-    if (strcmp(svc->telemetry->capture_filter, capture_filter != NULL ? capture_filter : "") == 0)
-    {
-      return true; /* already watching */
-    }
-    az_iot_e2e_service_telemetry_watch_end(svc);
-  }
-
   /* Event Hubs authorizes the entity audience with a SAS whose HMAC key is the
    * raw key string (NOT base64-decoded) — the Event Hubs/Service Bus convention. */
   /* Sized for the widest possible "amqps://<host>/<entity>": host[256] + entity[128]
@@ -263,9 +262,16 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc, const cha
     return false;
   }
 
+  if (!e2e_amqp_telemetry_set_device_filter(svc->telemetry, device_id))
+  {
+    set_error(svc, "telemetry: device ID too long");
+    free(svc->telemetry);
+    svc->telemetry = NULL;
+    return false;
+  }
+
   svc->telemetry_reconnect_at = 0;
   const char* err = NULL;
-  int64_t enqueued_after_ms = ((int64_t)time(NULL) - E2E_TELEMETRY_CLOCK_SKEW_S) * 1000;
   if (!e2e_amqp_telemetry_begin(
           svc->telemetry,
           svc->eh_info.host,
@@ -283,6 +289,36 @@ bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc, const cha
     return false;
   }
   return true;
+}
+
+bool az_iot_e2e_service_telemetry_watch_begin(az_iot_e2e_service* svc, const char* capture_filter)
+{
+  if (svc->telemetry != NULL)
+  {
+    if (svc->telemetry->device_filter[0] == '\0'
+        && strcmp(svc->telemetry->capture_filter, capture_filter != NULL ? capture_filter : "")
+            == 0)
+    {
+      return true; /* already watching */
+    }
+    az_iot_e2e_service_telemetry_watch_end(svc);
+  }
+  return telemetry_watch_start(
+      svc, capture_filter, NULL, ((int64_t)time(NULL) - E2E_TELEMETRY_CLOCK_SKEW_S) * 1000);
+}
+
+bool az_iot_e2e_service_telemetry_watch_device_begin(
+    az_iot_e2e_service* svc,
+    const char* device_id,
+    int64_t enqueued_after_s)
+{
+  if (device_id == NULL || device_id[0] == '\0')
+  {
+    set_error(svc, "telemetry: no device ID");
+    return false;
+  }
+  az_iot_e2e_service_telemetry_watch_end(svc);
+  return telemetry_watch_start(svc, NULL, device_id, enqueued_after_s * 1000);
 }
 
 /**

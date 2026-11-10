@@ -11,7 +11,7 @@
 #   eng/esp-idf-qemu-identity.sh <build-dir> <target> <cert.pem> <key.pem> <out-dir>
 #
 # Writes <out-dir>/esp_secure_cert.bin (for offset 0xd000) and, with DS, <out-dir>/qemu_efuse.bin
-# (eFuse key block 3). DS takes an RSA key of at most 3072 bits.
+# (eFuse key block 3). DS takes an RSA key of at most 3072 bits on esp32c3, 4096 on esp32s3.
 set -euo pipefail
 
 if [ $# -ne 5 ]; then
@@ -37,14 +37,15 @@ cd "$out"
 rm -rf esp_secure_cert_data qemu_efuse.bin
 
 if grep -q '^#define CONFIG_ESP_SECURE_CERT_DS_PERIPHERAL 1' "${build}/config/sdkconfig.h"; then
-  if [ "$target" != esp32c3 ]; then
-    echo "DS identities are written in QEMU for esp32c3 only" >&2
+  if [ "$target" != esp32c3 ] && [ "$target" != esp32s3 ]; then
+    echo "DS identities are written in QEMU for esp32c3 and esp32s3 only" >&2
     exit 2
   fi
   bits=$(python -c 'import sys
 from cryptography.hazmat.primitives.serialization import load_pem_private_key
 print(load_pem_private_key(open(sys.argv[1], "rb").read(), None).key_size)' "$key")
-  # A blank esp32c3 eFuse image at chip revision 0.3, as ESP-IDF's `idf.py qemu` writes it.
+  # A blank eFuse image at chip revision 0.3, as ESP-IDF's `idf.py qemu` writes it (the same for
+  # esp32c3 and esp32s3).
   python -c 'import sys; b = bytearray(1024); b[0x26] = 0x0c; open(sys.argv[1], "wb").write(b)' \
     qemu_efuse.bin
   port=$((5555 + RANDOM % 1000))

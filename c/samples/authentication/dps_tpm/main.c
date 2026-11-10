@@ -238,6 +238,8 @@ static bool https_send(
     curl_slist_free_all(headers);
     return false;
   }
+  char error[CURL_ERROR_SIZE] = { 0 };
+  curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, request->method);
   if (request->body != NULL)
@@ -264,7 +266,7 @@ static bool https_send(
   }
   else
   {
-    fprintf(stderr, "[dps_tpm] HTTPS failed: %s\n", curl_easy_strerror(rc));
+    fprintf(stderr, "[dps_tpm] HTTPS failed: %s (%s)\n", curl_easy_strerror(rc), error);
   }
   OPENSSL_cleanse(auth, sizeof(auth));
   curl_slist_free_all(headers);
@@ -668,6 +670,9 @@ static az_iot_result connect_and_send_telemetry(
 
 int main(int argc, char** argv)
 {
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call.
+  sample_pipeline_checks_begin();
   az_iot_log_sink log = sample_log_sink(AZ_IOT_LOG_LEVEL_INFO);
   az_iot_log_set_global_sink(&log);
 
@@ -755,5 +760,8 @@ cleanup:
   free(endpoint);
   free(reg_id_env);
   free(ca);
-  return rc;
+  // Used only by automatic ci-pipeline verification of this sample.
+  // When porting this code to your own application, please ignore this call or return the value
+  // directly.
+  return sample_pipeline_checks_end(rc);
 }

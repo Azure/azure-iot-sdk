@@ -20,7 +20,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             uint expectedResponseTimeout = 20;
             uint expectedConnectTimeout = 20;
 
-            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, null, cancellationToken: TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
             ServiceClient serviceClient = Setup.GetMQTTv5IotHubServiceClient();
@@ -44,7 +44,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             TaskCompletionSource<DirectMethodRequestProbeReceivedEventArgs> ProbeReceivedTcs = new();
             directMethodClient.DirectMethodProbeReceivedAsync += (args) =>
             {
-                if (args.MethodName.Equals(expectedDirectMethodName) && args.ResponseTimeoutSeconds == expectedResponseTimeout)
+                if (args.MethodName.Equals(expectedDirectMethodName, StringComparison.Ordinal) && args.ResponseTimeoutSeconds == expectedResponseTimeout)
                 {
                     ProbeReceivedTcs.TrySetResult(args);
 
@@ -57,7 +57,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             TaskCompletionSource<DirectMethodRequestReceivedEventArgs> DirectMethodReceivedTcs = new();
             directMethodClient.DirectMethodInvokedAsync += (args) =>
             {
-                if (args.MethodName.Equals(expectedDirectMethodName))
+                if (args.MethodName.Equals(expectedDirectMethodName, StringComparison.Ordinal))
                 {
                     if (args.Payload == null)
                     {
@@ -66,7 +66,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 
                     var requestPayload = SimpleDirectMethodPayload.FromJsonBytes(args.Payload);
 
-                    if (requestPayload.SomeString.Equals(expectedRequestPayload.SomeString) && requestPayload.SomeInt == expectedRequestPayload.SomeInt)
+                    if (requestPayload.SomeString != null && requestPayload.SomeString.Equals(expectedRequestPayload.SomeString, StringComparison.Ordinal) && requestPayload.SomeInt == expectedRequestPayload.SomeInt)
                     {
                         actualDirectMethodRequestsReceivedCount++;
                         DirectMethodResponse response = new()
@@ -116,7 +116,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             uint expectedResponseTimeout = 20;
             uint expectedConnectTimeout = 20;
 
-            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, null, TestContext.Current.CancellationToken);
+            MQTTv5DeviceTestContext testDeviceContext = await Setup.CreateConnectedMQTTv5ConnectionClientAsync(null, null, cancellationToken: TestContext.Current.CancellationToken);
             using DirectMethodClient directMethodClient = new DirectMethodClient(testDeviceContext.ConnectionClient);
 
             ServiceClient serviceClient = Setup.GetMQTTv5IotHubServiceClient();
@@ -150,13 +150,13 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             directMethodClient.DirectMethodProbeReceivedAsync += (args) =>
             {
                 // Deliberately reject the first direct method invocation to test that flow
-                if (args.MethodName.Equals(expectedDirectMethod1Name))
+                if (args.MethodName.Equals(expectedDirectMethod1Name, StringComparison.Ordinal))
                 {
                     Probe1ReceivedTcs.TrySetResult(args);
 
                     return Task.FromResult(DirectMethodProbeAck.Rejected(RejectedReason.DeviceBusy));
                 }
-                else if (args.MethodName.Equals(expectedDirectMethod2Name) && args.ResponseTimeoutSeconds == expectedResponseTimeout)
+                else if (args.MethodName.Equals(expectedDirectMethod2Name, StringComparison.Ordinal) && args.ResponseTimeoutSeconds == expectedResponseTimeout)
                 {
                     byte[] readyId = Guid.NewGuid().ToByteArray();
 
@@ -171,11 +171,11 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
             TaskCompletionSource<DirectMethodRequestReceivedEventArgs> DirectMethodReceivedTcs = new();
             directMethodClient.DirectMethodInvokedAsync += (args) =>
             {
-                if (args.MethodName.Equals(expectedDirectMethod1Name))
+                if (args.MethodName.Equals(expectedDirectMethod1Name, StringComparison.Ordinal))
                 {
                     return Task.FromResult(new DirectMethodResponse() { Status = 429 }); // This shouldn't be reached during the test since the probe for this direct method was rejected
                 }
-                else if (args.MethodName.Equals(expectedDirectMethod2Name))
+                else if (args.MethodName.Equals(expectedDirectMethod2Name, StringComparison.Ordinal))
                 {
                     if (args.Payload == null)
                     {
@@ -184,7 +184,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.MQTTv5
 
                     var requestPayload = SimpleDirectMethodPayload.FromJsonBytes(args.Payload);
 
-                    if (requestPayload.SomeString.Equals(expectedRequest2Payload.SomeString) && requestPayload.SomeInt == expectedRequest2Payload.SomeInt)
+                    if (requestPayload.SomeString != null && requestPayload.SomeString.Equals(expectedRequest2Payload.SomeString, StringComparison.Ordinal) && requestPayload.SomeInt == expectedRequest2Payload.SomeInt)
                     {
                         actualDirectMethodRequestsReceivedCount++;
                         DirectMethodResponse response = new()

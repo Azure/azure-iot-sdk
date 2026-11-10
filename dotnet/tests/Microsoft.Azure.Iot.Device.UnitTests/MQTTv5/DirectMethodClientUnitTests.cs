@@ -1095,7 +1095,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
             public override void TraceEvent(TraceEventCache? eventCache, string source, TraceEventType eventType, int id, string? format, params object?[]? args)
             {
-                Capture(args == null || format == null ? format : string.Format(format, args));
+                Capture(args == null || format == null ? format : string.Format(System.Globalization.CultureInfo.InvariantCulture, format, args));
             }
 
             private void Capture(string? message)

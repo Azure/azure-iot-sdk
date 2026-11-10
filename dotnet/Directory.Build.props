@@ -1,0 +1,12 @@
+<Project>
+  <!-- Code analysis for every project under dotnet/. Rule severities are tuned in .editorconfig. -->
+  <PropertyGroup>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
+    <AnalysisModeSecurity>All</AnalysisModeSecurity>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- NuGet audit (known-vulnerable packages) stays a warning: a newly published advisory must not
+         break every build. The vulnerable-package check fails on it instead. -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+  </PropertyGroup>
+</Project>

@@ -1,12 +1,24 @@
 # Release History
 
-## 2.0.0-preview.1 (2026-11-05)
+## 2.0.0-preview.2 (2026-11-07)
 
 Public preview of the C SDK for Azure IoT Hub (mqttv3 and mqttv5), the Azure IoT Hub Device
 Provisioning Service (DPS) and software updates through Azure Device Update: a C99 device SDK for
 constrained and embedded devices. It has everything in the GA release 1.0.0 (mqttv3, DPS), which is
 on [`main`](https://github.com/Azure/azure-iot-sdk/tree/main/c), plus mqttv5 hubs, MQTT 5 and
 software updates. APIs may change before a stable release.
+
+2.0.0-preview.1 was tagged but not published; this release supersedes it. Since that tag:
+
+- Software updates support detached (mini) update manifests in the managed client, library mode,
+  the ESP32 OTA hooks and the samples. A refused update is reported as FAILED, a check is deferred
+  on a 503 `UPSTREAM_UNAVAILABLE` without `Retry-After`, a 5xx is backed off even when it carries a
+  `Retry-After`, and `agentInfo` is resent only on update checks.
+- An ESP32 reboots for an update installed before registration.
+- An mqttv5 direct method does not answer a probe redelivered after its token ended.
+- `do_work()` waits when there is no MQTT session.
+- The DPS TPM sample has a tpm2-tss ESAPI backend, and a certificate renewal that the hub failed
+  transiently is resent in the end-to-end tests.
 
 ### Features Added
 

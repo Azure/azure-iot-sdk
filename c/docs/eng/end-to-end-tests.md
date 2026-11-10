@@ -307,9 +307,9 @@ failure, or a runner that dies before teardown.
 | Job | Runs on | Purpose |
 | --- | --- | --- |
 | `setup` | ubuntu | provisions one resource group (IoT Hub + DPS) via the shared `provision-e2e-resources` action and publishes the test-config artifact |
-| `test` | ubuntu + windows, 4 groups each (matrix) | builds the e2e tests, materializes its device's X.509 material, and runs its group: `core` (every e2e suite but the three below, plus custody and the file upload sample on Linux), `transport-paho`, `transport-az_mqtt`, `sas` (both adapters) |
+| `test` | ubuntu + windows, 4 groups each (matrix) | builds the e2e tests, materializes its device's X.509 material, and runs its group: `core` (every e2e suite but the three below, plus custody on Linux), `transport-paho`, `transport-az_mqtt`, `sas` (both adapters) |
 | `coverage` | ubuntu | merges the four Linux groups' tracefiles into `coverage-trace-e2e`, only when every `test` job passed |
-| `esp32-qemu` | ubuntu, esp32 and esp32c3 (matrix) | the ESP32 IoT Hub sample in QEMU, always on the shared environment ([ESP32 in QEMU](#esp32-in-qemu)) |
+| `esp32-qemu` | ubuntu, esp32, esp32c3 and esp32s3 (matrix) | the ESP32 IoT Hub sample in QEMU, always on the shared environment ([ESP32 in QEMU](#esp32-in-qemu)) |
 | `teardown` | ubuntu | `always()` deletes the resource group via `destroy-e2e-resources`, using the run-derived name (not a `setup` output) |
 
 Each `test` job has its own device (index os-index * 4 + group-index; eight DPS
@@ -393,6 +393,7 @@ workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 the service. The device is the [ESP32 IoT Hub sample](../../samples/unified/esp32/README.md)
 firmware in Espressif's QEMU. The test starts it with `E2E_ESP32_QEMU_COMMAND` (through
 `/bin/sh -c`, in its own process group) and reads the sample's stable `hub_esp32:` log lines.
+It runs the firmware through the child-process helper below.
 `E2E_ESP32_DEVICE_ID` is the registration id the firmware was built with. Once the firmware
 logs `hub_esp32: ready on`:
 
@@ -408,17 +409,95 @@ runs it all in an ESP-IDF environment with QEMU, a host compiler and OpenSSL hea
    for [`eng/esp-idf-build.sh`](../../eng/esp-idf-build.sh));
 2. writes the identity with [`eng/esp-idf-qemu-identity.sh`](../../eng/esp-idf-qemu-identity.sh):
    - esp32: an `esp_secure_cert` partition holding the certificate and key;
-   - esp32c3: the key goes into the Digital Signature peripheral. The script boots QEMU in
-     download mode, and `configure_esp_secure_cert.py --configure_ds` burns the DS key into an
-     emulated eFuse image and writes the partition with the encrypted DS parameters. DS takes RSA
-     keys of at most 3072 bits;
+   - esp32c3 and esp32s3: the key goes into the Digital Signature peripheral. The script boots
+     QEMU in download mode, and `configure_esp_secure_cert.py --configure_ds` burns the DS key
+     into an emulated eFuse image and writes the partition with the encrypted DS parameters. The
+     esp32c3 DS takes RSA keys of at most 3072 bits;
 3. builds and runs the test, booting the firmware with
    [`eng/esp-idf-qemu.sh`](../../eng/esp-idf-qemu.sh) `--run`.
 
-CI: job `esp32-qemu` in `ci-c-e2e.yml`. It runs esp32 and esp32c3 in `espressif/idf:v6.1`, with
-devices 12 and 13 issued by `e2e-shared-device.ps1`. It uses the shared environment on every run,
-push and nightly included: the per-run enrollments' RSA-4096 keys exceed DS's 3072 bits, while the
-shared group CA issues RSA-2048. Without the shared environment's secrets, the job fails.
+CI: job `esp32-qemu` in `ci-c-e2e.yml`. It runs esp32, esp32c3 and esp32s3 in
+`espressif/idf:v6.1`, with devices 12, 13 and 14 issued by `e2e-shared-device.ps1`. It uses the
+shared environment on every run, push and nightly included: the per-run enrollments' RSA-4096 keys
+exceed the esp32c3 DS's 3072 bits, while the shared group CA issues RSA-2048. Without the shared
+environment's secrets, the job fails.
+
+### Child-process helper
+
+[`tests/support/e2e_process.h`](../../tests/support/e2e_process.h) runs a program as a child, on
+POSIX and Windows, for suites whose device is another process: it starts an argument list or a
+shell command (environment variables set or removed for the child only), captures stdout and stderr through
+one pipe, echoes whole lines with a prefix, waits for a text while calling a pump (here the
+service facade), and stops the child: SIGTERM to its process group (Windows: `CTRL_BREAK_EVENT`
+to its process group), then SIGKILL (Windows: its job object is terminated) after a grace period.
+It is built in every build, not only with `AZ_IOT_BUILD_E2E`, and its test,
+`az_iot_tests_e2e_process`, runs in `ci-c`'s unit-test ctest on Linux and Windows.
+
+---
+
+## Samples
+
+[`e2e_samples_test.c`](../../tests/e2e/tests/e2e_samples_test.c) runs each connecting sample
+against the mqttv3 hub and checks its work from the service side. CMake option
+`AZ_IOT_BUILD_E2E_SAMPLES` (needs `AZ_IOT_BUILD_E2E`, `AZ_IOT_BUILD_SAMPLES` and
+`AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS`) registers one CTest test per sample and adapter,
+`az_iot_samples_e2e_<group>_<name>_<adapter>`, labelled `samples_mqttv3`. A sample in scope that is
+not built fails the configure.
+
+Each test:
+
+1. gives the sample only the variables it reads (its README): the leg's X.509 device, or a
+   registration ID of its own (`<leg registration ID>-<suffix>`), and a work directory. The
+   service connection strings are removed from its environment;
+2. starts it, lets it run to its own end (unified samples 60 s; the one-shot samples their own
+   timeouts), and stops it only past the test's own limit;
+3. requires `sample-pipeline: end rc=0` and exit code 0, then the check below.
+
+| Sample | Check |
+| --- | --- |
+| `unified/telemetry`, `connect_first`, `websockets`, `multithreaded_telemetry` | Telemetry of that device reaches the Event Hub endpoint, enqueued after the test started (the watcher filters on `iothub-connection-device-id`). |
+| `unified/proxy` | Same, and the proxy's log shows a `CONNECT` to port 8883 ([proxy.py](https://github.com/abhinavsingh/proxy.py), log in `AZ_IOT_SAMPLES_E2E_PROXY_LOG`). |
+| `unified/twin_get_patch` | A twin GET shows reported `sample` = `hello`, `$lastUpdated` after the start. |
+| `unified/direct_method_responder`, `direct_method_slow_responder` | Once the hub session is up, `echo` (`slowEcho`) answers 200 with the payload echoed; retried while the device is not subscribed. |
+| `unified/c2d_receiver` | Once the hub session is up, one C2D message is sent; the sample prints it and `Received N message(s).`, N >= 1. |
+| `unified/file_upload` | The hub's file-upload notification for that device and `sample-data/test.txt`. |
+| `authentication/dps_sas_key` | Telemetry `"auth":"sas-key"`; the sample gets `AZ_IOT_DPS_ENROLLMENT_GROUP_KEY`. |
+| `authentication/user_provided_sas_token` | rc 0 only; it gets `AZ_IOT_DPS_SYMMETRIC_KEY` derived from the group key. |
+| `authentication/hsm_pkcs11` | Telemetry `"custody":"hardware"`; the device key in a SoftHSM2 token, `OPENSSL_CONF` (from `AZ_IOT_SAMPLES_E2E_PKCS11_OPENSSL_CONF`) for this sample only. |
+| `authentication/dps_tpm`, `dps_tpm_tss` | `--enrollment` first; the test creates the TPM individual enrollment, then telemetry `"attestation":"tpm"`. The enrollment and device are always deleted. `dps_tpm_tss` runs against an swtpm the test starts. |
+
+CI: [`ci-c-samples.yml`](../../../.github/workflows/ci-c-samples.yml), on pull requests and pushes
+to `main` that change `c/` or `common/` (Markdown excluded), and on demand. Not a required check.
+
+- Legs: {ubuntu-24.04, windows-latest} x {paho, az_mqtt} x shard {0, 1}. Shard 0 is
+  telemetry, connect_first, websockets, proxy, multithreaded_telemetry, dps_sas_key and
+  user_provided_sas_token; shard 1 the rest. A leg runs its samples one after the other on its
+  device.
+- Slot = os-index * 4 + adapter-index * 2 + shard (0..7). Each leg reads events on consumer group
+  `samples-<slot>`.
+- Pull requests use the shared environment: device index 20 + slot, registration ID
+  `samples-<run>-<attempt>-<index>` (`e2e-shared-device.ps1`). The hub needs consumer groups
+  `samples-0`..`samples-7`.
+- Pushes and manual runs provision `CSDKE2ESamples-<run>-<attempt>` (8 X.509 enrollments, the SAS
+  group, file upload) and always delete it.
+- Pull requests from forks and Dependabot skip.
+- Each leg uploads its JUnit, each sample's `sample-output.log` and the proxy log.
+
+Not in this workflow: the CSR samples (`dps_csr_managed`, `custom_certificate_provider`,
+`dps_persist_assignment`, `hub_renew`, `dps_sas_key_issued_cert`), which need a CA-linked
+enrollment; the samples that do not connect, which are CTest tests of `ci-c` already;
+`unified/esp32` ([ESP32 in QEMU](#esp32-in-qemu)). Windows: see [Not run on Windows](#not-run-on-windows).
+
+Run locally, with the variables above (as the workflow's "Run the samples" step sets them) and
+proxy.py listening:
+
+```pwsh
+# from c/
+cmake --preset linux-gcc-debug -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E=ON `
+  -DAZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS=ON -DAZ_IOT_BUILD_E2E_SAMPLES=ON
+cmake --build --preset linux-gcc-debug --target az_iot_tests_e2e_samples
+ctest --test-dir build/linux-gcc-debug -L samples_mqttv3 -R '_paho$' --no-tests=error --output-on-failure
+```
 
 ---
 
@@ -548,7 +627,7 @@ Schannel), on every pull request and main run of its workflow.
 | --- | --- |
 | `az_iot_tests_e2e_custody`, `az_iot_tests_e2e_mqttv5_custody` | The device key is in a PKCS#11 token (SoftHSM2) reached through the OpenSSL pkcs11 provider. The provider has no MSVC build (it needs a POSIX `dl` library) and the runner's OpenSSL is an MSVC build. az_mqtt on Windows uses Schannel, which takes no key references. |
 | `az_iot_tests_e2e_amqp_transport_sigpipe` | Tests SIGPIPE, which Windows does not have. |
-| File upload sample run (`ci-c-e2e`, built on Windows) | The sample passes its PEM client certificate to libcurl; libcurl over Schannel (the Windows build) takes client certificates from a certificate store or PFX only. |
+| Samples `authentication/hsm_pkcs11`, `authentication/dps_tpm_tss` | As the custody suite: no pkcs11 provider for MSVC. tpm2-tss and swtpm are not built for Windows. |
 
 ---
 

@@ -55,13 +55,39 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// <summary>How many CONNECTs have been attempted, including the ones the server refused.</summary>
         public int ConnectAttemptCount => Volatile.Read(ref _connectAttemptCount);
 
-        public List<MqttDisconnect> DisconnectRequests { get; } = new();
+        private readonly List<MqttDisconnect> _disconnectRequests = new();
+        private readonly List<MockMqttOutgoingTraffic> _sentMqttTrafficInOrder = new();
 
         /// <summary>
-        /// The publishes/subscribes/unsubscribes that were "sent on the wire", in order. An operation whose handler throws
-        /// is not recorded.
+        /// A snapshot of the disconnects requested so far. The SDK records these from background tasks, so a snapshot is
+        /// returned to keep test enumeration safe.
         /// </summary>
-        public List<MockMqttOutgoingTraffic> SentMqttTrafficInOrder { get; } = new();
+        public IReadOnlyList<MqttDisconnect> DisconnectRequests
+        {
+            get
+            {
+                lock (_disconnectRequests)
+                {
+                    return _disconnectRequests.ToArray();
+                }
+            }
+        }
+
+        /// <summary>
+        /// A snapshot of the publishes/subscribes/unsubscribes that were "sent on the wire", in order. An operation whose
+        /// handler throws is not recorded. The SDK sends from background tasks, so a snapshot is returned to keep test
+        /// enumeration safe.
+        /// </summary>
+        public IReadOnlyList<MockMqttOutgoingTraffic> SentMqttTrafficInOrder
+        {
+            get
+            {
+                lock (_sentMqttTrafficInOrder)
+                {
+                    return _sentMqttTrafficInOrder.ToArray();
+                }
+            }
+        }
 
         public bool IsDisposed { get; private set; }
 
@@ -101,9 +127,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         public async Task DisconnectAsync(MqttDisconnect disconnect, CancellationToken cancellationToken = default)
         {
-            lock (DisconnectRequests)
+            lock (_disconnectRequests)
             {
-                DisconnectRequests.Add(disconnect);
+                _disconnectRequests.Add(disconnect);
             }
 
             bool wasConnected = _isConnected;
@@ -205,15 +231,15 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         private void RecordSentTraffic(MockMqttOutgoingTraffic traffic)
         {
-            lock (SentMqttTrafficInOrder)
+            lock (_sentMqttTrafficInOrder)
             {
-                SentMqttTrafficInOrder.Add(traffic);
+                _sentMqttTrafficInOrder.Add(traffic);
             }
         }
 
         private void SimulateBirthAckIfBirthPublish(MqttPublish publish)
         {
-            if (!publish.Topic.StartsWith("ih/") || !publish.Topic.EndsWith("/srv/presence"))
+            if (!publish.Topic.StartsWith("ih/", StringComparison.Ordinal) || !publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
             {
                 return;
             }

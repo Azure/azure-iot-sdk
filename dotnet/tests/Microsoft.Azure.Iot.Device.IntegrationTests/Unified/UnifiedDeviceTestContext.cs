@@ -37,7 +37,11 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         /// </summary>
         public string RegistrationId => IndividualEnrollment?.RegistrationId ?? AuthenticationProvider.GetRegistrationId();
 
-        public ValueTask DisposeAsync() => CleanupAsync(ConnectionClient, ConnectionContext, IndividualEnrollment, TestAgainstClassicHub);
+        public ValueTask DisposeAsync()
+        {
+            GC.SuppressFinalize(this);
+            return CleanupAsync(ConnectionClient, ConnectionContext, IndividualEnrollment, TestAgainstClassicHub);
+        }
 
         internal static async ValueTask CleanupAsync(
             ConnectionClient connectionClient,

@@ -55,7 +55,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
             Assert.Equal(0, disconnectCount);
-            var presenceSubscribe = mockMqttClient.SentMqttTrafficInOrder.Last().Subscribe;
+            var presenceSubscribe = mockMqttClient.SentMqttTrafficInOrder[^1].Subscribe;
             Assert.NotNull(presenceSubscribe);
             Assert.Contains(presenceSubscribe.TopicFilters, topicFilter =>
                 topicFilter.Topic == "devices/someDeviceId/messages/devicebound/#"
@@ -81,7 +81,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             await connectionClient.ConnectToHubAsync(GetMockConnectionContext(), cancellationToken: TestContext.Current.CancellationToken)
                 .WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
 
-            var topics = mockMqttClient.SentMqttTrafficInOrder.Last().Subscribe!.TopicFilters.Select(topicFilter => topicFilter.Topic).ToList();
+            var topics = mockMqttClient.SentMqttTrafficInOrder[^1].Subscribe!.TopicFilters.Select(topicFilter => topicFilter.Topic).ToList();
             Assert.Equal(enableCloudToDeviceMessages, topics.Contains("devices/someDeviceId/messages/devicebound/#"));
             Assert.Equal(enableTwin, topics.Contains(ClassicTwinResponseTopicFilter));
             Assert.Equal(enableTwin, topics.Contains("$iothub/twin/PATCH/properties/desired/#"));
@@ -221,7 +221,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             // A successful classic presence flow ends by subscribing to the twin/desired/direct-method topics, so that
             // SUBSCRIBE must be the last traffic on the wire once the presence flow has completed.
-            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder.Last();
+            var lastTraffic = mockMqttClient.SentMqttTrafficInOrder[^1];
             Assert.NotNull(lastTraffic.Subscribe);
             Assert.Contains(lastTraffic.Subscribe.TopicFilters, topicFilter => topicFilter.Topic == "devices/someDeviceId/messages/devicebound/#");
             Assert.Contains(lastTraffic.Subscribe.TopicFilters, topicFilter => topicFilter.Topic == ClassicTwinResponseTopicFilter);
