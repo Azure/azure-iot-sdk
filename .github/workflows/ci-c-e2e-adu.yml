@@ -84,6 +84,7 @@ jobs:
               - 'c/adapters/cert_openssl/**'
               - 'c/adapters/su/**'
               - 'c/eng/install-su-delta-processor.sh'
+              - 'c/eng/apt-install.sh'
               - 'c/deps/az_mqtt/**'
               - 'c/CMakeLists.txt'
               - 'c/CMakePresets.json'
