@@ -243,10 +243,11 @@ az_iot_add_e2e_suite(az_iot_tests_e2e_fileupload
 # ---------------------------------------------------------------------------
 # az_iot_samples_e2e_<group>_<name>_<adapter>
 #
-# Each connecting sample of samples/, built with the pipeline hooks, run against the mqttv3 e2e
-# hub by az_iot_tests_e2e_samples (tests/e2e_samples_test.c, which names what each sample is
-# given and checked for): one test per sample and adapter, labelled samples_mqttv3. A sample
-# that is in scope but not built fails the configure rather than dropping its test.
+# Each connecting sample of samples/, built with the pipeline hooks, run against an e2e hub by
+# az_iot_tests_e2e_samples (tests/e2e_samples_test.c, which names what each sample is given and
+# checked for): one test per sample and adapter, labelled samples_mqttv3, or samples_csr for the
+# samples that need a CA-linked enrollment (certificate management). A sample that is in scope but
+# not built fails the configure rather than dropping its test.
 # ---------------------------------------------------------------------------
 if(AZ_IOT_BUILD_E2E_SAMPLES)
     az_iot_add_cmocka_test(az_iot_tests_e2e_samples NO_CTEST
@@ -264,6 +265,12 @@ if(AZ_IOT_BUILD_E2E_SAMPLES)
         authentication/dps_tpm)
     # Built only in some configurations: a test where the sample is built.
     set(_optional_samples)
+    # CSR: a bootstrap identity of an X.509 enrollment group linked to a signing CA, and the SAS
+    # group linked to it (ci-c-samples' CSR legs). Labelled samples_csr.
+    set(_csr_samples
+        authentication/dps_csr_managed authentication/custom_certificate_provider
+        authentication/dps_persist_assignment authentication/hub_renew
+        authentication/dps_sas_key_issued_cert)
     if(NOT WIN32)
         # A PKCS#11 token (SoftHSM2) and the OpenSSL pkcs11 provider: Linux CI only. The az_mqtt
         # build exists only over OpenSSL TLS.
@@ -286,7 +293,7 @@ if(AZ_IOT_BUILD_E2E_SAMPLES)
         if(NOT _adapter STREQUAL "paho")
             set(_suffix _${_adapter})
         endif()
-        foreach(_sample IN LISTS _samples _optional_samples)
+        foreach(_sample IN LISTS _samples _optional_samples _csr_samples)
             string(REPLACE "/" ";" _parts "${_sample}")
             list(GET _parts 0 _group)
             list(GET _parts 1 _name)
@@ -314,16 +321,22 @@ if(AZ_IOT_BUILD_E2E_SAMPLES)
             set(_test az_iot_samples_e2e_${_group}_${_name}_${_adapter})
             set(_work_directory ${CMAKE_CURRENT_BINARY_DIR}/samples/${_test})
             file(MAKE_DIRECTORY ${_work_directory})
+            set(_label samples_mqttv3)
+            if(_sample IN_LIST _csr_samples)
+                set(_label samples_csr)
+            endif()
             add_test(NAME ${_test}
                 COMMAND az_iot_tests_e2e_samples ${_group}_${_name} $<TARGET_FILE:${_target}>
                     ${_work_directory}
                 WORKING_DIRECTORY ${_work_directory})
             # The test stops the sample first: its own limit is at most 300 s, plus the checks.
-            set_tests_properties(${_test} PROPERTIES LABELS samples_mqttv3 TIMEOUT 600)
+            set_tests_properties(${_test} PROPERTIES LABELS ${_label} TIMEOUT 600)
         endforeach()
     endforeach()
     unset(_samples)
     unset(_optional_samples)
+    unset(_csr_samples)
+    unset(_label)
 endif()
 
 # ---------------------------------------------------------------------------
