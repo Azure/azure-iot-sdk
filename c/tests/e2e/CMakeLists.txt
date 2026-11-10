@@ -260,13 +260,11 @@ if(AZ_IOT_BUILD_E2E_SAMPLES)
         unified/telemetry unified/connect_first unified/websockets unified/proxy
         unified/multithreaded_telemetry unified/twin_get_patch unified/direct_method_responder
         unified/direct_method_slow_responder unified/c2d_receiver unified/file_upload
-        authentication/dps_sas_key authentication/user_provided_sas_token)
+        authentication/dps_sas_key authentication/user_provided_sas_token
+        authentication/dps_tpm)
     # Built only in some configurations: a test where the sample is built.
     set(_optional_samples)
     if(NOT WIN32)
-        # The simulated TPM writes its keys through BIO_new_fp(), which an OpenSSL DLL refuses
-        # without OPENSSL_Applink.
-        list(APPEND _samples authentication/dps_tpm)
         # A PKCS#11 token (SoftHSM2) and the OpenSSL pkcs11 provider: Linux CI only. The az_mqtt
         # build exists only over OpenSSL TLS.
         list(APPEND _samples authentication/hsm_pkcs11)

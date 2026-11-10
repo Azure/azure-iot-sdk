@@ -1552,7 +1552,7 @@ e2e rows run on Windows too, except these suites ([why](end-to-end-tests.md#not-
 | --- | --- |
 | Custody (`e2e_custody_test.c`) | Technical: no OpenSSL pkcs11 provider for MSVC; Schannel takes no key references. |
 | AMQP transport SIGPIPE (`e2e_amqp_transport_sigpipe_test.c`) | Technical: Windows has no SIGPIPE. |
-| Samples `hsm_pkcs11`, `dps_tpm`, `dps_tpm_tss` (`e2e_samples_test.c`) | Technical: no OpenSSL pkcs11 provider for MSVC; the simulated TPM's `BIO_new_fp()` needs `OPENSSL_Applink` with an OpenSSL DLL; no tpm2-tss or swtpm build. |
+| Samples `hsm_pkcs11`, `dps_tpm_tss` (`e2e_samples_test.c`) | Technical: no OpenSSL pkcs11 provider for MSVC; no tpm2-tss or swtpm build. |
 
 
 ## Defects and limitations
