@@ -315,15 +315,15 @@ static EVP_PKEY* key_load_or_create(const char* dir, const char* file)
   EVP_PKEY* pkey = EVP_PKEY_Q_keygen(NULL, NULL, "RSA", (size_t)SIM_RSA_BITS);
   if (pkey != NULL && dir != NULL)
   {
-    /* Owner-only: the files hold the device's private keys. */
-    FILE* f = sample_file_open_private(path, false);
-    BIO* out = f != NULL ? BIO_new_fp(f, BIO_CLOSE) : NULL;
-    if (out == NULL && f != NULL)
-    {
-      (void)fclose(f);
-    }
-    bool ok = out != NULL && PEM_write_bio_PrivateKey(out, pkey, NULL, NULL, 0, NULL, NULL) == 1;
-    ok = BIO_free(out) == 1 && ok;
+    /* PEM in memory, then an owner-only file (it holds a private key). A memory
+     * BIO, not BIO_new_fp(): with OpenSSL as a DLL, a FILE* from another C
+     * runtime needs OPENSSL_Applink. BIO_free() cleanses the buffer. */
+    BIO* pem = BIO_new(BIO_s_mem());
+    bool ok = pem != NULL && PEM_write_bio_PrivateKey(pem, pkey, NULL, NULL, 0, NULL, NULL) == 1;
+    char* data = NULL;
+    long size = ok ? BIO_get_mem_data(pem, &data) : 0;
+    ok = ok && size > 0 && sample_file_write_atomically(path, data, (size_t)size);
+    BIO_free(pem);
     if (!ok)
     {
       EVP_PKEY_free(pkey);
