@@ -72,8 +72,7 @@ jobs:
         # its sources are analyzed: libssl (Paho TLS, key custody, OpenSSL crypto,
         # managed certificate provider), libcurl (file upload sample), mbedTLS below.
         run: |
-          sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev
+          bash "$GITHUB_WORKSPACE/c/eng/apt-install.sh" ninja-build libssl-dev libcurl4-openssl-dev
           pipx install "clang-tidy==${CLANG_TIDY_VERSION}"
 
       - name: Build mbedTLS

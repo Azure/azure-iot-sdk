@@ -237,8 +237,7 @@ jobs:
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update -o Acquire::Retries=3
-          sudo apt-get install -y ninja-build
+          bash "$GITHUB_WORKSPACE/c/eng/apt-install.sh" ninja-build
           python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build CSR e2e test
