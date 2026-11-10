@@ -370,7 +370,7 @@ Each test:
 | `authentication/dps_csr_managed` (`samples_csr`) | Prints `[dps_csr] telemetry sent with operational certificate`; telemetry `"source":"dps_csr_managed"`. |
 | `authentication/custom_certificate_provider` (`samples_csr`) | Prints `[custom_cert] connected with operational identity`. |
 | `authentication/dps_persist_assignment` (`samples_csr`) | Two runs in one work directory: the first registers with DPS and saves the assignment, the second prints `(restored assignment)` once connected to the saved hub. |
-| `authentication/hub_renew` (`samples_csr`) | Registers with a CSR, renews over the hub and prints `[hub_renew] reconnected with the renewed operational certificate`. |
+| `authentication/hub_renew` (`samples_csr`) | Registers with a CSR, renews over the hub (resubmitting if the hub ends the session first, as it often does right after the CSR registration) and prints `[hub_renew] reconnected with the renewed operational certificate`. |
 | `authentication/dps_sas_key_issued_cert` (`samples_csr`) | Telemetry `"auth":"sas-key,x509-issued"`; the sample gets the certificate-management environment's `AZ_IOT_DPS_ENROLLMENT_GROUP_KEY`. |
 | `authentication/dps_tpm`, `dps_tpm_tss` | `--enrollment` first; the test creates the TPM individual enrollment, then telemetry `"attestation":"tpm"`. The enrollment and device are always deleted. `dps_tpm_tss` runs against an swtpm the test starts. |
 

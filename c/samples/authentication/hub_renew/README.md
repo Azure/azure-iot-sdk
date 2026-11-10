@@ -13,6 +13,7 @@ the hub is an **mqttv3** feature.
 - Uses the OpenSSL-backed managed certificate provider for the operational key, the CSR and the files.
 - Registers with DPS with a CSR (`opts.dps.request_operational_certificate`), as [`dps_csr_managed`](../dps_csr_managed/README.md) does, and connects with the operational certificate DPS issues. The hub accepts that certificate only for a device DPS registered with a CSR.
 - `az_iot_connection_client_send_csr()` gets the CSR from the provider and is two-phase: the hub answers `202 Accepted`, then `200` with the issued chain.
+- Recovers as `az_iot_connection_client_send_csr()` documents, up to 4 requests: a request the hub session ends under (`AZ_IOT_ERR_NOT_CONNECTED`) is sent again with the same request ID once reconnected; `409xxx` (an earlier request still active) is replaced with `replace="*"`, and `412xxx` (nothing left to replace) is sent again, each under a new request ID. Each resubmission prints `[hub_renew] resubmitting renewal <id>`.
 - The SDK stores the renewed chain in the provider before the callback, which reports the result in `store_status`. It does not reconnect: the sample calls `close()` and `open()`, because a new client certificate needs a new TLS handshake.
 - Platforms: Linux and Windows.
 
@@ -108,7 +109,7 @@ The chain length depends on the credential policy.
 | SDK line `dps register: errorCode=<code> errorMessage=<text>` | DPS refused the registration: no matching enrollment, the certificate's common name differs from `AZ_IOT_DPS_REGISTRATION_ID`, or the enrollment is disabled. DPS verdicts are retried until the sample's run time ends. |
 | Repeated `paho: connect failed: ... TCP/TLS connect failure` | DPS or the hub is unreachable (network, proxy, `AZ_IOT_DPS_GLOBAL_ENDPOINT`), or server certificate validation fails (`AZ_IOT_TRUSTED_CA`). |
 | `Unsupported hub generation "<value>". Upgrade the SDK.` | DPS assigned a connection profile this SDK does not support. |
-| `CSR failed: ... service_code=409005` | Another renewal is active on the hub; retry later, or supersede it with `replace`. |
+| `CSR failed: ... service_code=409005` on the last request | Another renewal stayed active on the hub after the sample replaced it; retry later. |
 | `CSR failed: ... service_code=400040` | The hub could not decode or verify the CSR. |
 
 ## Where to look in `main.c`
@@ -118,6 +119,7 @@ The chain length depends on the credential policy.
 | Provider setup | `az_iot_certificate_provider_managed_init()` |
 | Request the renewal | `az_iot_connection_client_send_csr()` |
 | Two-phase result and store status | `on_csr_event()` |
+| Resubmit after a lost session, 409 or 412 | the `SAMPLE_RENEW_ATTEMPTS` loop in `main()` |
 | Apply the new certificate | `az_iot_connection_client_close()` then `az_iot_connection_client_open()` |
 
 Design background: [certificate-management.md](../../../docs/eng/certificate-management.md#hub-side-renewal-mqttv3).
