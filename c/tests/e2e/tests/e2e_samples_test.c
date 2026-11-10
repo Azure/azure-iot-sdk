@@ -3,25 +3,28 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* A sample, built with the pipeline hooks, run against the mqttv3 e2e hub and checked from the
- * service side (az_iot_e2e_service).
+/* A sample, built with the pipeline hooks, run against an e2e hub and checked from the service
+ * side (az_iot_e2e_service).
  *
  * Usage: az_iot_tests_e2e_samples <sample> <executable> <work directory>
+ *        [<dps_csr_managed executable>]
  *
  * <sample> names an entry of k_samples ("<group>_<name>"); tests/e2e/CMakeLists.txt registers one
- * CTest test per sample and adapter. The sample runs to its own end, in <work directory>, with
- * the variables it reads; this test then checks its end marker, its exit code and what the service
- * saw. Nothing is skipped: a missing variable fails the test.
+ * CTest test per sample and adapter, labelled samples_mqttv3 or, for the CSR samples, samples_csr.
+ * The sample runs to its own end, in <work directory>, with the variables it reads; this test then
+ * checks its end marker, its exit code and what the service saw. Nothing is skipped: a missing
+ * variable fails the test. hub_renew is given dps_csr_managed, which issues the operational
+ * certificate it renews.
  *
  * Environment:
  *   service (not passed to the sample): IOTHUB_CONNECTION_STRING,
  * IOTHUB_EVENTHUB_CONNECTION_STRING, IOTHUB_EVENTHUB_CONSUMER_GROUP; IOT_DPS_CONNECTION_STRING and
  *     IOTHUB_REGISTRY_CONNECTION_STRING for the TPM samples' enrollment and device cleanup;
- *   device: AZ_IOT_DPS_ID_SCOPE, AZ_IOT_DPS_REGISTRATION_ID (the X.509 device; also the prefix
- *     of the other samples' registration IDs), AZ_IOT_CLIENT_CERT, AZ_IOT_CLIENT_KEY,
- *     AZ_IOT_TRUSTED_CA, optional AZ_IOT_DPS_GLOBAL_ENDPOINT;
- *   SAS samples: AZ_IOT_DPS_ENROLLMENT_GROUP_KEY;
- *   proxy: AZ_IOT_PROXY_HOST, AZ_IOT_PROXY_PORT, and AZ_IOT_SAMPLES_E2E_PROXY_LOG, the proxy's log;
+ *   device: AZ_IOT_DPS_ID_SCOPE, AZ_IOT_DPS_REGISTRATION_ID (the X.509 device, or for the CSR
+ *     samples the bootstrap device; also the prefix of the other samples' registration IDs),
+ *     AZ_IOT_CLIENT_CERT, AZ_IOT_CLIENT_KEY, AZ_IOT_TRUSTED_CA, optional
+ * AZ_IOT_DPS_GLOBAL_ENDPOINT; SAS samples: AZ_IOT_DPS_ENROLLMENT_GROUP_KEY; proxy:
+ * AZ_IOT_PROXY_HOST, AZ_IOT_PROXY_PORT, and AZ_IOT_SAMPLES_E2E_PROXY_LOG, the proxy's log;
  *   hsm_pkcs11: AZ_IOT_CLIENT_KEY_URI, AZ_IOT_CRYPTO_ENGINE_ID, SOFTHSM2_CONF, and
  *     AZ_IOT_SAMPLES_E2E_PKCS11_OPENSSL_CONF, the OPENSSL_CONF given to that sample only. */
 #if !defined(_WIN32) && !defined(_POSIX_C_SOURCE)
@@ -103,6 +106,8 @@ typedef struct
   e2e_sample_step action; /**< From the service, once its hub session is up; may be NULL. */
   e2e_sample_step check; /**< From the service, after it exited; may be NULL. */
   int run_timeout_s; /**< Longest run before the test stops it and fails. */
+  /** @brief The sample must print this, after it exited with 0; NULL: not checked. */
+  const char* expected_output;
 } e2e_sample;
 
 /** @brief The run of the sample under test. */
@@ -111,6 +116,9 @@ static struct
   const e2e_sample* sample;
   const char* executable;
   const char* work_directory;
+  /** @brief authentication/dps_csr_managed, which hub_renew needs an operational certificate
+   * from; NULL for the other samples. */
+  const char* provisioning_executable;
   time_t start; /**< Before the sample started, runner clock. */
   char registration_id[129]; /**< Also its device ID: no enrollment here sets another. */
   az_iot_e2e_service* service;
@@ -300,12 +308,11 @@ static void make_child_environment(void)
   }
 }
 
-/** @brief Starts the sample with @p argument (may be NULL) and waits for its begin marker. */
-static void start_sample(const char* argument)
+/** @brief Starts @p executable with @p argument (may be NULL) and waits for its begin marker. */
+static void start_executable(const char* executable, const char* argument)
 {
-  const char* const arguments[] = { s_run.executable, argument, NULL };
-  printf(
-      "[e2e] starting %s%s%s\n", s_run.executable, argument ? " " : "", argument ? argument : "");
+  const char* const arguments[] = { executable, argument, NULL };
+  printf("[e2e] starting %s%s%s\n", executable, argument ? " " : "", argument ? argument : "");
   assert_true(az_iot_e2e_process_start(&s_sample, arguments, s_child_environment, "[sample] "));
   if (!az_iot_e2e_process_wait_for_output(
           &s_sample,
@@ -317,6 +324,9 @@ static void start_sample(const char* argument)
     fail_msg("the sample did not print \"%s\"", E2E_SAMPLE_BEGIN_MARKER);
   }
 }
+
+/** @brief Starts the sample under test: see start_executable(). */
+static void start_sample(const char* argument) { start_executable(s_run.executable, argument); }
 
 /** @brief Pumps until the sample exits, stopping it after @p timeout_s; checks it ended with 0. */
 static void wait_for_sample_success(int timeout_s)
@@ -696,12 +706,79 @@ static void create_tpm_enrollment(void)
   assert_true(az_iot_e2e_dps_tpm_enrollment_create(s_run.registration_id, endorsement_key));
 }
 
+/** @brief Fails the test unless the sample printed @p text. */
+static void require_output(const char* text)
+{
+  if (!az_iot_e2e_process_has_printed(&s_sample, text))
+  {
+    fail_msg("the sample did not print \"%s\"", text);
+  }
+}
+
+/** @brief Deletes the files a certificate sample keeps in its work directory (its defaults), so
+ * it starts from the bootstrap certificate. */
+static void remove_certificate_files(void)
+{
+  static const char* const names[] = {
+    "operational_key.pem",
+    "operational_cert.pem",
+    "dps_assignment.txt",
+  };
+  for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); ++i)
+  {
+    char path[1024];
+    int const n = snprintf(path, sizeof(path), "%s/%s", s_run.work_directory, names[i]);
+    assert_true(n > 0 && (size_t)n < sizeof(path));
+    (void)remove(path);
+  }
+}
+
+/** @brief dps_persist_assignment: a first run registers with DPS and saves the assignment, which
+ * the run under test restores. */
+static void register_and_save_assignment(void)
+{
+  remove_certificate_files();
+  start_sample(NULL);
+  wait_for_sample_success(s_run.sample->run_timeout_s);
+  require_output("[persist] no saved assignment");
+}
+
+/** @brief hub_renew: dps_csr_managed, run in the same work directory, leaves the operational
+ * certificate the run under test renews (its README). */
+static void issue_operational_certificate(void)
+{
+  remove_certificate_files();
+  if (s_run.provisioning_executable == NULL)
+  {
+    fail_msg("no authentication/dps_csr_managed executable given");
+  }
+  start_executable(s_run.provisioning_executable, NULL);
+  wait_for_sample_success(s_run.sample->run_timeout_s);
+  require_output("[dps_csr] telemetry sent with operational certificate");
+}
+
 /* What each sample does and how long it runs: samples/<group>/<name>/main.c. */
 static const e2e_sample k_samples[] = {
   /* Telemetry every 5 s for 60 s: {"temp":23}, multithreaded {"sensor":n,"temp":t}. */
-  { "unified_telemetry", E2E_SAMPLE_IDENTITY_X509, NULL, "\"temp\":", NULL, NULL, NULL, 180 },
-  { "unified_connect_first", E2E_SAMPLE_IDENTITY_X509, NULL, "\"temp\":", NULL, NULL, NULL, 180 },
-  { "unified_websockets", E2E_SAMPLE_IDENTITY_X509, NULL, "\"temp\":", NULL, NULL, NULL, 180 },
+  { "unified_telemetry", E2E_SAMPLE_IDENTITY_X509, NULL, "\"temp\":", NULL, NULL, NULL, 180, NULL },
+  { "unified_connect_first",
+    E2E_SAMPLE_IDENTITY_X509,
+    NULL,
+    "\"temp\":",
+    NULL,
+    NULL,
+    NULL,
+    180,
+    NULL },
+  { "unified_websockets",
+    E2E_SAMPLE_IDENTITY_X509,
+    NULL,
+    "\"temp\":",
+    NULL,
+    NULL,
+    NULL,
+    180,
+    NULL },
   { "unified_proxy",
     E2E_SAMPLE_IDENTITY_X509,
     NULL,
@@ -709,7 +786,8 @@ static const e2e_sample k_samples[] = {
     note_proxy_log_end,
     NULL,
     check_proxy_tunnel,
-    180 },
+    180,
+    NULL },
   { "unified_multithreaded_telemetry",
     E2E_SAMPLE_IDENTITY_X509,
     NULL,
@@ -717,7 +795,8 @@ static const e2e_sample k_samples[] = {
     NULL,
     NULL,
     NULL,
-    180 },
+    180,
+    NULL },
   /* Listen for 60 s; twin_get_patch reports {"sample":"hello"} on each connect. */
   { "unified_twin_get_patch",
     E2E_SAMPLE_IDENTITY_X509,
@@ -726,7 +805,8 @@ static const e2e_sample k_samples[] = {
     NULL,
     NULL,
     check_twin_reported_property,
-    180 },
+    180,
+    NULL },
   { "unified_direct_method_responder",
     E2E_SAMPLE_IDENTITY_X509,
     NULL,
@@ -734,7 +814,8 @@ static const e2e_sample k_samples[] = {
     NULL,
     invoke_echo,
     NULL,
-    180 },
+    180,
+    NULL },
   { "unified_direct_method_slow_responder",
     E2E_SAMPLE_IDENTITY_X509,
     NULL,
@@ -742,7 +823,8 @@ static const e2e_sample k_samples[] = {
     NULL,
     invoke_slow_echo,
     NULL,
-    180 },
+    180,
+    NULL },
   { "unified_c2d_receiver",
     E2E_SAMPLE_IDENTITY_X509,
     NULL,
@@ -750,7 +832,8 @@ static const e2e_sample k_samples[] = {
     NULL,
     send_cloud_to_device_message,
     check_cloud_to_device_message,
-    180 },
+    180,
+    NULL },
   /* One shot: connect (60 s at most), then an upload or one telemetry message. */
   { "unified_file_upload",
     E2E_SAMPLE_IDENTITY_X509,
@@ -759,7 +842,8 @@ static const e2e_sample k_samples[] = {
     watch_file_upload_notifications,
     NULL,
     check_file_upload_notification,
-    240 },
+    240,
+    NULL },
   { "authentication_dps_sas_key",
     E2E_SAMPLE_IDENTITY_SAS_GROUP_KEY,
     "sas-key",
@@ -767,7 +851,8 @@ static const e2e_sample k_samples[] = {
     NULL,
     NULL,
     NULL,
-    180 },
+    180,
+    NULL },
   { "authentication_user_provided_sas_token",
     E2E_SAMPLE_IDENTITY_SAS_DEVICE_KEY,
     "sas-token",
@@ -775,7 +860,8 @@ static const e2e_sample k_samples[] = {
     NULL,
     NULL,
     NULL,
-    180 },
+    180,
+    NULL },
   { "authentication_hsm_pkcs11",
     E2E_SAMPLE_IDENTITY_PKCS11,
     NULL,
@@ -783,7 +869,8 @@ static const e2e_sample k_samples[] = {
     NULL,
     NULL,
     NULL,
-    180 },
+    180,
+    NULL },
   /* Registration over HTTPS (120 s at most), connect (60 s), one message (60 s). */
   { "authentication_dps_tpm",
     E2E_SAMPLE_IDENTITY_TPM_SIMULATED,
@@ -792,7 +879,8 @@ static const e2e_sample k_samples[] = {
     NULL,
     NULL,
     NULL,
-    300 },
+    300,
+    NULL },
   { "authentication_dps_tpm_tss",
     E2E_SAMPLE_IDENTITY_TPM_SWTPM,
     "tpm-tss",
@@ -800,7 +888,55 @@ static const e2e_sample k_samples[] = {
     NULL,
     NULL,
     NULL,
-    300 },
+    300,
+    NULL },
+  /* CSR (samples_csr): the leg's device is a bootstrap identity of an X.509 enrollment group
+   * linked to a signing CA. Connect 60 s and send 30 s at most; hub_renew renews and reconnects. */
+  { "authentication_dps_csr_managed",
+    E2E_SAMPLE_IDENTITY_X509,
+    NULL,
+    "\"source\":\"dps_csr_managed\"",
+    remove_certificate_files,
+    NULL,
+    NULL,
+    180,
+    "[dps_csr] telemetry sent with operational certificate" },
+  { "authentication_custom_certificate_provider",
+    E2E_SAMPLE_IDENTITY_X509,
+    NULL,
+    NULL,
+    remove_certificate_files,
+    NULL,
+    NULL,
+    180,
+    "[custom_cert] connected with operational identity" },
+  { "authentication_dps_persist_assignment",
+    E2E_SAMPLE_IDENTITY_X509,
+    NULL,
+    NULL,
+    register_and_save_assignment,
+    NULL,
+    NULL,
+    180,
+    "[persist] restoring hub=" },
+  { "authentication_hub_renew",
+    E2E_SAMPLE_IDENTITY_X509,
+    NULL,
+    NULL,
+    issue_operational_certificate,
+    NULL,
+    NULL,
+    300,
+    "[hub_renew] reconnected with the renewed operational certificate" },
+  { "authentication_dps_sas_key_issued_cert",
+    E2E_SAMPLE_IDENTITY_SAS_GROUP_KEY,
+    "sas-cert",
+    "\"auth\":\"sas-key,x509-issued\"",
+    remove_certificate_files,
+    NULL,
+    NULL,
+    180,
+    NULL },
 };
 
 /** @brief Runs the sample and checks it: see the file comment. */
@@ -864,6 +1000,10 @@ static void the_sample_runs_and_the_service_sees_its_work(void** state)
     assert_true(s_run.action_succeeded);
   }
   wait_for_sample_success(sample->run_timeout_s);
+  if (sample->expected_output != NULL)
+  {
+    require_output(sample->expected_output);
+  }
   if (sample->telemetry_needle != NULL)
   {
     check_telemetry();
@@ -928,9 +1068,12 @@ static int teardown(void** state)
 
 int main(int argc, char** argv)
 {
-  if (argc != 4)
+  if (argc != 4 && argc != 5)
   {
-    fprintf(stderr, "usage: %s <sample> <executable> <work directory>\n", argv[0]);
+    fprintf(
+        stderr,
+        "usage: %s <sample> <executable> <work directory> [<dps_csr_managed executable>]\n",
+        argv[0]);
     return 2;
   }
   for (size_t i = 0; i < sizeof(k_samples) / sizeof(k_samples[0]); ++i)
@@ -948,6 +1091,7 @@ int main(int argc, char** argv)
   (void)setvbuf(stdout, NULL, _IONBF, 0); // In order with the sample's and cmocka's output.
   s_run.executable = argv[2];
   s_run.work_directory = argv[3];
+  s_run.provisioning_executable = argc == 5 ? argv[4] : NULL;
   const struct CMUnitTest tests[] = {
     cmocka_unit_test_teardown(the_sample_runs_and_the_service_sees_its_work, teardown),
   };
