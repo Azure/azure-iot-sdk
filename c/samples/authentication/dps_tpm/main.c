@@ -227,6 +227,8 @@ static bool https_send(
     curl_slist_free_all(headers);
     return false;
   }
+  char error[CURL_ERROR_SIZE] = { 0 };
+  curl_easy_setopt(curl, CURLOPT_ERRORBUFFER, error);
   curl_easy_setopt(curl, CURLOPT_URL, url);
   curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, request->method);
   if (request->body != NULL)
@@ -253,7 +255,7 @@ static bool https_send(
   }
   else
   {
-    fprintf(stderr, "[dps_tpm] HTTPS failed: %s\n", curl_easy_strerror(rc));
+    fprintf(stderr, "[dps_tpm] HTTPS failed: %s (%s)\n", curl_easy_strerror(rc), error);
   }
   OPENSSL_cleanse(auth, sizeof(auth));
   curl_slist_free_all(headers);
