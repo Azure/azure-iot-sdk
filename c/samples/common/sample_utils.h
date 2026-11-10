@@ -298,6 +298,34 @@ void sample_install_stop_handler(void);
  */
 bool sample_is_stop_requested(void);
 
+/**
+ * @name Pipeline hooks
+ * @brief Let a CI pipeline drive a sample. Compiled in only with SAMPLE_PIPELINE_HOOKS
+ * (CMake option AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS); otherwise they are no-ops and
+ * sample_pipeline_checks_end() yields its argument.
+ *
+ * Each prints one line to stdout, at line start:
+ * - `sample-pipeline: begin`
+ * - `sample-pipeline: end rc=<rc>`
+ * - `sample-pipeline: stop <reason>`
+ *
+ * sample_pipeline_checks_begin() also records CTRL_BREAK (Windows) as a stop request.
+ * @{
+ */
+#if defined(SAMPLE_PIPELINE_HOOKS)
+/** @brief Pipeline builds only: unbuffered output, begin marker, stop handler. */
+void sample_pipeline_checks_begin(void);
+/** @brief Pipeline builds only: prints the end marker. @return @p rc. */
+int sample_pipeline_checks_end(int rc);
+/** @brief Pipeline builds only: prints @p reason and requests the sample loop to stop. */
+void sample_pipeline_checks_request_stop(const char* reason);
+#else
+#define sample_pipeline_checks_begin() ((void)0)
+#define sample_pipeline_checks_end(rc) (rc)
+#define sample_pipeline_checks_request_stop(reason) ((void)0)
+#endif
+/** @} */
+
 // Milliseconds from an unspecified origin, never moving backwards. Only
 // differences are meaningful. The SDK keeps its clock internal, so a sample
 // that has to measure elapsed time brings its own.

@@ -39,7 +39,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             await using UnifiedDeviceTestContext device = await Setup.CreateConnectedUnifiedConnectionClientAsync(
                 testAgainstClassicHub: true,
                 options,
-                cancellationToken);
+                cancellationToken: cancellationToken);
 
             // This test device provisioned from an individual enrollment whose registration id is also the id it is
             // assigned in the hub, so the same value identifies it in both the registry and DPS.
@@ -89,7 +89,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             await using UnifiedDeviceTestContext device = await Setup.CreateConnectedUnifiedConnectionClientAsync(
                 testAgainstClassicHub: true,
                 options,
-                cancellationToken);
+                cancellationToken: cancellationToken);
 
             // Cache the connection context that provisioning returned so the device can be connected again later
             // without provisioning. This test device provisioned from an individual enrollment whose registration id is
@@ -156,7 +156,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             await using UnifiedDeviceTestContext device = await Setup.CreateConnectedUnifiedConnectionClientAsync(
                 testAgainstClassicHub: true,
                 options,
-                cancellationToken);
+                cancellationToken: cancellationToken);
 
             // This test device provisioned from an individual enrollment whose registration id is also the id it is
             // assigned in the hub, so the same value identifies it in both the registry and DPS.

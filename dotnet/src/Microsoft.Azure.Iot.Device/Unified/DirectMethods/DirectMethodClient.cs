@@ -9,6 +9,7 @@ using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using System.Collections.Specialized;
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.RegularExpressions;
 using System.Web;
 using Microsoft.Azure.Iot.Device.Unified.Models;
@@ -95,7 +96,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
 
         private async Task HandleReceivedMqttPublish(MqttPublishReceivedEventArgs args)
         {
-            if (!args.Publish.Topic.StartsWith("$iothub/methods/"))
+            if (!args.Publish.Topic.StartsWith("$iothub/methods/", StringComparison.Ordinal))
             {
                 // The publish is not relevant to this client, so ignore it. This check needs to happen prior to checking the deviceId within the topic b/c deviceId is
                 // not available until after provisioning finishes and this client may be setup prior to provisioning. This allows this client to ignore DPS
@@ -121,7 +122,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
             // Parse and respond to the direct method according the classic direct method mqtt communication pattern
             //
             // Note that all direct method invocation messages are QoS 0, so no need to ack the MQTT message here
-            if (!args.Publish.Topic.StartsWith(ClassicDirectMethodsRequestTopic))
+            if (!args.Publish.Topic.StartsWith(ClassicDirectMethodsRequestTopic, StringComparison.Ordinal))
             {
                 // The message isn't relevant to this client
                 return;
@@ -155,7 +156,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
 
             DirectMethodResponse methodResponse = await handler.Invoke(methodRequest);
 
-            string responsePublishTopic = string.Format(ClassicDirectMethodsResponseTopicFormat, methodResponse.Status, requestId);
+            string responsePublishTopic = string.Format(CultureInfo.InvariantCulture, ClassicDirectMethodsResponseTopicFormat, methodResponse.Status, requestId);
             MqttPublish publish = new MqttPublish()
             {
                 Topic = responsePublishTopic,
@@ -194,8 +195,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.DirectMethods
         /// </summary>
         public void Dispose()
         {
+            GC.SuppressFinalize(this);
             _connection.PublishReceivedAsync -= HandleReceivedMqttPublish;
-
             _connection.Dispose();
         }
     }

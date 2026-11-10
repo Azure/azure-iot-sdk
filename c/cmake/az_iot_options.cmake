@@ -17,7 +17,15 @@ option(AZ_IOT_WITH_CRYPTO_OPENSSL "Build the OpenSSL crypto backend"            
 option(AZ_IOT_WITH_CRYPTO_MBEDTLS "Build the mbedTLS crypto backend when mbedTLS 3.6 LTS or 4.1+ is found" ON)
 option(AZ_IOT_WITH_CERT_PROVIDER_MANAGED "Build the OpenSSL managed certificate provider" ON)
 option(AZ_IOT_BUILD_SAMPLES    "Build sample apps"                              ON)
+# Compiles the samples' pipeline hooks (SAMPLE_PIPELINE_HOOKS, samples/common/sample_utils.h): begin
+# and end markers and a graceful stop, so a CI pipeline can drive them. Off: user builds compile
+# them out.
+option(AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS "Build the samples with the CI pipeline hooks" OFF)
 option(AZ_IOT_BUILD_TESTS      "Build unit tests"                               OFF)
+# libFuzzer fuzz targets (tests/fuzz, docs/eng/fuzzing.md), for OneFuzz or local runs: clang or MSVC.
+# Instruments every target for coverage; build only the fuzz targets. Without it, the targets are
+# built as corpus replays and run by CTest.
+option(AZ_IOT_BUILD_FUZZERS    "Build the fuzz targets with libFuzzer (clang or MSVC)" OFF)
 # End-to-end tests talk to a REAL Azure IoT Hub/DPS instance and are off by
 # default (they require provisioned cloud resources + the Paho adapter). The
 # e2e GitHub Actions workflow enables this alongside AZ_IOT_BUILD_TESTS.
@@ -65,6 +73,10 @@ option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e tests (need a toke
 # The ESP32 e2e test runs the ESP32 IoT Hub sample's firmware in QEMU against the e2e resources;
 # only the e2e workflow's esp32-qemu legs build that firmware. Same build-it-when-it-will-run rule.
 option(AZ_IOT_BUILD_E2E_ESP32_QEMU "Build the ESP32 QEMU e2e test (needs E2E_ESP32_QEMU_COMMAND + e2e resources)" OFF)
+# One e2e test per connecting sample and adapter (tests/e2e/tests/e2e_samples_test.c): the sample,
+# built with its pipeline hooks, runs against the e2e hub. Only the ci-c-samples workflow has the
+# resources (a proxy, a PKCS#11 token, swtpm) they need. Same build-it-when-it-will-run rule.
+option(AZ_IOT_BUILD_E2E_SAMPLES "Build the samples e2e tests (need e2e resources; see docs/eng/end-to-end-tests.md)" OFF)
 # Install rules and the azure-iot-sdk CMake package (find_package). On by default
 # only for a top-level build, so a parent project that adds this tree with
 # add_subdirectory() or FetchContent does not install it as a side effect.
@@ -103,16 +115,31 @@ foreach(_opt AZ_IOT_BUILD_E2E_CSR AZ_IOT_BUILD_E2E_PKCS11
     endif()
 endforeach()
 unset(_opt)
-foreach(_opt AZ_IOT_BUILD_E2E AZ_IOT_BUILD_PKCS11_TESTS)
+foreach(_opt AZ_IOT_BUILD_E2E AZ_IOT_BUILD_PKCS11_TESTS AZ_IOT_BUILD_FUZZERS)
     if(${_opt} AND NOT AZ_IOT_BUILD_TESTS)
         message(FATAL_ERROR "${_opt}=ON needs AZ_IOT_BUILD_TESTS=ON")
     endif()
 endforeach()
 unset(_opt)
+if(AZ_IOT_BUILD_E2E_SAMPLES AND NOT (AZ_IOT_BUILD_E2E AND AZ_IOT_BUILD_SAMPLES
+                                     AND AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS))
+    message(FATAL_ERROR "AZ_IOT_BUILD_E2E_SAMPLES=ON needs AZ_IOT_BUILD_E2E=ON, "
+        "AZ_IOT_BUILD_SAMPLES=ON and AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS=ON")
+endif()
 if(AZ_IOT_BUILD_E2E AND NOT (AZ_IOT_WITH_PAHO OR AZ_IOT_WITH_AZ_MQTT))
     message(FATAL_ERROR "AZ_IOT_BUILD_E2E=ON needs an MQTT adapter to run over "
         "(AZ_IOT_WITH_PAHO=ON or AZ_IOT_WITH_AZ_MQTT=ON)")
 endif()
 if(AZ_IOT_BUILD_PKCS11_TESTS AND NOT AZ_IOT_WITH_PAHO)
     message(FATAL_ERROR "AZ_IOT_BUILD_PKCS11_TESTS=ON needs the Paho adapter (AZ_IOT_WITH_PAHO=ON)")
+endif()
+if(AZ_IOT_BUILD_FUZZERS)
+    if(MSVC)
+        add_compile_options(/fsanitize=fuzzer)
+    elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        # Coverage for libFuzzer in every target, dependencies included; the fuzz targets link it.
+        add_compile_options(-fsanitize=fuzzer-no-link)
+    else()
+        message(FATAL_ERROR "AZ_IOT_BUILD_FUZZERS=ON needs clang or MSVC")
+    endif()
 endif()

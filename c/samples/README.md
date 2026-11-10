@@ -136,6 +136,8 @@ certificate, Schannel connects with TLS 1.2. Not available, because they need Op
 - The managed certificate provider and the samples' OpenSSL certificate, CSR, token and TPM code:
   `custom_certificate_provider`, `dps_csr_managed`, `dps_persist_assignment`,
   `dps_sas_key_issued_cert`, `hub_renew`, `user_provided_sas_token` and `dps_tpm` are not built.
+- The upload path of `file_upload`, which builds the PKCS#12 it hands libcurl with OpenSSL: the
+  sample connects but cannot upload.
 
 ## Configuration
 
@@ -188,3 +190,19 @@ client in a static workspace sized for `SAMPLE_MQTT_LIMITS` in
 [`common/sample_utils.h`](common/sample_utils.h): raise those for larger messages. With samples
 on, at least one of the two adapters is required. The SAS-key samples use the OpenSSL crypto backend, or
 mbedTLS when OpenSSL is not built (`AZ_IOT_SAMPLE_CRYPTO_OPENSSL`, `AZ_IOT_SAMPLE_CRYPTO_MBEDTLS`).
+
+### Pipeline hooks
+
+The `main()` of each sample built with [`common/sample_utils.c`](common/sample_utils.c) calls
+`sample_pipeline_checks_begin()` first and returns through `sample_pipeline_checks_end()`
+([`common/sample_utils.h`](common/sample_utils.h)), so a CI pipeline can tell when it started and
+ended and what it returned. User builds compile them out: unless
+`AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS=ON` (default `OFF`) defines `SAMPLE_PIPELINE_HOOKS`, they
+are no-ops and the samples are unchanged. With it, the sample writes unbuffered output and prints
+`sample-pipeline: begin` and `sample-pipeline: end rc=<rc>` at the start of a stdout line. It records
+SIGINT, SIGTERM and (Windows) CTRL_BREAK as a stop request for a loop that checks
+`sample_is_stop_requested()`; a signal prints no marker. Only a call to
+`sample_pipeline_checks_request_stop(reason)` prints `sample-pipeline: stop <reason>`.
+
+CI runs the connecting samples against a real hub this way: see
+[Samples in the end-to-end tests](../docs/eng/end-to-end-tests.md#samples).

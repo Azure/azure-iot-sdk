@@ -48,7 +48,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
             foreach (string connectionStringKeyValuePair in connectionStringKeyValuePairs)
             {
                 string[] keyAndValue = connectionStringKeyValuePair.Split("=");
-                if (keyAndValue[0].Equals("HostName"))
+                if (keyAndValue[0].Equals("HostName", StringComparison.Ordinal))
                 {
                     return keyAndValue[1];
                 }
@@ -60,7 +60,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
 
         public const int TestTimeoutMilliseconds = 60 * 1000;
 
-        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, CancellationToken cancellationToken = default, TimeSpan? certificateValidity = null)
+        public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientAsync(bool testAgainstClassicHub, ConnectionClientOptions? options = null, TimeSpan? certificateValidity = null, CancellationToken cancellationToken = default)
         {
             if (!testAgainstClassicHub)
             {
@@ -184,10 +184,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests
         /// </param>
         public static async Task<UnifiedDeviceTestContext> CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
             ConnectionClientOptions? options = null,
-            CancellationToken cancellationToken = default,
             AsymmetricAlgorithm? issuedCertificatePrivateKey = null,
             Microsoft.Azure.Devices.Provisioning.Service.TwinState? initialTwinState = null,
-            Action<ConnectionClient>? beforeConnect = null)
+            Action<ConnectionClient>? beforeConnect = null,
+            CancellationToken cancellationToken = default)
         {
             if (issuedCertificatePrivateKey != null && initialTwinState != null)
             {
