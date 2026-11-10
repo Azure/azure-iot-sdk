@@ -2700,6 +2700,26 @@ static void a_failed_body_with_trailing_content_faults_with_a_protocol_error(voi
   assert_int_equal(fx->log.reasons[i], AZ_IOT_ERR_PROTOCOL);
 }
 
+/* azure-sdk-for-c accepts "assigned" without a registrationState: both halves of the
+ * assignment are absent (empty spans with NULL pointers). Found by fuzzing; the sanitizer
+ * build catches a copy from those NULL pointers. */
+static void an_assignment_without_registration_state_is_not_adopted(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+  assert_true(inject_dps_response(
+      m, DPS_RESPONSE_TOPIC_ASSIGNED, "{\"operationId\":\"op-1\",\"status\":\"assigned\"}"));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_INVALID_ARG);
+  assert_null(fx->client->opts.iothub_hostname);
+}
+
 /* Top-level errorCode/message are kept when registrationState has none, and
  * registrationState's own values win when it has them. */
 static void a_failed_reprovisioning_keeps_the_top_level_error(void** state)
@@ -6639,6 +6659,8 @@ int main(void)
         a_failed_body_with_a_non_string_device_id_faults_with_a_protocol_error, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_body_with_trailing_content_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        an_assignment_without_registration_state_is_not_adopted, setup, teardown),
     cmocka_unit_test_setup_teardown(
         a_request_level_refusal_carries_the_service_error, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
