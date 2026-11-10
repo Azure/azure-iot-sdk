@@ -25,7 +25,7 @@ set(_file_upload_targets ${AZ_IOT_SAMPLE_TARGETS})
 # certificate and key into the PKCS#12 libcurl takes on every TLS backend,
 # Schannel (Windows) included. Optional: without both the sample still
 # provisions, connects, and prints the request it built.
-find_package(CURL QUIET)
+find_package(CURL 7.71 QUIET)
 find_package(OpenSSL QUIET)
 if(CURL_FOUND AND OpenSSL_FOUND)
     foreach(_t IN LISTS _file_upload_targets)
@@ -33,9 +33,9 @@ if(CURL_FOUND AND OpenSSL_FOUND)
         target_link_libraries(${_t} PRIVATE CURL::libcurl OpenSSL::Crypto)
     endforeach()
 else()
-    message(STATUS "az_iot_sample_unified_file_upload: libcurl or OpenSSL not found; building "
-                   "without the HTTPS upload path. Install libcurl (e.g. 'vcpkg install curl') "
-                   "to enable it.")
+    message(STATUS "az_iot_sample_unified_file_upload: libcurl 7.71+ or OpenSSL not found; "
+                   "building without the HTTPS upload path. Install libcurl (e.g. "
+                   "'vcpkg install curl') to enable it.")
 endif()
 
 # unified/telemetry with readings produced on other threads: the application's

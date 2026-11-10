@@ -136,6 +136,8 @@ certificate, Schannel connects with TLS 1.2. Not available, because they need Op
 - The managed certificate provider and the samples' OpenSSL certificate, CSR, token and TPM code:
   `custom_certificate_provider`, `dps_csr_managed`, `dps_persist_assignment`,
   `dps_sas_key_issued_cert`, `hub_renew`, `user_provided_sas_token` and `dps_tpm` are not built.
+- The upload path of `file_upload`, which builds the PKCS#12 it hands libcurl with OpenSSL: the
+  sample connects but cannot upload.
 
 ## Configuration
 

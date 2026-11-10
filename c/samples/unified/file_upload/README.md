@@ -80,7 +80,7 @@ cmake --build --preset windows-msvc-debug --target az_iot_sample_unified_file_up
 .\build\windows-msvc-debug\samples\unified\Debug\az_iot_sample_file_upload.exe
 ```
 
-The upload needs **libcurl** with OpenSSL or Schannel TLS (the client certificate goes to it as an
+The upload needs **libcurl** 7.71 or newer with OpenSSL or Schannel TLS (the client certificate goes to it as an
 in-memory PKCS#12), and OpenSSL. Linux: install `libcurl4-openssl-dev` (Debian/Ubuntu). Windows:
 use vcpkg through the manifest in `c/vcpkg.json` by adding these to the configure command (vcpkg
 then builds libcurl over Schannel, and OpenSSL; `vcpkg install curl` alone is not enough):
@@ -92,7 +92,7 @@ cmake --preset windows-msvc-debug `
 ```
 
 Without libcurl or OpenSSL, configure prints
-`az_iot_sample_unified_file_upload: libcurl or OpenSSL not found; building without the HTTPS upload path.`
+`az_iot_sample_unified_file_upload: libcurl 7.71+ or OpenSSL not found; building without the HTTPS upload path.`
 and the sample connects but cannot upload.
 
 ## How it ends
