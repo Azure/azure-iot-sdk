@@ -155,7 +155,9 @@ its policy signs the device delete, sent to the `IOTHUB_CONNECTION_STRING` host)
 - [`e2e_tpm_test.c`](../../tests/e2e/tests/e2e_tpm_test.c) — a TPM simulated in software
   (`samples/common/sample_tpm_sim.c`) gets a new individual enrollment through the DPS service
   API, registers over HTTPS, connects to the assigned mqttv3 hub with TPM-signed SAS tokens and
-  sends telemetry. The enrollment, registration and device are deleted. `ci-c-e2e`.
+  sends telemetry. It then deletes the device and its enrollment, expects the hub to refuse the
+  identity, enrolls it again under a new device ID, registers again and sends again. The enrollment, registration and device are deleted.
+  `ci-c-e2e`.
 
 ---
 
@@ -340,11 +342,12 @@ It is built in every build, not only with `AZ_IOT_BUILD_E2E`, and its test,
 ## Samples
 
 [`e2e_samples_test.c`](../../tests/e2e/tests/e2e_samples_test.c) runs each connecting sample
-against the mqttv3 hub and checks its work from the service side. CMake option
+against an mqttv3 hub and checks its work from the service side. CMake option
 `AZ_IOT_BUILD_E2E_SAMPLES` (needs `AZ_IOT_BUILD_E2E`, `AZ_IOT_BUILD_SAMPLES` and
 `AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS`) registers one CTest test per sample and adapter,
-`az_iot_samples_e2e_<group>_<name>_<adapter>`, labelled `samples_mqttv3`. A sample in scope that is
-not built fails the configure.
+`az_iot_samples_e2e_<group>_<name>_<adapter>`, labelled `samples_mqttv3`, or `samples_csr` for the
+samples that need a certificate-management environment. A sample in scope that is not built fails
+the configure.
 
 Each test:
 
@@ -366,6 +369,11 @@ Each test:
 | `authentication/dps_sas_key` | Telemetry `"auth":"sas-key"`; the sample gets `AZ_IOT_DPS_ENROLLMENT_GROUP_KEY`. |
 | `authentication/user_provided_sas_token` | rc 0 only; it gets `AZ_IOT_DPS_SYMMETRIC_KEY` derived from the group key. |
 | `authentication/hsm_pkcs11` | Telemetry `"custody":"hardware"`; the device key in a SoftHSM2 token, `OPENSSL_CONF` (from `AZ_IOT_SAMPLES_E2E_PKCS11_OPENSSL_CONF`) for this sample only. |
+| `authentication/dps_csr_managed` (`samples_csr`) | Prints `[dps_csr] telemetry sent with operational certificate`; telemetry `"source":"dps_csr_managed"`. |
+| `authentication/custom_certificate_provider` (`samples_csr`) | Prints `[custom_cert] connected with operational identity`. |
+| `authentication/dps_persist_assignment` (`samples_csr`) | Two runs in one work directory: the first registers with DPS and saves the assignment, the second prints `(restored assignment)` once connected to the saved hub. |
+| `authentication/hub_renew` (`samples_csr`) | Registers with a CSR, renews over the hub (resubmitting if the hub ends the session first, as it often does right after the CSR registration) and prints `[hub_renew] reconnected with the renewed operational certificate`. |
+| `authentication/dps_sas_key_issued_cert` (`samples_csr`) | Telemetry `"auth":"sas-key,x509-issued"`; the sample gets the certificate-management environment's `AZ_IOT_DPS_ENROLLMENT_GROUP_KEY`. |
 | `authentication/dps_tpm`, `dps_tpm_tss` | `--enrollment` first; the test creates the TPM individual enrollment, then telemetry `"attestation":"tpm"`. The enrollment and device are always deleted. `dps_tpm_tss` runs against an swtpm the test starts. |
 
 CI: [`ci-c-samples.yml`](../../../.github/workflows/ci-c-samples.yml), on pull requests and pushes
@@ -384,10 +392,14 @@ to `main` that change `c/` or `common/` (Markdown excluded), and on demand. Not 
   group, file upload) and always delete it.
 - Pull requests from forks and Dependabot skip.
 - Each leg uploads its JUnit, each sample's `sample-output.log` and the proxy log.
+- CSR legs (`samples_csr`): {ubuntu-24.04, windows-latest} x {paho, az_mqtt}, slot 0..3. Every run,
+  pull requests included, provisions `CSDKE2ESamplesCert-<run>-<attempt>` (certificate management,
+  an X.509 enrollment group with four devices, the SAS group, both linked to the signing CA) and
+  always deletes it. A leg uses group identity `IOT_DPS_GROUP_X509_*_<slot>` as its bootstrap
+  device and consumer group `samples-<slot>` on that hub. Two legs run at a time: with all four
+  registering with a CSR at once, DPS left some registrations unanswered past the samples' 60 s.
 
-Not in this workflow: the CSR samples (`dps_csr_managed`, `custom_certificate_provider`,
-`dps_persist_assignment`, `hub_renew`, `dps_sas_key_issued_cert`), which need a CA-linked
-enrollment; the samples that do not connect, which are CTest tests of `ci-c` already;
+Not in this workflow: the samples that do not connect, which are CTest tests of `ci-c` already;
 `unified/esp32` ([ESP32 in QEMU](#esp32-in-qemu)). Windows: see [Not run on Windows](#not-run-on-windows).
 
 Run locally, with the variables above (as the workflow's "Run the samples" step sets them) and
