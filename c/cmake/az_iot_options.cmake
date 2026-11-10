@@ -69,6 +69,10 @@ option(AZ_IOT_BUILD_E2E_PKCS11 "Build the PKCS#11 custody e2e tests (need a toke
 # The ESP32 e2e test runs the ESP32 IoT Hub sample's firmware in QEMU against the e2e resources;
 # only the e2e workflow's esp32-qemu legs build that firmware. Same build-it-when-it-will-run rule.
 option(AZ_IOT_BUILD_E2E_ESP32_QEMU "Build the ESP32 QEMU e2e test (needs E2E_ESP32_QEMU_COMMAND + e2e resources)" OFF)
+# One e2e test per connecting sample and adapter (tests/e2e/tests/e2e_samples_test.c): the sample,
+# built with its pipeline hooks, runs against the e2e hub. Only the ci-c-samples workflow has the
+# resources (a proxy, a PKCS#11 token, swtpm) they need. Same build-it-when-it-will-run rule.
+option(AZ_IOT_BUILD_E2E_SAMPLES "Build the samples e2e tests (need e2e resources; see docs/eng/end-to-end-tests.md)" OFF)
 # Install rules and the azure-iot-sdk CMake package (find_package). On by default
 # only for a top-level build, so a parent project that adds this tree with
 # add_subdirectory() or FetchContent does not install it as a side effect.
@@ -113,6 +117,11 @@ foreach(_opt AZ_IOT_BUILD_E2E AZ_IOT_BUILD_PKCS11_TESTS)
     endif()
 endforeach()
 unset(_opt)
+if(AZ_IOT_BUILD_E2E_SAMPLES AND NOT (AZ_IOT_BUILD_E2E AND AZ_IOT_BUILD_SAMPLES
+                                     AND AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS))
+    message(FATAL_ERROR "AZ_IOT_BUILD_E2E_SAMPLES=ON needs AZ_IOT_BUILD_E2E=ON, "
+        "AZ_IOT_BUILD_SAMPLES=ON and AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS=ON")
+endif()
 if(AZ_IOT_BUILD_E2E AND NOT (AZ_IOT_WITH_PAHO OR AZ_IOT_WITH_AZ_MQTT))
     message(FATAL_ERROR "AZ_IOT_BUILD_E2E=ON needs an MQTT adapter to run over "
         "(AZ_IOT_WITH_PAHO=ON or AZ_IOT_WITH_AZ_MQTT=ON)")

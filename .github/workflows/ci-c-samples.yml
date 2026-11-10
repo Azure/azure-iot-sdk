@@ -1,0 +1,403 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# The C samples, run against a real mqttv3 IoT Hub and checked from the service side.
+#
+# Each connecting sample is built with its pipeline hooks (AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS)
+# and registered as one CTest test per sample and adapter (AZ_IOT_BUILD_E2E_SAMPLES,
+# c/tests/e2e/tests/e2e_samples_test.c), labelled samples_mqttv3. A test starts the sample with
+# the variables it reads, lets it run to its own end, then checks its end marker, its exit code
+# and what the service saw: telemetry, a method answer, a twin, a cloud-to-device message, a
+# file-upload notification. See c/docs/eng/end-to-end-tests.md, "Samples".
+#
+# Legs: OS x adapter x shard, 8 in all. Each leg has a device and a consumer group of its own
+# (slot 0..7) and runs its shard of the samples serially on that device.
+#
+# Resources: pull requests use the shared mqttv3 environment (as ci-c-e2e does when
+# E2E_SHARED_ID_SCOPE is set). Each leg issues its own device, device index 20 + slot (0..14
+# belong to ci-c-e2e), registration ID samples-<run>-<attempt>-<index>, and reads events on
+# consumer group samples-<slot>, which exists on the shared hub for this workflow only. Pushes and
+# manual runs provision a resource group per run and always delete it (teardown).
+#
+# Pull requests from forks and from Dependabot get no secrets, so their Azure jobs skip.
+
+name: ci-c-samples
+
+on:
+  pull_request:
+    paths:
+      - 'c/**'
+      - '!c/**/*.md'
+      - 'common/**'
+      - '!common/**/*.md'
+      - '.github/workflows/ci-c-samples.yml'
+      - '.github/actions/install-curl-windows/**'
+  push:
+    branches: [ main ]
+    paths:
+      - 'c/**'
+      - '!c/**/*.md'
+      - 'common/**'
+      - '!common/**/*.md'
+      - '.github/workflows/ci-c-samples.yml'
+      - '.github/actions/install-curl-windows/**'
+  workflow_dispatch:
+
+# A new push to a pull request cancels its older run; other events get a group of their own.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+# The resource group of a provisioned run, from the run (as ci-c-e2e), so teardown finds it even
+# after a cancelled setup. CSDKE2E: the prefix cleanup-e2e-resources.yml reaps.
+env:
+  E2E_RESOURCE_GROUP: CSDKE2ESamples-${{ github.run_id }}-${{ github.run_attempt }}
+  # 'true' when this run uses the shared environment. Job-level `if:` cannot read `env`, so the
+  # jobs repeat the expression.
+  E2E_SHARED: ${{ vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request' }}
+  # Shard 0; shard 1 is every other test. Unified samples run ~70 s each.
+  SAMPLES_SHARD_0: '^az_iot_samples_e2e_(unified_(telemetry|connect_first|websockets|proxy|multithreaded_telemetry)|authentication_(dps_sas_key|user_provided_sas_token))_'
+
+jobs:
+  setup:
+    name: setup (provision)
+    if: >-
+      ${{ !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Azure Login via OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Same action and pin as ci-c-e2e.
+      - name: Provision resources
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@2fc8ffebbdc13476890b15fee48e304b1e135ce3 # v1.0.1 + #456 + #457 + retry on 5xx (#459)
+        with:
+          rg-name: ${{ env.E2E_RESOURCE_GROUP }}
+          azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
+          # One device per leg (slot 0..7).
+          dps-x509-individual-enrollments: '8'
+          # The SAS samples register under the symmetric-key group.
+          dps-symmkey-group-enrollment-devices: '1'
+          # unified/file_upload.
+          enable-file-upload: 'true'
+
+      - name: Create consumer groups
+        run: |
+          set -euo pipefail
+          hub="$(az iot hub list -g "$E2E_RESOURCE_GROUP" --query '[0].name' -o tsv)"
+          [ -n "$hub" ] || { echo "::error::no IoT Hub in $E2E_RESOURCE_GROUP"; exit 1; }
+          for i in $(seq 0 7); do
+            az iot hub consumer-group create -g "$E2E_RESOURCE_GROUP" --hub-name "$hub" -n "samples-$i" -o none
+          done
+
+      - name: Upload test config
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: samples-test-config
+          path: test_config/set_test_env_vars.ps1
+          retention-days: 1
+          if-no-files-found: error
+
+  samples:
+    name: ${{ matrix.os }} / ${{ matrix.adapter }} / shard ${{ matrix.shard }}
+    needs: setup
+    # After setup, or without it on the shared environment (setup skipped there).
+    if: >-
+      ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    # Runs pull-request code: no Azure OIDC token.
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.os }}
+    # Build ~10 min (Windows, libcurl not cached: ~20), a shard's samples ~8 min.
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      # Slot = os-index * 4 + adapter-index * 2 + shard.
+      matrix:
+        os: [ ubuntu-24.04, windows-latest ]
+        adapter: [ paho, az_mqtt ]
+        shard: [ 0, 1 ]
+        include:
+          - os: ubuntu-24.04
+            preset: linux-gcc-debug
+            os-index: 0
+          - os: windows-latest
+            preset: windows-msvc-debug
+            os-index: 1
+          - adapter: paho
+            adapter-index: 0
+          - adapter: az_mqtt
+            adapter-index: 1
+    env:
+      AZ_IOT_PRESET: ${{ matrix.preset }}
+      SAMPLES_ADAPTER: ${{ matrix.adapter }}
+      SAMPLES_SHARD: ${{ matrix.shard }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      # libcurl: file_upload and dps_tpm. libtss2-dev and swtpm: dps_tpm_tss. softhsm2, opensc,
+      # meson and pkg-config: the PKCS#11 token of hsm_pkcs11 and its OpenSSL provider.
+      - name: Install packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev libtss2-dev swtpm \
+                                  softhsm2 opensc meson pkg-config
+
+      - name: Install libcurl (Windows)
+        id: curl
+        if: runner.os == 'Windows'
+        # actionlint 1.7.12 does not accept the $/ self-repository form yet.
+        uses: ./.github/actions/install-curl-windows # zizmor: ignore[self-repository]
+
+      - name: Build
+        working-directory: c
+        shell: pwsh
+        env:
+          CMAKE_PREFIX_PATH: ${{ steps.curl.outputs.prefix }}
+        run: |
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON `
+            -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS=ON -DAZ_IOT_BUILD_E2E_SAMPLES=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset $env:AZ_IOT_PRESET --config Debug --target az_iot_tests_e2e_samples
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          # Linux: hsm_pkcs11 is built for both adapters, dps_tpm_tss where tpm2-tss is found.
+          if ($IsLinux) {
+            foreach ($name in 'hsm_pkcs11', 'dps_tpm_tss') {
+              $test = "^az_iot_samples_e2e_authentication_$($name)_$($env:SAMPLES_ADAPTER)$"
+              $listed = ctest --test-dir "build/$($env:AZ_IOT_PRESET)" -N -R $test | Out-String
+              if ($listed -notmatch 'Total Tests: 1\b') { throw "no test $test" }
+            }
+          }
+
+      - name: Install the HTTP proxy
+        shell: pwsh
+        # proxy.py, for unified/proxy; its log shows the tunnels the sample opened. Started by the
+        # step that runs the samples: Windows ends what a step started when the step ends.
+        run: |
+          $venv = Join-Path $env:RUNNER_TEMP 'proxy-venv'
+          & ($IsWindows ? 'python' : 'python3') -m venv $venv
+          $python = Join-Path $venv ($IsWindows ? 'Scripts/python.exe' : 'bin/python')
+          & $python -m pip install --quiet 'proxy.py==2.4.10'
+          if ($LASTEXITCODE -ne 0) { throw "pip install proxy.py failed" }
+
+      - name: Select the device
+        shell: bash
+        env:
+          OS_INDEX: ${{ matrix.os-index }}
+          ADAPTER_INDEX: ${{ matrix.adapter-index }}
+        run: |
+          slot=$((OS_INDEX * 4 + ADAPTER_INDEX * 2 + SAMPLES_SHARD))
+          echo "SAMPLES_SLOT=$slot" >> "$GITHUB_ENV"
+          if [ "$E2E_SHARED" = 'true' ]; then
+            echo "SAMPLES_DEVICE_INDEX=$((20 + slot))" >> "$GITHUB_ENV"
+          else
+            echo "SAMPLES_DEVICE_INDEX=$slot" >> "$GITHUB_ENV"
+          fi
+
+      - name: Download test config
+        if: env.E2E_SHARED != 'true'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: samples-test-config
+          path: test_config
+
+      - name: Issue a device on the shared environment
+        if: env.E2E_SHARED == 'true'
+        shell: pwsh
+        env:
+          E2E_SHARED_GROUP_CA: ${{ secrets.E2E_SHARED_GROUP_CA }}
+          E2E_SHARED_IOTHUB_CS: ${{ secrets.E2E_SHARED_IOTHUB_CS }}
+          E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
+          E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
+          E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
+          E2E_SHARED_DPS_CS: ${{ secrets.E2E_SHARED_DPS_CS }}
+          E2E_SHARED_IOTHUB_REGISTRY_CS: ${{ secrets.E2E_SHARED_IOTHUB_REGISTRY_CS }}
+          E2E_RUN_ID: ${{ github.run_id }}
+          E2E_RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          $idx = [int]$env:SAMPLES_DEVICE_INDEX
+          ./c/eng/e2e-shared-device.ps1 -RegistrationId "samples-$($env:E2E_RUN_ID)-$($env:E2E_RUN_ATTEMPT)-$idx" `
+            -DeviceIndex $idx -ConsumerGroup "samples-$($env:SAMPLES_SLOT)" `
+            -OutFile test_config/set_test_env_vars.ps1
+
+      - name: Run the samples
+        shell: pwsh
+        env:
+          CURL_PREFIX: ${{ steps.curl.outputs.prefix }}
+          SAMPLES_LEG: ${{ matrix.os }}-${{ matrix.adapter }}-${{ matrix.shard }}
+        run: |
+          # The test config sets the service and device values, and more: keep only what the test
+          # reads (c/tests/e2e/tests/e2e_samples_test.c), so nothing else reaches the samples.
+          $before = @(Get-ChildItem env: | ForEach-Object Name)
+          . ./test_config/set_test_env_vars.ps1
+          $config = @{}
+          foreach ($name in @(Get-ChildItem env: | ForEach-Object Name | Where-Object { $_ -notin $before })) {
+            $config[$name] = (Get-Item "env:$name").Value
+            Remove-Item "env:$name"
+          }
+          Remove-Item -Recurse -Force test_config
+          foreach ($name in 'IOTHUB_CONNECTION_STRING', 'IOTHUB_EVENTHUB_CONNECTION_STRING',
+                            'IOTHUB_EVENTHUB_LISTEN_NAME', 'IOTHUB_EVENTHUB_PARTITION_COUNT',
+                            'IOT_DPS_CONNECTION_STRING', 'IOTHUB_REGISTRY_CONNECTION_STRING') {
+            if ($config[$name]) { Set-Item "env:$name" $config[$name] }
+          }
+          $env:IOTHUB_EVENTHUB_CONSUMER_GROUP = "samples-$($env:SAMPLES_SLOT)"
+
+          # The leg's device, its X.509 material in files.
+          $idx = $env:SAMPLES_DEVICE_INDEX
+          $dir = Join-Path $env:RUNNER_TEMP 'samples-device'
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $env:AZ_IOT_DPS_ID_SCOPE = $config['IOT_DPS_ID_SCOPE']
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $config["IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$idx"]
+          if (-not $env:AZ_IOT_DPS_REGISTRATION_ID) { throw "no device $idx in the test config" }
+          $env:AZ_IOT_CLIENT_CERT = Join-Path $dir 'device-cert.pem'
+          $env:AZ_IOT_CLIENT_KEY = Join-Path $dir 'device-key.pem'
+          [IO.File]::WriteAllBytes($env:AZ_IOT_CLIENT_CERT,
+            [Convert]::FromBase64String($config["IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$idx"]))
+          [IO.File]::WriteAllBytes($env:AZ_IOT_CLIENT_KEY,
+            [Convert]::FromBase64String($config["IOT_DPS_INDIVIDUAL_X509_KEY_$idx"]))
+          $env:AZ_IOT_TRUSTED_CA = ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $dir 'trusted-ca.pem')
+          if ($config['IOT_DPS_GLOBAL_ENDPOINT']) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $config['IOT_DPS_GLOBAL_ENDPOINT'] }
+          Write-Host "::add-mask::$($config['IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY'])"
+          $env:AZ_IOT_DPS_ENROLLMENT_GROUP_KEY = $config['IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY']
+          $env:AZ_IOT_PROXY_HOST = '127.0.0.1'
+          $env:AZ_IOT_PROXY_PORT = '8899'
+          Write-Host "samples device (index $idx): $($env:AZ_IOT_DPS_REGISTRATION_ID)"
+
+          if ($IsLinux) {
+            # hsm_pkcs11: a copy of the device key in a SoftHSM2 token. Its OpenSSL configuration
+            # (the pkcs11 provider) is for that sample only: the test passes it as OPENSSL_CONF.
+            $exports = & bash -c 'set -e; mods="$(c/eng/setup-pkcs11-provider.sh)"; eval "$mods"; c/eng/setup-softhsm.sh "$AZ_IOT_CLIENT_KEY" --keep-key-file'
+            if ($LASTEXITCODE -ne 0) { throw "PKCS#11 token provisioning failed ($LASTEXITCODE)" }
+            foreach ($line in $exports) {
+              if ($line -match "^export ([A-Za-z0-9_]+)='(.*)'$") {
+                $name = $Matches[1] -eq 'OPENSSL_CONF' ? 'AZ_IOT_SAMPLES_E2E_PKCS11_OPENSSL_CONF' : $Matches[1]
+                Set-Item "env:$name" $Matches[2]
+              }
+            }
+          } else {
+            # Debug builds link libcurl-d.dll.
+            $env:PATH = "$($env:CURL_PREFIX)/debug/bin;$($env:CURL_PREFIX)/bin;$($env:PATH)"
+          }
+
+          # The HTTP proxy, for this step's lifetime.
+          $venv = Join-Path $env:RUNNER_TEMP 'proxy-venv'
+          $python = Join-Path $venv ($IsWindows ? 'Scripts/python.exe' : 'bin/python')
+          $env:AZ_IOT_SAMPLES_E2E_PROXY_LOG = Join-Path $env:RUNNER_TEMP 'proxy.log'
+          $proxy = Start-Process -FilePath $python -PassThru -ArgumentList @('-m', 'proxy',
+            '--hostname', '127.0.0.1', '--port', $env:AZ_IOT_PROXY_PORT, '--log-level', 'INFO',
+            '--log-file', $env:AZ_IOT_SAMPLES_E2E_PROXY_LOG) `
+            -RedirectStandardOutput (Join-Path $env:RUNNER_TEMP 'proxy.out') `
+            -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'proxy.err')
+          for ($i = 0; $i -lt 60; $i++) {
+            $client = [System.Net.Sockets.TcpClient]::new()
+            try { $client.Connect('127.0.0.1', [int]$env:AZ_IOT_PROXY_PORT); break } catch { Start-Sleep -Milliseconds 500 } finally { $client.Dispose() }
+          }
+          if ($i -eq 60) { throw "proxy.py did not listen on $($env:AZ_IOT_PROXY_PORT)" }
+
+          New-Item -ItemType Directory -Path results -Force | Out-Null
+          $select = if ($env:SAMPLES_SHARD -eq '0') {
+            @('-R', "$($env:SAMPLES_SHARD_0)$($env:SAMPLES_ADAPTER)$")
+          } else {
+            @('-R', "_$($env:SAMPLES_ADAPTER)$", '-E', $env:SAMPLES_SHARD_0)
+          }
+          ctest --test-dir "c/build/$($env:AZ_IOT_PRESET)" -C Debug -L samples_mqttv3 @select `
+            --verbose --no-tests=error `
+            --output-junit "$PWD/results/samples-$($env:SAMPLES_LEG).xml"
+          $rc = $LASTEXITCODE
+          Stop-Process -Id $proxy.Id -ErrorAction SilentlyContinue
+          Remove-Item -Recurse -Force $dir
+          exit $rc
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: samples-results-${{ matrix.os }}-${{ matrix.adapter }}-${{ matrix.shard }}
+          path: |
+            results/*.xml
+            c/build/${{ matrix.preset }}/tests/e2e/samples/*/sample-output.log
+            ${{ runner.temp }}/proxy.log
+            ${{ runner.temp }}/proxy.err
+          if-no-files-found: ignore
+
+  teardown:
+    name: teardown (delete resources)
+    needs: [ setup, samples ]
+    # always(): also after a cancellation. Skipped on the shared environment, and where setup
+    # never had secrets (forks, Dependabot).
+    if: >-
+      ${{ always() && !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Azure Login via OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete Azure resources
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@2fc8ffebbdc13476890b15fee48e304b1e135ce3 # v1.0.1 + SHA-pinned azure/powershell (#457)
+        with:
+          resource-group: ${{ env.E2E_RESOURCE_GROUP }}
+
+  # One check name: fails when any job failed or was cancelled (skipped jobs pass).
+  gate:
+    name: ci-c-samples-gate
+    needs: [ setup, samples, teardown ]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Check every job's result
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          jq -r 'to_entries[] | "\(.key): \(.value.result)"' <<< "$RESULTS"
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | .key] | join(", ")' <<< "$RESULTS")
+          if [ -n "$failed" ]; then
+            echo "::error::ci-c-samples-gate: failed or cancelled: $failed"
+            exit 1
+          fi

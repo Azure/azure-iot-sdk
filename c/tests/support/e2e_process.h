@@ -46,7 +46,8 @@ typedef void (*az_iot_e2e_process_pump)(void* context);
  * @brief Starts @p arguments[0] (searched in PATH) with @p arguments (NULL-terminated), in a new
  * process group. @p process must not be running.
  *
- * @param environment NULL, or "NAME=value" strings (NULL-terminated) set for the child only.
+ * @param environment NULL, or strings (NULL-terminated) for the child only: "NAME=value" sets NAME,
+ * "NAME" removes it.
  * @param echo_prefix Printed before each whole line the child prints, echoed to stdout; NULL for
  * no echo. Not copied.
  * @return false when it could not be started, or (POSIX) @p arguments[0] could not be run.

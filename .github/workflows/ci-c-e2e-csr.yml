@@ -78,6 +78,7 @@ on:
       - 'c/tests/e2e/**'
       - 'c/eng/e2e-shared-device.ps1'
       - 'c/eng/e2e-trusted-ca.ps1'
+      - 'c/eng/apt-install.sh'
       - '.github/workflows/ci-c-e2e-csr.yml'
       - '.github/actions/install-openssl/**'
   schedule:
@@ -137,6 +138,7 @@ jobs:
               - 'c/tests/e2e/**'
               - 'c/eng/e2e-shared-device.ps1'
               - 'c/eng/e2e-trusted-ca.ps1'
+              - 'c/eng/apt-install.sh'
               - '.github/workflows/ci-c-e2e-csr.yml'
               - '.github/actions/install-openssl/**'
 
@@ -237,7 +239,7 @@ jobs:
       - name: Install ninja (Linux)
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update && sudo apt-get install -y ninja-build
+          bash "$GITHUB_WORKSPACE/c/eng/apt-install.sh" ninja-build
           python3 -m pip install --upgrade 'gcovr==7.2'
 
       - name: Build CSR e2e test
