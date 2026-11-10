@@ -3818,15 +3818,23 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
             dps_finalize(c, AZ_IOT_ERR_NOT_SUPPORTED, false);
             return;
           }
-          memcpy(
-              c->dps_assigned_hub,
-              az_span_ptr(resp.registration_state.assigned_hub_hostname),
-              (size_t)hub_n);
+          /* An absent field is an empty span with a NULL pointer, which memcpy must not
+           * get; validation on adoption rejects the empty value. */
+          if (hub_n > 0)
+          {
+            memcpy(
+                c->dps_assigned_hub,
+                az_span_ptr(resp.registration_state.assigned_hub_hostname),
+                (size_t)hub_n);
+          }
           c->dps_assigned_hub[hub_n] = '\0';
-          memcpy(
-              c->dps_assigned_device_id,
-              az_span_ptr(resp.registration_state.device_id),
-              (size_t)dev_n);
+          if (dev_n > 0)
+          {
+            memcpy(
+                c->dps_assigned_device_id,
+                az_span_ptr(resp.registration_state.device_id),
+                (size_t)dev_n);
+          }
           c->dps_assigned_device_id[dev_n] = '\0';
           /* Which hub generation we were assigned to. Held pending and recorded
            * only when the assignment is adopted (dps_apply_deferred()): until
