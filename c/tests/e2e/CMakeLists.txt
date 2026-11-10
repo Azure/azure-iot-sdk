@@ -259,15 +259,12 @@ if(AZ_IOT_BUILD_E2E_SAMPLES)
     set(_samples
         unified/telemetry unified/connect_first unified/websockets unified/proxy
         unified/multithreaded_telemetry unified/twin_get_patch unified/direct_method_responder
-        unified/direct_method_slow_responder unified/c2d_receiver
+        unified/direct_method_slow_responder unified/c2d_receiver unified/file_upload
         authentication/dps_sas_key authentication/user_provided_sas_token
         authentication/dps_tpm)
     # Built only in some configurations: a test where the sample is built.
     set(_optional_samples)
     if(NOT WIN32)
-        # file_upload hands libcurl a PEM client certificate, which libcurl over Schannel (Windows)
-        # does not take.
-        list(APPEND _samples unified/file_upload)
         # A PKCS#11 token (SoftHSM2) and the OpenSSL pkcs11 provider: Linux CI only. The az_mqtt
         # build exists only over OpenSSL TLS.
         list(APPEND _samples authentication/hsm_pkcs11)
@@ -308,8 +305,8 @@ if(AZ_IOT_BUILD_E2E_SAMPLES)
             if(_sample STREQUAL "unified/file_upload")
                 get_target_property(_defs ${_target} COMPILE_DEFINITIONS)
                 if(NOT "AZ_IOT_SAMPLE_WITH_CURL" IN_LIST _defs)
-                    message(FATAL_ERROR "AZ_IOT_BUILD_E2E_SAMPLES=ON needs libcurl: "
-                        "unified/file_upload uploads with it")
+                    message(FATAL_ERROR "AZ_IOT_BUILD_E2E_SAMPLES=ON needs libcurl and OpenSSL: "
+                        "unified/file_upload uploads with them")
                 endif()
                 unset(_defs)
             endif()
