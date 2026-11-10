@@ -44,8 +44,8 @@ extends:
     # 1ES PT runs only on 1ES hosted pools whose images carry the 1es-pt-prerequisites artifact.
     # `image` becomes the demand `ImageOverride -equals <image>`, matched against the pool image aliases.
     pool:
-      name: azure-iot-sdk-c-ubuntu-2404
-      image: ubuntu-24.04
+      name: azure-iot-sdk-c-linux
+      image: azurelinux3
       os: linux
     settings:
       # The organization's effective policy set, stated explicitly: Permissive (GitHub reachable for
@@ -53,8 +53,8 @@ extends:
       networkIsolationPolicy: Permissive, CFSClean, CFSClean2, CFSClean3
     sdl:
       sourceAnalysisPool:
-        name: azure-iot-sdk-c-windows-2022
-        image: windows-2022
+        name: azure-iot-sdk-c-windows
+        image: windows-2025
         os: windows
       codeql:
         language: cpp
@@ -86,21 +86,13 @@ extends:
             steps:
               - checkout: self
                 submodules: false
-              # The image normally has these. Network isolation blocks some apt sources
-              # (archive.ubuntu.com, Launchpad PPAs), so apt runs only for what is missing.
+              # The 1ES Starter Azure Linux 3 image carries no C toolchain (1ES has no artifact to bake one in).
+              # kernel-headers provides linux/limits.h, which glibc-devel does not pull in on Azure Linux.
               - bash: |
                   set -euo pipefail
-                  missing=()
-                  command -v cmake >/dev/null || missing+=(cmake)
-                  command -v ninja >/dev/null || missing+=(ninja-build)
-                  for pkg in libssl-dev libcurl4-openssl-dev; do
-                    dpkg -s "$pkg" >/dev/null 2>&1 || missing+=("$pkg")
-                  done
-                  if [ ${#missing[@]} -gt 0 ]; then
-                    sudo apt-get update || true
-                    sudo apt-get install -y --no-install-recommends "${missing[@]}"
-                  fi
-                  cmake --version | head -1; ninja --version
+                  sudo tdnf -y install gcc glibc-devel kernel-headers binutils make cmake ninja-build git \
+                    openssl-devel curl-devel
+                  gcc --version | head -1; cmake --version | head -1; ninja --version
                 displayName: Install toolchain
               # Warnings are gated on GitHub Actions; this image's compiler may differ.
               - bash: |
@@ -133,8 +125,8 @@ extends:
           - job: windows
             displayName: Windows (MSVC x64, shared, RelWithDebInfo)
             pool:
-              name: azure-iot-sdk-c-windows-2022
-              image: windows-2022
+              name: azure-iot-sdk-c-windows
+              image: windows-2025
               os: windows
             templateContext:
               outputs:
@@ -144,12 +136,12 @@ extends:
             steps:
               - checkout: self
                 submodules: false
-              # CMake from PATH, else the copy bundled with Visual Studio.
+              # CMake from PATH, else the copy bundled with Visual Studio (Build Tools included: -products *).
               - powershell: |
                   $ErrorActionPreference = 'Stop'
                   $cmd = Get-Command cmake -ErrorAction SilentlyContinue
                   if ($cmd) { $cmake = $cmd.Source } else {
-                    $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+                    $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -products * -latest -property installationPath
                     $cmake = Join-Path $vs 'Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
                   }
                   if (-not (Test-Path $cmake)) { throw "cmake not found" }
