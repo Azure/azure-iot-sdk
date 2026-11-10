@@ -127,7 +127,7 @@ if(AZ_IOT_BUILD_E2E_ESP32_QEMU)
     if(NOT UNIX)
         message(FATAL_ERROR "AZ_IOT_BUILD_E2E_ESP32_QEMU=ON needs a POSIX host (it starts QEMU)")
     endif()
-    az_iot_add_cmocka_test(az_iot_tests_e2e_esp32_qemu tests/e2e_esp32_qemu_test.c)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_esp32_qemu tests/e2e_esp32_qemu_test.c tests/e2e_json.c)
     target_link_libraries(az_iot_tests_e2e_esp32_qemu PRIVATE az_iot_e2e_service az_iot_e2e_process)
     # DPS, TLS and MQTT run emulated: minutes, not seconds.
     set_tests_properties(az_iot_tests_e2e_esp32_qemu PROPERTIES TIMEOUT 1200)
@@ -239,6 +239,95 @@ endforeach()
 az_iot_add_e2e_suite(az_iot_tests_e2e_fileupload
     SOURCES tests/e2e_fileupload_test.c tests/e2e_device.c tests/e2e_sas_device.c
     LIBS az_iot_e2e_service az_iot_mqttv3 az_iot_crypto_openssl)
+
+# ---------------------------------------------------------------------------
+# az_iot_samples_e2e_<group>_<name>_<adapter>
+#
+# Each connecting sample of samples/, built with the pipeline hooks, run against the mqttv3 e2e
+# hub by az_iot_tests_e2e_samples (tests/e2e_samples_test.c, which names what each sample is
+# given and checked for): one test per sample and adapter, labelled samples_mqttv3. A sample
+# that is in scope but not built fails the configure rather than dropping its test.
+# ---------------------------------------------------------------------------
+if(AZ_IOT_BUILD_E2E_SAMPLES)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_samples NO_CTEST
+        tests/e2e_samples_test.c tests/e2e_json.c)
+    target_link_libraries(az_iot_tests_e2e_samples PRIVATE
+        az_iot_e2e_service az_iot_e2e_process OpenSSL::Crypto)
+
+    # <group>/<name>: unified/<name> is target az_iot_sample_unified_<name>, authentication/<name>
+    # az_iot_sample_auth_<name>; az_mqtt adds _az_mqtt.
+    set(_samples
+        unified/telemetry unified/connect_first unified/websockets unified/proxy
+        unified/multithreaded_telemetry unified/twin_get_patch unified/direct_method_responder
+        unified/direct_method_slow_responder unified/c2d_receiver
+        authentication/dps_sas_key authentication/user_provided_sas_token authentication/dps_tpm)
+    # Built only in some configurations: a test where the sample is built.
+    set(_optional_samples)
+    if(NOT WIN32)
+        # file_upload hands libcurl a PEM client certificate, which libcurl over Schannel (Windows)
+        # does not take.
+        list(APPEND _samples unified/file_upload)
+        # A PKCS#11 token (SoftHSM2) and the OpenSSL pkcs11 provider: Linux CI only. The az_mqtt
+        # build exists only over OpenSSL TLS.
+        list(APPEND _samples authentication/hsm_pkcs11)
+        # tpm2-tss against swtpm, built where tpm2-tss is found.
+        list(APPEND _optional_samples authentication/dps_tpm_tss)
+        find_program(AZ_IOT_SWTPM swtpm)
+        # Not found: run from PATH, so the test fails rather than the sample being dropped.
+        set(_swtpm swtpm)
+        if(AZ_IOT_SWTPM)
+            set(_swtpm ${AZ_IOT_SWTPM})
+        endif()
+        target_compile_definitions(az_iot_tests_e2e_samples PRIVATE
+            AZ_IOT_E2E_SAMPLES_SWTPM="${_swtpm}")
+        unset(_swtpm)
+    endif()
+
+    if("unified/file_upload" IN_LIST _samples)
+        get_target_property(_defs az_iot_sample_unified_file_upload COMPILE_DEFINITIONS)
+        if(NOT "AZ_IOT_SAMPLE_WITH_CURL" IN_LIST _defs)
+            message(FATAL_ERROR "AZ_IOT_BUILD_E2E_SAMPLES=ON needs libcurl: unified/file_upload "
+                "uploads with it")
+        endif()
+        unset(_defs)
+    endif()
+
+    foreach(_adapter IN LISTS AZ_IOT_E2E_ADAPTERS)
+        set(_suffix "")
+        if(NOT _adapter STREQUAL "paho")
+            set(_suffix _${_adapter})
+        endif()
+        foreach(_sample IN LISTS _samples _optional_samples)
+            string(REPLACE "/" ";" _parts "${_sample}")
+            list(GET _parts 0 _group)
+            list(GET _parts 1 _name)
+            set(_target_group ${_group})
+            if(_group STREQUAL "authentication")
+                set(_target_group auth)
+            endif()
+            set(_target az_iot_sample_${_target_group}_${_name}${_suffix})
+            if(NOT TARGET ${_target})
+                if(_sample IN_LIST _optional_samples
+                   OR (_sample STREQUAL "authentication/hsm_pkcs11" AND _adapter STREQUAL "az_mqtt"))
+                    continue()
+                endif()
+                message(FATAL_ERROR "AZ_IOT_BUILD_E2E_SAMPLES=ON: sample ${_target} is not built")
+            endif()
+            add_dependencies(az_iot_tests_e2e_samples ${_target})
+            set(_test az_iot_samples_e2e_${_group}_${_name}_${_adapter})
+            set(_work_directory ${CMAKE_CURRENT_BINARY_DIR}/samples/${_test})
+            file(MAKE_DIRECTORY ${_work_directory})
+            add_test(NAME ${_test}
+                COMMAND az_iot_tests_e2e_samples ${_group}_${_name} $<TARGET_FILE:${_target}>
+                    ${_work_directory}
+                WORKING_DIRECTORY ${_work_directory})
+            # The test stops the sample first: its own limit is at most 300 s, plus the checks.
+            set_tests_properties(${_test} PROPERTIES LABELS samples_mqttv3 TIMEOUT 600)
+        endforeach()
+    endforeach()
+    unset(_samples)
+    unset(_optional_samples)
+endif()
 
 # ---------------------------------------------------------------------------
 # az_iot_tests_e2e_transport

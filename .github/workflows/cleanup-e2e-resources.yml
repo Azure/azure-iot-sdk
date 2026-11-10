@@ -6,8 +6,8 @@
 #
 # Covered prefixes:
 #   CSDKE2E                 -> ci-c-e2e (Fast), ci-c-e2e-adu (Adu), ci-c-e2e-csr
-#                              (Cert). No trailing dash, so the one entry matches
-#                              all three C flavors.
+#                              (Cert), ci-c-samples (Samples). No trailing dash, so
+#                              the one entry matches every C flavor.
 #   DotnetE2ETestPipeline-  -> ci-dotnet.
 #   DotnetLonghaul-         -> longhaul-dotnet.
 #

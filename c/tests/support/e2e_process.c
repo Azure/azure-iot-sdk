@@ -105,7 +105,7 @@ static wchar_t* make_environment_block(const char* const* overrides)
   for (size_t i = 0; ok && i < count; ++i)
   {
     wide_overrides[i] = to_wide(overrides[i]);
-    ok = wide_overrides[i] != NULL && wcschr(wide_overrides[i], L'=') != NULL;
+    ok = wide_overrides[i] != NULL && wide_overrides[i][0] != L'\0';
     size += ok ? wcslen(wide_overrides[i]) + 1 : 0;
   }
   for (const wchar_t* entry = parent; ok && *entry != L'\0'; entry += wcslen(entry) + 1)
@@ -134,6 +134,10 @@ static wchar_t* make_environment_block(const char* const* overrides)
     }
     for (size_t i = 0; i < count; ++i)
     {
+      if (wcschr(wide_overrides[i] + 1, L'=') == NULL)
+      {
+        continue; // "NAME": removed.
+      }
       size_t const length = wcslen(wide_overrides[i]) + 1;
       memcpy(out, wide_overrides[i], length * sizeof(wchar_t));
       out += length;
@@ -332,21 +336,24 @@ static void sleep_ms(int milliseconds)
   (void)nanosleep(&t, NULL);
 }
 
-/** @brief Sets @p environment ("NAME=value" strings) in this process; false on a malformed one. */
+/**
+ * @brief Sets @p environment ("NAME=value" sets, "NAME" removes) in this process; false on a
+ * malformed one.
+ */
 static bool set_environment(const char* const* environment)
 {
   for (; environment != NULL && *environment != NULL; ++environment)
   {
     const char* equals = strchr(*environment, '=');
     char name[256];
-    size_t const length = equals != NULL ? (size_t)(equals - *environment) : 0;
+    size_t const length = equals != NULL ? (size_t)(equals - *environment) : strlen(*environment);
     if (length == 0 || length >= sizeof(name))
     {
       return false;
     }
     memcpy(name, *environment, length);
     name[length] = '\0';
-    if (setenv(name, equals + 1, 1) != 0)
+    if ((equals != NULL ? setenv(name, equals + 1, 1) : unsetenv(name)) != 0)
     {
       return false;
     }
