@@ -21,7 +21,7 @@ Both releases target **.NET 10.0** and include device connectivity and DPS provi
 
 | Version | Use when | Samples |
 | --- | --- | --- |
-| [1.2.0](https://www.nuget.org/packages/Microsoft.Azure.Iot.Device/1.2.0) | Connecting to an MQTTv3 IoT Hub with the Unified API set | [release samples][stable-samples] |
+| [1.2.0](https://www.nuget.org/packages/Microsoft.Azure.Iot.Device/1.2.0) | Connecting to an MQTTv3 IoT Hub with the Unified API set | [Samples][stable-samples] |
 | [2.0.0-preview4](https://www.nuget.org/packages/Microsoft.Azure.Iot.Device/2.0.0-preview4) | Evaluating an MQTTv5 IoT Hub, or using the Unified API set across MQTTv3 and MQTTv5 hubs | [Unified samples][preview-unified-samples], [MQTTv5 samples][preview-mqttv5-samples] |
 
 Pin the package version explicitly:
@@ -30,10 +30,10 @@ Pin the package version explicitly:
 dotnet add package Microsoft.Azure.Iot.Device --version 1.2.0
 ```
 
-For the preview, replace `1.2.0` with `2.0.0-preview4`. The capability matrix below describes these
-published versions, not unreleased branch changes. Release source and sample links are pinned to the
-commits recorded in the NuGet packages' repository metadata. Local samples reference the local SDK
-project; use the pinned samples when working with a published package.
+For the preview, replace `1.2.0` with `2.0.0-preview4`. The capability matrix below summarizes branch
+availability. Release source and sample links are pinned to the commits recorded in the NuGet packages'
+repository metadata. Local samples reference the local SDK project; use the pinned source and samples
+for published-version details.
 
 ## High-level Design notes
 
@@ -119,33 +119,34 @@ The `main` branch contains the MQTTv3-only SDK; MQTTv5 implementation and sample
 
 ## Key features
 
-**Supported** means available in 1.2.0. **Preview** means implemented in 2.0.0-preview4, whose APIs
-remain subject to change. **No** means unsupported in that version/API set, not a delivery commitment.
+**Main + preview** means supported in both `main` and `releases/public-preview`. **Preview only**
+means supported only in `releases/public-preview`, whose APIs remain subject to change.
+**Not supported** means unavailable in either branch, not a delivery commitment.
 
-| Feature | 1.2.0 Unified / MQTTv3 | 2.0.0-preview4 Unified / MQTTv3 | 2.0.0-preview4 Unified / MQTTv5 | 2.0.0-preview4 MQTTv5 API |
-| --- | --- | --- | --- | --- |
-| Device provisioning through DPS | Supported | Preview | Preview | Preview |
-| X.509 authentication | Supported | Preview | Preview | Preview |
-| Symmetric key / SAS authentication | Supported | Preview | No | No |
-| MQTTv3 connection to IoT Hub | Supported | Preview | No | No |
-| MQTTv5 connection to IoT Hub | No | No | Preview | Preview |
-| Device-to-cloud telemetry | Supported | Preview | Preview | Preview |
-| Cloud-to-device messages | Supported | Preview | No | No |
-| Twin GET, reported-property updates, desired-property patches | Supported | Preview | Preview (opt in to patches) | Preview (opt in to patches) |
-| MQTTv5 twin pushes | No | No | Preview | Preview |
-| Direct-method invocation handling | Supported | Preview | Preview | Preview |
-| Application-defined direct-method probe handling | No | No | No | Preview |
-| Custom-topic publishing | No | No | No | Preview |
-| Custom-topic subscriptions / receiving | No | No | No | No |
-| Certificate issuance through DPS | Supported | Preview | Preview | Preview |
-| Certificate signing through IoT Hub | Supported | Preview | No | No |
-| File-upload SAS URI and completion APIs | Supported | Preview | No | No |
-| Bring-your-own MQTT client (`IMqttClient`) | Supported | Preview | Preview | Preview |
-| Retry, reconnection, and re-provisioning | Supported | Preview | Preview | Preview |
-| AMQPS transport | No | No | No | No |
-| HTTPS transport for provisioning / messaging | No | No | No | No |
-| TPM authentication through DPS | No | No | No | No |
-| Software updates via DPS | No | No | No | No |
+| Feature | Availability | API / hub limitations |
+| --- | --- | --- |
+| Device provisioning through DPS | Main + preview | |
+| X.509 authentication | Main + preview | |
+| Symmetric key / SAS authentication | Main + preview | Unified API with MQTTv3 hubs only |
+| MQTTv3 connection to IoT Hub | Main + preview | Unified API only |
+| MQTTv5 connection to IoT Hub | Preview only | Unified or MQTTv5 API |
+| Device-to-cloud telemetry | Main + preview | |
+| Cloud-to-device messages | Main + preview | Unified API with MQTTv3 hubs only |
+| Twin GET, reported-property updates, desired-property patches | Main + preview | Opt in to desired-property patches on MQTTv5 hubs |
+| MQTTv5 twin pushes | Preview only | Unified or MQTTv5 API with MQTTv5 hubs |
+| Direct-method invocation handling | Main + preview | |
+| Application-defined direct-method probe handling | Preview only | MQTTv5 API with MQTTv5 hubs only |
+| Custom-topic publishing | Preview only | MQTTv5 API with MQTTv5 hubs only |
+| Custom-topic subscriptions / receiving | Not supported | |
+| Certificate issuance through DPS | Main + preview | |
+| Certificate signing through IoT Hub | Main + preview | Unified API with MQTTv3 hubs only |
+| File-upload SAS URI and completion APIs | Main + preview | Unified API with MQTTv3 hubs only |
+| Bring-your-own MQTT client (`IMqttClient`) | Main + preview | |
+| Retry, reconnection, and re-provisioning | Main + preview | |
+| AMQPS transport | Not supported | |
+| HTTPS transport for provisioning / messaging | Not supported | |
+| TPM authentication through DPS | Not supported | |
+| Software updates via DPS | Not supported | |
 
 ### Capability limitations
 
