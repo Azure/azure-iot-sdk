@@ -151,8 +151,7 @@ means supported only in `releases/public-preview`, whose APIs remain subject to 
 ### Capability limitations
 
 - **Custom topics:** `MQTTv5.CustomTopics.CustomTopicsClient.PublishAsync` publishes to application-defined
-  topics on an MQTTv5 hub. It does not expose custom-topic subscriptions or receiving. Check the returned
-  `MqttPublishAck.ReasonCode` for broker rejection; a failed PUBACK is returned, not thrown.
+  topics on an MQTTv5 hub. It does not expose custom-topic subscriptions or receiving. 
   See the [preview4 custom-topic publishing sample][custom-topic-sample].
 - **Twins:** In preview4, both API sets expose MQTTv5 twin push behavior. Desired-property push mode is
   off by default; set `ReceiveDesiredPropertyUpdates = true` for ongoing desired-property patches.
@@ -161,10 +160,9 @@ means supported only in `releases/public-preview`, whose APIs remain subject to 
 - **Direct methods:** The Unified API handles invocations on either hub type, but application-defined
   MQTTv5 probe handling requires the MQTTv5 API set.
 - **Certificates:** DPS certificate issuance and IoT Hub certificate signing are separate capabilities.
-  Hub-side signing is available only on MQTTv3 hubs in these releases and requires service-side support.
+  Hub-side signing is available only on MQTTv3 hubs.
 - **File upload:** `Unified.FileUpload.FileUploadClient` requests an upload SAS URI and reports completion
-  over HTTPS for MQTTv3 hubs. The application uploads the file using a storage client. This is not an
-  HTTPS provisioning or messaging transport.
+  over HTTPS for MQTTv3 hubs. File upload operations are not supported on MQTTv5 IoT Hubs currently
 
 [iothub-device-release]: https://img.shields.io/nuget/v/Microsoft.Azure.Iot.Device.svg?style=plastic
 [iothub-device-nuget]: https://www.nuget.org/packages/Microsoft.Azure.Iot.Device/
