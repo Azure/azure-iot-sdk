@@ -13,7 +13,7 @@ for an MQTTv5 hub. MQTTv5 hubs require X.509 authentication.
 
 The preview4 [custom-topic sample](https://github.com/Azure/azure-iot-sdk/tree/c2568eae58cd1235ea2e961eb29e77b02dfe70f9/dotnet/samples/MQTTv5/CustomTopicSample)
 demonstrates publishing only; custom-topic subscriptions and receiving are not supported.
-See the [capability matrix](../README.md#key-features) and [release notes](../CHANGELOG.md) for
+See the [capability matrix](../README.md#key-features) for
 version-specific limitations. Samples added after these releases may use APIs absent from those packages.
 
 ## Pre-requisites
