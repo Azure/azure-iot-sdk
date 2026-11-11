@@ -2,6 +2,20 @@
 
 This directory contains all the samples for using the .NET IoT SDK in this repo.
 
+## Match samples to your SDK version
+
+Local samples reference the SDK project in this checkout, not a published NuGet package. For
+**1.2.0**, use the [release-pinned Unified samples](https://github.com/Azure/azure-iot-sdk/tree/fa63f8e548f217472471cefb97a1cf0908f7f846/dotnet/samples/Unified)
+with an MQTTv3 IoT Hub. For **2.0.0-preview4**, use the
+[release-pinned Unified samples](https://github.com/Azure/azure-iot-sdk/tree/c2568eae58cd1235ea2e961eb29e77b02dfe70f9/dotnet/samples/Unified)
+for either hub type, or the [MQTTv5 samples](https://github.com/Azure/azure-iot-sdk/tree/c2568eae58cd1235ea2e961eb29e77b02dfe70f9/dotnet/samples/MQTTv5)
+for an MQTTv5 hub. MQTTv5 hubs require X.509 authentication.
+
+The preview4 [custom-topic sample](https://github.com/Azure/azure-iot-sdk/tree/c2568eae58cd1235ea2e961eb29e77b02dfe70f9/dotnet/samples/MQTTv5/CustomTopicSample)
+demonstrates publishing only; custom-topic subscriptions and receiving are not supported.
+See the [capability matrix](../README.md#key-features) and [release notes](../CHANGELOG.md) for
+version-specific limitations. Samples added after these releases may use APIs absent from those packages.
+
 ## Pre-requisites
 
 - A Device Provisioning Service
@@ -33,7 +47,7 @@ This sample can be run again to delete the previous credentials and create a new
 By running the above sample, you should see a set of credential files saved at the root of this samples directory like "deviceId.txt", "certificate.pfx", and more. Once you have those, all you need to do is run a command from this directory like:
 
 ```bash
-dotnet run --project DirectMethodsSample  --property WarningLevel=0
+dotnet run --project Unified/DirectMethodsSample --property WarningLevel=0
 ```
 
 To see each way a device can authenticate with DPS and IoT Hub (X.509 certificates, symmetric keys, and certificates issued by DPS and renewed by IoT Hub), see the [AuthenticationSample](./Unified/AuthenticationSample/).

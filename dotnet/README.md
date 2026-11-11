@@ -14,6 +14,27 @@ This SDK does not include any service client code. You can find that [here inste
 | ---                                                   | ---                                                       |
 | Microsoft.Azure.Iot.Device                            | [![NuGet][iothub-device-release]][iothub-device-nuget]    |
 
+## Choose a version
+
+Both releases target **.NET 10.0** and include device connectivity and DPS provisioning in the single
+`Microsoft.Azure.Iot.Device` package. They do not include service clients.
+
+| Version | Use when | Documentation and samples |
+| --- | --- | --- |
+| [1.2.0](https://www.nuget.org/packages/Microsoft.Azure.Iot.Device/1.2.0) | Connecting to an MQTTv3 IoT Hub with the Unified API set | [Release notes](CHANGELOG.md#120), [release source][stable-source], [release samples][stable-samples] |
+| [2.0.0-preview4](https://www.nuget.org/packages/Microsoft.Azure.Iot.Device/2.0.0-preview4) | Evaluating an MQTTv5 IoT Hub, or using the Unified API set across MQTTv3 and MQTTv5 hubs | [Release notes](CHANGELOG.md#200-preview4), [release source][preview-source], [Unified samples][preview-unified-samples], [MQTTv5 samples][preview-mqttv5-samples] |
+
+Pin the package version explicitly:
+
+```shell
+dotnet add package Microsoft.Azure.Iot.Device --version 1.2.0
+```
+
+For the preview, replace `1.2.0` with `2.0.0-preview4`. The capability matrix below describes these
+published versions, not unreleased branch changes. Release source and sample links are pinned to the
+commits recorded in the NuGet packages' repository metadata. Local samples reference the local SDK
+project; use the pinned samples when working with a published package.
+
 ## High-level Design notes
 
 Unlike previous incarnations of the Azure IoT Hub and Device Provisioning Service SDKs, this version is designed such that
@@ -31,8 +52,8 @@ For example, capture informational messages, warnings, and errors in a file:
 
 ```csharp
 using System.Diagnostics;
-using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 using var listener = new TextWriterTraceListener("iot-sdk.log")
 {
@@ -82,82 +103,73 @@ console and file logs while provisioning a device and sending telemetry.
 
 > Please note that all preview APIs are subject to change prior to their formal release
 
-This SDK is currently previewing v2.0.0 versions which are compatible with new MQTTv5 supporting Azure IoT Hub (which is also currently in preview). These new MQTTv5 IoT Hubs will include new features that will not be available in the current MQTTv3 IoT Hubs.
+**2.0.0-preview4** supports MQTTv5 IoT Hubs, which are also in preview. MQTTv5 hub capabilities are not
+available merely by installing the preview package while continuing to use an MQTTv3 hub.
 
-The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different enough that this preview SDK version includes two API sets (each with their own set of samples). 
+The preview package includes two API sets:
 
- - The **Unified** API set allows for writing device code that works as similarly as possible regardless of the type of IoT Hub it is connected to by taking a lowest-common-denominator of the supported features. 
-   - Samples can be found in our preview branch [here](https://github.com/Azure/azure-iot-sdk/tree/releases/public-preview/dotnet/samples/Unified)
- - The **MQTTv5** API set allows for writing device code that specifically targets this new kind of IoT hub. See the supported features section below for more details.
-   - Samples can be found in our preview branch [here](https://github.com/Azure/azure-iot-sdk/tree/releases/public-preview/dotnet/samples/MQTTv5)
- - All the SDK code is shipped in a single NuGet package. No more managing IoT Hub + DPS packages separately
+- **Unified** supports either hub type, selected from the DPS assignment. Core telemetry, twin, and
+  direct-method APIs work across both, with the hub-specific limitations listed below. MQTTv5 twin
+  push options are also exposed by this API set.
+- **MQTTv5** targets MQTTv5 hubs only and adds custom-topic publishing and direct-method probe handling.
+
+The `main` branch contains the MQTTv3-only SDK; MQTTv5 implementation and samples live in
+`releases/public-preview`. For published-version examples, use the pinned links under
+[Choose a version](#choose-a-version), rather than assuming either branch matches a released package.
 
 ## Key features
 
-:heavy_check_mark: feature available  :heavy_multiplication_x: not supported, but planned to be supported  :heavy_minus_sign: not supported
+**Supported** means available in 1.2.0. **Preview** means implemented in 2.0.0-preview4, whose APIs
+remain subject to change. **No** means unsupported in that version/API set, not a delivery commitment.
 
-### v1.0.0 supported features
+| Feature | 1.2.0 Unified / MQTTv3 | 2.0.0-preview4 Unified / MQTTv3 | 2.0.0-preview4 Unified / MQTTv5 | 2.0.0-preview4 MQTTv5 API |
+| --- | --- | --- | --- | --- |
+| Device provisioning through DPS | Supported | Preview | Preview | Preview |
+| X.509 authentication | Supported | Preview | Preview | Preview |
+| Symmetric key / SAS authentication | Supported | Preview | No | No |
+| MQTTv3 connection to IoT Hub | Supported | Preview | No | No |
+| MQTTv5 connection to IoT Hub | No | No | Preview | Preview |
+| Device-to-cloud telemetry | Supported | Preview | Preview | Preview |
+| Cloud-to-device messages | Supported | Preview | No | No |
+| Twin GET, reported-property updates, desired-property patches | Supported | Preview | Preview (opt in to patches) | Preview (opt in to patches) |
+| MQTTv5 twin pushes | No | No | Preview | Preview |
+| Direct-method invocation handling | Supported | Preview | Preview | Preview |
+| Application-defined direct-method probe handling | No | No | No | Preview |
+| Custom-topic publishing | No | No | No | Preview |
+| Custom-topic subscriptions / receiving | No | No | No | No |
+| Certificate issuance through DPS | Supported | Preview | Preview | Preview |
+| Certificate signing through IoT Hub | Supported | Preview | No | No |
+| File-upload SAS URI and completion APIs | Supported | Preview | No | No |
+| Bring-your-own MQTT client (`IMqttClient`) | Supported | Preview | Preview | Preview |
+| Retry, reconnection, and re-provisioning | Supported | Preview | Preview | Preview |
+| AMQPS transport | No | No | No | No |
+| HTTPS transport for provisioning / messaging | No | No | No | No |
+| TPM authentication through DPS | No | No | No | No |
+| Software updates via DPS | No | No | No | No |
 
-|Feature|Support|Description|
-|---|---|---|
-| Device provisioning      | :heavy_check_mark: | Provision your device through an Azure Device Provisioning Service enrollment
-| X509 Authentication      | :heavy_check_mark: | 
-| Symmetric key authentication      | :heavy_check_mark: | Authenticate with SAS tokens generated from a symmetric key. Only supported by MQTTv3 IoT Hubs
-| MQTTv3 connection to IoT Hub       | :heavy_check_mark: | After provisioning device, connect to IoT Hub via MQTTv3 connection
-| MQTTv5 connection to IoT Hub       | :heavy_minus_sign: | This feature will only be supported in v2.0.0
-| Device-to-cloud telemetry       | :heavy_check_mark: | 
-| Device twin       | :heavy_check_mark: | 
-| Direct methods       | :heavy_check_mark: | 
-| Certificate management       | :heavy_check_mark: | ```ConnectionClient``` class allows for you to ask the Device Provisioning Service to sign certificates for your device to use when connecting to IoT Hub. The same class also allows you to ask IoT Hub to sign certificates that can be used to connect to IoT Hub with as well.
-| Bring-your-own MQTT client       | :heavy_check_mark: | This library defines an ```IMqttClient``` interface that allows you to swap out our default MQTTnet MQTT client for your own, if needed 
-| Retry + reconnection logic       | :heavy_check_mark: | ```ConnectionClient``` includes retry by default and even handles re-provisioning the device if necessary
-| AMQPS connection support       | :heavy_minus_sign: |
-| HTTPS connection support       | :heavy_minus_sign:* | We are considering adding support for performing provisioning over HTTPS
-| TPM authentication support       | :heavy_minus_sign:* | We are considering adding support for using TPM authentication
-| Software updates via DPS | :heavy_minus_sign: |
+### Capability limitations
 
-### v2.0.0-preview Unified API set supported features
-
-|Feature|Support|Description|
-|---|---|---|
-| Device provisioning      | :heavy_check_mark: | Provision your device through an Azure Device Provisioning Service enrollment
-| X509 Authentication      | :heavy_check_mark: | 
-| Symmetric key authentication      | :heavy_check_mark:* | *Only works with MQTTv3 IoT Hubs. MQTTv5 IoT Hubs only accept X509 authentication
-| MQTTv3 connection to IoT Hub       | :heavy_check_mark: | When provisioned to an MQTTv3 IoT Hub, the ```ConnectionClient``` will automatically do this
-| MQTTv5 connection to IoT Hub       | :heavy_check_mark: | When provisioned to an MQTTv5 IoT Hub, the ```ConnectionClient``` will automatically do this 
-| Device-to-cloud telemetry       | :heavy_check_mark: | 
-| Device twin       | :heavy_check_mark:* | *Some twin features (such as twin pushes) are only available in MQTTv5 Hubs, so they are not included in this API set 
-| Direct methods       | :heavy_check_mark:* | *Direct method probe handling support is exclusive to MQTTv5 hubs, so it is omitted from this API set
-| Custom topic support       | :heavy_minus_sign: | This feature will only be supported via the MQTTv5 API set
-| Certificate management       | :heavy_check_mark:* | Only available on MQTTv3 Hubs currently
-| Bring-your-own MQTT client       | :heavy_check_mark: | This library defines an ```IMqttClient``` interface that allows you to swap out our default MQTTnet MQTT client for your own, if needed 
-| Retry + reconnection logic       | :heavy_check_mark: | ```ConnectionClient``` includes retry by default and even handles re-provisioning the device if necessary
-| AMQPS connection support       | :heavy_minus_sign: |
-| HTTPS connection support       | :heavy_minus_sign:* | We are considering adding support for performing provisioning over HTTPS
-| TPM authentication support       | :heavy_minus_sign:* | We are considering adding support for using TPM authentication
-| Software updates via DPS | :heavy_minus_sign: |
-
-### v2.0.0-preview MQTTv5 API set supported features
-
-|Feature|Support|Description|
-|---|---|---|
-| Device provisioning      | :heavy_check_mark: | Provision your device through an Azure Device Provisioning Service enrollment
-| X509 Authentication      | :heavy_check_mark: | 
-| Symmetric key authentication      | :heavy_minus_sign: | MQTTv5 IoT Hubs only accept X509 authentication. Use the Unified API set with an MQTTv3 IoT Hub for symmetric key authentication
-| MQTTv3 connection to IoT Hub       | :heavy_minus_sign: | 
-| MQTTv5 connection to IoT Hub       | :heavy_check_mark: | 
-| Device-to-cloud telemetry       | :heavy_check_mark: | 
-| Device twin       | :heavy_check_mark: | 
-| Direct methods       | :heavy_check_mark: |
-| Custom topic support       | :heavy_multiplication_x: | This feature will allow you to publish/receive publishes from custom MQTT topics. It will be exclusive to MQTTv5 IoT Hubs
-| Certificate management       | :heavy_multiplication_x: |
-| Bring-your-own MQTT client       | :heavy_check_mark: | This library defines an ```IMqttClient``` interface that allows you to swap out our default MQTTnet MQTT client for your own, if needed 
-| Retry + reconnection logic       | :heavy_check_mark: | ```ConnectionClient``` includes retry by default and even handles re-provisioning the device if necessary
-| AMQPS connection support       | :heavy_minus_sign: |
-| HTTPS connection support       | :heavy_minus_sign:* | We are considering adding support for performing provisioning over HTTPS
-| TPM authentication support       | :heavy_minus_sign:* | We are considering adding support for using TPM authentication
-| Software updates via DPS | :heavy_minus_sign: |
-
+- **Custom topics:** `MQTTv5.CustomTopics.CustomTopicsClient.PublishAsync` publishes to application-defined
+  topics on an MQTTv5 hub. It does not expose custom-topic subscriptions or receiving. Check the returned
+  `MqttPublishAck.ReasonCode` for broker rejection; a failed PUBACK is returned, not thrown.
+  See the [preview4 custom-topic publishing sample][custom-topic-sample].
+- **Twins:** In preview4, both API sets expose MQTTv5 twin push behavior. Desired-property push mode is
+  off by default; set `ReceiveDesiredPropertyUpdates = true` for ongoing desired-property patches.
+  `ReceiveReportedPropertiesUponConnect` independently controls reported-property pushes on connection
+  and also defaults to `false`. These options do not change MQTTv3 desired-property patch delivery.
+- **Direct methods:** The Unified API handles invocations on either hub type, but application-defined
+  MQTTv5 probe handling requires the MQTTv5 API set.
+- **Certificates:** DPS certificate issuance and IoT Hub certificate signing are separate capabilities.
+  Hub-side signing is available only on MQTTv3 hubs in these releases and requires service-side support.
+- **File upload:** `Unified.FileUpload.FileUploadClient` requests an upload SAS URI and reports completion
+  over HTTPS for MQTTv3 hubs. The application uploads the file using a storage client. This is not an
+  HTTPS provisioning or messaging transport.
 
 [iothub-device-release]: https://img.shields.io/nuget/v/Microsoft.Azure.Iot.Device.svg?style=plastic
 [iothub-device-nuget]: https://www.nuget.org/packages/Microsoft.Azure.Iot.Device/
+[stable-source]: https://github.com/Azure/azure-iot-sdk/tree/fa63f8e548f217472471cefb97a1cf0908f7f846/dotnet
+[stable-samples]: https://github.com/Azure/azure-iot-sdk/tree/fa63f8e548f217472471cefb97a1cf0908f7f846/dotnet/samples/Unified
+[preview-source]: https://github.com/Azure/azure-iot-sdk/tree/c2568eae58cd1235ea2e961eb29e77b02dfe70f9/dotnet
+[preview-unified-samples]: https://github.com/Azure/azure-iot-sdk/tree/c2568eae58cd1235ea2e961eb29e77b02dfe70f9/dotnet/samples/Unified
+[preview-mqttv5-samples]: https://github.com/Azure/azure-iot-sdk/tree/c2568eae58cd1235ea2e961eb29e77b02dfe70f9/dotnet/samples/MQTTv5
+[custom-topic-sample]: https://github.com/Azure/azure-iot-sdk/tree/c2568eae58cd1235ea2e961eb29e77b02dfe70f9/dotnet/samples/MQTTv5/CustomTopicSample
