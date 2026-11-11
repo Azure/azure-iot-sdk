@@ -103,15 +103,13 @@ console and file logs while provisioning a device and sending telemetry.
 
 > Please note that all preview APIs are subject to change prior to their formal release
 
-**2.0.0-preview4** supports MQTTv5 IoT Hubs, which are also in preview. MQTTv5 hub capabilities are not
-available merely by installing the preview package while continuing to use an MQTTv3 hub.
+**2.0.0-previewX** versions support connecting to MQTTv5 IoT Hubs, which are also in preview. MQTTv5 hub capabilities are not
+available merely by installing the preview package to connect with an MQTTv3 hub.
 
 The preview package includes two API sets:
 
-- **Unified** supports either hub type, selected from the DPS assignment. Core telemetry, twin, and
-  direct-method APIs work across both, with the hub-specific limitations listed below. MQTTv5 twin
-  push options are also exposed by this API set.
-- **MQTTv5** targets MQTTv5 hubs only and adds custom-topic publishing and direct-method probe handling.
+- **Unified** supports either hub type, selected from the DPS assignment. This API set offers a lowest-common-denominator set of features that are available on both MQTTv3 and MQTTv5 IoT Hubs with some exceptions (see below table)
+- **MQTTv5** targets MQTTv5 hubs specifically and offers all features available to MQTTv5 IoT Hubs regardless of availability of that feature on MQTTv3 IoT Hubs.
 
 The `main` branch contains the MQTTv3-only SDK; MQTTv5 implementation and samples live in
 `releases/public-preview`. For published-version examples, use the pinned links under
