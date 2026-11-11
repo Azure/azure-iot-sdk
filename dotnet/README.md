@@ -19,10 +19,10 @@ This SDK does not include any service client code. You can find that [here inste
 Both releases target **.NET 10.0** and include device connectivity and DPS provisioning in the single
 `Microsoft.Azure.Iot.Device` package. They do not include service clients.
 
-| Version | Use when | Documentation and samples |
+| Version | Use when | Samples |
 | --- | --- | --- |
-| [1.2.0](https://www.nuget.org/packages/Microsoft.Azure.Iot.Device/1.2.0) | Connecting to an MQTTv3 IoT Hub with the Unified API set | [Release notes](CHANGELOG.md#120), [release source][stable-source], [release samples][stable-samples] |
-| [2.0.0-preview4](https://www.nuget.org/packages/Microsoft.Azure.Iot.Device/2.0.0-preview4) | Evaluating an MQTTv5 IoT Hub, or using the Unified API set across MQTTv3 and MQTTv5 hubs | [Release notes](CHANGELOG.md#200-preview4), [release source][preview-source], [Unified samples][preview-unified-samples], [MQTTv5 samples][preview-mqttv5-samples] |
+| [1.2.0](https://www.nuget.org/packages/Microsoft.Azure.Iot.Device/1.2.0) | Connecting to an MQTTv3 IoT Hub with the Unified API set | [release samples][stable-samples] |
+| [2.0.0-preview4](https://www.nuget.org/packages/Microsoft.Azure.Iot.Device/2.0.0-preview4) | Evaluating an MQTTv5 IoT Hub, or using the Unified API set across MQTTv3 and MQTTv5 hubs | [Unified samples][preview-unified-samples], [MQTTv5 samples][preview-mqttv5-samples] |
 
 Pin the package version explicitly:
 
