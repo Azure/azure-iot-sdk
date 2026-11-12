@@ -58,6 +58,10 @@
 # (c/eng/e2e-shared-device.ps1 -Csr); the test job never logs in to Azure. Same
 # tests. Push and nightly runs always provision. Unset the variable to return to
 # per-run provisioning.
+#
+# This is the certificate-management environment (E2E_CSR_SHARED_*): hub and DPS
+# linked to ADR with a certificate policy. ci-c-e2e uses a separate plain mqttv3
+# environment (E2E_MQTTV3_SHARED_*); neither workflow reads the other's.
 
 name: ci-c-e2e-csr
 
