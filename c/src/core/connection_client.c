@@ -3460,6 +3460,48 @@ static az_iot_result dps_store_issued_cert(az_iot_connection_client* c, az_span 
   return rc;
 }
 
+/**
+ * @brief Whether @p topic is a registration response topic the azure-sdk-for-c parser can read.
+ * @details az_iot_provisioning_client_parse_received_topic_and_payload() requires a non-empty
+ * topic, status and retry-after value, and a failed precondition does not return.
+ * @return true if @p topic is "$dps/registrations/res/<status>[/...]" with a non-empty status
+ * and, if "retry-after=" follows, a non-empty value.
+ */
+static bool dps_response_topic_is_parsable(az_span topic)
+{
+  az_span const subscribe_filter
+      = AZ_SPAN_FROM_STR(AZ_IOT_PROVISIONING_CLIENT_REGISTER_SUBSCRIBE_TOPIC);
+  /* The filter without its "#". */
+  az_span const response_prefix
+      = az_span_slice(subscribe_filter, 0, az_span_size(subscribe_filter) - 1);
+  az_span const retry_after_key = AZ_SPAN_FROM_STR("retry-after=");
+
+  if (az_span_find(topic, response_prefix) != 0)
+  {
+    return false;
+  }
+  az_span const status_and_rest = az_span_slice_to_end(topic, az_span_size(response_prefix));
+  int32_t const status_end = az_span_find(status_and_rest, AZ_SPAN_FROM_STR("/"));
+  if (status_end == 0 || az_span_size(status_and_rest) == 0)
+  {
+    return false;
+  }
+  if (status_end == -1)
+  {
+    return true;
+  }
+  az_span const rest = az_span_slice_to_end(status_and_rest, status_end + 1);
+  int32_t const retry_after_index = az_span_find(rest, retry_after_key);
+  if (retry_after_index == -1)
+  {
+    return true;
+  }
+  az_span const retry_after_value
+      = az_span_slice_to_end(rest, retry_after_index + az_span_size(retry_after_key));
+  return az_span_size(retry_after_value) > 0
+      && az_span_find(retry_after_value, AZ_SPAN_FROM_STR("&")) != 0;
+}
+
 static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 {
   az_iot_connection_client* c = (az_iot_connection_client*)user_ctx;
@@ -3610,6 +3652,14 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
 
       az_span topic_span = az_span_create(
           (uint8_t*)(uintptr_t)evt->message->topic, (int32_t)strlen(evt->message->topic));
+      /* The parser's preconditions cover the topic too, so check it here for the same reason. */
+      if (!dps_response_topic_is_parsable(topic_span))
+      {
+        AZ_IOT_LOG_ERRORF(
+            AZ_IOT_LOG_COMPONENT_DPS, "register: malformed response topic %s", evt->message->topic);
+        dps_finalize(c, AZ_IOT_ERR_PROTOCOL, false);
+        return;
+      }
       az_span payload_span = az_span_create(
           (uint8_t*)(uintptr_t)evt->message->payload, (int32_t)evt->message->payload_len);
 
