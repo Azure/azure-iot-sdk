@@ -23,6 +23,7 @@
 
 #include <cmocka.h>
 
+#include "azure/core/az_precondition.h"
 #include "azure/iot/az_iot_connection_client.h"
 #include "azure/iot/az_iot_log.h"
 #include "azure/iot/az_iot_log_components.h"
@@ -2835,6 +2836,59 @@ static void dps_empty_response_body_faults_without_a_null_deref(void** state)
   /* Scoped: DPS does reach CONNECTED at its SUBACK; the HUB never did. */
   assert_int_equal(
       az_iot_test_count_for(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTED), 0);
+}
+
+/**
+ * @brief Deliver a valid body on @p topic and assert the attempt faults with a protocol error.
+ * @details Each topic below failed a precondition in the azure-sdk-for-c response parser, whose
+ * default handler spins forever. Found by fuzzing.
+ */
+static void assert_dps_response_topic_faults_with_a_protocol_error(
+    az_iot_test_conn* fx,
+    const char* topic)
+{
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+
+  assert_true(inject_dps_response(m, topic, k_assigned_body));
+  for (int i = 0; i < 3; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  assert_int_equal(az_iot_test_last_state(&fx->log), AZ_IOT_CONN_STATE_FAULTED);
+  assert_int_equal(
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_FAULTED), AZ_IOT_ERR_PROTOCOL);
+  assert_int_equal(
+      az_iot_test_count_for(&fx->log, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_CONN_STATE_CONNECTED), 0);
+}
+
+static void dps_empty_response_topic_faults_with_a_protocol_error(void** state)
+{
+  assert_dps_response_topic_faults_with_a_protocol_error((az_iot_test_conn*)*state, "");
+}
+
+static void dps_response_topic_without_a_status_faults_with_a_protocol_error(void** state)
+{
+  assert_dps_response_topic_faults_with_a_protocol_error(
+      (az_iot_test_conn*)*state, "$dps/registrations/res/");
+}
+
+static void dps_response_topic_with_an_empty_status_faults_with_a_protocol_error(void** state)
+{
+  assert_dps_response_topic_faults_with_a_protocol_error(
+      (az_iot_test_conn*)*state, "$dps/registrations/res//?$rid=1");
+}
+
+static void dps_response_topic_with_an_empty_retry_after_faults_with_a_protocol_error(void** state)
+{
+  assert_dps_response_topic_faults_with_a_protocol_error(
+      (az_iot_test_conn*)*state, "$dps/registrations/res/202/?$rid=1&retry-after=");
+}
+
+static void dps_response_topic_with_an_empty_retry_after_before_a_property_faults(void** state)
+{
+  assert_dps_response_topic_faults_with_a_protocol_error(
+      (az_iot_test_conn*)*state, "$dps/registrations/res/202/?retry-after=&$rid=1");
 }
 
 /* A DPS identity the SDK cannot use must come back as an error, not as a hang.
@@ -6285,8 +6339,12 @@ static void set_dps_assignment_invalidated_callback_rejects_a_null_client(void**
       AZ_IOT_ERR_INVALID_ARG);
 }
 
+/** @brief Abort on an azure-sdk-for-c precondition failure; its default handler spins forever. */
+static void abort_on_precondition_failure(void) { abort(); }
+
 int main(void)
 {
+  az_precondition_failed_set_callback(abort_on_precondition_failure);
   const struct CMUnitTest tests[] = {
     /* assignment notification */
     cmocka_unit_test(assignment_callback_reports_the_adopted_assignment),
@@ -6475,6 +6533,16 @@ int main(void)
     cmocka_unit_test_setup_teardown(a_failed_registration_logs_its_operation_id, setup, teardown),
     cmocka_unit_test_setup_teardown(
         dps_empty_response_body_faults_without_a_null_deref, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_empty_response_topic_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_response_topic_without_a_status_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_response_topic_with_an_empty_status_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_response_topic_with_an_empty_retry_after_faults_with_a_protocol_error, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_response_topic_with_an_empty_retry_after_before_a_property_faults, setup, teardown),
     /* identity validation */
     cmocka_unit_test(dps_rejects_a_null_registration_id),
     cmocka_unit_test(dps_rejects_an_empty_registration_id),
