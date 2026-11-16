@@ -13,6 +13,10 @@
  * Usage: <target> <file>...  Exits nonzero if a file cannot be read.
  */
 
+#ifndef _CRT_SECURE_NO_WARNINGS
+#define _CRT_SECURE_NO_WARNINGS /* fopen */
+#endif
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
