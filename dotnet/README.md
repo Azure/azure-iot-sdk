@@ -113,7 +113,7 @@ The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different eno
 | Retry + reconnection logic       | :heavy_check_mark: | ```ConnectionClient``` includes retry by default and even handles re-provisioning the device if necessary
 | AMQPS connection support       | :heavy_minus_sign: |
 | HTTPS connection support       | :heavy_check_mark:* | *Provisioning can be performed over HTTPS by setting `ProvisioningSettings.Transport = ProvisioningTransport.Http`. The IoT hub connection always uses MQTT
-| TPM authentication support       | :heavy_minus_sign:* | We are considering adding support for using TPM authentication
+| TPM authentication support       | :heavy_check_mark:* | *Provision and authenticate with a key held in a TPM through `TpmAuthenticationProvider` and your own `ITpmSecurityProvider`. Device Provisioning Service only supports TPM attestation over HTTPS, so set `ProvisioningSettings.Transport = ProvisioningTransport.Http`. See the [TpmAuthenticationSample](./samples/Unified/TpmAuthenticationSample/)
 | Software updates via DPS | :heavy_minus_sign: |
 
 ### v2.0.0-preview Unified API set supported features
@@ -134,7 +134,7 @@ The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different eno
 | Retry + reconnection logic       | :heavy_check_mark: | ```ConnectionClient``` includes retry by default and even handles re-provisioning the device if necessary
 | AMQPS connection support       | :heavy_minus_sign: |
 | HTTPS connection support       | :heavy_check_mark:* | *Provisioning can be performed over HTTPS by setting `ProvisioningSettings.Transport = ProvisioningTransport.Http`. The IoT hub connection always uses MQTT
-| TPM authentication support       | :heavy_minus_sign:* | We are considering adding support for using TPM authentication
+| TPM authentication support       | :heavy_check_mark:* | *Provision and authenticate with a key held in a TPM through `TpmAuthenticationProvider` and your own `ITpmSecurityProvider`. Device Provisioning Service only supports TPM attestation over HTTPS, so set `ProvisioningSettings.Transport = ProvisioningTransport.Http`. Only works with MQTTv3 IoT Hubs, since TPM authentication uses SAS tokens. See the [TpmAuthenticationSample](./samples/Unified/TpmAuthenticationSample/)
 | Software updates via DPS | :heavy_minus_sign: |
 
 ### v2.0.0-preview MQTTv5 API set supported features
@@ -155,7 +155,7 @@ The behavior of these two kinds of IoT Hubs (MQTTv3 and MQTTv5) is different eno
 | Retry + reconnection logic       | :heavy_check_mark: | ```ConnectionClient``` includes retry by default and even handles re-provisioning the device if necessary
 | AMQPS connection support       | :heavy_minus_sign: |
 | HTTPS connection support       | :heavy_check_mark:* | *Provisioning can be performed over HTTPS by setting `ProvisioningSettings.Transport = ProvisioningTransport.Http`. The IoT hub connection always uses MQTT
-| TPM authentication support       | :heavy_minus_sign:* | We are considering adding support for using TPM authentication
+| TPM authentication support       | :heavy_minus_sign: | MQTTv5 IoT Hubs only accept X509 authentication. Use the Unified API set with an MQTTv3 IoT Hub for TPM authentication
 | Software updates via DPS | :heavy_minus_sign: |
 
 

@@ -14,6 +14,8 @@
     <PackageReference Include="Microsoft.Azure.Devices" Version="1.41.1" />
     <PackageReference Include="Microsoft.Azure.Devices.Provisioning.Service" Version="1.18.4" />
     <PackageReference Include="Microsoft.Azure.Devices.Shared" Version="1.30.5" />
+    <!-- The TPM tests drive the TPM simulator through the TPM authentication sample's Microsoft.TSS-based provider. -->
+    <PackageReference Include="Microsoft.TSS" Version="2.1.1" />
     
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.9.0" />
     
@@ -31,6 +33,10 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Microsoft.Azure.Iot.Device\Microsoft.Azure.Iot.Device.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\..\samples\Unified\TpmAuthenticationSample\TssTpmSecurityProvider.cs" Link="Unified\TssTpmSecurityProvider.cs" />
   </ItemGroup>
 
 </Project>

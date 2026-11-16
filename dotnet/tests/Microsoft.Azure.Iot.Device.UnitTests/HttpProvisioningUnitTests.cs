@@ -203,6 +203,190 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 async () => await provisioning.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
         }
 
+        [Fact]
+        public async Task TpmProvisioningAnswersTheChallengeAndAuthenticatesWithTheImportedKeys()
+        {
+            byte[] dpsKey = Encoding.UTF8.GetBytes("some-dps-key-for-unit-tests");
+            byte[] hubKey = Encoding.UTF8.GetBytes("some-hub-key-for-unit-tests");
+            FakeDpsHandler dps = new(request =>
+            {
+                if (request.Method == HttpMethod.Put && !request.Headers.Contains("Authorization"))
+                {
+                    return Respond(HttpStatusCode.Unauthorized, new JsonObject
+                    {
+                        ["authenticationKey"] = Convert.ToBase64String(dpsKey),
+                        ["keyName"] = "someKeyName",
+                    }.ToJsonString());
+                }
+
+                return request.Method == HttpMethod.Put
+                    ? Respond(HttpStatusCode.Accepted, Assigning())
+                    : Respond(HttpStatusCode.OK, AssignedTpm(hubKey));
+            });
+
+            List<MqttConnect> connects = new();
+            using MockConnectionMqttClient mockMqttClient = new();
+            mockMqttClient.OnConnect = connect =>
+            {
+                lock (connects)
+                {
+                    connects.Add(connect);
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
+            FakeTpm tpm = new();
+
+            ConnectionContext context = await connectionClient
+                .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, tpm), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(AssignedHub, context.IotHubHostName);
+            Assert.Equal(3, dps.Requests.Count);
+
+            // The first register request is unauthenticated and carries the TPM's public keys.
+            RecordedRequest challenged = dps.Requests[0];
+            Assert.Null(challenged.Authorization);
+            JsonNode body = JsonNode.Parse(challenged.Body!)!;
+            Assert.Equal(Convert.ToBase64String(FakeTpm.EndorsementKey), (string?)body["tpm"]!["endorsementKey"]);
+            Assert.Equal(Convert.ToBase64String(FakeTpm.StorageRootKey), (string?)body["tpm"]!["storageRootKey"]);
+
+            // The same register request, then the poll, are signed with the key from the challenge.
+            Assert.Equal(HttpMethod.Put, dps.Requests[1].Method);
+            Assert.Equal(challenged.Body, dps.Requests[1].Body);
+            AssertSignedSasToken(dps.Requests[1].Authorization, dpsKey, $"{IdScope}/registrations/{RegistrationId}", "someKeyName");
+            AssertSignedSasToken(dps.Requests[2].Authorization, dpsKey, $"{IdScope}/registrations/{RegistrationId}", "someKeyName");
+
+            // The hub is authenticated with the key from the registration result.
+            Assert.Equal(new[] { dpsKey, hubKey }, tpm.ImportedKeys);
+            MqttConnect connect = Assert.Single(connects);
+            AssertSignedSasToken(Encoding.UTF8.GetString(connect.Password!), hubKey, $"{AssignedHub}/devices/{DeviceId}", null);
+        }
+
+        [Fact]
+        public async Task TpmProvisioningFailsWithAnIdentityErrorWhenTheAnsweredChallengeIsRejected()
+        {
+            FakeDpsHandler dps = new(_ => Respond(HttpStatusCode.Unauthorized, new JsonObject
+            {
+                ["authenticationKey"] = Convert.ToBase64String(PrimaryKey),
+            }.ToJsonString()));
+
+            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
+            FakeTpm tpm = new();
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
+                async () => await connectionClient
+                    .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, tpm), cancellationToken: TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            Assert.Equal(ErrorRetryability.IdentityTerminal, exception.Retryability);
+            Assert.Equal(2, dps.Requests.Count);
+            Assert.Null(dps.Requests[0].Authorization);
+            AssertSignedSasToken(dps.Requests[1].Authorization, PrimaryKey, $"{IdScope}/registrations/{RegistrationId}", "registration");
+            Assert.Single(tpm.ImportedKeys);
+        }
+
+        [Fact]
+        public async Task TpmProvisioningFailsWhenTheAssignmentHasNoKeyForTheHub()
+        {
+            FakeDpsHandler dps = new(request => !request.Headers.Contains("Authorization")
+                ? Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(PrimaryKey) }.ToJsonString())
+                : Respond(HttpStatusCode.OK, Assigned()));
+
+            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
+
+            Exception exception = await Assert.ThrowsAnyAsync<Exception>(
+                async () => await connectionClient
+                    .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            Assert.Contains("without the key", exception.Message);
+        }
+
+        [Fact]
+        public async Task TpmProvisioningRequiresTheHttpTransport()
+        {
+            FakeDpsHandler dps = new(_ => throw new UnreachableException());
+            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
+
+            ProvisioningSettings settings = CreateSettings();
+            settings.Transport = ProvisioningTransport.Mqtt;
+
+            await Assert.ThrowsAsync<ArgumentException>(
+                async () => await connectionClient
+                    .ProvisionAndConnectAsync(settings, new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            Assert.Empty(dps.Requests);
+        }
+
+        private static void AssertSignedSasToken(string? authorization, byte[] key, string target, string? keyName)
+        {
+            Assert.NotNull(authorization);
+            const string prefix = "SharedAccessSignature ";
+            Assert.StartsWith(prefix, authorization);
+            Dictionary<string, string> fields = authorization[prefix.Length..]
+                .Split('&')
+                .Select(field => field.Split('=', 2))
+                .ToDictionary(field => field[0], field => WebUtility.UrlDecode(field[1]));
+
+            Assert.Equal(target, fields["sr"]);
+            using var hmac = new System.Security.Cryptography.HMACSHA256(key);
+            string expectedSignature = Convert.ToBase64String(hmac.ComputeHash(Encoding.UTF8.GetBytes($"{WebUtility.UrlEncode(target)}\n{fields["se"]}")));
+            Assert.Equal(expectedSignature, fields["sig"]);
+
+            if (keyName == null)
+            {
+                Assert.False(fields.ContainsKey("skn"));
+            }
+            else
+            {
+                Assert.Equal(keyName, fields["skn"]);
+            }
+        }
+
+        private static RegistrationOperationStatus AssignedTpm(byte[] hubKey)
+        {
+            RegistrationOperationStatus status = Assigned();
+            status.RegistrationState!.Tpm = new TpmRegistrationResult { AuthenticationKey = Convert.ToBase64String(hubKey) };
+            return status;
+        }
+
+        /// <summary>
+        /// Stands in for a TPM whose imported keys are not encrypted, so that each key it signs with is the one sent to it.
+        /// </summary>
+        private sealed class FakeTpm : ITpmSecurityProvider
+        {
+            public static readonly byte[] EndorsementKey = Encoding.UTF8.GetBytes("someEndorsementKey");
+            public static readonly byte[] StorageRootKey = Encoding.UTF8.GetBytes("someStorageRootKey");
+
+            private byte[]? _key;
+
+            public List<byte[]> ImportedKeys { get; } = new();
+
+            public Task<byte[]> GetEndorsementKeyAsync(CancellationToken cancellationToken = default) => Task.FromResult(EndorsementKey);
+
+            public Task<byte[]> GetStorageRootKeyAsync(CancellationToken cancellationToken = default) => Task.FromResult(StorageRootKey);
+
+            public Task ImportKeyAsync(byte[] encryptedKey, CancellationToken cancellationToken = default)
+            {
+                ImportedKeys.Add(encryptedKey);
+                _key = encryptedKey;
+                return Task.CompletedTask;
+            }
+
+            public Task<byte[]> SignAsync(byte[] data, CancellationToken cancellationToken = default)
+            {
+                using var hmac = new System.Security.Cryptography.HMACSHA256(_key ?? throw new InvalidOperationException("No key was imported."));
+                return Task.FromResult(hmac.ComputeHash(data));
+            }
+        }
+
         private static ProvisioningSettings CreateSettings() => new(IdScope)
         {
             RegistrationId = RegistrationId,

@@ -460,11 +460,22 @@ namespace Microsoft.Azure.Iot.Device
         public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication, bool forceProvisioning = false, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
+            ThrowIfTransportUnsupported(provisioningSettings, authentication);
             StartOperationLifetime();
 
             Volatile.Write(ref _currentReprovisioningCancellationToken, null);
 
             return await ProvisionAndConnectCoreAsync(provisioningSettings, authentication, forceProvisioning, cancellationToken);
+        }
+
+        private static void ThrowIfTransportUnsupported(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication)
+        {
+            if (authentication is TpmAuthenticationProvider && provisioningSettings.Transport != ProvisioningTransport.Http)
+            {
+                throw new ArgumentException(
+                    $"Device Provisioning Service only supports TPM attestation over HTTPS. Set {nameof(ProvisioningSettings)}.{nameof(ProvisioningSettings.Transport)} to {nameof(ProvisioningTransport)}.{nameof(ProvisioningTransport.Http)}.",
+                    nameof(provisioningSettings));
+            }
         }
 
         private async Task<ConnectionContext> ProvisionAndConnectCoreAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication, bool forceProvisioning, CancellationToken cancellationToken)
@@ -1515,6 +1526,8 @@ namespace Microsoft.Azure.Iot.Device
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
+            ThrowIfTransportUnsupported(provisioningSettings, authentication);
+
             cancellationToken.ThrowIfCancellationRequested();
             _provisioningFlowParentCancellationToken = cancellationToken;
             int deliberateDisconnectCount = Volatile.Read(ref _deliberateDisconnectCount);
@@ -1685,7 +1698,8 @@ namespace Microsoft.Azure.Iot.Device
                             userAgent,
                             _connectionAttemptTimeout,
                             s_defaultOperationPollingInterval,
-                            CaptureProvisioningServiceRetryAfter);
+                            CaptureProvisioningServiceRetryAfter,
+                            authentication as TpmAuthenticationProvider);
 
                         return await provisioningHttpClient.RegisterAsync(
                             provisioningSettings.ProvisioningPayload,

@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Only the sample depends on a TPM software stack; the SDK talks to the TPM through ITpmSecurityProvider. -->
+    <PackageReference Include="Microsoft.TSS" Version="2.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\SetupSampleDevice\SetupSampleDevice.csproj" />
+  </ItemGroup>
+</Project>
