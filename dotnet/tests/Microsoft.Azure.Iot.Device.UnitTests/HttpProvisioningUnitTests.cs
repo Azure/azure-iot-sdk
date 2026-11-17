@@ -382,6 +382,212 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ProvisioningOverHttpThrowsTheTransientFailureOnceTheRetryPolicyAbandons()
+        {
+            FakeDpsHandler dps = new(_ => Respond(HttpStatusCode.ServiceUnavailable, "{}"));
+            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
+            ImmediateRetryPolicy retryPolicy = new(maxProvisioningRetries: 2);
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps, retryPolicy);
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
+                async () => await connectionClient
+                    .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+            Assert.Contains("503", exception.Message);
+
+            // The first attempt and two retries, after which the policy's third answer abandoned.
+            Assert.Equal(3, dps.Requests.Count);
+            Assert.Equal(new[] { ConnectionEndpoint.DeviceProvisioningService, ConnectionEndpoint.DeviceProvisioningService, ConnectionEndpoint.DeviceProvisioningService }, retryPolicy.Endpoints);
+            Assert.Equal(0, mockMqttClient.ConnectAttemptCount);
+        }
+
+        [Fact]
+        public async Task TpmReprovisioningOverHttpFaultsTheConnectionOnceTheRetryPolicyAbandons()
+        {
+            byte[] hubKey = Encoding.UTF8.GetBytes("some-hub-key-for-unit-tests");
+            int registrations = 0;
+            FakeDpsHandler dps = new(request =>
+            {
+                if (Volatile.Read(ref registrations) > 0)
+                {
+                    // Device Provisioning Service is unavailable for as long as the device tries to re-provision.
+                    return Respond(HttpStatusCode.ServiceUnavailable, "{}");
+                }
+
+                if (!request.Headers.Contains("Authorization"))
+                {
+                    return Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(PrimaryKey) }.ToJsonString());
+                }
+
+                Interlocked.Increment(ref registrations);
+                return Respond(HttpStatusCode.OK, AssignedTpm(hubKey));
+            });
+
+            using MockConnectionMqttClient mockMqttClient = new();
+            int connects = 0;
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck()
+            {
+                // The hub accepts this device only once; it rejects it as unauthorized from then on.
+                ResultCode = Interlocked.Increment(ref connects) == 1 ? MqttConnectReasonCode.Success : MqttConnectReasonCode.NotAuthorized,
+            });
+
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps, new ImmediateRetryPolicy(maxProvisioningRetries: 2));
+            TaskCompletionSource<ConnectionFaultedEventArgs> connectionFaulted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            connectionClient.ConnectionFaultedAsync += args =>
+            {
+                connectionFaulted.TrySetResult(args);
+                return Task.CompletedTask;
+            };
+
+            await connectionClient
+                .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+
+            // Re-provisioning is the only way left to recover, so giving up on it tells the application the connection is gone.
+            await connectionFaulted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            Assert.Equal(1, registrations);
+            Assert.Contains(dps.Requests.Skip(2), request => request.Method == HttpMethod.Put);
+        }
+
+        [Fact]
+        public async Task ProvisioningOverHttpRetriesARequestThatTimesOut()
+        {
+            int requests = 0;
+            FakeDpsHandler dps = new(async (request, cancellationToken) =>
+            {
+                if (Interlocked.Increment(ref requests) == 1)
+                {
+                    // Device Provisioning Service never answers the first request.
+                    await Task.Delay(Timeout.Infinite, cancellationToken);
+                }
+
+                return !request.Headers.Contains("Authorization")
+                    ? Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(PrimaryKey) }.ToJsonString())
+                    : Respond(HttpStatusCode.OK, AssignedTpm(PrimaryKey));
+            });
+
+            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
+            ImmediateRetryPolicy retryPolicy = new();
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps, retryPolicy, connectionAttemptTimeout: TimeSpan.FromMilliseconds(500));
+
+            ConnectionContext context = await connectionClient
+                .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(AssignedHub, context.IotHubHostName);
+            Assert.Equal(new[] { ConnectionEndpoint.DeviceProvisioningService }, retryPolicy.Endpoints);
+            Assert.Equal(3, dps.Requests.Count);
+        }
+
+        [Fact]
+        public async Task ProvisioningOverHttpDoesNotRetryARequestTheServiceRejectsAsInvalid()
+        {
+            FakeDpsHandler dps = new(_ => Respond(HttpStatusCode.BadRequest, "{\"errorCode\":400004,\"message\":\"Invalid registration request.\"}"));
+            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
+            ImmediateRetryPolicy retryPolicy = new();
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps, retryPolicy);
+
+            Exception exception = await Assert.ThrowsAnyAsync<Exception>(
+                async () => await connectionClient
+                    .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            Assert.Contains("400", exception.Message);
+            Assert.Single(dps.Requests);
+            Assert.Empty(retryPolicy.Endpoints);
+        }
+
+        [Theory]
+        [InlineData("failed")]
+        [InlineData("no hub")]
+        [InlineData("no device id")]
+        [InlineData("unsupported connection profile")]
+        public async Task ProvisioningOverHttpThatDoesNotAssignAUsableHubThrowsARetryableFault(string assignment)
+        {
+            FakeDpsHandler dps = new(request => !request.Headers.Contains("Authorization")
+                ? Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(PrimaryKey) }.ToJsonString())
+                : Respond(HttpStatusCode.OK, UnusableAssignment(assignment)));
+
+            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
+
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
+                async () => await connectionClient
+                    .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            // The device registered once and refused the result rather than connecting with missing or wrong parameters.
+            Assert.Equal(ErrorRetryability.Retryable, exception.Retryability);
+            Assert.Equal(2, dps.Requests.Count);
+            Assert.Equal(0, mockMqttClient.ConnectAttemptCount);
+            Assert.Null(connectionClient.GetCurrentConnectionContext());
+        }
+
+        [Fact]
+        public async Task TpmReprovisioningOverHttpRegistersAgainUntilItIsAssignedAUsableHub()
+        {
+            const string secondHub = "second-hub.azure-devices.net";
+            byte[] hubKey = Encoding.UTF8.GetBytes("some-hub-key-for-unit-tests");
+
+            int registrations = 0;
+            FakeDpsHandler dps = new(request =>
+            {
+                if (!request.Headers.Contains("Authorization"))
+                {
+                    return Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(PrimaryKey) }.ToJsonString());
+                }
+
+                switch (Interlocked.Increment(ref registrations))
+                {
+                    case 1:
+                        return Respond(HttpStatusCode.OK, AssignedTpm(hubKey));
+                    case 2:
+                        return Respond(HttpStatusCode.OK, UnusableAssignment("no hub"));
+                    default:
+                        RegistrationOperationStatus status = AssignedTpm(hubKey);
+                        status.RegistrationState!.AssignedHub = secondHub;
+                        return Respond(HttpStatusCode.OK, status);
+                }
+            });
+
+            TaskCompletionSource connectedToSecondHub = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            int firstHubConnects = 0;
+            using MockConnectionMqttClient mockMqttClient = new();
+            mockMqttClient.OnConnect = connect =>
+            {
+                if (connect.HostName == secondHub)
+                {
+                    connectedToSecondHub.TrySetResult();
+                    return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+                }
+
+                return Task.FromResult(new MqttConnectAck()
+                {
+                    ResultCode = Interlocked.Increment(ref firstHubConnects) == 1 ? MqttConnectReasonCode.Success : MqttConnectReasonCode.NotAuthorized,
+                });
+            };
+
+            ImmediateRetryPolicy retryPolicy = new();
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps, retryPolicy);
+
+            await connectionClient
+                .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            await mockMqttClient.SimulateServerDisconnectAsync(MqttDisconnectReason.NotAuthorized);
+            await connectedToSecondHub.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            // The unusable assignment was retried under the policy as a provisioning failure, and never connected to.
+            Assert.Equal(3, registrations);
+            Assert.Equal(secondHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
+            Assert.Contains(ConnectionEndpoint.DeviceProvisioningService, retryPolicy.Endpoints);
+        }
+
+        [Fact]
         public async Task TpmProvisioningFailsWithAnIdentityErrorWhenTheAnsweredChallengeIsRejected()
         {
             FakeDpsHandler dps = new(_ => Respond(HttpStatusCode.Unauthorized, new JsonObject
@@ -508,6 +714,45 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             }
         }
 
+        private static RegistrationOperationStatus UnusableAssignment(string assignment)
+        {
+            if (assignment == "failed")
+            {
+                // DPS completes the registration without assigning a hub, as it does when the enrollment does not exist yet.
+                return new RegistrationOperationStatus
+                {
+                    OperationId = OperationId,
+                    Status = ProvisioningRegistrationStatus.Failed,
+                    RegistrationState = new DeviceRegistrationResult()
+                    {
+                        RegistrationId = RegistrationId,
+                        Status = ProvisioningRegistrationStatus.Failed,
+                        ErrorCode = 404201,
+                        ErrorMessage = "Enrollment not found.",
+                    },
+                };
+            }
+
+            // Otherwise DPS reports "assigned", but the assignment lacks something the device needs to connect.
+            RegistrationOperationStatus status = AssignedTpm(Encoding.UTF8.GetBytes("some-hub-key-for-unit-tests"));
+            switch (assignment)
+            {
+                case "no hub":
+                    status.RegistrationState!.AssignedHub = null;
+                    break;
+                case "no device id":
+                    status.RegistrationState!.DeviceId = null;
+                    break;
+                case "unsupported connection profile":
+                    status.RegistrationState!.ConnectionProfile = IotHubConnectionType.Mqttv5;
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(assignment), assignment, null);
+            }
+
+            return status;
+        }
+
         private static RegistrationOperationStatus AssignedTpm(byte[] hubKey)
         {
             RegistrationOperationStatus status = Assigned();
@@ -551,12 +796,21 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             GlobalEndpointAddress = GlobalDeviceEndpoint,
         };
 
-        private static TestConnectionClient CreateClient(MockConnectionMqttClient mqttClient, FakeDpsHandler dps, IRetryPolicy? retryPolicy = null)
+        private static TestConnectionClient CreateClient(
+            MockConnectionMqttClient mqttClient,
+            FakeDpsHandler dps,
+            IRetryPolicy? retryPolicy = null,
+            TimeSpan? connectionAttemptTimeout = null)
         {
             Device.Unified.Models.ConnectionClientOptions options = new() { MqttClient = mqttClient };
             if (retryPolicy != null)
             {
                 options.ConnectionRetryPolicy = retryPolicy;
+            }
+
+            if (connectionAttemptTimeout != null)
+            {
+                options.ConnectionAttemptTimeout = connectionAttemptTimeout.Value;
             }
 
             return new TestConnectionClient(options)
@@ -615,8 +869,8 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         /// <summary>
         /// Stands in for Device Provisioning Service, recording each request before answering it. The connection client
-                /// disposes each handler it is given; disposing an <see cref="HttpMessageHandler"/> is a no-op, so this one
-                /// can serve every attempt.
+        /// disposes each handler it is given; disposing an <see cref="HttpMessageHandler"/> is a no-op, so this one
+        /// can serve every attempt.
         /// </summary>
         private sealed class FakeDpsHandler : HttpMessageHandler
         {
@@ -653,13 +907,18 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         private sealed class ImmediateRetryPolicy : IRetryPolicy
         {
             private readonly uint _maxHubConnectAttemptsBeforeReprovision;
+            private readonly uint _maxProvisioningRetries;
 
             /// <param name="maxHubConnectAttemptsBeforeReprovision">
             /// How many failed attempts to reconnect to IoT hub to make before re-provisioning, or zero to never re-provision.
             /// </param>
-            public ImmediateRetryPolicy(uint maxHubConnectAttemptsBeforeReprovision = 0)
+            /// <param name="maxProvisioningRetries">
+            /// How many times to retry Device Provisioning Service before abandoning, or zero to never abandon.
+            /// </param>
+            public ImmediateRetryPolicy(uint maxHubConnectAttemptsBeforeReprovision = 0, uint maxProvisioningRetries = 0)
             {
                 _maxHubConnectAttemptsBeforeReprovision = maxHubConnectAttemptsBeforeReprovision;
+                _maxProvisioningRetries = maxProvisioningRetries;
             }
 
             public ConcurrentQueue<ConnectionEndpoint> Endpoints { get; } = new();
@@ -668,6 +927,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             {
                 Endpoints.Enqueue(connectionEndpoint);
                 retryDelay = TimeSpan.Zero;
+
+                if (connectionEndpoint == ConnectionEndpoint.DeviceProvisioningService
+                    && _maxProvisioningRetries > 0
+                    && currentRetryCount > _maxProvisioningRetries)
+                {
+                    return RetryGuidance.AbandonRetry;
+                }
+
                 return connectionEndpoint == ConnectionEndpoint.IotHub
                     && _maxHubConnectAttemptsBeforeReprovision > 0
                     && currentRetryCount > _maxHubConnectAttemptsBeforeReprovision

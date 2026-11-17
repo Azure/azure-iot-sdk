@@ -2,10 +2,12 @@
 // See LICENSE file in the project root for full license information.
 
 using CaptureProxy;
+using Microsoft.Azure.Devices;
 using Microsoft.Azure.Devices.Provisioning.Service;
 using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
+using Microsoft.Azure.Iot.Device.Retry;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Models;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
@@ -107,6 +109,68 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             finally
             {
                 await UnifiedDeviceTestContext.CleanupAsync(connectionClient, context, enrollment);
+            }
+        }
+
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task ReprovisionsOverHttpAfterTheDeviceIsDeletedFromItsHub()
+        {
+            // The device provisions and connects, then its identity is deleted from the hub, which drops its connection
+            // and rejects every reconnect. A TPM has no secondary credentials to fall back on, so the device should
+            // re-provision over HTTPS, answering a fresh TPM challenge, and connect with the new hub key DPS sends.
+            _simulator.SkipIfUnavailable();
+            CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+
+            using RegistryManager registryManager = Setup.GetMQTTv3IotHubRegistryManager();
+            using TssTpmProvider tpm = TssTpmProvider.CreateForSimulator();
+            IndividualEnrollment enrollment = await CreateEnrollmentAsync(tpm, cancellationToken);
+            TpmAuthenticationProvider authentication = new(enrollment.RegistrationId, Setup.DpsIdScope, tpm);
+
+            // A fast reconnect cadence and a low re-provision threshold keep the recovery within this test's time budget.
+            ConnectionClient connectionClient = new(new ConnectionClientOptions
+            {
+                ConnectionRetryPolicy = new ExponentialBackoffRetryPolicy(uint.MaxValue, TimeSpan.FromSeconds(1), maxHubConnectAttemptsBeforeReprovision: 3),
+                ConnectionAttemptTimeout = TimeSpan.FromSeconds(5),
+            });
+
+            bool connectionFaulted = false;
+            connectionClient.ConnectionFaultedAsync += _ =>
+            {
+                connectionFaulted = true;
+                return Task.CompletedTask;
+            };
+
+            try
+            {
+                ConnectionContext context = await Setup.RetryAroundAuthorizationAsync(
+                    () => connectionClient.ProvisionAndConnectAsync(CreateSettings(), authentication, cancellationToken: cancellationToken),
+                    cancellationToken);
+                string deviceId = context.DeviceId!;
+
+                Assert.True(
+                    await Setup.WaitUntilAsync(() => Setup.DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(10), cancellationToken),
+                    "The test device was never registered in the IoT hub after provisioning.");
+
+                await registryManager.RemoveDeviceAsync(deviceId, cancellationToken);
+
+                // Only DPS creates the device in the hub, so its reappearance shows the device re-provisioned rather than
+                // reconnecting to the hub it was removed from.
+                Assert.True(
+                    await Setup.WaitUntilAsync(() => Setup.DeviceExistsAsync(registryManager, deviceId, cancellationToken), TimeSpan.FromSeconds(45), cancellationToken),
+                    "The TPM device did not re-provision and reappear in the IoT hub registry after being deleted.");
+
+                // The device reconnects with the key from the new registration, so it can send telemetry again.
+                TelemetryClient telemetryClient = new(connectionClient); // Not disposed: disposing it would dispose the connection client before cleanup disconnects it
+                await Setup.RetryAroundAuthorizationAsync(
+                    () => telemetryClient.SendTelemetryAsync(new DeviceToCloudTelemetry { Payload = new byte[10] }, cancellationToken),
+                    cancellationToken);
+
+                Assert.Equal(deviceId, connectionClient.GetCurrentConnectionContext()!.DeviceId);
+                Assert.False(connectionFaulted, "The connection client gave up rather than recovering by re-provisioning.");
+            }
+            finally
+            {
+                await UnifiedDeviceTestContext.CleanupAsync(connectionClient, connectionClient.GetCurrentConnectionContext(), enrollment);
             }
         }
 
