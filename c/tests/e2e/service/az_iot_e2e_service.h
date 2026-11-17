@@ -349,10 +349,12 @@ extern "C"
   /* ---- DPS service (IOT_DPS_CONNECTION_STRING) ------------------------------- */
 
   /* Creates or replaces an individual enrollment with TPM attestation for
-   * @p endorsement_key_base64 (base64 TPM2B_PUBLIC). Returns true on a 2xx. */
+   * @p endorsement_key_base64 (base64 TPM2B_PUBLIC), assigning @p device_id (NULL: DPS
+   * names the device after @p registration_id). Returns true on a 2xx. */
   bool az_iot_e2e_dps_tpm_enrollment_create(
       const char* registration_id,
-      const char* endorsement_key_base64);
+      const char* endorsement_key_base64,
+      const char* device_id);
 
   /* Deletes the registration record and the individual enrollment; a missing one
    * counts as deleted. */

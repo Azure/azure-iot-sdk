@@ -22,6 +22,10 @@ option(AZ_IOT_BUILD_SAMPLES    "Build sample apps"                              
 # them out.
 option(AZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS "Build the samples with the CI pipeline hooks" OFF)
 option(AZ_IOT_BUILD_TESTS      "Build unit tests"                               OFF)
+# libFuzzer fuzz targets (tests/fuzz, docs/eng/fuzzing.md), for OneFuzz or local runs: clang or MSVC.
+# Instruments every target for coverage; build only the fuzz targets. Without it, the targets are
+# built as corpus replays and run by CTest.
+option(AZ_IOT_BUILD_FUZZERS    "Build the fuzz targets with libFuzzer (clang or MSVC)" OFF)
 # End-to-end tests talk to a REAL Azure IoT Hub/DPS instance and are off by
 # default (they require provisioned cloud resources + the Paho adapter). The
 # e2e GitHub Actions workflow enables this alongside AZ_IOT_BUILD_TESTS.
@@ -111,7 +115,7 @@ foreach(_opt AZ_IOT_BUILD_E2E_CSR AZ_IOT_BUILD_E2E_PKCS11
     endif()
 endforeach()
 unset(_opt)
-foreach(_opt AZ_IOT_BUILD_E2E AZ_IOT_BUILD_PKCS11_TESTS)
+foreach(_opt AZ_IOT_BUILD_E2E AZ_IOT_BUILD_PKCS11_TESTS AZ_IOT_BUILD_FUZZERS)
     if(${_opt} AND NOT AZ_IOT_BUILD_TESTS)
         message(FATAL_ERROR "${_opt}=ON needs AZ_IOT_BUILD_TESTS=ON")
     endif()
@@ -128,4 +132,14 @@ if(AZ_IOT_BUILD_E2E AND NOT (AZ_IOT_WITH_PAHO OR AZ_IOT_WITH_AZ_MQTT))
 endif()
 if(AZ_IOT_BUILD_PKCS11_TESTS AND NOT AZ_IOT_WITH_PAHO)
     message(FATAL_ERROR "AZ_IOT_BUILD_PKCS11_TESTS=ON needs the Paho adapter (AZ_IOT_WITH_PAHO=ON)")
+endif()
+if(AZ_IOT_BUILD_FUZZERS)
+    if(MSVC)
+        add_compile_options(/fsanitize=fuzzer)
+    elseif(CMAKE_C_COMPILER_ID MATCHES "Clang")
+        # Coverage for libFuzzer in every target, dependencies included; the fuzz targets link it.
+        add_compile_options(-fsanitize=fuzzer-no-link)
+    else()
+        message(FATAL_ERROR "AZ_IOT_BUILD_FUZZERS=ON needs clang or MSVC")
+    endif()
 endif()

@@ -2026,7 +2026,7 @@ namespace Microsoft.Azure.Iot.Device
                 ProvisioningApiVersion,
                 Uri.EscapeDataString(GetProvisioningUserAgentString()));
 
-            var mqttConnect =  new MqttConnect()
+            var mqttConnect = new MqttConnect()
             {
                 HostName = hostName,
                 TcpPort = 8883,
