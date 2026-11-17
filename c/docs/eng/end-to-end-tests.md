@@ -220,6 +220,11 @@ its policy signs the device delete, sent to the `IOTHUB_CONNECTION_STRING` host)
 Direct-hub mode (`AZ_IOT_HUB_HOSTNAME`, `AZ_IOT_DEVICE_ID`) reaches an mqttv5 hub with
 `AZ_IOT_HUB_CONNECTION_PROFILE=mqttv5`; without DPS, nothing else reports the hub's profile.
 
+The mqttv5 suites publish births, direct method responses and twin requests on the per-device
+topic, `ih/srv/{device_id}`. Against an IoT hub without it, set
+`AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT=legacy` (`per-device` is the default) to use the
+`ih/{device_id}/srv/{presence,methods,twin}` topics.
+
 ---
 
 ## Build & CMake wiring

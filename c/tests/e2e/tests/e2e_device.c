@@ -7,6 +7,7 @@
 #include "e2e_connect_clock.h"
 #include "e2e_defensive_timeout.h"
 #include "e2e_mqtt_adapter.h"
+#include "e2e_service_bound_topic_format.h"
 #include "support/test_env.h"
 
 #include <stdio.h>
@@ -209,6 +210,10 @@ int e2e_device_connect_with(e2e_device* dev, const e2e_device_connect_options* o
     }
   }
   copts.twin_push.push_reported = opts != NULL && opts->twin_push_reported;
+  if (!e2e_use_service_bound_topic_format(&copts))
+  {
+    return 1;
+  }
   copts.workspace = dev->connection_workspace;
   copts.workspace_size = sizeof(dev->connection_workspace);
   /* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */

@@ -347,7 +347,11 @@ extern "C"
    * Two flat topics, neither carrying a method name:
    *
    *   Inbound   "ih/{device_id}/dev/methods"   probe:1, exec:1
-   *   Outbound  "ih/{device_id}/srv/methods"   probe-ack:1, abandon:1, result:1
+   *   Outbound  "ih/srv/{device_id}"           probe-ack:1, abandon:1, result:1
+   *
+   * Outbound goes on "ih/{device_id}/srv/methods" instead with
+   * AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY (connection option
+   * service_bound_topic_format).
    *
    * The phase is a `type` user property, the request id is 16 bytes of MQTT v5
    * correlation data, and every payload is protobuf

@@ -263,6 +263,25 @@ extern "C"
   const char* az_iot_connection_client__device_id(const az_iot_connection_client* client);
 
   /**
+   * @brief Builds the topic an mqttv5 service-bound message other than telemetry goes on:
+   * `ih/srv/{device_id}`, or `ih/{device_id}{legacy_suffix}` with
+   * AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY (opts.service_bound_topic_format).
+   *
+   * @param[in]  client        Connection client.
+   * @param[in]  device_id     Device id the topic is for.
+   * @param[in]  legacy_suffix The legacy topic after the device id, e.g. "/srv/methods".
+   * @param[out] destination   Receives the NUL-terminated topic.
+   * @param[out] out_length    Topic length without the terminator; may be NULL.
+   * @return AZ_IOT_OK, or AZ_IOT_ERR_NOT_ENOUGH_SPACE when it does not fit.
+   */
+  AZ_NODISCARD az_iot_result az_iot_connection_client__build_service_bound_topic(
+      const az_iot_connection_client* client,
+      const char* device_id,
+      const char* legacy_suffix,
+      az_span destination,
+      size_t* out_length);
+
+  /**
    * @brief Signs a hub SAS token for an HTTPS request to the hub, with the key
    * the hub session authenticates with: the one a fallback selected (kept while
    * it connects), else the key of its current attempt, else of its last one,

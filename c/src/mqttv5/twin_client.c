@@ -7,7 +7,8 @@
  * @file
  * @brief MQTT v5 twin client.
  *
- * Device -> service on `ih/{id}/srv/twin`, service -> device on `ih/{id}/dev/twin`,
+ * Device -> service on `ih/srv/{id}` (`ih/{id}/srv/twin` with
+ * AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY), service -> device on `ih/{id}/dev/twin`,
  * protobuf bodies (common/Protos/twin.proto) at QoS 0, message kind in the `type`
  * user property. GET and reported patch correlate on a per-request UUID;
  * twin-push and desired-patch carry the connection's birth nonce.
@@ -358,10 +359,12 @@ static void twin_push_wait_lower_remaining(void* user_ctx, uint64_t* remaining_m
 /* publishing                                                                */
 /* ------------------------------------------------------------------------- */
 
-/** @brief Build `ih/{device_id}<suffix>`. */
+/** @brief Build `ih/{device_id}<suffix>`, or with @p service_bound the service-bound topic whose
+ *         legacy form that is (az_iot_connection_client__build_service_bound_topic()). */
 static az_iot_result build_topic(
     az_iot_connection_client* conn,
     const char* suffix,
+    bool service_bound,
     char (*topic)[AZ_IOT_MQTTV5_TWIN_TOPIC_MAX],
     size_t* out_len)
 {
@@ -372,7 +375,11 @@ static az_iot_result build_topic(
     return AZ_IOT_ERR_NOT_CONNECTED;
   }
   const char* parts[] = { TWIN_TOPIC_ROOT, device_id, suffix };
-  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(*topic), out_len, parts, 3) != AZ_IOT_OK)
+  az_iot_result const built = service_bound
+      ? az_iot_connection_client__build_service_bound_topic(
+            conn, device_id, suffix, AZ_SPAN_FROM_BUFFER(*topic), out_len)
+      : az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(*topic), out_len, parts, 3);
+  if (built != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(
         AZ_IOT_LOG_COMPONENT_MQTTV5_TWIN,
@@ -424,7 +431,8 @@ static az_iot_result encode_twin_request(void* owner, size_t entry_index, az_iot
   {
     return AZ_IOT_ERR_INTERNAL;
   }
-  az_iot_result r = build_topic(TI(t).conn, TWIN_OUTBOUND_SUFFIX, &TI(t).outbound_topic, NULL);
+  az_iot_result r
+      = build_topic(TI(t).conn, TWIN_OUTBOUND_SUFFIX, true, &TI(t).outbound_topic, NULL);
   if (r != AZ_IOT_OK)
   {
     return r;
@@ -1219,7 +1227,7 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
 
   char topic[AZ_IOT_MQTTV5_TWIN_TOPIC_MAX];
   size_t topic_len = 0;
-  az_iot_result r = build_topic(conn, TWIN_INBOUND_SUFFIX, &topic, &topic_len);
+  az_iot_result r = build_topic(conn, TWIN_INBOUND_SUFFIX, false, &topic, &topic_len);
   if (r != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR(

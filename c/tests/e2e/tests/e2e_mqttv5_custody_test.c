@@ -32,6 +32,7 @@
 
 /* The MQTT adapter this build of the suite uses (see tests/e2e/CMakeLists.txt). */
 #include "e2e_mqtt_adapter.h"
+#include "e2e_service_bound_topic_format.h"
 #include "azure/iot/az_iot.h"
 
 #include "az_iot_e2e_service.h"
@@ -257,6 +258,10 @@ static int device_connect(fixture* fx)
   if (fx->config.global_endpoint != NULL)
   {
     copts.dps.global_endpoint = fx->config.global_endpoint;
+  }
+  if (!e2e_use_service_bound_topic_format(&copts))
+  {
+    return -1;
   }
   /* Both generations, so an mqttv3 assignment still connects and the first test names it. */
   fx->mqtt_workspace = e2e_use_mqtt_adapter(&copts);

@@ -72,6 +72,27 @@ extern "C"
     AZ_IOT_SESSION_CONTINUITY_CLEAN = 2
   } az_iot_session_continuity;
 
+  /**
+   * @brief The topics an mqttv5 hub session publishes its births, direct method responses and twin
+   * requests on.
+   *
+   * Telemetry is always published on `ih/{device_id}/srv/telemetry`, and the device always
+   * subscribes to `ih/{device_id}/dev/#`, whichever format is chosen. Ignored for mqttv3 hubs and
+   * for DPS sessions.
+   */
+  typedef enum az_iot_service_bound_topic_format
+  {
+    /** @brief Publish births (`birth:1`), direct method responses (`probe-ack:1`, `result:1`,
+     * `abandon:1`) and twin requests (`get:1`, `reported-patch:1`) on the device's own topic,
+     * `ih/srv/{device_id}`; the `type` user property tells them apart. The default, and zero.
+     * Requires an IoT hub that supports it. */
+    AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_PER_DEVICE = 0,
+    /** @brief Publish births on `ih/{device_id}/srv/presence`, direct method responses on
+     * `ih/{device_id}/srv/methods` and twin requests on `ih/{device_id}/srv/twin`, for IoT hubs
+     * that do not support #AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_PER_DEVICE. */
+    AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY = 1
+  } az_iot_service_bound_topic_format;
+
   /* Caller-allocated; az_iot_connection_client_get_hub_profile() fills every
    * field. */
   typedef struct az_iot_hub_profile
@@ -985,6 +1006,15 @@ extern "C"
      */
     uint8_t* mqtt_workspace;
     size_t mqtt_workspace_size; /**< Bytes in mqtt_workspace. */
+    /**
+     * @brief mqttv5 only. The topics the hub session publishes its births, direct method responses
+     * and twin requests on. Zero, and az_iot_connection_client_options_default(), select
+     * #AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_PER_DEVICE (`ih/srv/{device_id}`); set
+     * #AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY for an IoT hub that does not support it. Telemetry
+     * is not affected. Fixed for the client's lifetime. init() fails with AZ_IOT_ERR_INVALID_ARG
+     * for any other value. Appended so positional initializers keep their meaning.
+     */
+    az_iot_service_bound_topic_format service_bound_topic_format;
   } az_iot_connection_client_options;
 
   typedef enum az_iot_connection_state
@@ -2057,7 +2087,8 @@ extern "C"
 
     /* MQTTv5 presence (birth) handshake. After CONNACK on a HUB_MQTT_V5 (v5)
      * session the client SUBSCRIBEs to ih/{deviceId}/dev/#, PUBLISHes a birth
-     * message to ih/{deviceId}/srv/presence, and only announces CONNECTED once
+     * message to ih/srv/{deviceId} (ih/{deviceId}/srv/presence with
+     * AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY), and only announces CONNECTED once
      * it receives a birth-ack -- matched by the exact ih/{deviceId}/dev/presence
      * topic -- whose correlation data matches `nonce`.
      * MQTTv3/DPS sessions leave phase == AZ_IOT_PRESENCE_PHASE_NONE. */

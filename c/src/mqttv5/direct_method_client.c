@@ -9,10 +9,13 @@
  * design and common/Protos/directmethods.proto:
  *
  *   probe:1      service -> device   ih/{device_id}/dev/methods
- *   probe-ack:1  device -> service   ih/{device_id}/srv/methods
+ *   probe-ack:1  device -> service   ih/srv/{device_id}
  *   exec:1       service -> device   ih/{device_id}/dev/methods
- *   abandon:1    device -> service   ih/{device_id}/srv/methods
- *   result:1     device -> service   ih/{device_id}/srv/methods
+ *   abandon:1    device -> service   ih/srv/{device_id}
+ *   result:1     device -> service   ih/srv/{device_id}
+ *
+ * The device -> service phases go on ih/{device_id}/srv/methods instead with
+ * AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY.
  *
  * The service asks first and sends the arguments only to a device that said
  * yes. The acceptance carries a ready id and the service quotes it back on the
@@ -53,8 +56,8 @@
 /* Bits to shift a draw by to reach its Nth byte. */
 #define DM_BITS_PER_BYTE 8u
 
-/* Both method topics are built from three parts: the "ih/" root, the device id
- * and the direction-specific tail. */
+/* The inbound method topic is built from three parts: the "ih/" root, the device
+ * id and "/dev/methods". */
 #define DM_TOPIC_PART_COUNT 3
 
 /* The public header has to size the result buffer without being able to see the
@@ -874,15 +877,11 @@ static az_iot_result bind_topics(void* owner, az_iot_connection_client* conn)
   }
 
   const char* inbound_parts[] = { "ih/", device_id, "/dev/methods" };
-  const char* outbound_parts[] = { "ih/", device_id, "/srv/methods" };
   if (az_iot_span_writer_build_str(
           AZ_SPAN_FROM_BUFFER(DI(client).inbound_topic), NULL, inbound_parts, DM_TOPIC_PART_COUNT)
           != AZ_IOT_OK
-      || az_iot_span_writer_build_str(
-             AZ_SPAN_FROM_BUFFER(DI(client).outbound_topic),
-             NULL,
-             outbound_parts,
-             DM_TOPIC_PART_COUNT)
+      || az_iot_connection_client__build_service_bound_topic(
+             conn, device_id, "/srv/methods", AZ_SPAN_FROM_BUFFER(DI(client).outbound_topic), NULL)
           != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERRORF(

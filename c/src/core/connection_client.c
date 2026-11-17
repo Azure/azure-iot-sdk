@@ -158,8 +158,9 @@
 #define PRESENCE_PHASE_BIRTH AZ_IOT_PRESENCE_PHASE_BIRTH
 #define PRESENCE_PHASE_DONE AZ_IOT_PRESENCE_PHASE_DONE
 
-/* Device publishes the birth message here; the birth-ack arrives on dev/. All
- * three are "ih/" + device id + one of these suffixes. */
+/* Device publishes the birth message on ih/srv/{device id} (see
+ * az_iot_connection_client__build_service_bound_topic()), or on "ih/" + device id +
+ * PRESENCE_TOPIC_SRV_SUFFIX with the legacy format; the birth-ack arrives on dev/. */
 #define PRESENCE_TOPIC_PREFIX "ih/"
 #define PRESENCE_TOPIC_SRV_SUFFIX "/srv/presence"
 #define PRESENCE_TOPIC_DEV_SUFFIX "/dev/presence"
@@ -5256,8 +5257,9 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
 
   const char* device_id = c->opts.device_id ? c->opts.device_id : "";
   char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
-  const char* topic_parts[] = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_SRV_SUFFIX };
-  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
+  if (az_iot_connection_client__build_service_bound_topic(
+          c, device_id, PRESENCE_TOPIC_SRV_SUFFIX, AZ_SPAN_FROM_BUFFER(topic), NULL)
+      != AZ_IOT_OK)
   {
     stage_local_error(
         c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_NOT_ENOUGH_SPACE, "presence topic does not fit");
@@ -7368,6 +7370,14 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
         "init: connection_profile is not a profile this SDK speaks");
     return AZ_IOT_ERR_INVALID_ARG;
   }
+  if (opts->service_bound_topic_format != AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_PER_DEVICE
+      && opts->service_bound_topic_format != AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY)
+  {
+    AZ_IOT_LOG_ERROR(
+        AZ_IOT_LOG_COMPONENT_CONNECTION,
+        "init: service_bound_topic_format is not a format this SDK knows");
+    return AZ_IOT_ERR_INVALID_ARG;
+  }
   if (opts->crypto != NULL && az_iot_crypto__validate(opts->crypto) != AZ_IOT_OK)
   {
     AZ_IOT_LOG_ERROR(
@@ -9123,6 +9133,22 @@ bool az_iot_connection_client__is_connected(const az_iot_connection_client* clie
 const char* az_iot_connection_client__device_id(const az_iot_connection_client* client)
 {
   return client ? client->opts.device_id : NULL;
+}
+
+AZ_NODISCARD az_iot_result az_iot_connection_client__build_service_bound_topic(
+    const az_iot_connection_client* client,
+    const char* device_id,
+    const char* legacy_suffix,
+    az_span destination,
+    size_t* out_length)
+{
+  if (client->opts.service_bound_topic_format == AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY)
+  {
+    const char* legacy_parts[] = { "ih/", device_id, legacy_suffix };
+    return az_iot_span_writer_build_str(destination, out_length, legacy_parts, 3);
+  }
+  const char* per_device_parts[] = { "ih/srv/", device_id };
+  return az_iot_span_writer_build_str(destination, out_length, per_device_parts, 2);
 }
 
 const char* az_iot_connection_client_get_iothub_address(const az_iot_connection_client* client)

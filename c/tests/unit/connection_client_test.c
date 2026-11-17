@@ -599,7 +599,11 @@ static void inbound_message_routes_through_dispatch(void** state)
 /* Fixture variant: a direct HUB_MQTT_V5 (MQTTv5, MQTT v5) connection. session_role
  * becomes HUB_MQTT_V5 from opts.connection_profile, so open() drives the birth handshake
  * after CONNACK instead of announcing CONNECTED immediately. */
-static int setup_mqtt_v5_ex(void** state, bool push_desired, bool push_reported)
+static int setup_mqtt_v5_ex(
+    void** state,
+    bool push_desired,
+    bool push_reported,
+    az_iot_service_bound_topic_format topic_format)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
@@ -611,6 +615,7 @@ static int setup_mqtt_v5_ex(void** state, bool push_desired, bool push_reported)
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
   opts.twin_push.push_desired = push_desired;
   opts.twin_push.push_reported = push_reported;
+  opts.service_bound_topic_format = topic_format;
   opts.csr_payload_buffer = az_span_create(fx->csr_buf, sizeof(fx->csr_buf));
   opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
   assert_int_equal(az_iot_test_connection_client_init(&fx->client_storage, &opts), AZ_IOT_OK);
@@ -622,11 +627,23 @@ static int setup_mqtt_v5_ex(void** state, bool push_desired, bool push_reported)
   return 0;
 }
 
-static int setup_mqtt_v5(void** state) { return setup_mqtt_v5_ex(state, false, false); }
+static int setup_mqtt_v5(void** state)
+{
+  return setup_mqtt_v5_ex(state, false, false, AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_PER_DEVICE);
+}
+
+/* Fixture variant: HUB_MQTT_V5 publishing on the legacy per-operation topics. */
+static int setup_mqtt_v5_legacy_topics(void** state)
+{
+  return setup_mqtt_v5_ex(state, false, false, AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY);
+}
 
 /* Fixture variant: HUB_MQTT_V5 with both twin push bits configured by the
  * application, to verify the birth advertises what was asked for. */
-static int setup_mqtt_v5_twin_push(void** state) { return setup_mqtt_v5_ex(state, true, true); }
+static int setup_mqtt_v5_twin_push(void** state)
+{
+  return setup_mqtt_v5_ex(state, true, true, AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_PER_DEVICE);
+}
 
 /* Most recent recorded call of `kind`, or NULL if none. */
 static const az_iot_mock_call* last_call_of_kind(
@@ -698,7 +715,7 @@ static void hub_mqtt_v5_births_then_connects_on_birth_ack(void** state)
   az_iot_mock_mqtt_client* m = NULL;
   const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
 
-  assert_string_equal(birth->topic, "ih/ut-device/srv/presence");
+  assert_string_equal(birth->topic, "ih/srv/ut-device");
   assert_int_equal(birth->qos, AZ_IOT_MQTT_QOS_0);
   assert_string_equal(birth->user_type, "birth:1");
   assert_int_equal(birth->correlation_data_len, 16);
@@ -726,6 +743,34 @@ static void hub_mqtt_v5_births_then_connects_on_birth_ack(void** state)
 
   assert_int_equal(fx->rec.states[fx->rec.count - 1], AZ_IOT_CONN_STATE_CONNECTED);
   assert_int_equal(fx->rec.reasons[fx->rec.count - 1], AZ_IOT_OK);
+}
+
+/* With the legacy service-bound topic format the birth goes on the per-operation presence topic;
+ * the subscription, type, QoS and correlation data are the same as with the per-device topic. */
+static void hub_mqtt_v5_legacy_topic_format_births_on_the_presence_topic(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  const az_iot_mock_call* birth = drive_to_birth_published(fx, false, NULL);
+
+  assert_string_equal(birth->topic, "ih/ut-device/srv/presence");
+  assert_int_equal(birth->qos, AZ_IOT_MQTT_QOS_0);
+  assert_string_equal(birth->user_type, "birth:1");
+  assert_int_equal(birth->correlation_data_len, 16);
+}
+
+static void init_rejects_an_unknown_service_bound_topic_format(void** state)
+{
+  (void)state;
+  az_iot_connection_client_options opts = { 0 };
+  opts.iothub_hostname = "broker.example";
+  opts.device_id = "ut-device";
+  opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
+  opts.service_bound_topic_format
+      = (az_iot_service_bound_topic_format)(AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY + 1);
+
+  az_iot_connection_client c;
+  assert_int_equal(az_iot_test_connection_client_init(&c, &opts), AZ_IOT_ERR_INVALID_ARG);
 }
 
 /* MQTTv5 requires a non-empty CONNECT username (WebhookAuthUserNameMissing
@@ -4987,6 +5032,11 @@ int main(void)
     cmocka_unit_test_setup_teardown(inbound_message_routes_through_dispatch, setup, teardown),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_births_then_connects_on_birth_ack, setup_mqtt_v5, teardown),
+    cmocka_unit_test_setup_teardown(
+        hub_mqtt_v5_legacy_topic_format_births_on_the_presence_topic,
+        setup_mqtt_v5_legacy_topics,
+        teardown),
+    cmocka_unit_test(init_rejects_an_unknown_service_bound_topic_format),
     cmocka_unit_test_setup_teardown(
         hub_mqtt_v5_connect_username_carries_correlation_nonce, setup_mqtt_v5, teardown),
     cmocka_unit_test_setup_teardown(

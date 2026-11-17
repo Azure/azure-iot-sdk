@@ -7,8 +7,9 @@
  * through the public API and the in-memory mock_mqtt_iface.
  *
  * The MQTTv5 protocol is a probe / probe-ack / exec / result handshake over two
- * flat topics -- ih/{device}/dev/methods inbound and ih/{device}/srv/methods
- * outbound -- discriminated by a `type` user property, with the request id in
+ * flat topics -- ih/{device}/dev/methods inbound and ih/srv/{device} outbound
+ * (ih/{device}/srv/methods with the legacy service-bound topic format) --
+ * discriminated by a `type` user property, with the request id in
  * MQTT v5 Correlation Data and protobuf payloads. Neither topic names the
  * method: the name arrives in the probe and has to survive until the exec.
  *
@@ -74,7 +75,10 @@
 #define DM_TEST_HOLDS_TWO_AT_ONCE (CONCURRENT_CAPACITY >= 2 && NOTICE_CAPACITY >= 2)
 
 #define DEV_TOPIC "ih/ut-device/dev/methods"
-#define SRV_TOPIC "ih/ut-device/srv/methods"
+/* Replies go on the per-device topic by default, which the birth shares; the `type` tells them
+ * apart. LEGACY_SRV_TOPIC is the one AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY uses. */
+#define SRV_TOPIC "ih/srv/ut-device"
+#define LEGACY_SRV_TOPIC "ih/ut-device/srv/methods"
 
 /* Some tests turn on a budget actually elapsing, and the budgets are whole
  * seconds off a monotonic clock with no test seam behind it. Anything under a
@@ -262,7 +266,7 @@ static void on_method_alt(
   (void)az_iot_mqttv5_direct_method_respond(a->dm, request, 200, NULL, 0);
 }
 
-static int setup(void** state)
+static int setup_with_topic_format(void** state, az_iot_service_bound_topic_format topic_format)
 {
   fixture* fx = (fixture*)calloc(1, sizeof(*fx));
   assert_non_null(fx);
@@ -272,6 +276,7 @@ static int setup(void** state)
   opts.port = 8883;
   opts.device_id = "ut-device";
   opts.connection_profile = AZ_IOT_CONNECTION_PROFILE_MQTT_V5;
+  opts.service_bound_topic_format = topic_format;
   opts.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(AZ_IOT_MQTT_VERSION_5);
   assert_int_equal(az_iot_test_connection_client_init(&fx->conn, &opts), AZ_IOT_OK);
 
@@ -291,6 +296,16 @@ static int setup(void** state)
 
   *state = fx;
   return 0;
+}
+
+static int setup(void** state)
+{
+  return setup_with_topic_format(state, AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_PER_DEVICE);
+}
+
+static int setup_legacy_topics(void** state)
+{
+  return setup_with_topic_format(state, AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY);
 }
 
 static int teardown(void** state)
@@ -332,6 +347,21 @@ static const az_iot_mock_call* find_phase(az_iot_mock_mqtt_client* m, const char
     const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i - 1);
     if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(c->topic, SRV_TOPIC) == 0
         && strcmp(c->user_type, type_value) == 0)
+    {
+      return c;
+    }
+  }
+  return NULL;
+}
+
+/* Most recent birth PUBLISH, whichever service-bound topic it went on. */
+static const az_iot_mock_call* find_birth(az_iot_mock_mqtt_client* m)
+{
+  size_t n = az_iot_mock_mqtt_client_call_count(m);
+  for (size_t i = n; i > 0; --i)
+  {
+    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i - 1);
+    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(c->user_type, "birth:1") == 0)
     {
       return c;
     }
@@ -416,8 +446,7 @@ static void ack_presence_subscription(fixture* fx)
 /* Echo the birth nonce back as a birth-ack so the session reaches CONNECTED. */
 static void send_birth_ack(fixture* fx)
 {
-  const az_iot_mock_call* birth
-      = find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, "ih/ut-device/srv/presence");
+  const az_iot_mock_call* birth = find_birth(fx->mock);
   assert_non_null(birth);
   assert_int_equal(birth->correlation_data_len, 16);
 
@@ -611,6 +640,57 @@ static void run_one_invocation(fixture* fx, invocation_record* rec, uint8_t seed
   rec->fired = false;
   inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 300);
   assert_true(rec->fired);
+}
+
+/* Probe, run and answer "reboot", asserting that the probe-ack and the result go on @p topic and
+ * nothing goes on @p other_topic. */
+static void assert_replies_go_on(fixture* fx, const char* topic, const char* other_topic)
+{
+  open_to_connected(fx);
+  invocation_record rec = { 0 };
+  fx->rec = &rec;
+
+  uint8_t request_id[16];
+  make_request_id(request_id, 0xE1);
+  uint8_t frame[128];
+  size_t frame_len = build_probe(frame, "reboot", 300);
+  inject_dm(fx, DEV_TOPIC, "probe:1", request_id, 16, frame, frame_len, 0);
+  const az_iot_mock_call* probe_ack = find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, topic);
+  assert_non_null(probe_ack);
+  assert_string_equal(probe_ack->user_type, "probe-ack:1");
+  assert_int_equal(probe_ack->correlation_data_len, 16);
+  assert_memory_equal(probe_ack->correlation_data, request_id, 16);
+  uint8_t ready_id[16];
+  probe_ack_ready_id(probe_ack, ready_id);
+
+  uint8_t exec[64];
+  size_t exec_len = build_exec(exec, ready_id, 16, NULL, 0);
+  inject_dm(fx, DEV_TOPIC, "exec:1", request_id, 16, exec, exec_len, 300);
+  assert_true(rec.fired);
+  assert_int_equal(
+      az_iot_mqttv5_direct_method_respond(&fx->dm, rec.request, 200, NULL, 0), AZ_IOT_OK);
+  const az_iot_mock_call* result = find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, topic);
+  assert_non_null(result);
+  assert_string_equal(result->user_type, "result:1");
+  assert_int_equal(result->qos, AZ_IOT_MQTT_QOS_1);
+  assert_int_equal(result->correlation_data_len, 16);
+  assert_memory_equal(result->correlation_data, request_id, 16);
+
+  assert_null(find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, other_topic));
+}
+
+static void replies_go_on_the_per_device_topic_by_default(void** state)
+{
+  assert_replies_go_on((fixture*)*state, SRV_TOPIC, LEGACY_SRV_TOPIC);
+}
+
+static void replies_go_on_the_methods_topic_with_the_legacy_topic_format(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_replies_go_on(fx, LEGACY_SRV_TOPIC, SRV_TOPIC);
+  const az_iot_mock_call* birth = find_birth(fx->mock);
+  assert_non_null(birth);
+  assert_string_equal(birth->topic, "ih/ut-device/srv/presence");
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2117,7 +2197,7 @@ static void a_probe_after_the_birth_before_its_ack_is_answered_once_connected(vo
   fixture* fx = (fixture*)*state;
   open_conn(fx);
   ack_presence_subscription(fx);
-  assert_non_null(find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, "ih/ut-device/srv/presence"));
+  assert_non_null(find_birth(fx->mock));
 
   uint8_t request_id[16];
   make_request_id(request_id, 0xD2);
@@ -3119,13 +3199,14 @@ static void reassign_and_reconnect(fixture* fx, const char* new_hub, const char*
   const char* device_id = new_device_id != NULL ? new_device_id : "ut-device";
   char presence_out[64];
   char presence_in[64];
-  snprintf(presence_out, sizeof(presence_out), "ih/%s/srv/presence", device_id);
+  snprintf(presence_out, sizeof(presence_out), "ih/srv/%s", device_id);
   snprintf(presence_in, sizeof(presence_in), "ih/%s/dev/presence", device_id);
   open_conn(fx);
   ack_presence_subscription(fx);
 
-  const az_iot_mock_call* birth = find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, presence_out);
+  const az_iot_mock_call* birth = find_birth(fx->mock);
   assert_non_null(birth);
+  assert_string_equal(birth->topic, presence_out);
   uint8_t nonce[16];
   memcpy(nonce, birth->correlation_data, sizeof(nonce));
   az_iot_mqtt_user_property ack_type = { "type", "birth-ack:1" };
@@ -3176,7 +3257,9 @@ static void assert_replies_are_dropped_on_reassignment(
   for (size_t i = 0; i < n; ++i)
   {
     const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
-    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strstr(c->topic, "/srv/methods") != NULL)
+    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH
+        && (strcmp(c->user_type, "probe-ack:1") == 0 || strcmp(c->user_type, "abandon:1") == 0
+            || strcmp(c->user_type, "result:1") == 0))
     {
       replies++;
     }
@@ -5372,6 +5455,11 @@ int main(void)
     cmocka_unit_test(init_rejects_a_null_connection),
     cmocka_unit_test(init_against_an_mqtt_v3_connection_is_rejected),
     cmocka_unit_test(a_device_id_too_long_for_the_topics_says_so),
+    cmocka_unit_test_setup_teardown(replies_go_on_the_per_device_topic_by_default, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        replies_go_on_the_methods_topic_with_the_legacy_topic_format,
+        setup_legacy_topics,
+        teardown),
     cmocka_unit_test_setup_teardown(
         init_does_not_subscribe_a_redundant_methods_filter, setup, teardown),
     cmocka_unit_test_setup_teardown(

@@ -94,7 +94,8 @@ static void on_send(az_iot_result status, void* user_ctx)
 static int setup_profile(
     void** state,
     az_iot_connection_profile profile,
-    az_iot_mqtt_version version)
+    az_iot_mqtt_version version,
+    az_iot_service_bound_topic_format topic_format)
 {
   fixture* test = (fixture*)calloc(1, sizeof(*test));
   assert_non_null(test);
@@ -104,6 +105,7 @@ static int setup_profile(
   options.port = 8883;
   options.device_id = "ut-device";
   options.connection_profile = profile;
+  options.service_bound_topic_format = topic_format;
   options.mqtt_adapter = az_iot_mock_mqtt_get_adapter_for_version(version);
   assert_int_equal(az_iot_test_connection_client_init(&test->connection, &options), AZ_IOT_OK);
 
@@ -113,12 +115,30 @@ static int setup_profile(
 
 static int setup(void** state)
 {
-  return setup_profile(state, AZ_IOT_CONNECTION_PROFILE_MQTT_V5, AZ_IOT_MQTT_VERSION_5);
+  return setup_profile(
+      state,
+      AZ_IOT_CONNECTION_PROFILE_MQTT_V5,
+      AZ_IOT_MQTT_VERSION_5,
+      AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_PER_DEVICE);
+}
+
+/* Telemetry stays on its own topic whichever service-bound topic format is chosen. */
+static int setup_legacy_topics(void** state)
+{
+  return setup_profile(
+      state,
+      AZ_IOT_CONNECTION_PROFILE_MQTT_V5,
+      AZ_IOT_MQTT_VERSION_5,
+      AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY);
 }
 
 static int setup_mqtt_v3(void** state)
 {
-  return setup_profile(state, AZ_IOT_CONNECTION_PROFILE_MQTT_V3, AZ_IOT_MQTT_VERSION_3_1_1);
+  return setup_profile(
+      state,
+      AZ_IOT_CONNECTION_PROFILE_MQTT_V3,
+      AZ_IOT_MQTT_VERSION_3_1_1,
+      AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_PER_DEVICE);
 }
 
 static int teardown(void** state)
@@ -190,8 +210,10 @@ static void open_v5(fixture* test)
     assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
   }
 
-  const az_iot_mock_call* birth = find_publish(test, "ih/ut-device/srv/presence");
+  const az_iot_mock_call* birth
+      = az_iot_mock_mqtt_client_last_of(test->mock, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(birth);
+  assert_string_equal(birth->user_type, "birth:1");
   assert_int_equal(birth->correlation_data_len, 16);
 
   uint8_t nonce[16];
@@ -319,6 +341,11 @@ static void send_uses_the_v5_wire_shape_and_waits_for_puback(void** state)
   assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
   assert_true(record.fired);
   assert_int_equal(record.status, AZ_IOT_OK);
+}
+
+static void send_uses_the_telemetry_topic_with_the_legacy_topic_format(void** state)
+{
+  send_uses_the_v5_wire_shape_and_waits_for_puback(state);
 }
 
 /* A PUBACK failure reaches the callback as the adapter classified it. */
@@ -908,6 +935,8 @@ int main(void)
     cmocka_unit_test_setup_teardown(send_rejects_invalid_arguments, setup, teardown),
     cmocka_unit_test_setup_teardown(
         send_uses_the_v5_wire_shape_and_waits_for_puback, setup, teardown),
+    cmocka_unit_test_setup_teardown(
+        send_uses_the_telemetry_topic_with_the_legacy_topic_format, setup_legacy_topics, teardown),
     cmocka_unit_test_setup_teardown(
         a_failed_puback_reaches_the_callback_unchanged, setup, teardown),
     cmocka_unit_test_setup_teardown(metadata_uses_native_v5_fields, setup, teardown),

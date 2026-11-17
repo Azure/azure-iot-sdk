@@ -32,6 +32,9 @@
  *   AZ_IOT_MQTT_WEBSOCKET_PATH  overrides the Azure default path
  *   AZ_IOT_PROXY_HOST, AZ_IOT_PROXY_PORT,
  *   AZ_IOT_PROXY_USERNAME, AZ_IOT_PROXY_PASSWORD
+ *
+ * mqttv5 service-bound topics (optional): AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT "per-device" (default)
+ * or "legacy", for an IoT hub without the per-device topic.
  */
 #ifndef E2E_DEVICE_H
 #define E2E_DEVICE_H

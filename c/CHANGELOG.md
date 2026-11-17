@@ -107,6 +107,13 @@ software updates. APIs may change before a stable release.
   ignored). A presence SUBACK missing after `subscription_ack_timeout_seconds`, or a birth-ack
   after 5 to 15 minutes (longer after consecutive misses), ends the session with a DISCONNECT and
   reconnects.
+- Service-bound topic: the birth, direct method responses (probe-acks, results and abandons) and
+  twin requests (gets and reported patches) go on the device's own topic, `ih/srv/{device_id}`,
+  told apart by their `type` user property; this needs an IoT hub that supports it.
+  `service_bound_topic_format = AZ_IOT_SERVICE_BOUND_TOPIC_FORMAT_LEGACY` keeps
+  `ih/{device_id}/srv/presence`, `.../srv/methods` and `.../srv/twin` for IoT hubs that do not.
+  Telemetry (`ih/{device_id}/srv/telemetry`) is the same either way. See
+  [docs/connecting.md](docs/connecting.md#mqtt-session-options).
 - WebSockets use the hub's path `/mqtt` (`AZ_IOT_MQTT_HUB_V5_WEBSOCKET_PATH`).
 - Not on mqttv5: cloud-to-device messages, file upload and certificate renewal over IoT Hub.
 
