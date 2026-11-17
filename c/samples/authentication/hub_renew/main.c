@@ -8,12 +8,16 @@
  * Runtime operational-certificate renewal against a connected MQTTv3 hub
  * (D7). Connects to whichever hub DPS assigns.
  * End to end:
- *   1. Connect, then call az_iot_connection_client_send_csr(); the SDK gets the
+ *   1. Register with DPS with a CSR, connect with the operational certificate DPS
+ *      issues, then call az_iot_connection_client_send_csr(); the SDK gets the
  *      CSR from the managed provider.
  *   2. The hub responds in two phases - ACCEPTED (202) then ISSUED (200) with
  *      the new chain - and the SDK stores it in the provider before the
  *      callback.
- *   3. Apply the renewed cert by reconnecting: close + reopen re-establishes the
+ *   3. A request the hub session ends under is resubmitted with the same id once
+ *      reconnected; 409xxx (still active) is replaced, 412xxx (nothing to
+ *      replace) sent again, each under a new id.
+ *   4. Apply the renewed cert by reconnecting: close + reopen re-establishes the
  *      session with the new operational identity (a new client certificate
  *      requires a fresh TLS handshake, so the cert is applied on reconnect).
  *
@@ -27,6 +31,7 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 #include "azure/iot/az_iot.h"
 /* The MQTT adapter this build of the sample uses (see samples/CMakeLists.txt). */
@@ -41,12 +46,16 @@
 
 #include "sample_utils.h"
 
+/** @brief Renewal requests sent at most, the first included. */
+#define SAMPLE_RENEW_ATTEMPTS 4
+
 typedef struct
 {
   az_iot_connection_state conn_state;
   int provisioning_faulted;
   int csr_done;
   az_iot_result csr_status;
+  int32_t csr_service_code;
 } user_context;
 
 static void on_conn_state(const az_iot_connection_state_event* event, void* user_ctx)
@@ -106,6 +115,7 @@ static void on_csr_event(const az_iot_csr_event* evt, void* user_ctx)
           evt->credential_message,
           evt->tracking_id);
       ctx->csr_status = evt->status;
+      ctx->csr_service_code = evt->service_code;
       ctx->csr_done = 1;
       break;
   }
@@ -159,6 +169,8 @@ int main(void)
   copts.dps.registration_id = config.reg_id;
   copts.dps.global_endpoint = config.dps_global_endpoint; /* NULL: the global default */
   copts.certificate_provider = &provider.base;
+  /* The hub accepts the issued certificate only for a device DPS registered with a CSR. */
+  copts.dps.request_operational_certificate = true;
   AZ_IOT_CSR_PAYLOAD_STORAGE(csr_payload_buf);
   copts.csr_payload_buffer = az_span_create(csr_payload_buf, sizeof(csr_payload_buf));
   /* The adapter builds each session's MQTT 3.1.1 client in this workspace, one at a time: DPS,
@@ -204,14 +216,54 @@ int main(void)
   }
   else if (user_ctx.conn_state == AZ_IOT_CONN_STATE_CONNECTED)
   {
-    /* Request renewal; the SDK gets the CSR from the provider. */
-    if (az_iot_connection_client_send_csr(&connection_client, NULL, NULL, on_csr_event, &user_ctx)
-        == AZ_IOT_OK)
+    /* Request renewal; the SDK gets the CSR from the provider. The sample names the request so
+     * that it can resubmit it (az_iot_connection_client_send_csr()). */
+    char request_id[32];
+    unsigned request_base = (unsigned)time(NULL);
+    (void)snprintf(request_id, sizeof(request_id), "%08x-0", request_base);
+    const char* replace = NULL;
+    for (int attempt = 1; attempt <= SAMPLE_RENEW_ATTEMPTS; ++attempt)
     {
+      for (int i = 0; i < 1200 && user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED
+           && user_ctx.conn_state != AZ_IOT_CONN_STATE_FAULTED;
+           ++i)
+      {
+        (void)az_iot_connection_client_do_work(&connection_client, 50);
+      }
+      /* Only this request's result drives the recovery below. */
+      user_ctx.csr_done = 0;
+      user_ctx.csr_status = AZ_IOT_OK;
+      user_ctx.csr_service_code = 0;
+      if (user_ctx.conn_state != AZ_IOT_CONN_STATE_CONNECTED
+          || az_iot_connection_client_send_csr(
+                 &connection_client, request_id, replace, on_csr_event, &user_ctx)
+              != AZ_IOT_OK)
+      {
+        break;
+      }
       for (int i = 0; i < 1200 && !user_ctx.csr_done; ++i)
       {
         (void)az_iot_connection_client_do_work(&connection_client, 50);
       }
+      int32_t service_status = user_ctx.csr_service_code / 1000;
+      if (!user_ctx.csr_done || user_ctx.csr_status == AZ_IOT_OK
+          || attempt == SAMPLE_RENEW_ATTEMPTS)
+      {
+        break;
+      }
+      /* A lost session: the same request (id and replace), once reconnected. */
+      if (user_ctx.csr_status != AZ_IOT_ERR_NOT_CONNECTED)
+      {
+        if (service_status != 409 && service_status != 412)
+        {
+          break;
+        }
+        /* 409: an earlier request is still active, so replace it; 412: it ended, so send again.
+         * A new id, so a late response to the earlier request is ignored. */
+        replace = service_status == 409 ? "*" : NULL;
+        (void)snprintf(request_id, sizeof(request_id), "%08x-%d", request_base, attempt);
+      }
+      fprintf(stderr, "[hub_renew] resubmitting renewal %s\n", request_id);
     }
   }
 

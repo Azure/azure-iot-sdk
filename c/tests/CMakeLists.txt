@@ -1043,6 +1043,9 @@ if(AZ_IOT_WITH_PAHO)
     endif()
 endif()
 
+# Fuzz targets: libFuzzer executables with AZ_IOT_BUILD_FUZZERS, corpus replays otherwise.
+add_subdirectory(fuzz)
+
 # ---------------------------------------------------------------------------
 # End-to-end (e2e) test suite.
 #

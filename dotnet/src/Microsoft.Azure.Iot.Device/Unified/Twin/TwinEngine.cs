@@ -1123,7 +1123,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Twin
                 return;
             }
 
-            if (!TryTakeGetTwinFetch(getId, out List<GetTwinWaiter>? waiters, out DesiredResync? resync,             out bool isSent, out Guid? sentConnectionNonce, out long abandonment))
+            if (!TryTakeGetTwinFetch(getId, out List<GetTwinWaiter>? waiters, out DesiredResync? resync, out bool isSent, out Guid? sentConnectionNonce, out long abandonment))
             {
                 Trace.TraceInformation("Dropping a get twin response that does not match the outstanding get twin request.");
                 return;
