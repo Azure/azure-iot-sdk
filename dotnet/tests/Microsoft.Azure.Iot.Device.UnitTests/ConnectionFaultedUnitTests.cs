@@ -202,6 +202,38 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task DisconnectCancelsProvisioningOverMqtt()
+        {
+            TaskCompletionSource registrationSent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            using MockConnectionMqttClient mockMqttClient = new();
+            mockMqttClient.OnConnect = _ => Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+
+            // DPS acknowledges the registration request but never answers it.
+            mockMqttClient.OnPublish = publish =>
+            {
+                if (publish.Topic.StartsWith(ProvisioningTopicPrefix, StringComparison.Ordinal))
+                {
+                    registrationSent.TrySetResult();
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = new(new() { MqttClient = mockMqttClient });
+
+            Task<ConnectionContext> provisioning = connectionClient.ProvisionAndConnectAsync(
+                CreateProvisioningSettings(),
+                CreateAuthenticationProvider(),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            await registrationSent.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await provisioning.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+        }
+
+        [Fact]
         public async Task ProvisionAndConnectAsyncAfterDisconnectReconnectsToTheCachedHubWithoutProvisioning()
         {
             using MockConnectionMqttClient mockMqttClient = new();
