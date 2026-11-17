@@ -98,7 +98,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             MqttPublish probeAckPublish = await connection.WaitForPublishedMessagesAsync(1);
             Assert.Single(connection.PublishedMessages);
             // The device ID is left for the connection client to fill in when it actually sends the publish.
-            Assert.Equal($"ih/{Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.DeviceIdPlaceholder}/srv/methods", probeAckPublish.Topic);
+            Assert.Equal($"ih/srv/{Microsoft.Azure.Iot.Device.Unified.Connection.IConnectionClient.DeviceIdPlaceholder}", probeAckPublish.Topic);
             Assert.Equal("probe-ack:1", GetType(probeAckPublish));
 
             ProbeAck sentProbeAck = ProbeAck.Parser.ParseFrom(probeAckPublish.Payload);

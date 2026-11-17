@@ -164,7 +164,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             connection.SimulateReconnected();
 
             MqttPublish resent = await connection.WaitForPublishedMessagesAsync(publishCount + 2);
-            Assert.Equal($"ih/{IConnectionClient.DeviceIdPlaceholder}/srv/twin", resent.Topic);
+            Assert.Equal($"ih/srv/{IConnectionClient.DeviceIdPlaceholder}", resent.Topic);
             Assert.Equal(Sections.Both, TwinGet.Parser.ParseFrom(resent.Payload).Sections);
             TwinGetResponse response = new() { DesiredVersion = 5, DesiredPayload = ByteString.CopyFromUtf8("{}"), ReportedVersion = 7, ReportedPayload = ByteString.CopyFromUtf8("{}") };
             await connection.SimulateReceiveAsync(CreateInboundMqttv5TwinPublish("get-response:1", resent.CorrelationData!, response.ToByteArray()));
@@ -1062,7 +1062,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             MqttPublish getPublish = Assert.Single(connection.PublishedMessages);
             // The device ID is left for the connection client to fill in when it actually sends the publish.
-            Assert.Equal($"ih/{IConnectionClient.DeviceIdPlaceholder}/srv/twin", getPublish.Topic);
+            Assert.Equal($"ih/srv/{IConnectionClient.DeviceIdPlaceholder}", getPublish.Topic);
             Assert.Equal(1ul, twin.DesiredVersion);
             Assert.Equal(2ul, twin.ReportedVersion);
         }
