@@ -50,6 +50,7 @@ permissions:
 # independently, so teardown never depends on setup completing.
 env:
   E2E_RESOURCE_GROUP: DotnetCertMgmtE2ETestPipeline-${{ github.run_id }}-${{ github.run_attempt }}
+  ENABLE_FILE_UPLOAD: 'false'
 
 jobs:
   setup:
@@ -82,7 +83,7 @@ jobs:
           # An undefined repository variable arrives as an empty string, which
           # would otherwise override the action default, so the fallback is here.
           azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
-          enable-file-upload: 'true'
+          enable-file-upload: ${{ env.ENABLE_FILE_UPLOAD }}
           enable-certificate-management: 'true'
           dps-x509-group-enrollment-devices: '2'
           dps-x509-individual-enrollments: '2'
@@ -214,8 +215,13 @@ jobs:
 
           # Run all certificate-management cases here; other MQTTv5 tests run in
           # ci-dotnet-e2e-mqttv5 and all remaining tests run in ci-dotnet.
+          # File upload tests run only when file upload resources are enabled.
+          $testFilter = "Category=CertificateManagement"
+          if ($env:ENABLE_FILE_UPLOAD -ne 'true') {
+            $testFilter += "&Category!=FileUpload"
+          }
           dotnet test ./dotnet/Project.slnx `
-            --filter "Category=CertificateManagement" `
+            --filter $testFilter `
             --collect:"XPlat Code Coverage" `
             --logger:"trx;LogFileName=test-results.trx" `
             --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `

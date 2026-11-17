@@ -161,7 +161,7 @@ jobs:
 
       - name: Provision resources
         id: provision
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@2fc8ffebbdc13476890b15fee48e304b1e135ce3 # v1.0.1 + #456 + #457 + retry on 5xx (#459)
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@911deae8e24fbac9ecb4361f99ea962ab5e5e4b4 # main after #463 (storage account: allowBlobPublicAccess=false)
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # The shared action defaults to EastUS; these pipelines run in
@@ -714,7 +714,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Delete Azure resources
-        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@2fc8ffebbdc13476890b15fee48e304b1e135ce3 # v1.0.1 + SHA-pinned azure/powershell (#457)
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@911deae8e24fbac9ecb4361f99ea962ab5e5e4b4 # same ref as provision
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}
 
