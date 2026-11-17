@@ -12,9 +12,10 @@ using Microsoft.Azure.Iot.Device.Authentication;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
+    [Trait("Category", "FileUpload")]
     public class FileUploadIntegrationTests
     {
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds, Skip = "Disabled test infrastructure temporarily")]
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true, false)]
         [InlineData(true, true)]
         [InlineData(false, false)]
@@ -48,7 +49,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             fileUploadClient.Dispose();
         }
 
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds, Skip = "Disabled test infrastructure temporarily")]
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(false)]
         [InlineData(true)]
         public async Task TestFileUpload_SymmetricKey(bool withProvidedHttpClient)
@@ -96,7 +97,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             await fileUploadClient.CompleteFileUploadSasUriAsync(completionNotification, cancellationToken);
         }
 
-        [Theory(Timeout = Setup.TestTimeoutMilliseconds, Skip = "Disabled test infrastructure temporarily")]
+        [Theory(Timeout = Setup.TestTimeoutMilliseconds)]
         [InlineData(true)]
         [InlineData(false)]
         public async Task TestFileUpload_BadFormat(bool testAgainstClassicHub)

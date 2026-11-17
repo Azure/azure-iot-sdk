@@ -38,6 +38,7 @@ permissions:
 # independently, so teardown never depends on setup completing.
 env:
   E2E_RESOURCE_GROUP: DotnetE2ETestPipeline-${{ github.run_id }}-${{ github.run_attempt }}
+  ENABLE_FILE_UPLOAD: 'false'
 
 jobs:
   setup:
@@ -70,7 +71,7 @@ jobs:
           # An undefined repository variable arrives as an empty string, which
           # would otherwise override the action default, so the fallback is here.
           azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
-          enable-file-upload: 'false'
+          enable-file-upload: ${{ env.ENABLE_FILE_UPLOAD }}
           enable-certificate-management: 'false'
           dps-x509-group-enrollment-devices: '2'
           dps-x509-individual-enrollments: '2'
@@ -123,10 +124,14 @@ jobs:
           if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 
           # Tests labeled Category=CertificateManagement run in ci-dotnet-e2e-csr and
-          # tests labeled Category=Longhaul run in longhaul-dotnet; all other tests,
-          # including those without a category, run here.
+          # tests labeled Category=Longhaul run in longhaul-dotnet.
+          # File upload tests run only when file upload resources are enabled.
+          $testFilter = "Category!=CertificateManagement&Category!=Longhaul"
+          if ($env:ENABLE_FILE_UPLOAD -ne 'true') {
+            $testFilter += "&Category!=FileUpload"
+          }
           dotnet test ./dotnet/Project.slnx `
-            --filter "Category!=CertificateManagement&Category!=Longhaul" `
+            --filter $testFilter `
             --collect:"XPlat Code Coverage" `
             --logger:"trx;LogFileName=test-results.trx" `
             --environment IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING `
