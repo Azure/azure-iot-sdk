@@ -15,8 +15,8 @@ namespace Microsoft.Azure.Iot.Device.Authentication
     /// Authenticates with a key held in a Trusted Platform Module (TPM) 2.0.
     /// </summary>
     /// <remarks>
-    /// Device Provisioning Service only supports TPM attestation over HTTPS, so provisioning with this provider requires
-    /// <see cref="Models.ProvisioningSettings.Transport"/> to be <see cref="Provisioning.Models.ProvisioningTransport.Http"/>.
+    /// Device Provisioning Service only supports TPM attestation over HTTPS, so the connection client always provisions
+    /// devices that use this provider over HTTPS. The device still connects to its assigned IoT hub over MQTT.
     /// <para>
     /// During registration, Device Provisioning Service challenges the device with a key encrypted with the TPM's
     /// endorsement key, which only that TPM can import. Every SAS token, for Device Provisioning Service and then for IoT

@@ -5,7 +5,6 @@ using Microsoft.Azure.Devices.Provisioning.Service;
 using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using System.Diagnostics;
@@ -107,10 +106,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             }
         }
 
-        private static ProvisioningSettings CreateSettings() => new(Setup.DpsIdScope)
-        {
-            Transport = ProvisioningTransport.Http,
-        };
+        private static ProvisioningSettings CreateSettings() => new(Setup.DpsIdScope);
 
         private static async Task<IndividualEnrollment> CreateEnrollmentAsync(TssTpmProvider tpm, CancellationToken cancellationToken)
         {

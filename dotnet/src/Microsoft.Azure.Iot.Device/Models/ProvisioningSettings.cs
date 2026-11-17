@@ -22,15 +22,5 @@ namespace Microsoft.Azure.Iot.Device.Models
         public JsonNode? ProvisioningPayload { get; set; }
 
         public ProvisioningCertificateSigningRequest? CertificateSigningRequest { get; set; }
-
-        /// <summary>
-        /// The protocol used to register with Device Provisioning Service. Defaults to <see cref="ProvisioningTransport.Mqtt"/>.
-        /// </summary>
-        /// <remarks>
-        /// Use <see cref="ProvisioningTransport.Http"/> where MQTT traffic to Device Provisioning Service is blocked. The
-        /// device still connects to its assigned IoT hub over MQTT. Device Provisioning Service only supports TPM
-        /// attestation (<see cref="Authentication.TpmAuthenticationProvider"/>) over <see cref="ProvisioningTransport.Http"/>.
-        /// </remarks>
-        public ProvisioningTransport Transport { get; set; } = ProvisioningTransport.Mqtt; //TODO does C even expose this? May cause frustration if users try to configure MQTT + TPM only to hit runtime error
     }
 }

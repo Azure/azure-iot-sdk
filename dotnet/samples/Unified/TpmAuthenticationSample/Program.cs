@@ -4,7 +4,6 @@
 using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using SetupSampleDevice;
@@ -35,19 +34,16 @@ internal class Program
         string registrationId = SampleConstants.LoadTpmRegistrationId();
         string idScope = SampleConstants.LoadIdScope();
 
-        // The SDK only depends on ITpmSecurityProvider. This sample implements it with the Microsoft.TSS library.
+        // The SDK only depends on ITpmProvider. This sample implements it with the Microsoft.TSS library.
         using TssTpmProvider tpm = args.Contains("--simulator")
             ? TssTpmProvider.CreateForSimulator()
             : TssTpmProvider.CreateForPlatformTpm();
 
         TpmAuthenticationProvider authentication = new(registrationId, idScope, tpm);
 
-        // Device Provisioning Service only supports TPM attestation over HTTPS. The device still connects to its
-        // assigned IoT Hub over MQTT.
-        ProvisioningSettings provisioningSettings = new(idScope)
-        {
-            Transport = ProvisioningTransport.Http,
-        };
+        // Device Provisioning Service only supports TPM attestation over HTTPS, so the SDK provisions TPM devices over
+        // HTTPS. The device still connects to its assigned IoT Hub over MQTT.
+        ProvisioningSettings provisioningSettings = new(idScope);
 
         using ConnectionClient connectionClient = new();
         TelemetryClient telemetryClient = new(connectionClient);

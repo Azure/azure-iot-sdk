@@ -5,7 +5,6 @@ using Microsoft.Azure.Devices.Provisioning.Service;
 using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
-using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
 using System.Globalization;
@@ -56,7 +55,6 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             ProvisioningSettings settings = new(Setup.DpsIdScope)
             {
-                Transport = ProvisioningTransport.Http,
                 CertificateSigningRequest = new(
                     issuedCertificatePrivateKey,
                     CertificateUtilities.GenerateCsrWithPrivateKey(enrollment.RegistrationId, issuedCertificatePrivateKey)),

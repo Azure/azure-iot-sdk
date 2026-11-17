@@ -90,7 +90,7 @@ means supported only in `releases/public-preview`, whose APIs remain subject to 
 | HTTPS transport for provisioning / messaging | Not supported | |
 | TPM authentication through DPS | Not supported | |
 | Software updates via DPS | Not supported | |
-| TPM authentication support | Main + preview | *Provision and authenticate with a key held in a TPM through `TpmAuthenticationProvider` and your own `ITpmSecurityProvider`. Device Provisioning Service only supports TPM attestation over HTTPS, so set `ProvisioningSettings.Transport = ProvisioningTransport.Http`. Only works with MQTTv3 IoT Hubs, since TPM authentication uses SAS tokens. See the [TpmAuthenticationSample](./samples/Unified/TpmAuthenticationSample/)
+| TPM authentication support | Main + preview | *Provision and authenticate with a key held in a TPM through `TpmAuthenticationProvider` and your own `ITpmProvider`. Device Provisioning Service only supports TPM attestation over HTTPS, so the SDK provisions TPM devices over HTTPS. Only works with MQTTv3 IoT Hubs, since TPM authentication uses SAS tokens. See the [TpmAuthenticationSample](./samples/Unified/TpmAuthenticationSample/)
 
 ### Capability limitations
 

@@ -23,7 +23,6 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
         private const string JsonMediaType = "application/json";
 
         private readonly HttpClient _httpClient;
-        private readonly AuthenticationCredentials _credentials;
         private readonly string _registrationsUri;
         private readonly string _registrationId;
         private readonly string _apiVersion;
@@ -31,7 +30,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
         private readonly TimeSpan _requestTimeout;
         private readonly TimeSpan _minimumPollingInterval;
         private readonly Action<TimeSpan?> _onRetryAfter;
-        private readonly TpmAuthenticationProvider? _tpm;
+        private readonly TpmAuthenticationProvider _tpm;
 
         // Set once this registration has answered Device Provisioning Service's TPM challenge, after which every request
         // carries a SAS token signed by the TPM.
@@ -39,7 +38,6 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
         private string? _tpmKeyName;
 
         /// <param name="handler">The handler that sends requests. It is disposed with this client.</param>
-        /// <param name="credentials">The boot credentials. A SAS token is sent as the Authorization header; a client certificate must already be bound to <paramref name="handler"/>.</param>
         /// <param name="globalEndpointAddress">The Device Provisioning Service host name.</param>
         /// <param name="idScope">The ID scope of the Device Provisioning Service instance.</param>
         /// <param name="registrationId">The registration ID of this device.</param>
@@ -49,13 +47,12 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
         /// <param name="minimumPollingInterval">The shortest time to wait between operation status polls.</param>
         /// <param name="onRetryAfter">Invoked with the Retry-After of every response (null when a response has none).</param>
         /// <param name="tpm">
-        /// The TPM to attest with, or null when not using TPM attestation. With a TPM, the register request carries its
-        /// endorsement and storage root keys and is first sent unauthenticated; Device Provisioning Service answers it with
-        /// a key for the TPM to import, and the request is sent again with a SAS token the TPM signs with that key.
+        /// The TPM to attest with. The register request carries its endorsement and storage root keys and is first sent
+        /// unauthenticated; Device Provisioning Service answers it with a key for the TPM to import, and the request is sent
+        /// again with a SAS token the TPM signs with that key.
         /// </param>
         public ProvisioningHttpClient(
             HttpMessageHandler handler,
-            AuthenticationCredentials credentials,
             string globalEndpointAddress,
             string idScope,
             string registrationId,
@@ -64,11 +61,10 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
             TimeSpan requestTimeout,
             TimeSpan minimumPollingInterval,
             Action<TimeSpan?> onRetryAfter,
-            TpmAuthenticationProvider? tpm = null)
+            TpmAuthenticationProvider tpm)
         {
             // Each request has its own timeout, applied below, so that a timeout can be told apart from cancellation.
             _httpClient = new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
-            _credentials = credentials;
             _registrationsUri = $"https://{globalEndpointAddress}/{Uri.EscapeDataString(idScope)}/registrations/{Uri.EscapeDataString(registrationId)}";
             _registrationId = registrationId;
             _apiVersion = apiVersion;
@@ -94,16 +90,12 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
                 RegistrationId = _registrationId,
                 Payload = payload,
                 ClientCertificateSigningRequest = certificateSigningRequest,
-            };
-
-            if (_tpm != null)
-            {
-                request.Tpm = new HttpTpmAttestation
+                Tpm = new HttpTpmAttestation
                 {
                     EndorsementKey = Convert.ToBase64String(await _tpm.GetEndorsementKeyAsync(cancellationToken).ConfigureAwait(false)),
                     StorageRootKey = Convert.ToBase64String(await _tpm.GetStorageRootKeyAsync(cancellationToken).ConfigureAwait(false)),
-                };
-            }
+                },
+            };
 
             string body = JsonSerializer.Serialize(request, JsonSerializationSettings.Options);
             RegistrationOperationStatus operation = await SendAsync(HttpMethod.Put, $"{_registrationsUri}/register", body, cancellationToken).ConfigureAwait(false);
@@ -116,7 +108,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
                     DeviceRegistrationResult result = operation.RegistrationState
                         ?? throw new Exception($"Device Provisioning Service reported registration status '{operation.Status}' without a registration state.");
 
-                    if (_tpm != null && operation.Status == ProvisioningRegistrationStatus.Assigned)
+                    if (operation.Status == ProvisioningRegistrationStatus.Assigned)
                     {
                         await ImportIotHubKeyAsync(result, cancellationToken).ConfigureAwait(false);
                     }
@@ -166,21 +158,12 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(JsonMediaType));
             request.Headers.TryAddWithoutValidation("User-Agent", _userAgent);
 
-            if (_tpm != null)
+            // Until the TPM challenge is answered there is no key to sign with, so the request goes unauthenticated.
+            // Sign a fresh token for each request so that one is never presented after it expires.
+            if (_tpmChallengeAnswered)
             {
-                // Until the TPM challenge is answered there is no key to sign with, so the request goes unauthenticated.
-                // Sign a fresh token for each request so that one is never presented after it expires.
-                if (_tpmChallengeAnswered)
-                {
-                    string sasToken = await _tpm.BuildProvisioningSasTokenAsync(_tpmKeyName, cancellationToken).ConfigureAwait(false);
-                    request.Headers.TryAddWithoutValidation("Authorization", sasToken);
-                }
-            }
-            else if (_credentials.Password.Length > 0)
-            {
-                // Providers that authenticate with a SAS token return it as the password; otherwise the client certificate
-                // bound to the handler authenticates the request.
-                request.Headers.TryAddWithoutValidation("Authorization", Encoding.UTF8.GetString(_credentials.Password));
+                string sasToken = await _tpm.BuildProvisioningSasTokenAsync(_tpmKeyName, cancellationToken).ConfigureAwait(false);
+                request.Headers.TryAddWithoutValidation("Authorization", sasToken);
             }
 
             if (body != null)
@@ -232,7 +215,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
 
                     if (response.StatusCode == HttpStatusCode.Unauthorized)
                     {
-                        if (_tpm != null && !_tpmChallengeAnswered && await TryAnswerTpmChallengeAsync(responseBody, cancellationToken).ConfigureAwait(false))
+                        if (!_tpmChallengeAnswered && await TryAnswerTpmChallengeAsync(responseBody, cancellationToken).ConfigureAwait(false))
                         {
                             return null;
                         }
@@ -283,8 +266,6 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
         /// <returns>False if the response was not a TPM challenge, so the service refused the registration.</returns>
         private async Task<bool> TryAnswerTpmChallengeAsync(string responseBody, CancellationToken cancellationToken)
         {
-            Debug.Assert(_tpm != null);
-
             HttpTpmChallenge? challenge;
             try
             {
@@ -312,8 +293,6 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
         /// </summary>
         private async Task ImportIotHubKeyAsync(DeviceRegistrationResult result, CancellationToken cancellationToken)
         {
-            Debug.Assert(_tpm != null);
-
             string? authenticationKey = result.Tpm?.AuthenticationKey;
             if (string.IsNullOrEmpty(authenticationKey))
             {

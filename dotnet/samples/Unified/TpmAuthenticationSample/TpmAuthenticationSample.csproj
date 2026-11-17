@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Only the sample depends on a TPM software stack; the SDK talks to the TPM through ITpmSecurityProvider. -->
+    <!-- Only the sample depends on a TPM software stack; the SDK talks to the TPM through ITpmProvider. -->
     <PackageReference Include="Microsoft.TSS" Version="2.1.1" />
   </ItemGroup>
 

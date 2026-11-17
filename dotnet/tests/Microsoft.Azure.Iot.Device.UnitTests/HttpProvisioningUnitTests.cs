@@ -18,8 +18,8 @@ using Xunit;
 namespace Microsoft.Azure.Iot.Device.UnitTests
 {
     /// <summary>
-    /// Tests provisioning over the Device Provisioning Service HTTPS REST API, selected by
-    /// <see cref="ProvisioningSettings.Transport"/>.
+    /// Tests provisioning over the Device Provisioning Service HTTPS REST API, which the connection client uses for
+    /// <see cref="TpmAuthenticationProvider"/> because DPS only supports TPM attestation over HTTPS.
     /// </summary>
     public class HttpProvisioningUnitTests
     {
@@ -30,107 +30,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         private const string AssignedHub = "some-hub.azure-devices.net";
         private const string OperationId = "someOperationId";
         private static readonly byte[] PrimaryKey = Encoding.UTF8.GetBytes("some-primary-key-for-unit-tests");
-        private static readonly byte[] SecondaryKey = Encoding.UTF8.GetBytes("some-secondary-key-for-unit-tests");
 
         private static readonly TimeSpan s_testTimeout = TimeSpan.FromSeconds(30);
-
-        [Fact]
-        public async Task ProvisioningOverHttpRegistersPollsAndConnectsToTheAssignedHubOverMqtt()
-        {
-            FakeDpsHandler dps = new(request => request.Method == HttpMethod.Put
-                ? Respond(HttpStatusCode.Accepted, Assigning())
-                : Respond(HttpStatusCode.OK, Assigned()));
-
-            List<MqttConnect> connects = new();
-            using MockConnectionMqttClient mockMqttClient = new();
-            mockMqttClient.OnConnect = connect =>
-            {
-                lock (connects)
-                {
-                    connects.Add(connect);
-                }
-
-                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
-            };
-
-            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
-
-            ProvisioningSettings settings = CreateSettings();
-            settings.ProvisioningPayload = new JsonObject { ["some"] = "value" };
-            settings.CertificateSigningRequest = new(System.Security.Cryptography.RSA.Create(2048), "someCsr");
-
-            ConnectionContext context = await connectionClient
-                .ProvisionAndConnectAsync(settings, new SymmetricKeyAuthenticationProvider(RegistrationId, IdScope, PrimaryKey, null), cancellationToken: TestContext.Current.CancellationToken)
-                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
-
-            Assert.Equal(AssignedHub, context.IotHubHostName);
-            Assert.Equal(DeviceId, context.DeviceId);
-
-            Assert.Equal(2, dps.Requests.Count);
-            RecordedRequest register = dps.Requests[0];
-            Assert.Equal(HttpMethod.Put, register.Method);
-            Assert.Equal($"https://{GlobalDeviceEndpoint}/{IdScope}/registrations/{RegistrationId}/register?api-version=2026-11-02-preview", register.Uri);
-            Assert.StartsWith("SharedAccessSignature ", register.Authorization);
-            Assert.Contains("skn=registration", register.Authorization);
-            Assert.StartsWith("Microsoft.Azure.Devices.Provisioning.Client/", register.UserAgent);
-
-            JsonNode body = JsonNode.Parse(register.Body!)!;
-            Assert.Equal(RegistrationId, (string?)body["registrationId"]);
-            Assert.Equal("value", (string?)body["payload"]!["some"]);
-            Assert.Equal("someCsr", (string?)body["csr"]);
-
-            RecordedRequest poll = dps.Requests[1];
-            Assert.Equal(HttpMethod.Get, poll.Method);
-            Assert.Equal($"https://{GlobalDeviceEndpoint}/{IdScope}/registrations/{RegistrationId}/operations/{OperationId}?api-version=2026-11-02-preview", poll.Uri);
-            Assert.NotNull(poll.Authorization);
-
-            // DPS was never contacted over MQTT: the only CONNECT went to the assigned hub.
-            MqttConnect onlyConnect = Assert.Single(connects);
-            Assert.Equal(AssignedHub, onlyConnect.HostName);
-        }
-
-        [Fact]
-        public async Task ProvisioningOverHttpRetriesWithTheSecondaryKeyWhenThePrimaryIsRejected()
-        {
-            int requestCount = 0;
-            FakeDpsHandler dps = new(_ => Interlocked.Increment(ref requestCount) == 1
-                ? Respond(HttpStatusCode.Unauthorized, "{\"errorCode\":401002}")
-                : Respond(HttpStatusCode.OK, Assigned()));
-
-            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
-            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
-
-            await connectionClient
-                .ProvisionAndConnectAsync(CreateSettings(), new SymmetricKeyAuthenticationProvider(RegistrationId, IdScope, PrimaryKey, SecondaryKey), cancellationToken: TestContext.Current.CancellationToken)
-                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
-
-            Assert.Equal(2, dps.Requests.Count);
-            Assert.NotEqual(dps.Requests[0].Authorization, dps.Requests[1].Authorization);
-        }
-
-        [Fact]
-        public async Task ProvisioningOverHttpFailsWithAnIdentityErrorWhenThereIsNoSecondaryKey()
-        {
-            FakeDpsHandler dps = new(_ => Respond(HttpStatusCode.Unauthorized, "{\"errorCode\":401002}"));
-
-            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
-            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
-
-            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
-                async () => await connectionClient
-                    .ProvisionAndConnectAsync(CreateSettings(), new SymmetricKeyAuthenticationProvider(RegistrationId, IdScope, PrimaryKey, null), cancellationToken: TestContext.Current.CancellationToken)
-                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
-
-            Assert.Equal(ErrorRetryability.IdentityTerminal, exception.Retryability);
-            Assert.Contains("401002", exception.Message);
-            Assert.Single(dps.Requests);
-        }
 
         [Fact]
         public async Task ProvisioningOverHttpRetriesATransientFailureNoSoonerThanTheServiceAsked()
         {
             int requestCount = 0;
-            FakeDpsHandler dps = new(_ =>
+            FakeDpsHandler dps = new(request =>
             {
                 if (Interlocked.Increment(ref requestCount) == 1)
                 {
@@ -139,7 +46,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     return throttled;
                 }
 
-                return Respond(HttpStatusCode.OK, Assigned());
+                return !request.Headers.Contains("Authorization")
+                    ? Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(PrimaryKey) }.ToJsonString())
+                    : Respond(HttpStatusCode.OK, AssignedTpm(PrimaryKey));
             });
 
             using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
@@ -148,10 +57,11 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             Stopwatch stopwatch = Stopwatch.StartNew();
             await connectionClient
-                .ProvisionAndConnectAsync(CreateSettings(), new SymmetricKeyAuthenticationProvider(RegistrationId, IdScope, PrimaryKey, null), cancellationToken: TestContext.Current.CancellationToken)
+                .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
-            Assert.Equal(2, dps.Requests.Count);
+            // Throttled, challenged, then registered.
+            Assert.Equal(3, dps.Requests.Count);
             Assert.Contains(ConnectionEndpoint.DeviceProvisioningService, retryPolicy.Endpoints);
 
             // The policy asked for no delay; the service's Retry-After is what held the retry back.
@@ -169,7 +79,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             Exception exception = await Assert.ThrowsAnyAsync<Exception>(
                 async () => await connectionClient
-                    .ProvisionAndConnectAsync(CreateSettings(), new SymmetricKeyAuthenticationProvider(RegistrationId, IdScope, PrimaryKey, null), cancellationToken: TestContext.Current.CancellationToken)
+                    .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
                     .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
 
             Assert.Contains("400", exception.Message);
@@ -193,7 +103,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             Task<ConnectionContext> provisioning = connectionClient.ProvisionAndConnectAsync(
                 CreateSettings(),
-                new SymmetricKeyAuthenticationProvider(RegistrationId, IdScope, PrimaryKey, null),
+                new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()),
                 cancellationToken: TestContext.Current.CancellationToken);
 
             await requestReceived.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
@@ -239,17 +149,26 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
             FakeTpm tpm = new();
 
+            ProvisioningSettings settings = CreateSettings();
+            settings.ProvisioningPayload = new JsonObject { ["some"] = "value" };
+
             ConnectionContext context = await connectionClient
-                .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, tpm), cancellationToken: TestContext.Current.CancellationToken)
+                .ProvisionAndConnectAsync(settings, new TpmAuthenticationProvider(RegistrationId, IdScope, tpm), cancellationToken: TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
 
             Assert.Equal(AssignedHub, context.IotHubHostName);
+            Assert.Equal(DeviceId, context.DeviceId);
             Assert.Equal(3, dps.Requests.Count);
 
             // The first register request is unauthenticated and carries the TPM's public keys.
             RecordedRequest challenged = dps.Requests[0];
+            Assert.Equal(HttpMethod.Put, challenged.Method);
+            Assert.Equal($"https://{GlobalDeviceEndpoint}/{IdScope}/registrations/{RegistrationId}/register?api-version=2026-11-02-preview", challenged.Uri);
+            Assert.StartsWith("Microsoft.Azure.Devices.Provisioning.Client/", challenged.UserAgent);
             Assert.Null(challenged.Authorization);
             JsonNode body = JsonNode.Parse(challenged.Body!)!;
+            Assert.Equal(RegistrationId, (string?)body["registrationId"]);
+            Assert.Equal("value", (string?)body["payload"]!["some"]);
             Assert.Equal(Convert.ToBase64String(FakeTpm.EndorsementKey), (string?)body["tpm"]!["endorsementKey"]);
             Assert.Equal(Convert.ToBase64String(FakeTpm.StorageRootKey), (string?)body["tpm"]!["storageRootKey"]);
 
@@ -257,11 +176,16 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.Equal(HttpMethod.Put, dps.Requests[1].Method);
             Assert.Equal(challenged.Body, dps.Requests[1].Body);
             AssertSignedSasToken(dps.Requests[1].Authorization, dpsKey, $"{IdScope}/registrations/{RegistrationId}", "someKeyName");
-            AssertSignedSasToken(dps.Requests[2].Authorization, dpsKey, $"{IdScope}/registrations/{RegistrationId}", "someKeyName");
+            RecordedRequest poll = dps.Requests[2];
+            Assert.Equal(HttpMethod.Get, poll.Method);
+            Assert.Equal($"https://{GlobalDeviceEndpoint}/{IdScope}/registrations/{RegistrationId}/operations/{OperationId}?api-version=2026-11-02-preview", poll.Uri);
+            AssertSignedSasToken(poll.Authorization, dpsKey, $"{IdScope}/registrations/{RegistrationId}", "someKeyName");
 
-            // The hub is authenticated with the key from the registration result.
+            // DPS was never contacted over MQTT: the only CONNECT went to the assigned hub, authenticated with the key
+            // from the registration result.
             Assert.Equal(new[] { dpsKey, hubKey }, tpm.ImportedKeys);
             MqttConnect connect = Assert.Single(connects);
+            Assert.Equal(AssignedHub, connect.HostName);
             AssertSignedSasToken(Encoding.UTF8.GetString(connect.Password!), hubKey, $"{AssignedHub}/devices/{DeviceId}", null);
         }
 
@@ -367,24 +291,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             Assert.True(connect.Password == null || connect.Password.Length == 0);
         }
 
-        [Fact]
-        public async Task TpmProvisioningRequiresTheHttpTransport()
-        {
-            FakeDpsHandler dps = new(_ => throw new UnreachableException());
-            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
-            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
-
-            ProvisioningSettings settings = CreateSettings();
-            settings.Transport = ProvisioningTransport.Mqtt;
-
-            await Assert.ThrowsAsync<ArgumentException>(
-                async () => await connectionClient
-                    .ProvisionAndConnectAsync(settings, new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
-                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
-
-            Assert.Empty(dps.Requests);
-        }
-
         private static void AssertSignedSasToken(string? authorization, byte[] key, string target, string? keyName)
         {
             Assert.NotNull(authorization);
@@ -451,7 +357,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         {
             RegistrationId = RegistrationId,
             GlobalEndpointAddress = GlobalDeviceEndpoint,
-            Transport = ProvisioningTransport.Http,
         };
 
         private static TestConnectionClient CreateClient(MockConnectionMqttClient mqttClient, FakeDpsHandler dps, IRetryPolicy? retryPolicy = null)

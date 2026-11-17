@@ -459,22 +459,11 @@ namespace Microsoft.Azure.Iot.Device
         public async Task<ConnectionContext> ProvisionAndConnectAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication, bool forceProvisioning = false, CancellationToken cancellationToken = default)
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
-            ThrowIfTransportUnsupported(provisioningSettings, authentication);
             StartOperationLifetime();
 
             Volatile.Write(ref _currentReprovisioningCancellationToken, null);
 
             return await ProvisionAndConnectCoreAsync(provisioningSettings, authentication, forceProvisioning, cancellationToken);
-        }
-
-        private static void ThrowIfTransportUnsupported(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication)
-        {
-            if (authentication is TpmAuthenticationProvider && provisioningSettings.Transport != ProvisioningTransport.Http)
-            {
-                throw new ArgumentException(
-                    $"Device Provisioning Service only supports TPM attestation over HTTPS. Set {nameof(ProvisioningSettings)}.{nameof(ProvisioningSettings.Transport)} to {nameof(ProvisioningTransport)}.{nameof(ProvisioningTransport.Http)}.",
-                    nameof(provisioningSettings));
-            }
         }
 
         private async Task<ConnectionContext> ProvisionAndConnectCoreAsync(ProvisioningSettings provisioningSettings, AuthenticationProvider authentication, bool forceProvisioning, CancellationToken cancellationToken)
@@ -1525,8 +1514,6 @@ namespace Microsoft.Azure.Iot.Device
         {
             ObjectDisposedException.ThrowIf(_isDisposed, this);
 
-            ThrowIfTransportUnsupported(provisioningSettings, authentication);
-
             cancellationToken.ThrowIfCancellationRequested();
             _provisioningFlowParentCancellationToken = cancellationToken;
             int deliberateDisconnectCount = Volatile.Read(ref _deliberateDisconnectCount);
@@ -1564,11 +1551,12 @@ namespace Microsoft.Azure.Iot.Device
             _usesSecondaryBootCredentials = false;
             _provisioningAuthentication = authentication;
 
-            if (provisioningSettings.Transport == ProvisioningTransport.Http)
+            // Device Provisioning Service only supports TPM attestation over HTTPS; every other attestation registers over MQTT.
+            if (authentication is TpmAuthenticationProvider tpmAuthentication)
             {
                 try
                 {
-                    return await ProvisionOverHttpAsync(provisioningSettings, authentication, deliberateDisconnectCount, cancellationToken);
+                    return await ProvisionOverHttpAsync(provisioningSettings, tpmAuthentication, deliberateDisconnectCount, cancellationToken);
                 }
                 finally
                 {
@@ -1664,7 +1652,7 @@ namespace Microsoft.Azure.Iot.Device
         /// </remarks>
         private async Task<DeviceRegistrationResult> ProvisionOverHttpAsync(
             ProvisioningSettings provisioningSettings,
-            AuthenticationProvider authentication,
+            TpmAuthenticationProvider authentication,
             int deliberateDisconnectCount,
             CancellationToken cancellationToken)
         {
@@ -1678,18 +1666,16 @@ namespace Microsoft.Azure.Iot.Device
 
                 string registrationId = authentication.GetRegistrationId();
                 string userAgent = GetProvisioningUserAgentString();
-                bool switchedCredentialsAfterRejectedRegistration = false;
                 uint attempt = 0;
 
+                // A TPM has no secondary credentials, so a rejected registration is not retried with other credentials.
                 while (true)
                 {
                     try
                     {
-                        // Fetch the credentials again for each attempt so that a SAS token is never presented after it expires.
-                        AuthenticationCredentials credentials = await GetCurrentBootCredentialsAsync(authentication, cancellation.Token);
+                        AuthenticationCredentials credentials = await authentication.GetPrimaryBootAuthenticationCredentialsAsync(cancellation.Token);
                         using var provisioningHttpClient = new ProvisioningHttpClient(
                             CreateProvisioningHttpMessageHandler(credentials),
-                            credentials,
                             provisioningSettings.GlobalEndpointAddress,
                             provisioningSettings.IdScope,
                             registrationId,
@@ -1698,24 +1684,12 @@ namespace Microsoft.Azure.Iot.Device
                             _connectionAttemptTimeout,
                             s_defaultOperationPollingInterval,
                             CaptureProvisioningServiceRetryAfter,
-                            authentication as TpmAuthenticationProvider);
+                            authentication);
 
                         return await provisioningHttpClient.RegisterAsync(
                             provisioningSettings.ProvisioningPayload,
                             provisioningSettings.CertificateSigningRequest?.Base64CertificateSigningRequest,
                             cancellation.Token);
-                    }
-                    catch (DeviceException e) when (e.Retryability == ErrorRetryability.IdentityTerminal
-                        && !switchedCredentialsAfterRejectedRegistration
-                        && !cancellation.IsCancellationRequested)
-                    {
-                        if (!await TrySwitchCredentialsAsync(cancellation.Token))
-                        {
-                            throw;
-                        }
-
-                        Trace.TraceWarning("Device Provisioning Service rejected the device's credentials, retrying with its other credentials. {0}", e);
-                        switchedCredentialsAfterRejectedRegistration = true;
                     }
                     catch (DeviceException e) when (e.Retryability == ErrorRetryability.Retryable && !cancellation.IsCancellationRequested)
                     {

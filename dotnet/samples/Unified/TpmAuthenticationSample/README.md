@@ -3,16 +3,17 @@
 This sample provisions a device that attests with a [TPM](https://learn.microsoft.com/azure/iot-dps/concepts-tpm-attestation)
 through the Device Provisioning Service (DPS), connects it to the IoT Hub it is assigned and sends one telemetry message.
 
-The SDK talks to the TPM only through the `ITpmSecurityProvider` interface, so it has no dependency on any particular TPM
-library. This sample implements that interface in [TssTpmSecurityProvider.cs](./TssTpmSecurityProvider.cs) with the
+The SDK talks to the TPM only through the `ITpmProvider` interface, so it has no dependency on any particular TPM
+library. This sample implements that interface in [TssTpmProvider.cs](./TssTpmProvider.cs) with the
 [Microsoft.TSS](https://www.nuget.org/packages/Microsoft.TSS) library, and passes it to a `TpmAuthenticationProvider`:
 
 ```csharp
-using TssTpmSecurityProvider tpm = TssTpmSecurityProvider.CreateForPlatformTpm();
+using TssTpmProvider tpm = TssTpmProvider.CreateForPlatformTpm();
 TpmAuthenticationProvider authentication = new(registrationId, idScope, tpm);
 
-// DPS only supports TPM attestation over HTTPS. The device still connects to its IoT Hub over MQTT.
-ProvisioningSettings provisioningSettings = new(idScope) { Transport = ProvisioningTransport.Http };
+// DPS only supports TPM attestation over HTTPS, so the SDK provisions TPM devices over HTTPS.
+// The device still connects to its IoT Hub over MQTT.
+ProvisioningSettings provisioningSettings = new(idScope);
 
 using ConnectionClient connectionClient = new();
 await connectionClient.ProvisionAndConnectAsync(provisioningSettings, authentication);
@@ -24,8 +25,8 @@ never leaves the TPM.
 
 ## Limitations
 
-- DPS only supports TPM attestation over HTTPS, so `ProvisioningSettings.Transport` must be `ProvisioningTransport.Http`.
-  `ConnectionClient` throws an `ArgumentException` otherwise.
+- DPS only supports TPM attestation over HTTPS, so the SDK always provisions devices that use a
+  `TpmAuthenticationProvider` over HTTPS (port 443), and all other devices over MQTT.
 - TPM authentication uses SAS tokens, so it only works with MQTTv3 IoT Hubs, unless IoT Hub is authenticated with an
   issued certificate as described below.
 - TPM devices have no secondary credentials to fall back to.
