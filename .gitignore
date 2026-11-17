@@ -76,6 +76,7 @@ nunit-*.xml
 /dotnet/samples/symmetrickeyregistrationid.txt
 /dotnet/samples/symmetrickey.txt
 /dotnet/samples/issuedcertificate.pem
+/dotnet/samples/tpmregistrationid.txt
 dotnet/iothub only samples/certificate.pfx
 dotnet/iothub only samples/certificate.cer
 dotnet/iothub only samples/deviceId.txt

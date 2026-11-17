@@ -52,6 +52,7 @@ namespace SetupSampleDevice
                 File.Delete(outputPath + "symmetrickeyregistrationid.txt");
                 File.Delete(outputPath + "symmetrickey.txt");
                 File.Delete(outputPath + "issuedcertificate.pem");
+                File.Delete(outputPath + "tpmregistrationid.txt");
             }
             catch (DirectoryNotFoundException)
             {
@@ -99,6 +100,27 @@ namespace SetupSampleDevice
         public static void SaveIssuedCertificateChain(string pem)
         {
             File.WriteAllText(outputPath + "issuedcertificate.pem", pem);
+        }
+
+        public static void SaveTpmRegistrationId(string registrationId)
+        {
+            File.WriteAllText(outputPath + "tpmregistrationid.txt", registrationId);
+        }
+
+        public static string LoadTpmRegistrationId()
+        {
+            string? registrationId = System.Environment.GetEnvironmentVariable("SAMPLE_TPM_REGISTRATION_ID");
+            if (!string.IsNullOrEmpty(registrationId))
+            {
+                return registrationId;
+            }
+
+            if (!File.Exists(outputPath + "tpmregistrationid.txt"))
+            {
+                throw new Exception("Run the SetupSampleDevice sample with --tpm or --tpm-simulator first to register a TPM test device");
+            }
+
+            return File.ReadAllText(outputPath + "tpmregistrationid.txt");
         }
 
         public static string LoadSymmetricKeyRegistrationId()

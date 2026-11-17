@@ -28,6 +28,8 @@ dotnet run --project SetupSampleDevice --property WarningLevel=0
 
 This sample can be run again to delete the previous credentials and create a new device and new credentials.
 
+To also register a device that attests with a TPM, for the [TpmAuthenticationSample](./Unified/TpmAuthenticationSample/), add `-- --tpm` to use this machine's TPM or `-- --tpm-simulator` to use a running TPM simulator.
+
 ### How to run the device samples
 
 By running the above sample, you should see a set of credential files saved at the root of this samples directory like "deviceId.txt", "certificate.pfx", and more. Once you have those, all you need to do is run a command from this directory like:

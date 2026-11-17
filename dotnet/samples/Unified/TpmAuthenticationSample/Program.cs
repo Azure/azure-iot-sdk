@@ -1,7 +1,6 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
-using Microsoft.Azure.Devices.Provisioning.Service;
 using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
@@ -32,28 +31,14 @@ internal class Program
             eventArgs.Cancel = true;
         };
 
-        string registrationId = Environment.GetEnvironmentVariable("SAMPLE_TPM_REGISTRATION_ID") ?? "tpm-sample-device";
+        // Run the SetupSampleDevice sample with --tpm (or --tpm-simulator) first, on this device, to register it with DPS.
+        string registrationId = SampleConstants.LoadTpmRegistrationId();
         string idScope = SampleConstants.LoadIdScope();
 
         // The SDK only depends on ITpmSecurityProvider. This sample implements it with the Microsoft.TSS library.
         using TssTpmSecurityProvider tpm = args.Contains("--simulator")
             ? TssTpmSecurityProvider.CreateForSimulator()
             : TssTpmSecurityProvider.CreateForPlatformTpm();
-
-        // DPS identifies a TPM device by its endorsement key, so its individual enrollment is created with it.
-        string endorsementKey = Convert.ToBase64String(await tpm.GetEndorsementKeyAsync(cts.Token));
-        Console.WriteLine($"Registration Id: {registrationId}");
-        Console.WriteLine($"Endorsement key: {endorsementKey}");
-
-        string? dpsConnectionString = Environment.GetEnvironmentVariable("IOT_DPS_CONNECTION_STRING");
-        if (!string.IsNullOrEmpty(dpsConnectionString))
-        {
-            using ProvisioningServiceClient provisioningServiceClient = ProvisioningServiceClient.CreateFromConnectionString(dpsConnectionString);
-            await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(
-                new IndividualEnrollment(registrationId, new TpmAttestation(endorsementKey)),
-                cts.Token);
-            Console.WriteLine("Created or updated the device's individual enrollment.");
-        }
 
         TpmAuthenticationProvider authentication = new(registrationId, idScope, tpm);
 

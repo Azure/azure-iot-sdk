@@ -10,6 +10,11 @@
     <PackageReference Include="Microsoft.Azure.Devices" Version="1.41.1" />
     <PackageReference Include="Microsoft.Azure.Devices.Provisioning.Service" Version="1.18.4" />
     <PackageReference Include="Microsoft.Azure.Devices.Shared" Version="1.30.5" />
+    <!-- Only needed to read the endorsement key of a TPM sample device. -->
+    <PackageReference Include="Microsoft.TSS" Version="2.1.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\Unified\TpmAuthenticationSample\TssTpmSecurityProvider.cs" Link="TssTpmSecurityProvider.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Microsoft.Azure.Iot.Device\Microsoft.Azure.Iot.Device.csproj" />

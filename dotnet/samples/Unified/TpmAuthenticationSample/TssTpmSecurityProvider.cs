@@ -20,7 +20,7 @@ namespace TpmAuthenticationSample
     /// a command.
     /// </para>
     /// </remarks>
-    public sealed class TssTpmSecurityProvider : ITpmSecurityProvider, IDisposable
+    internal sealed class TssTpmSecurityProvider : ITpmSecurityProvider, IDisposable
     {
         /// <summary>The address the TPM simulator listens on by default.</summary>
         public const string DefaultSimulatorAddress = "127.0.0.1";

@@ -39,13 +39,19 @@ never leaves the TPM.
     [azure-iot-sdk-csharp repo](https://github.com/Azure/azure-iot-sdk-csharp/tree/main/security/tpm/samples/SecurityProviderTpmSimulator/TpmSimulator)
     into the same directory and run `Simulator.exe`. It listens on `127.0.0.1:2321`.
 
-## Configuration
+## Registering the device
 
-| Environment variable | Required | Description |
-|---|---|---|
-| `DPS_ID_SCOPE` | No | The ID scope of your DPS instance. If it is not set, the ID scope saved by the [SetupSampleDevice](../../SetupSampleDevice/) sample is used. |
-| `SAMPLE_TPM_REGISTRATION_ID` | No | The registration ID of the device's individual enrollment. Defaults to `tpm-sample-device`. |
-| `IOT_DPS_CONNECTION_STRING` | No | A DPS service connection string. When set, the sample creates or updates the device's individual enrollment with the TPM's endorsement key. Otherwise, create that enrollment yourself with the endorsement key the sample prints. |
+DPS identifies a TPM device by its TPM's endorsement key, so the device's individual enrollment is created from it. On
+the device, from the `dotnet/samples` directory, run the [SetupSampleDevice](../../SetupSampleDevice/) sample with
+`--tpm` to register the platform TPM, or `--tpm-simulator` to register a running TPM simulator:
+
+```bash
+dotnet run --project SetupSampleDevice --property WarningLevel=0 -- --tpm-simulator
+```
+
+It reads the endorsement key, creates the enrollment and saves the device's registration ID and your DPS ID scope in the
+samples directory, where this sample loads them from. To use an enrollment you created yourself, set
+`SAMPLE_TPM_REGISTRATION_ID` to its registration ID and `DPS_ID_SCOPE` to your DPS ID scope instead.
 
 ## Running the sample
 
@@ -60,3 +66,6 @@ or against the TPM simulator with:
 ```bash
 dotnet run --project Unified/TpmAuthenticationSample --property WarningLevel=0 -- --simulator
 ```
+
+Use the TPM that was registered: an enrollment for the platform TPM's endorsement key does not accept the simulator, or
+the other way around.
