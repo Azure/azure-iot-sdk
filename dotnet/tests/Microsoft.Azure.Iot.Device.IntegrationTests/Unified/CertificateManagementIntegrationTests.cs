@@ -70,6 +70,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         }
 
         [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        [Trait("Category", "FileUpload")]
         public async Task FileUploadUsesIssuedCertificateInsteadOfSymmetricKey()
         {
             using RSA privateKey = RSA.Create(2048);
