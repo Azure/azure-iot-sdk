@@ -95,7 +95,7 @@ jobs:
 
       # Same action and pin as ci-c-e2e.
       - name: Provision resources
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@2fc8ffebbdc13476890b15fee48e304b1e135ce3 # v1.0.1 + #456 + #457 + retry on 5xx (#459)
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@911deae8e24fbac9ecb4361f99ea962ab5e5e4b4 # main after #463 (storage account: allowBlobPublicAccess=false)
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
@@ -383,7 +383,7 @@ jobs:
 
       # Emits every group identity (IOT_DPS_GROUP_X509_*_<i>) from Azure/iot-sdks-e2e-fx#462.
       - name: Provision cert-management resources
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@52376889064b3ec77aa3fc5775f68f4ed1b3f8a9 # main after #462
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@911deae8e24fbac9ecb4361f99ea962ab5e5e4b4 # main after #463 (storage account: allowBlobPublicAccess=false)
         with:
           rg-name: ${{ env.E2E_CSR_RESOURCE_GROUP }}
           azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
@@ -568,7 +568,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Delete Azure resources
-        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@2fc8ffebbdc13476890b15fee48e304b1e135ce3 # v1.0.1 + SHA-pinned azure/powershell (#457)
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@911deae8e24fbac9ecb4361f99ea962ab5e5e4b4 # same ref as provision
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}
 
@@ -599,7 +599,7 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
       - name: Delete Azure resources
-        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@2fc8ffebbdc13476890b15fee48e304b1e135ce3 # v1.0.1 + SHA-pinned azure/powershell (#457)
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@911deae8e24fbac9ecb4361f99ea962ab5e5e4b4 # same ref as provision
         with:
           resource-group: ${{ env.E2E_CSR_RESOURCE_GROUP }}
 
