@@ -91,9 +91,9 @@ internal class Program
         string registrationId = Guid.NewGuid().ToString();
 
         string endorsementKey;
-        using (TssTpmSecurityProvider tpm = useSimulator
-            ? TssTpmSecurityProvider.CreateForSimulator()
-            : TssTpmSecurityProvider.CreateForPlatformTpm())
+        using (TssTpmProvider tpm = useSimulator
+            ? TssTpmProvider.CreateForSimulator()
+            : TssTpmProvider.CreateForPlatformTpm())
         {
             endorsementKey = Convert.ToBase64String(await tpm.GetEndorsementKeyAsync(cancellationToken));
 

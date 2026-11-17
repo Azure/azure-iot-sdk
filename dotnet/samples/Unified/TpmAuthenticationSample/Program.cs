@@ -36,9 +36,9 @@ internal class Program
         string idScope = SampleConstants.LoadIdScope();
 
         // The SDK only depends on ITpmSecurityProvider. This sample implements it with the Microsoft.TSS library.
-        using TssTpmSecurityProvider tpm = args.Contains("--simulator")
-            ? TssTpmSecurityProvider.CreateForSimulator()
-            : TssTpmSecurityProvider.CreateForPlatformTpm();
+        using TssTpmProvider tpm = args.Contains("--simulator")
+            ? TssTpmProvider.CreateForSimulator()
+            : TssTpmProvider.CreateForPlatformTpm();
 
         TpmAuthenticationProvider authentication = new(registrationId, idScope, tpm);
 

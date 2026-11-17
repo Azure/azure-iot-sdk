@@ -20,7 +20,7 @@ namespace TpmAuthenticationSample
     /// a command.
     /// </para>
     /// </remarks>
-    internal sealed class TssTpmSecurityProvider : ITpmProvider, IDisposable
+    internal sealed class TssTpmProvider : ITpmProvider, IDisposable
     {
         /// <summary>The address the TPM simulator listens on by default.</summary>
         public const string DefaultSimulatorAddress = "127.0.0.1";
@@ -43,7 +43,7 @@ namespace TpmAuthenticationSample
         private readonly TpmPublic _storageRootKey;
         private bool _disposed;
 
-        private TssTpmSecurityProvider(Tpm2Device device, bool startUp)
+        private TssTpmProvider(Tpm2Device device, bool startUp)
         {
             _tpm2 = new Tpm2(device);
             try
@@ -68,7 +68,7 @@ namespace TpmAuthenticationSample
         /// <summary>
         /// Connects to the platform TPM: through TPM Base Services (TBS) on Windows, or /dev/tpm0 on Linux.
         /// </summary>
-        public static TssTpmSecurityProvider CreateForPlatformTpm()
+        public static TssTpmProvider CreateForPlatformTpm()
         {
             Tpm2Device device;
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
@@ -94,7 +94,7 @@ namespace TpmAuthenticationSample
                 throw;
             }
 
-            return new TssTpmSecurityProvider(device, startUp: false);
+            return new TssTpmProvider(device, startUp: false);
         }
 
         /// <summary>
@@ -105,7 +105,7 @@ namespace TpmAuthenticationSample
         /// </remarks>
         /// <param name="address">The address the simulator listens on.</param>
         /// <param name="port">The port the simulator listens for TPM commands on. Its platform port must be the next one.</param>
-        public static TssTpmSecurityProvider CreateForSimulator(string address = DefaultSimulatorAddress, int port = DefaultSimulatorPort)
+        public static TssTpmProvider CreateForSimulator(string address = DefaultSimulatorAddress, int port = DefaultSimulatorPort)
         {
             var device = new TcpTpmDevice(address, port);
             try
@@ -120,7 +120,7 @@ namespace TpmAuthenticationSample
                 throw;
             }
 
-            return new TssTpmSecurityProvider(device, startUp: true);
+            return new TssTpmProvider(device, startUp: true);
         }
 
         /// <inheritdoc/>

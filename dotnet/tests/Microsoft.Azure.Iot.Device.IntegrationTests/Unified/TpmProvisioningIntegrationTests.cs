@@ -17,7 +17,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
     /// <summary>
     /// Provisions with TPM attestation against the TSS.MSR TPM simulator, using the TPM authentication sample's
-    /// Microsoft.TSS-based <see cref="TssTpmSecurityProvider"/>.
+    /// Microsoft.TSS-based <see cref="TssTpmProvider"/>.
     /// </summary>
     /// <remarks>
     /// These run only on Windows, where the simulator runs, and only when TPM_SIMULATOR_PATH names the directory holding
@@ -41,7 +41,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             _simulator.SkipIfUnavailable();
             CancellationToken cancellationToken = TestContext.Current.CancellationToken;
 
-            using TssTpmSecurityProvider tpm = TssTpmSecurityProvider.CreateForSimulator();
+            using TssTpmProvider tpm = TssTpmProvider.CreateForSimulator();
             IndividualEnrollment enrollment = await CreateEnrollmentAsync(tpm, cancellationToken);
             TpmAuthenticationProvider authentication = new(enrollment.RegistrationId, Setup.DpsIdScope, tpm);
 
@@ -74,7 +74,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             ConnectionClient connectionClient = new();
             try
             {
-                using (TssTpmSecurityProvider tpm = TssTpmSecurityProvider.CreateForSimulator())
+                using (TssTpmProvider tpm = TssTpmProvider.CreateForSimulator())
                 {
                     enrollment = await CreateEnrollmentAsync(tpm, cancellationToken);
                     TpmAuthenticationProvider authentication = new(enrollment.RegistrationId, Setup.DpsIdScope, tpm);
@@ -87,7 +87,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
                 // As if the device restarted: a new connection to the TPM, which power cycles it, and a new client
                 // restored from the saved context. Provisioning is pointed at a host that does not exist, so the device
                 // can only connect by signing with the key the TPM persisted.
-                using TssTpmSecurityProvider restartedTpm = TssTpmSecurityProvider.CreateForSimulator();
+                using TssTpmProvider restartedTpm = TssTpmProvider.CreateForSimulator();
                 context.AuthenticationProvider = new TpmAuthenticationProvider(enrollment.RegistrationId, Setup.DpsIdScope, restartedTpm);
                 ProvisioningSettings unreachableDps = CreateSettings();
                 unreachableDps.GlobalEndpointAddress = "dps.invalid";
@@ -112,7 +112,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             Transport = ProvisioningTransport.Http,
         };
 
-        private static async Task<IndividualEnrollment> CreateEnrollmentAsync(TssTpmSecurityProvider tpm, CancellationToken cancellationToken)
+        private static async Task<IndividualEnrollment> CreateEnrollmentAsync(TssTpmProvider tpm, CancellationToken cancellationToken)
         {
             string endorsementKey = Convert.ToBase64String(await tpm.GetEndorsementKeyAsync(cancellationToken));
             IndividualEnrollment enrollment = new(Guid.NewGuid().ToString(), new TpmAttestation(endorsementKey));
@@ -233,7 +233,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         {
             return IPGlobalProperties.GetIPGlobalProperties()
                 .GetActiveTcpListeners()
-                .Any(endpoint => endpoint.Port == TssTpmSecurityProvider.DefaultSimulatorPort);
+                .Any(endpoint => endpoint.Port == TssTpmProvider.DefaultSimulatorPort);
         }
     }
 }
