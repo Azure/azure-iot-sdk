@@ -1,4 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
 using Microsoft.Azure.Iot.Device.Authentication;
@@ -37,7 +37,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         private readonly Func<AuthenticationCredentials, HttpMessageHandler> _createHttpMessageHandler;
 
         public FileUploadClient(IConnectionClient connection)
-            : this(connection, CreateHttpMessageHandler)
+            : this(connection, HttpMessageHandlerFactory.Create)
         {
         }
 
@@ -70,7 +70,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         {
             _connection = connection;
             _httpClient = new HttpClientLease(httpClient, credentials: null, iotHubHostName: null, ownsClient: false);
-            _createHttpMessageHandler = CreateHttpMessageHandler;
+            _createHttpMessageHandler = HttpMessageHandlerFactory.Create;
         }
 
         private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage requestMessage, ConnectionContext currentConnectionContext, CancellationToken cancellationToken)
@@ -140,26 +140,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             };
 
             return new HttpClientLease(httpClient, credentials, currentConnectionContext.IotHubHostName, ownsClient: true);
-        }
-
-        internal static HttpMessageHandler CreateHttpMessageHandler(AuthenticationCredentials credentials)
-        {
-            // SocketsHttpHandler is used rather than HttpClientHandler because only it exposes a local certificate selection callback.
-            var handler = new SocketsHttpHandler();
-            handler.SslOptions.RemoteCertificateValidationCallback = credentials.RemoteCertificateValidationCallback;
-
-            X509Certificate2? clientCertificate = credentials.ClientCertificate;
-            if (clientCertificate != null)
-            {
-                handler.SslOptions.ClientCertificates = new X509CertificateCollection { clientCertificate };
-            }
-
-            // Per the AuthenticationCredentials contract, present the client certificate when there is no selection callback rather than leaving
-            // the choice to the TLS stack, which may present nothing if the certificate's issuer isn't one IoT hub asked for.
-            handler.SslOptions.LocalCertificateSelectionCallback = credentials.LocalCertificateSelectionCallback
-                ?? (clientCertificate == null ? null : (_, _, _, _, _) => clientCertificate);
-
-            return handler;
         }
 
         private static bool HasSameTlsSettings(AuthenticationCredentials first, AuthenticationCredentials second)

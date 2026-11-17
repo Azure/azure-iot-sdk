@@ -25,7 +25,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
     {
         private const string DefaultProvisioningKeyName = "registration";
 
-        private readonly ITpmSecurityProvider _tpm;
+        private readonly ITpmProvider _tpm;
         private readonly SemaphoreSlim _tpmLock = new(1, 1);
         private readonly string _registrationId;
         private readonly string _idScope;
@@ -45,7 +45,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         public TpmAuthenticationProvider(
             string registrationId,
             string idScope,
-            ITpmSecurityProvider tpm,
+            ITpmProvider tpm,
             RemoteCertificateValidationCallback? remoteCertificateValidationCallback = null,
             LocalCertificateSelectionCallback? localCertificateSelectionCallback = null,
             TimeSpan? iotHubSasTokenTimeToLive = null,

@@ -15,7 +15,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
     /// shared between several providers must synchronize access to the TPM itself.
     /// </para>
     /// </remarks>
-    public interface ITpmSecurityProvider
+    public interface ITpmProvider
     {
         /// <summary>
         /// Gets the public part of the TPM's endorsement key (EK), marshalled as a TPM2B_PUBLIC structure.

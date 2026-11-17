@@ -19,7 +19,6 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
-using Microsoft.Azure.Iot.Device.Unified.FileUpload;
 using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Unified.Models;
 
@@ -378,7 +377,7 @@ namespace Microsoft.Azure.Iot.Device
         /// Creates the handler that sends HTTPS requests to Device Provisioning Service with the given boot credentials.
         /// Replaceable so that tests can intercept the requests.
         /// </summary>
-        internal Func<AuthenticationCredentials, HttpMessageHandler> CreateProvisioningHttpMessageHandler { get; set; } = FileUploadClient.CreateHttpMessageHandler;
+        internal Func<AuthenticationCredentials, HttpMessageHandler> CreateProvisioningHttpMessageHandler { get; set; } = HttpMessageHandlerFactory.Create;
 
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>

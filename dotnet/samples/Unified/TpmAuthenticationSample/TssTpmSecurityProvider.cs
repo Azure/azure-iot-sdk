@@ -8,7 +8,7 @@ using Tpm2Lib;
 namespace TpmAuthenticationSample
 {
     /// <summary>
-    /// An <see cref="ITpmSecurityProvider"/> built on the Microsoft.TSS (Tpm2Lib) TPM software stack.
+    /// An <see cref="ITpmProvider"/> built on the Microsoft.TSS (Tpm2Lib) TPM software stack.
     /// </summary>
     /// <remarks>
     /// Connects to the platform TPM (through TBS on Windows or /dev/tpm0 on Linux) or to a TPM simulator over TCP. The
@@ -20,7 +20,7 @@ namespace TpmAuthenticationSample
     /// a command.
     /// </para>
     /// </remarks>
-    internal sealed class TssTpmSecurityProvider : ITpmSecurityProvider, IDisposable
+    internal sealed class TssTpmSecurityProvider : ITpmProvider, IDisposable
     {
         /// <summary>The address the TPM simulator listens on by default.</summary>
         public const string DefaultSimulatorAddress = "127.0.0.1";

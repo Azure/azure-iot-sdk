@@ -360,7 +360,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         /// <summary>
         /// Stands in for a TPM whose imported keys are not encrypted, so that each key it signs with is the one sent to it.
         /// </summary>
-        private sealed class FakeTpm : ITpmSecurityProvider
+        private sealed class FakeTpm : ITpmProvider
         {
             public static readonly byte[] EndorsementKey = Encoding.UTF8.GetBytes("someEndorsementKey");
             public static readonly byte[] StorageRootKey = Encoding.UTF8.GetBytes("someStorageRootKey");

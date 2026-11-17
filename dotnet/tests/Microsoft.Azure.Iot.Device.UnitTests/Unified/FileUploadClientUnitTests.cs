@@ -233,46 +233,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Same(selection, handlerCredentials[2].LocalCertificateSelectionCallback);
         }
 
-        [Fact]
-        public void HttpMessageHandlerAppliesCredentialTlsSettings()
-        {
-            using X509Certificate2 certificate = CreateCertificate();
-            RemoteCertificateValidationCallback validation = (_, _, _, errors) => errors == SslPolicyErrors.None;
-            LocalCertificateSelectionCallback selection = (_, _, _, _, _) => null!;
-
-            using var handler = Assert.IsType<SocketsHttpHandler>(FileUploadClient.CreateHttpMessageHandler(new AuthenticationCredentials
-            {
-                ClientCertificate = certificate,
-                RemoteCertificateValidationCallback = validation,
-                LocalCertificateSelectionCallback = selection,
-            }));
-
-            Assert.Same(validation, handler.SslOptions.RemoteCertificateValidationCallback);
-            Assert.Same(selection, handler.SslOptions.LocalCertificateSelectionCallback);
-            Assert.Same(certificate, Assert.Single(handler.SslOptions.ClientCertificates!));
-        }
-
-        [Fact]
-        public void HttpMessageHandlerPresentsClientCertificateWithoutSelectionCallback()
-        {
-            using X509Certificate2 certificate = CreateCertificate();
-
-            using var handler = Assert.IsType<SocketsHttpHandler>(FileUploadClient.CreateHttpMessageHandler(new AuthenticationCredentials { ClientCertificate = certificate }));
-
-            Assert.Null(handler.SslOptions.RemoteCertificateValidationCallback);
-            Assert.NotNull(handler.SslOptions.LocalCertificateSelectionCallback);
-            Assert.Same(certificate, handler.SslOptions.LocalCertificateSelectionCallback(this, HostName, new X509CertificateCollection(), null, Array.Empty<string>()));
-        }
-
-        [Fact]
-        public void HttpMessageHandlerHasNoClientCertificateForSasCredentials()
-        {
-            using var handler = Assert.IsType<SocketsHttpHandler>(FileUploadClient.CreateHttpMessageHandler(CreateSasCredentials()));
-
-            Assert.Null(handler.SslOptions.ClientCertificates);
-            Assert.Null(handler.SslOptions.LocalCertificateSelectionCallback);
-        }
-
         private static Task<FileUploadSasUriResponse> GetSasUriAsync(FileUploadClient fileUploadClient)
         {
             return fileUploadClient.GetFileUploadSasUriAsync(new FileUploadSasUriRequest { BlobName = "file.txt" }, TestContext.Current.CancellationToken);
