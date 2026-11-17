@@ -19,6 +19,12 @@
 # consumer group samples-<slot>, which exists on the shared hub for this workflow only. Pushes and
 # manual runs provision a resource group per run and always delete it (teardown).
 #
+# CSR legs (samples_csr: dps_csr_managed, custom_certificate_provider, dps_persist_assignment,
+# hub_renew, dps_sas_key_issued_cert): OS x adapter, 4 in all, on a certificate-management
+# environment provisioned per run (every event; there is no shared one with the service connection
+# strings), with one bootstrap identity of its X.509 enrollment group per leg
+# (IOT_DPS_GROUP_X509_*_<slot>) and consumer group samples-<slot> on its hub.
+#
 # Pull requests from forks and from Dependabot get no secrets, so their Azure jobs skip.
 
 name: ci-c-samples
@@ -55,6 +61,7 @@ permissions:
 # after a cancelled setup. CSDKE2E: the prefix cleanup-e2e-resources.yml reaps.
 env:
   E2E_RESOURCE_GROUP: CSDKE2ESamples-${{ github.run_id }}-${{ github.run_attempt }}
+  E2E_CSR_RESOURCE_GROUP: CSDKE2ESamplesCert-${{ github.run_id }}-${{ github.run_attempt }}
   # 'true' when this run uses the shared environment. Job-level `if:` cannot read `env`, so the
   # jobs repeat the expression.
   E2E_SHARED: ${{ vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request' }}
@@ -349,6 +356,190 @@ jobs:
             ${{ runner.temp }}/proxy.err
           if-no-files-found: ignore
 
+  # The CSR samples' environment: DPS with certificate management, an X.509 enrollment group with
+  # one device per CSR leg, and the SAS group, both linked to the signing CA.
+  setup-csr:
+    name: setup (provision, CSR)
+    if: >-
+      ${{ github.event_name != 'pull_request' ||
+          (github.event.pull_request.head.repo.full_name == github.repository &&
+           github.actor != 'dependabot[bot]') }}
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Azure Login via OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Emits every group identity (IOT_DPS_GROUP_X509_*_<i>) from Azure/iot-sdks-e2e-fx#462.
+      - name: Provision cert-management resources
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@52376889064b3ec77aa3fc5775f68f4ed1b3f8a9 # main after #462
+        with:
+          rg-name: ${{ env.E2E_CSR_RESOURCE_GROUP }}
+          azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
+          enable-certificate-management: 'true'
+          # One bootstrap identity per CSR leg (slot 0..3).
+          dps-x509-group-enrollment-devices: '4'
+          # The C test-config cmdlet reads IndividualX509[0] unconditionally.
+          dps-x509-individual-enrollments: '1'
+          # dps_sas_key_issued_cert registers under the symmetric-key group.
+          dps-symmkey-group-enrollment-devices: '1'
+
+      - name: Create consumer groups
+        run: |
+          set -euo pipefail
+          hub="$(az iot hub list -g "$E2E_CSR_RESOURCE_GROUP" --query '[0].name' -o tsv)"
+          [ -n "$hub" ] || { echo "::error::no IoT Hub in $E2E_CSR_RESOURCE_GROUP"; exit 1; }
+          for i in $(seq 0 3); do
+            az iot hub consumer-group create -g "$E2E_CSR_RESOURCE_GROUP" --hub-name "$hub" -n "samples-$i" -o none
+          done
+
+      - name: Upload test config
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: samples-csr-test-config
+          path: test_config/set_test_env_vars.ps1
+          retention-days: 1
+          if-no-files-found: error
+
+  samples-csr:
+    name: csr / ${{ matrix.os }} / ${{ matrix.adapter }}
+    needs: setup-csr
+    if: ${{ !cancelled() && needs.setup-csr.result == 'success' }}
+    # Runs pull-request code: no Azure OIDC token.
+    permissions:
+      contents: read
+    runs-on: ${{ matrix.os }}
+    # Build ~10 min (Windows, libcurl not cached: ~20), the CSR samples ~10 min.
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      # Two legs at a time: with all four registering with a CSR at once, DPS left some
+      # registrations unanswered past the samples' 60 s. The Windows legs, the slower builds, first.
+      max-parallel: 2
+      # Slot: the leg's group identity and consumer group.
+      matrix:
+        include:
+          - { os: windows-latest, preset: windows-msvc-debug, adapter: paho, slot: 2 }
+          - { os: windows-latest, preset: windows-msvc-debug, adapter: az_mqtt, slot: 3 }
+          - { os: ubuntu-24.04, preset: linux-gcc-debug, adapter: paho, slot: 0 }
+          - { os: ubuntu-24.04, preset: linux-gcc-debug, adapter: az_mqtt, slot: 1 }
+    env:
+      AZ_IOT_PRESET: ${{ matrix.preset }}
+      SAMPLES_ADAPTER: ${{ matrix.adapter }}
+      SAMPLES_SLOT: ${{ matrix.slot }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Set up MSVC (Windows)
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
+
+      # libcurl: the configure requires it (file_upload is built with the other samples).
+      - name: Install packages (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libssl-dev libcurl4-openssl-dev
+
+      - name: Install libcurl (Windows)
+        id: curl
+        if: runner.os == 'Windows'
+        # actionlint 1.7.12 does not accept the $/ self-repository form yet.
+        uses: ./.github/actions/install-curl-windows # zizmor: ignore[self-repository]
+
+      - name: Build
+        working-directory: c
+        shell: pwsh
+        env:
+          CMAKE_PREFIX_PATH: ${{ steps.curl.outputs.prefix }}
+        run: |
+          cmake --preset $env:AZ_IOT_PRESET -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON `
+            -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS=ON -DAZ_IOT_BUILD_E2E_SAMPLES=ON
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset $env:AZ_IOT_PRESET --config Debug --target az_iot_tests_e2e_samples
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Download test config
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: samples-csr-test-config
+          path: test_config
+
+      - name: Run the CSR samples
+        shell: pwsh
+        env:
+          CURL_PREFIX: ${{ steps.curl.outputs.prefix }}
+          SAMPLES_LEG: csr-${{ matrix.os }}-${{ matrix.adapter }}
+        run: |
+          # Keep only what the test reads (c/tests/e2e/tests/e2e_samples_test.c).
+          $before = @(Get-ChildItem env: | ForEach-Object Name)
+          . ./test_config/set_test_env_vars.ps1
+          $config = @{}
+          foreach ($name in @(Get-ChildItem env: | ForEach-Object Name | Where-Object { $_ -notin $before })) {
+            $config[$name] = (Get-Item "env:$name").Value
+            Remove-Item "env:$name"
+          }
+          Remove-Item -Recurse -Force test_config
+          foreach ($name in 'IOTHUB_CONNECTION_STRING', 'IOTHUB_EVENTHUB_CONNECTION_STRING',
+                            'IOTHUB_EVENTHUB_LISTEN_NAME', 'IOTHUB_EVENTHUB_PARTITION_COUNT') {
+            if ($config[$name]) { Set-Item "env:$name" $config[$name] }
+          }
+          $env:IOTHUB_EVENTHUB_CONSUMER_GROUP = "samples-$($env:SAMPLES_SLOT)"
+
+          # The leg's bootstrap device, its X.509 material in files.
+          $slot = $env:SAMPLES_SLOT
+          $dir = Join-Path $env:RUNNER_TEMP 'samples-device'
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          $env:AZ_IOT_DPS_ID_SCOPE = $config['IOT_DPS_ID_SCOPE']
+          $env:AZ_IOT_DPS_REGISTRATION_ID = $config["IOT_DPS_GROUP_X509_REGISTRATION_ID_$slot"]
+          if (-not $env:AZ_IOT_DPS_REGISTRATION_ID) { throw "no group identity $slot in the test config" }
+          $env:AZ_IOT_CLIENT_CERT = Join-Path $dir 'bootstrap-cert.pem'
+          $env:AZ_IOT_CLIENT_KEY = Join-Path $dir 'bootstrap-key.pem'
+          [IO.File]::WriteAllBytes($env:AZ_IOT_CLIENT_CERT,
+            [Convert]::FromBase64String($config["IOT_DPS_GROUP_X509_CERTIFICATE_$slot"]))
+          [IO.File]::WriteAllBytes($env:AZ_IOT_CLIENT_KEY,
+            [Convert]::FromBase64String($config["IOT_DPS_GROUP_X509_KEY_$slot"]))
+          $env:AZ_IOT_TRUSTED_CA = ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $dir 'trusted-ca.pem')
+          if ($config['IOT_DPS_GLOBAL_ENDPOINT']) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $config['IOT_DPS_GLOBAL_ENDPOINT'] }
+          Write-Host "::add-mask::$($config['IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY'])"
+          $env:AZ_IOT_DPS_ENROLLMENT_GROUP_KEY = $config['IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY']
+          Write-Host "bootstrap device (slot $slot): $($env:AZ_IOT_DPS_REGISTRATION_ID)"
+          if ($IsWindows) {
+            # Debug builds link libcurl-d.dll.
+            $env:PATH = "$($env:CURL_PREFIX)/debug/bin;$($env:CURL_PREFIX)/bin;$($env:PATH)"
+          }
+
+          New-Item -ItemType Directory -Path results -Force | Out-Null
+          ctest --test-dir "c/build/$($env:AZ_IOT_PRESET)" -C Debug -L samples_csr `
+            -R "_$($env:SAMPLES_ADAPTER)$" --verbose --no-tests=error `
+            --output-junit "$PWD/results/samples-$($env:SAMPLES_LEG).xml"
+          $rc = $LASTEXITCODE
+          Remove-Item -Recurse -Force $dir
+          exit $rc
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: samples-results-csr-${{ matrix.os }}-${{ matrix.adapter }}
+          path: |
+            results/*.xml
+            c/build/${{ matrix.preset }}/tests/e2e/samples/*/sample-output.log
+          if-no-files-found: ignore
+
   teardown:
     name: teardown (delete resources)
     needs: [ setup, samples ]
@@ -381,10 +572,41 @@ jobs:
         with:
           resource-group: ${{ env.E2E_RESOURCE_GROUP }}
 
+  teardown-csr:
+    name: teardown (delete resources, CSR)
+    needs: [ setup-csr, samples-csr ]
+    # always(): also after a cancellation. Skipped where setup-csr never had secrets.
+    if: >-
+      ${{ always() &&
+          (github.event_name != 'pull_request' ||
+           (github.event.pull_request.head.repo.full_name == github.repository &&
+            github.actor != 'dependabot[bot]')) }}
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Azure Login via OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Delete Azure resources
+        uses: Azure/iot-sdks-e2e-fx/actions/destroy-e2e-resources@2fc8ffebbdc13476890b15fee48e304b1e135ce3 # v1.0.1 + SHA-pinned azure/powershell (#457)
+        with:
+          resource-group: ${{ env.E2E_CSR_RESOURCE_GROUP }}
+
   # One check name: fails when any job failed or was cancelled (skipped jobs pass).
   gate:
     name: ci-c-samples-gate
-    needs: [ setup, samples, teardown ]
+    needs: [ setup, samples, teardown, setup-csr, samples-csr, teardown-csr ]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
