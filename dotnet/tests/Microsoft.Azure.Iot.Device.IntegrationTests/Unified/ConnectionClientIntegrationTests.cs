@@ -82,7 +82,7 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             {
                 Assert.Skip("MQTTv5 IoT Hub does not support symmetric key authentication.");
             }
-            
+
             // The same key signs the DPS SAS token and, after provisioning, the IoT hub SAS token
             await using UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
                 testAgainstClassicHub, cancellationToken: TestContext.Current.CancellationToken);
