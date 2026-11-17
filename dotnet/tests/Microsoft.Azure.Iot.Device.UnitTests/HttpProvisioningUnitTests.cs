@@ -308,6 +308,66 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task TpmProvisioningWithACertificateSigningRequestConnectsToTheHubWithTheIssuedCertificate()
+        {
+            byte[] dpsKey = Encoding.UTF8.GetBytes("some-dps-key-for-unit-tests");
+            using System.Security.Cryptography.RSA privateKey = System.Security.Cryptography.RSA.Create(2048);
+            using System.Security.Cryptography.X509Certificates.X509Certificate2 issuedCertificate = new System.Security.Cryptography.X509Certificates.CertificateRequest(
+                    $"CN={RegistrationId}", privateKey, System.Security.Cryptography.HashAlgorithmName.SHA256, System.Security.Cryptography.RSASignaturePadding.Pkcs1)
+                .CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
+            string issuedCertificateBase64 = Convert.ToBase64String(issuedCertificate.RawData);
+
+            // The assignment carries the issued certificate but no IoT Hub key, which a certificate-issuing enrollment need not send.
+            FakeDpsHandler dps = new(request =>
+            {
+                if (!request.Headers.Contains("Authorization"))
+                {
+                    return Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(dpsKey) }.ToJsonString());
+                }
+
+                RegistrationOperationStatus assigned = Assigned();
+                assigned.RegistrationState!.IssuedClientCertificateChain = new[] { issuedCertificateBase64 };
+                return Respond(HttpStatusCode.OK, assigned);
+            });
+
+            List<MqttConnect> connects = new();
+            using MockConnectionMqttClient mockMqttClient = new();
+            mockMqttClient.OnConnect = connect =>
+            {
+                lock (connects)
+                {
+                    connects.Add(connect);
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
+            FakeTpm tpm = new();
+            ProvisioningSettings settings = CreateSettings();
+            settings.CertificateSigningRequest = new(privateKey, "someCsr");
+
+            ConnectionContext context = await connectionClient
+                .ProvisionAndConnectAsync(settings, new TpmAuthenticationProvider(RegistrationId, IdScope, tpm, privateKey), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            // The register request is TPM-attested and carries the certificate signing request.
+            JsonNode body = JsonNode.Parse(dps.Requests[^1].Body!)!;
+            Assert.Equal("someCsr", (string?)body["csr"]);
+            Assert.NotNull(body["tpm"]);
+            AssertSignedSasToken(dps.Requests[^1].Authorization, dpsKey, $"{IdScope}/registrations/{RegistrationId}", "registration");
+            Assert.Equal(new[] { dpsKey }, tpm.ImportedKeys);
+
+            // IoT Hub is authenticated with the issued certificate, not a TPM-signed SAS token.
+            Assert.Equal(new[] { issuedCertificateBase64 }, context.IssuedClientCertificates);
+            MqttConnect connect = Assert.Single(connects);
+            Assert.NotNull(connect.ClientCertificate);
+            Assert.Equal(issuedCertificate.Thumbprint, connect.ClientCertificate.Thumbprint);
+            Assert.True(connect.ClientCertificate.HasPrivateKey);
+            Assert.True(connect.Password == null || connect.Password.Length == 0);
+        }
+
+        [Fact]
         public async Task TpmProvisioningRequiresTheHttpTransport()
         {
             FakeDpsHandler dps = new(_ => throw new UnreachableException());

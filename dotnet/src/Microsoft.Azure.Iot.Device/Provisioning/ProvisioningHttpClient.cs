@@ -317,6 +317,12 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
             string? authenticationKey = result.Tpm?.AuthenticationKey;
             if (string.IsNullOrEmpty(authenticationKey))
             {
+                if (_tpm.PresentsIssuedCertificates && result.IssuedClientCertificateChain is { Count: > 0 })
+                {
+                    // The device presents its issued certificate to IoT Hub, so it never signs with an IoT Hub key.
+                    return;
+                }
+
                 throw new Exception("Device Provisioning Service assigned this TPM device without the key it authenticates with IoT Hub with.");
             }
 

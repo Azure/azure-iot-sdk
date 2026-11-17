@@ -14,7 +14,7 @@
     <PackageReference Include="Microsoft.TSS" Version="2.1.1" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="..\Unified\TpmAuthenticationSample\TssTpmSecurityProvider.cs" Link="TssTpmSecurityProvider.cs" />
+    <Compile Include="..\Unified\TpmAuthenticationSample\TssTpmProvider.cs" Link="TssTpmProvider.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\Microsoft.Azure.Iot.Device\Microsoft.Azure.Iot.Device.csproj" />

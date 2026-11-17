@@ -36,7 +36,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="..\..\samples\Unified\TpmAuthenticationSample\TssTpmSecurityProvider.cs" Link="Unified\TssTpmSecurityProvider.cs" />
+    <Compile Include="..\..\samples\Unified\TpmAuthenticationSample\TssTpmProvider.cs" Link="Unified\TssTpmProvider.cs" />
   </ItemGroup>
 
 </Project>

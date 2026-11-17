@@ -114,6 +114,26 @@ jobs:
           name: e2e-test-config
           path: test_config
 
+      # TpmCertificateManagementIntegrationTests run against the TSS.MSR TPM simulator that the
+      # azure-iot-sdk-csharp repo publishes. It only runs on Windows; elsewhere those tests skip themselves.
+      - name: Download TPM simulator
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $simulatorPath = Join-Path $env:RUNNER_TEMP 'tpmsim'
+          New-Item -ItemType Directory -Force -Path $simulatorPath | Out-Null
+          $files = @(
+            @{ Name = 'Simulator.exe'; Commit = 'ef909004bcc029c66b53e3abd94d8cb253dff4e0'; Sha256 = '34552FC49063BD7578C695370DD056BE442F9E06029E7C94BEA34B2EFCDAF755' },
+            @{ Name = 'Tpm.dll'; Commit = 'f336c463c46032a69250ee91aff4e9d328a9e83e'; Sha256 = 'BCF66E0954FC25B03BEFC464F22695841E287B64633134683D0146857833EFA4' }
+          )
+          foreach ($file in $files) {
+            $destination = Join-Path $simulatorPath $file.Name
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/Azure/azure-iot-sdk-csharp/$($file.Commit)/security/tpm/samples/SecurityProviderTpmSimulator/TpmSimulator/$($file.Name)" -OutFile $destination
+            $actual = (Get-FileHash -Algorithm SHA256 -Path $destination).Hash
+            if ($actual -ne $file.Sha256) { throw "$($file.Name) has SHA256 $actual, expected $($file.Sha256)." }
+          }
+          "TPM_SIMULATOR_PATH=$simulatorPath" >> $env:GITHUB_ENV
+
       - name: Run e2e
         shell: pwsh
         run: |
@@ -191,6 +211,8 @@ jobs:
 
           # Only tests labeled Category=CertificateManagement run here;
           # all other tests run in ci-dotnet.
+          $tpmEnvironment = @()
+          if ($env:TPM_SIMULATOR_PATH) { $tpmEnvironment = @('--environment', "TPM_SIMULATOR_PATH=$env:TPM_SIMULATOR_PATH") }
           dotnet test ./dotnet/Project.slnx `
             --filter "Category=CertificateManagement" `
             --collect:"XPlat Code Coverage" `
@@ -202,6 +224,10 @@ jobs:
             --environment IOT_DPS_GROUP_X509_CERTIFICATE=$groupCertB64 `
             --environment IOT_DPS_GROUP_X509_KEY=$groupKeyB64 `
             --environment IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY=$env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY `
+            --environment ADR_CERT_MGMT_NAMESPACE_NAME=$env:ADR_CERT_MGMT_NAMESPACE_NAME `
+            --environment ADR_CERT_MGMT_CERTIFICATE_AUTHORITY_NAME=$env:ADR_CERT_MGMT_CERTIFICATE_AUTHORITY_NAME `
+            --environment ADR_CERT_MGMT_POLICY_NAME=$env:ADR_CERT_MGMT_POLICY_NAME `
+            @tpmEnvironment `
             --results-directory ./coverage `
             -- xunit.parallelizeAssembly=true
 

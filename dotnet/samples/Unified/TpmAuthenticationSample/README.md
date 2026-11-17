@@ -26,8 +26,16 @@ never leaves the TPM.
 
 - DPS only supports TPM attestation over HTTPS, so `ProvisioningSettings.Transport` must be `ProvisioningTransport.Http`.
   `ConnectionClient` throws an `ArgumentException` otherwise.
-- TPM authentication uses SAS tokens, so it only works with MQTTv3 IoT Hubs.
+- TPM authentication uses SAS tokens, so it only works with MQTTv3 IoT Hubs, unless IoT Hub is authenticated with an
+  issued certificate as described below.
 - TPM devices have no secondary credentials to fall back to.
+
+## Using an issued certificate for IoT Hub
+
+If the device's enrollment is linked to a certificate policy, the device can use its TPM only to authenticate with DPS
+and use a DPS-issued client certificate for IoT Hub. Set `ProvisioningSettings.CertificateSigningRequest`, then create
+the `TpmAuthenticationProvider` with the CSR's private key, or with a callback that prepares the issued certificate.
+IoT Hub then gets the issued certificate instead of a TPM-signed SAS token.
 
 ## Prerequisites
 
