@@ -13,6 +13,11 @@
 
 #include "internal/dispatch.h"
 
+/* Service-bound MQTTv5 traffic other than telemetry (presence birth, direct method
+ * replies, twin requests) is published on this prefix + device id; the `type` user
+ * property identifies the operation. */
+#define AZ_IOT_SERVICE_BOUND_TOPIC_PREFIX "ih/srv/"
+
 #ifdef __cplusplus
 extern "C"
 {

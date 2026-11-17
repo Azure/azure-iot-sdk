@@ -698,7 +698,7 @@ static void hub_mqtt_v5_births_then_connects_on_birth_ack(void** state)
   az_iot_mock_mqtt_client* m = NULL;
   const az_iot_mock_call* birth = drive_to_birth_published(fx, false, &m);
 
-  assert_string_equal(birth->topic, "ih/ut-device/srv/presence");
+  assert_string_equal(birth->topic, "ih/srv/ut-device");
   assert_int_equal(birth->qos, AZ_IOT_MQTT_QOS_0);
   assert_string_equal(birth->user_type, "birth:1");
   assert_int_equal(birth->correlation_data_len, 16);

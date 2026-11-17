@@ -6,7 +6,7 @@
 /* MQTT v5 twin client unit tests, driven through the public API and the
  * in-memory mock_mqtt_iface.
  *
- * The mqttv5 twin uses one topic each way -- srv/twin outbound, dev/twin inbound
+ * The mqttv5 twin uses one topic each way -- ih/srv/{device} outbound, dev/twin inbound
  * -- with the message kind in a `type` user property and a protobuf body.
  * Device-initiated exchanges correlate on a per-attempt 16-byte UUID;
  * backend-initiated ones carry the connection's birth nonce instead.
@@ -40,7 +40,7 @@
 #include "support/test_provider.h"
 #include "support/subscription_ack.h"
 
-#define TWIN_SRV_TOPIC "ih/ut-device/srv/twin"
+#define TWIN_SRV_TOPIC "ih/srv/ut-device"
 #define TWIN_DEV_TOPIC "ih/ut-device/dev/twin"
 
 /* ------------------------------------------------------------------------- */
@@ -248,20 +248,6 @@ static int teardown(void** state)
   return 0;
 }
 
-static const az_iot_mock_call* find_publish(az_iot_mock_mqtt_client* m, const char* expected)
-{
-  size_t n = az_iot_mock_mqtt_client_call_count(m);
-  for (size_t i = n; i > 0; --i)
-  {
-    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i - 1);
-    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(c->topic, expected) == 0)
-    {
-      return c;
-    }
-  }
-  return NULL;
-}
-
 static const az_iot_mock_call* find_subscribe(az_iot_mock_mqtt_client* m, const char* expected)
 {
   size_t n = az_iot_mock_mqtt_client_call_count(m);
@@ -269,6 +255,49 @@ static const az_iot_mock_call* find_subscribe(az_iot_mock_mqtt_client* m, const 
   {
     const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i);
     if (c->kind == AZ_IOT_MOCK_CALL_SUBSCRIBE && strcmp(c->topic, expected) == 0)
+    {
+      return c;
+    }
+  }
+  return NULL;
+}
+
+/* The birth shares the service-bound topic with the twin requests; `type` tells them apart. */
+static bool is_birth(const az_iot_mock_call* c)
+{
+  return c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(c->topic, TWIN_SRV_TOPIC) == 0
+      && strcmp(c->user_type, "birth:1") == 0;
+}
+
+static bool is_twin_request(const az_iot_mock_call* c)
+{
+  return c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(c->topic, TWIN_SRV_TOPIC) == 0
+      && !is_birth(c);
+}
+
+/* Most recent birth PUBLISH, or NULL. */
+static const az_iot_mock_call* find_birth(az_iot_mock_mqtt_client* m)
+{
+  size_t n = az_iot_mock_mqtt_client_call_count(m);
+  for (size_t i = n; i > 0; --i)
+  {
+    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i - 1);
+    if (is_birth(c))
+    {
+      return c;
+    }
+  }
+  return NULL;
+}
+
+/* Most recent twin request PUBLISH, or NULL. */
+static const az_iot_mock_call* find_twin_request(az_iot_mock_mqtt_client* m)
+{
+  size_t n = az_iot_mock_mqtt_client_call_count(m);
+  for (size_t i = n; i > 0; --i)
+  {
+    const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i - 1);
+    if (is_twin_request(c))
     {
       return c;
     }
@@ -284,7 +313,7 @@ static size_t count_twin_publishes(az_iot_mock_mqtt_client* m)
   for (size_t i = 0; i < n; ++i)
   {
     const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(m, i);
-    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strcmp(c->topic, TWIN_SRV_TOPIC) == 0)
+    if (is_twin_request(c))
     {
       count++;
     }
@@ -330,7 +359,7 @@ static void open_to_birth_after_open(fixture* fx)
     assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   }
 
-  const az_iot_mock_call* birth = find_publish(fx->mock, "ih/ut-device/srv/presence");
+  const az_iot_mock_call* birth = find_birth(fx->mock);
   assert_non_null(birth);
   assert_int_equal(birth->correlation_data_len, 16);
   memcpy(fx->nonce, birth->correlation_data, sizeof(fx->nonce));
@@ -445,7 +474,7 @@ static void reopen_with_versions_hooked(
     assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   }
 
-  const az_iot_mock_call* birth = find_publish(fx->mock, "ih/ut-device/srv/presence");
+  const az_iot_mock_call* birth = find_birth(fx->mock);
   assert_non_null(birth);
   memcpy(fx->nonce, birth->correlation_data, sizeof(fx->nonce));
 
@@ -562,7 +591,7 @@ static void inject_twin(
 static void issue_get(fixture* fx, get_record* rec, uint8_t out_corr[16])
 {
   assert_int_equal(az_iot_mqttv5_twin_client_get(&fx->twin, on_get, rec), AZ_IOT_OK);
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   assert_non_null(pub);
   assert_int_equal(pub->correlation_data_len, 16);
   memcpy(out_corr, pub->correlation_data, 16);
@@ -611,7 +640,7 @@ static void get_publishes_a_conformant_request(void** state)
   get_record rec = { 0 };
   assert_int_equal(az_iot_mqttv5_twin_client_get(&fx->twin, on_get, &rec), AZ_IOT_OK);
 
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   assert_non_null(pub);
   assert_int_equal(pub->qos, AZ_IOT_MQTT_QOS_0);
   assert_string_equal(pub->user_type, "get:1");
@@ -973,7 +1002,7 @@ static void patch_frames_if_match_from_the_birth_ack(void** state)
       az_iot_mqttv5_twin_client_patch_reported(&fx->twin, patch, sizeof(patch) - 1, on_patch, &rec),
       AZ_IOT_OK);
 
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   assert_non_null(pub);
   assert_int_equal(pub->qos, AZ_IOT_MQTT_QOS_0);
   assert_string_equal(pub->user_type, "reported-patch:1");
@@ -1001,7 +1030,7 @@ static void patch_without_a_known_version_omits_if_match(void** state)
       az_iot_mqttv5_twin_client_patch_reported(&fx->twin, patch, sizeof(patch) - 1, on_patch, &rec),
       AZ_IOT_OK);
 
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   assert_non_null(pub);
   const uint8_t expect[] = { 0x12, 0x07, '{', '"', 'x', '"', ':', '1', '}' };
   assert_int_equal(pub->payload_len, sizeof(expect));
@@ -1019,7 +1048,7 @@ static void a_patch_response_reports_the_verdict(void** state)
   assert_int_equal(
       az_iot_mqttv5_twin_client_patch_reported(&fx->twin, patch, sizeof(patch) - 1, on_patch, &rec),
       AZ_IOT_OK);
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   uint8_t corr[16];
   memcpy(corr, pub->correlation_data, sizeof(corr));
 
@@ -1048,7 +1077,7 @@ static void a_version_mismatch_reaches_the_caller_and_corrects_the_retry(void** 
   assert_int_equal(
       az_iot_mqttv5_twin_client_patch_reported(&fx->twin, patch, sizeof(patch) - 1, on_patch, &rec),
       AZ_IOT_OK);
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   uint8_t corr[16];
   memcpy(corr, pub->correlation_data, sizeof(corr));
 
@@ -1067,7 +1096,7 @@ static void a_version_mismatch_reaches_the_caller_and_corrects_the_retry(void** 
       az_iot_mqttv5_twin_client_patch_reported(
           &fx->twin, patch, sizeof(patch) - 1, on_patch, &retry),
       AZ_IOT_OK);
-  const az_iot_mock_call* second = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* second = find_twin_request(fx->mock);
   assert_non_null(second);
   const uint8_t expect[] = {
     0x08, 0x0C, 0x12, 0x07, '{', '"', 'x', '"', ':', '1', '}',
@@ -1198,7 +1227,7 @@ static void an_empty_patch_is_publishable(void** state)
   assert_int_equal(
       az_iot_mqttv5_twin_client_patch_reported(&fx->twin, NULL, 0, on_patch, &rec), AZ_IOT_OK);
 
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   assert_non_null(pub);
   const uint8_t expect[] = { 0x12, 0x00 };
   assert_int_equal(pub->payload_len, sizeof(expect));
@@ -1583,7 +1612,7 @@ static void a_push_before_the_birth_is_dropped(void** state)
   connack.status = AZ_IOT_OK;
   assert_true(az_iot_mock_mqtt_client_inject_event(fx->mock, &connack));
   assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
-  assert_null(find_publish(fx->mock, "ih/ut-device/srv/presence"));
+  assert_null(find_birth(fx->mock));
 
   /* The nonce rides the CONNECT username: correlationId=<32 hex>&... */
   const az_iot_mock_call* connect = az_iot_mock_mqtt_client_call_at(fx->mock, 0);
@@ -1737,7 +1766,7 @@ static void init_on_a_live_connection_adopts_the_birth_ack(void** state)
           &fx->twin, patch, sizeof(patch) - 1, on_patch, &prec),
       AZ_IOT_OK);
   const uint8_t expect[] = { 0x08, 0x09, 0x12, 0x02, 0x7B, 0x7D }; /* if_match = 9 */
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   assert_int_equal(pub->payload_len, sizeof(expect));
   assert_memory_equal(pub->payload, expect, sizeof(expect));
 }
@@ -1895,7 +1924,7 @@ static void a_push_before_connected_is_not_overwritten_by_the_birth_ack(void** s
           &fx->twin, patch, sizeof(patch) - 1, on_patch, &prec),
       AZ_IOT_OK);
   const uint8_t expect[] = { 0x08, 0x15, 0x12, 0x02, 0x7B, 0x7D }; /* if_match = 21, not 9 */
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   assert_int_equal(pub->payload_len, sizeof(expect));
   assert_memory_equal(pub->payload, expect, sizeof(expect));
 }
@@ -1908,7 +1937,7 @@ static uint8_t patch_and_read_if_match(fixture* fx)
   assert_int_equal(
       az_iot_mqttv5_twin_client_patch_reported(&fx->twin, patch, sizeof(patch) - 1, NULL, NULL),
       AZ_IOT_OK);
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   assert_non_null(pub);
   return (pub->payload[0] == 0x08) ? pub->payload[1] : 0;
 }
@@ -1938,7 +1967,7 @@ static void a_reported_version_reset_to_zero_is_adopted(void** state)
   /* Patch response carrying version 0. */
   inject_twin(fx, "twin-push:1", fx->nonce, push9, sizeof(push9));
   assert_int_equal(patch_and_read_if_match(fx), 9);
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   uint8_t pcorr[16];
   memcpy(pcorr, pub->correlation_data, sizeof(pcorr));
   const uint8_t resp[] = { 0x08, 0x01 }; /* OK, version 0 */
@@ -2199,7 +2228,7 @@ static void a_twin_push_advances_the_reported_version(void** state)
       az_iot_mqttv5_twin_client_patch_reported(&fx->twin, patch, sizeof(patch) - 1, on_patch, &rec),
       AZ_IOT_OK);
 
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   assert_non_null(pub);
   const uint8_t expect[] = { 0x08, 0x15, 0x12, 0x07, '{', '"', 'x', '"', ':', '1', '}' };
   assert_int_equal(pub->payload_len, sizeof(expect));
@@ -2230,7 +2259,7 @@ static void patch_reported_if_match_sends_the_given_version(void** state)
       az_iot_mqttv5_twin_client_patch_reported_if_match(
           &fx->twin, 42, patch, sizeof(patch) - 1, on_patch, &rec),
       AZ_IOT_OK);
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   const uint8_t expect[] = { 0x08, 0x2A, 0x12, 0x02, '{', '}' };
   assert_int_equal(pub->payload_len, sizeof(expect));
   assert_memory_equal(pub->payload, expect, sizeof(expect));
@@ -2491,7 +2520,7 @@ static void concurrent_get_and_patch_correlate_independently(void** state)
       az_iot_mqttv5_twin_client_patch_reported(
           &fx->twin, patch, sizeof(patch) - 1, on_patch, &patch_rec),
       AZ_IOT_OK);
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   uint8_t patch_corr[16];
   memcpy(patch_corr, pub->correlation_data, sizeof(patch_corr));
   assert_memory_not_equal(get_corr, patch_corr, sizeof(get_corr));
@@ -2555,7 +2584,7 @@ static void a_reconnect_reseeds_the_versions_from_the_new_birth_ack(void** state
     assert_int_equal(az_iot_connection_client_do_work(&fx->conn, 0), AZ_IOT_OK);
   }
 
-  const az_iot_mock_call* birth = find_publish(fx->mock, "ih/ut-device/srv/presence");
+  const az_iot_mock_call* birth = find_birth(fx->mock);
   assert_non_null(birth);
   memcpy(fx->nonce, birth->correlation_data, sizeof(fx->nonce));
 
@@ -2584,7 +2613,7 @@ static void a_reconnect_reseeds_the_versions_from_the_new_birth_ack(void** state
   assert_int_equal(
       az_iot_mqttv5_twin_client_patch_reported(&fx->twin, patch, sizeof(patch) - 1, on_patch, &rec),
       AZ_IOT_OK);
-  const az_iot_mock_call* pub = find_publish(fx->mock, TWIN_SRV_TOPIC);
+  const az_iot_mock_call* pub = find_twin_request(fx->mock);
   assert_non_null(pub);
   const uint8_t expect[] = {
     0x08, 0x03, 0x12, 0x07, '{', '"', 'x', '"', ':', '1', '}',

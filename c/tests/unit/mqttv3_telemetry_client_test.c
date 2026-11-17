@@ -155,7 +155,7 @@ static void open_v5(fixture* test)
     assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
   }
 
-  const az_iot_mock_call* birth = find_publish(test, "ih/ut-device/srv/presence");
+  const az_iot_mock_call* birth = find_publish(test, "ih/srv/ut-device");
   assert_non_null(birth);
   assert_int_equal(birth->correlation_data_len, 16);
 
