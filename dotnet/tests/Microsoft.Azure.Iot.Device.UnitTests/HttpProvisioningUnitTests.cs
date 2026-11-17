@@ -212,6 +212,175 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             AssertSignedSasToken(Encoding.UTF8.GetString(connect.Password!), hubKey, $"{AssignedHub}/devices/{DeviceId}", null);
         }
 
+        [Theory]
+        [InlineData("identity fault")]
+        [InlineData("hub unreachable")]
+        public async Task TpmDeviceReprovisionsOverHttpAndConnectsToTheNewlyAssignedHub(string trigger)
+        {
+            const string secondHub = "second-hub.azure-devices.net";
+            byte[] firstHubKey = Encoding.UTF8.GetBytes("some-first-hub-key-for-unit-tests");
+            byte[] secondHubKey = Encoding.UTF8.GetBytes("some-second-hub-key-for-unit-tests");
+
+            int registrations = 0;
+            FakeDpsHandler dps = new(request =>
+            {
+                if (!request.Headers.Contains("Authorization"))
+                {
+                    return Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(PrimaryKey) }.ToJsonString());
+                }
+
+                bool isFirstRegistration = Interlocked.Increment(ref registrations) == 1;
+                RegistrationOperationStatus status = AssignedTpm(isFirstRegistration ? firstHubKey : secondHubKey);
+                status.RegistrationState!.AssignedHub = isFirstRegistration ? AssignedHub : secondHub;
+                return Respond(HttpStatusCode.OK, status);
+            });
+
+            TaskCompletionSource connectedToSecondHub = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            List<MqttConnect> connects = new();
+            using MockConnectionMqttClient mockMqttClient = new();
+            mockMqttClient.OnConnect = connect =>
+            {
+                int firstHubConnects;
+                lock (connects)
+                {
+                    connects.Add(connect);
+                    firstHubConnects = connects.Count(c => c.HostName == AssignedHub);
+                }
+
+                if (connect.HostName == secondHub)
+                {
+                    connectedToSecondHub.TrySetResult();
+                }
+                else if (firstHubConnects > 1)
+                {
+                    // The first hub no longer accepts this device: it was deleted there, or the hub was vacated.
+                    return trigger == "identity fault"
+                        ? Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.NotAuthorized })
+                        : throw new Exception("simulated unreachable hub");
+                }
+
+                return Task.FromResult(new MqttConnectAck() { ResultCode = MqttConnectReasonCode.Success });
+            };
+
+            using TestConnectionClient connectionClient = CreateClient(
+                mockMqttClient,
+                dps,
+                new ImmediateRetryPolicy(maxHubConnectAttemptsBeforeReprovision: trigger == "hub unreachable" ? 3u : 0u));
+            FakeTpm tpm = new();
+
+            await connectionClient
+                .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, tpm), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            await mockMqttClient.SimulateServerDisconnectAsync(trigger == "identity fault" ? MqttDisconnectReason.NotAuthorized : MqttDisconnectReason.ServerBusy);
+            await connectedToSecondHub.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(secondHub, connectionClient.GetCurrentConnectionContext()!.IotHubHostName);
+
+            // Re-provisioning registered over HTTPS again, answering a fresh TPM challenge, rather than over MQTT.
+            Assert.Equal(2, registrations);
+            Assert.Equal(4, dps.Requests.Count);
+            Assert.Null(dps.Requests[2].Authorization);
+            AssertSignedSasToken(dps.Requests[3].Authorization, PrimaryKey, $"{IdScope}/registrations/{RegistrationId}", "registration");
+
+            // The device connected to the new hub with the key that DPS sent for it, and never connected to DPS over MQTT.
+            lock (connects)
+            {
+                Assert.DoesNotContain(connects, connect => connect.HostName == GlobalDeviceEndpoint);
+                MqttConnect secondHubConnect = connects.Last();
+                Assert.Equal(secondHub, secondHubConnect.HostName);
+                AssertSignedSasToken(Encoding.UTF8.GetString(secondHubConnect.Password!), secondHubKey, $"{secondHub}/devices/{DeviceId}", null);
+            }
+
+            Assert.Equal(new[] { PrimaryKey, firstHubKey, PrimaryKey, secondHubKey }, tpm.ImportedKeys);
+        }
+
+        [Fact]
+        public async Task ProvisioningOverHttpPollsUntilAssignedNoSoonerThanTheServiceAsks()
+        {
+            int polls = 0;
+            FakeDpsHandler dps = new(request =>
+            {
+                if (!request.Headers.Contains("Authorization"))
+                {
+                    return Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(PrimaryKey) }.ToJsonString());
+                }
+
+                if (request.Method == HttpMethod.Put)
+                {
+                    return RespondAssigning(retryAfter: TimeSpan.FromSeconds(3));
+                }
+
+                // A Retry-After shorter than the minimum polling interval is not honored.
+                return Interlocked.Increment(ref polls) == 1
+                    ? RespondAssigning(retryAfter: TimeSpan.FromSeconds(1))
+                    : Respond(HttpStatusCode.OK, AssignedTpm(PrimaryKey));
+            });
+
+            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
+
+            ConnectionContext context = await connectionClient
+                .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(AssignedHub, context.IotHubHostName);
+
+            // Challenged, registered, then polled twice for the same operation.
+            Assert.Equal(4, dps.Requests.Count);
+            RecordedRequest registered = dps.Requests[1];
+            RecordedRequest[] pollRequests = { dps.Requests[2], dps.Requests[3] };
+            foreach (RecordedRequest poll in pollRequests)
+            {
+                Assert.Equal(HttpMethod.Get, poll.Method);
+                Assert.Equal($"https://{GlobalDeviceEndpoint}/{IdScope}/registrations/{RegistrationId}/operations/{OperationId}?api-version=2026-11-02-preview", poll.Uri);
+                AssertSignedSasToken(poll.Authorization, PrimaryKey, $"{IdScope}/registrations/{RegistrationId}", "registration");
+            }
+
+            TimeSpan firstPollDelay = Stopwatch.GetElapsedTime(registered.Timestamp, pollRequests[0].Timestamp);
+            TimeSpan secondPollDelay = Stopwatch.GetElapsedTime(pollRequests[0].Timestamp, pollRequests[1].Timestamp);
+            Assert.True(firstPollDelay >= TimeSpan.FromMilliseconds(2900), $"Polled {firstPollDelay} after registering, sooner than the service's Retry-After of 3s.");
+            Assert.True(secondPollDelay >= TimeSpan.FromMilliseconds(1900), $"Polled again after {secondPollDelay}, sooner than the minimum polling interval of 2s.");
+        }
+
+        [Fact]
+        public async Task ProvisioningOverHttpRegistersAgainWhenPollingFailsTransiently()
+        {
+            int polls = 0;
+            FakeDpsHandler dps = new(request =>
+            {
+                if (!request.Headers.Contains("Authorization"))
+                {
+                    return Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(PrimaryKey) }.ToJsonString());
+                }
+
+                if (request.Method == HttpMethod.Put)
+                {
+                    return Volatile.Read(ref polls) == 0 ? Respond(HttpStatusCode.Accepted, Assigning()) : Respond(HttpStatusCode.OK, AssignedTpm(PrimaryKey));
+                }
+
+                Interlocked.Increment(ref polls);
+                return Respond(HttpStatusCode.ServiceUnavailable, "{}");
+            });
+
+            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
+            ImmediateRetryPolicy retryPolicy = new();
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps, retryPolicy);
+            FakeTpm tpm = new();
+
+            ConnectionContext context = await connectionClient
+                .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, tpm), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            Assert.Equal(AssignedHub, context.IotHubHostName);
+            Assert.Contains(ConnectionEndpoint.DeviceProvisioningService, retryPolicy.Endpoints);
+
+            // The failed poll abandoned that registration, so the retry starts over with a fresh TPM challenge.
+            Assert.Equal(
+                new[] { (HttpMethod.Put, false), (HttpMethod.Put, true), (HttpMethod.Get, true), (HttpMethod.Put, false), (HttpMethod.Put, true) },
+                dps.Requests.Select(request => (request.Method, request.Authorization != null)));
+        }
+
         [Fact]
         public async Task TpmProvisioningFailsWithAnIdentityErrorWhenTheAnsweredChallengeIsRejected()
         {
@@ -427,6 +596,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             return Respond(statusCode, JsonSerializer.Serialize(status, JsonSerializationSettings.Options));
         }
 
+        private static HttpResponseMessage RespondAssigning(TimeSpan retryAfter)
+        {
+            HttpResponseMessage response = Respond(HttpStatusCode.Accepted, Assigning());
+            response.Headers.RetryAfter = new(retryAfter);
+            return response;
+        }
+
         private static HttpResponseMessage Respond(HttpStatusCode statusCode, string body)
         {
             return new HttpResponseMessage(statusCode)
@@ -435,7 +611,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             };
         }
 
-        private sealed record RecordedRequest(HttpMethod Method, string Uri, string? Authorization, string? UserAgent, string? Body);
+        private sealed record RecordedRequest(HttpMethod Method, string Uri, string? Authorization, string? UserAgent, string? Body, long Timestamp);
 
         /// <summary>
         /// Stands in for Device Provisioning Service, recording each request before answering it. The connection client
@@ -461,12 +637,14 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
             {
+                long timestamp = Stopwatch.GetTimestamp();
                 _requests.Enqueue(new RecordedRequest(
                     request.Method,
                     request.RequestUri!.ToString(),
                     request.Headers.TryGetValues("Authorization", out IEnumerable<string>? authorization) ? authorization.Single() : null,
                     request.Headers.TryGetValues("User-Agent", out IEnumerable<string>? userAgent) ? string.Join(" ", userAgent) : null,
-                    request.Content == null ? null : await request.Content.ReadAsStringAsync(cancellationToken)));
+                    request.Content == null ? null : await request.Content.ReadAsStringAsync(cancellationToken),
+                    timestamp));
 
                 return await _respond(request, cancellationToken);
             }
@@ -474,13 +652,27 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
         private sealed class ImmediateRetryPolicy : IRetryPolicy
         {
+            private readonly uint _maxHubConnectAttemptsBeforeReprovision;
+
+            /// <param name="maxHubConnectAttemptsBeforeReprovision">
+            /// How many failed attempts to reconnect to IoT hub to make before re-provisioning, or zero to never re-provision.
+            /// </param>
+            public ImmediateRetryPolicy(uint maxHubConnectAttemptsBeforeReprovision = 0)
+            {
+                _maxHubConnectAttemptsBeforeReprovision = maxHubConnectAttemptsBeforeReprovision;
+            }
+
             public ConcurrentQueue<ConnectionEndpoint> Endpoints { get; } = new();
 
             public RetryGuidance GetRetryGuidance(uint currentRetryCount, Exception? lastException, ConnectionEndpoint connectionEndpoint, out TimeSpan retryDelay)
             {
                 Endpoints.Enqueue(connectionEndpoint);
                 retryDelay = TimeSpan.Zero;
-                return RetryGuidance.Retry;
+                return connectionEndpoint == ConnectionEndpoint.IotHub
+                    && _maxHubConnectAttemptsBeforeReprovision > 0
+                    && currentRetryCount > _maxHubConnectAttemptsBeforeReprovision
+                        ? RetryGuidance.Reprovision
+                        : RetryGuidance.Retry;
             }
         }
     }
