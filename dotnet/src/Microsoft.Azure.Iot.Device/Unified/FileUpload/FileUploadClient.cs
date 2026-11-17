@@ -37,7 +37,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         private readonly Func<AuthenticationCredentials, HttpMessageHandler> _createHttpMessageHandler;
 
         public FileUploadClient(IConnectionClient connection)
-            : this(connection, HttpMessageHandlerFactory.Create)
+            : this(connection, credentials => HttpMessageHandlerFactory.Create(credentials, connection.Proxy))
         {
         }
 
@@ -65,12 +65,15 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         /// to target the IoT Hub endpoint correctly, and requests always target the IoT hub the device is currently assigned to. Unlike the HTTP client this client creates for itself,
         /// a user-supplied HTTP client is not replaced when the device's TLS credentials change or the device is re-provisioned to a different IoT hub.
         /// </para>
+        /// <para>
+        /// A user-supplied HTTP client does not use <see cref="Unified.Models.ConnectionClientOptions.Proxy"/>, so configure it with any proxy the device needs.
+        /// </para>
         /// </remarks>
         public FileUploadClient(IConnectionClient connection, HttpClient httpClient)
         {
             _connection = connection;
             _httpClient = new HttpClientLease(httpClient, credentials: null, iotHubHostName: null, ownsClient: false);
-            _createHttpMessageHandler = HttpMessageHandlerFactory.Create;
+            _createHttpMessageHandler = credentials => HttpMessageHandlerFactory.Create(credentials, connection.Proxy);
         }
 
         private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage requestMessage, ConnectionContext currentConnectionContext, CancellationToken cancellationToken)

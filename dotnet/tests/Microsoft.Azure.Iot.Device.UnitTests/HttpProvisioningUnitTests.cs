@@ -88,6 +88,29 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ProvisioningOverHttpGoesThroughTheConfiguredProxy()
+        {
+            using LoopbackConnectProxy proxy = new();
+            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
+
+            // The default handler factory is kept so that the proxy is applied the way it is in production.
+            using TestConnectionClient connectionClient = new(new Device.Unified.Models.ConnectionClientOptions
+            {
+                MqttClient = mockMqttClient,
+                Proxy = new WebProxy(proxy.Address),
+                ConnectionRetryPolicy = new NoRetry(),
+            });
+
+            await Assert.ThrowsAnyAsync<Exception>(
+                async () => await connectionClient
+                    .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            Assert.Contains($"CONNECT {GlobalDeviceEndpoint}:443 HTTP/1.1", proxy.RequestLines);
+            Assert.Equal(0, mockMqttClient.ConnectAttemptCount);
+        }
+
+        [Fact]
         public async Task DisconnectCancelsProvisioningOverHttp()
         {
             TaskCompletionSource requestReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);

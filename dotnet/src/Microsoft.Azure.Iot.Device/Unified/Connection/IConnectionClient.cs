@@ -4,6 +4,7 @@
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Unified.Models;
+using System.Net;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Connection
 {
@@ -42,6 +43,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// those of the next.
         /// </remarks>
         internal Guid? ConnectionNonce => null;
+
+        /// <summary>
+        /// The HTTP proxy that feature clients send their HTTPS requests through, or null to use the system's default proxy
+        /// settings. See <see cref="ConnectionClientOptions.Proxy"/>.
+        /// </summary>
+        internal IWebProxy? Proxy => null;
 
         /// <summary>
         /// Raised whenever the connection to IoT hub is lost or closed, before any reconnection starts.

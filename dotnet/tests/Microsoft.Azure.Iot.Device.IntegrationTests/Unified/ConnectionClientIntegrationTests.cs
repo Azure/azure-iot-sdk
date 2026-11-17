@@ -52,15 +52,11 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             httpProxy.Start();
 
 
-            MqttNetClientOptions mqttClientOptions = new()
+            // No MQTT client is supplied, so the one the connection client creates takes these settings
+            ConnectionClientOptions connectionClientOptions = new()
             {
                 UseWebsocket = true,
                 Proxy = new WebProxy("localhost", proxyPort)
-            };
-
-            ConnectionClientOptions connectionClientOptions = new()
-            {
-                MqttClient = new MqttNetClient(mqttClientOptions)
             };
 
             UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(isClassicHub, connectionClientOptions, cancellationToken: TestContext.Current.CancellationToken);

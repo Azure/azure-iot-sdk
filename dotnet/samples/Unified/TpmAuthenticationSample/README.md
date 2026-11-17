@@ -26,7 +26,9 @@ never leaves the TPM.
 ## Limitations
 
 - DPS only supports TPM attestation over HTTPS, so the SDK always provisions devices that use a
-  `TpmAuthenticationProvider` over HTTPS (port 443), and all other devices over MQTT.
+  `TpmAuthenticationProvider` over HTTPS (port 443), and all other devices over MQTT. A proxy set in
+  `ConnectionClientOptions.Proxy` applies to both: the HTTPS requests to DPS and the MQTT connection to IoT Hub (over
+  websockets).
 - TPM authentication uses SAS tokens, so it only works with MQTTv3 IoT Hubs, unless IoT Hub is authenticated with an
   issued certificate as described below.
 - TPM devices have no secondary credentials to fall back to.

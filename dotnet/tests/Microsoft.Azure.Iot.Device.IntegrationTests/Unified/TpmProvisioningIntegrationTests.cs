@@ -1,13 +1,17 @@
 // Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using CaptureProxy;
 using Microsoft.Azure.Devices.Provisioning.Service;
 using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Models.Telemetry;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 using Microsoft.Azure.Iot.Device.Unified.Telemetry;
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
 using System.Net.NetworkInformation;
 using TpmAuthenticationSample;
 using Xunit;
@@ -106,6 +110,42 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             }
         }
 
+        [Fact(Timeout = Setup.TestTimeoutMilliseconds)]
+        public async Task ProvisionsOverHttpAndConnectsOverMqttThroughTheSameProxy()
+        {
+            _simulator.SkipIfUnavailable();
+            CancellationToken cancellationToken = TestContext.Current.CancellationToken;
+
+            const int proxyPort = 8879; // Distinct from the ports other proxy tests use so that they don't collide if run in parallel
+            using HttpProxy httpProxy = new(proxyPort);
+            httpProxy.Start();
+
+            using TssTpmProvider tpm = TssTpmProvider.CreateForSimulator();
+            IndividualEnrollment enrollment = await CreateEnrollmentAsync(tpm, cancellationToken);
+            TpmAuthenticationProvider authentication = new(enrollment.RegistrationId, Setup.DpsIdScope, tpm);
+
+            RecordingWebProxy proxy = new(new WebProxy("localhost", proxyPort));
+            ConnectionClient connectionClient = new(new ConnectionClientOptions { UseWebsocket = true, Proxy = proxy });
+            try
+            {
+                TelemetryClient telemetryClient = new(connectionClient); // Not disposed: disposing it would dispose the connection client before cleanup disconnects it
+
+                ConnectionContext context = await Setup.RetryAroundAuthorizationAsync(
+                    () => connectionClient.ProvisionAndConnectAsync(CreateSettings(), authentication, cancellationToken: cancellationToken),
+                    cancellationToken);
+                await telemetryClient.SendTelemetryAsync(new DeviceToCloudTelemetry { Payload = new byte[10] }, cancellationToken);
+
+                // DPS was reached over HTTPS and IoT hub over MQTT on websockets, both through the proxy.
+                Assert.Contains(proxy.Destinations, destination => destination.Scheme == Uri.UriSchemeHttps && destination.Host == CreateSettings().GlobalEndpointAddress);
+                Assert.Contains(proxy.Destinations, destination => destination.Scheme == "wss" && destination.Host == context.IotHubHostName);
+            }
+            finally
+            {
+                await UnifiedDeviceTestContext.CleanupAsync(connectionClient, connectionClient.GetCurrentConnectionContext(), enrollment);
+                httpProxy.Stop();
+            }
+        }
+
         private static ProvisioningSettings CreateSettings() => new(Setup.DpsIdScope);
 
         private static async Task<IndividualEnrollment> CreateEnrollmentAsync(TssTpmProvider tpm, CancellationToken cancellationToken)
@@ -116,6 +156,36 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
             using ProvisioningServiceClient provisioningServiceClient = Setup.GetDpsHubServiceClient();
             await provisioningServiceClient.CreateOrUpdateIndividualEnrollmentAsync(enrollment, cancellationToken);
             return enrollment;
+        }
+
+        /// <summary>
+        /// Records each destination the SDK asks the proxy about, which it does for every connection it routes through it.
+        /// </summary>
+        private sealed class RecordingWebProxy : IWebProxy
+        {
+            private readonly IWebProxy _inner;
+            private readonly ConcurrentQueue<Uri> _destinations = new();
+
+            public RecordingWebProxy(IWebProxy inner)
+            {
+                _inner = inner;
+            }
+
+            public IReadOnlyCollection<Uri> Destinations => _destinations.ToArray();
+
+            public ICredentials? Credentials
+            {
+                get => _inner.Credentials;
+                set => _inner.Credentials = value;
+            }
+
+            public Uri? GetProxy(Uri destination)
+            {
+                _destinations.Enqueue(destination);
+                return _inner.GetProxy(destination);
+            }
+
+            public bool IsBypassed(Uri host) => _inner.IsBypassed(host);
         }
     }
 

@@ -13,6 +13,7 @@ using Microsoft.Azure.Iot.Device.Provisioning.Models;
 using Microsoft.Azure.Iot.Device.Retry;
 using System.Diagnostics;
 using System.Globalization;
+using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Azure.Iot.Device.MQTTv5.Connection;
@@ -360,7 +361,13 @@ namespace Microsoft.Azure.Iot.Device
         /// Creates the handler that sends HTTPS requests to Device Provisioning Service with the given boot credentials.
         /// Replaceable so that tests can intercept the requests.
         /// </summary>
-        internal Func<AuthenticationCredentials, HttpMessageHandler> CreateProvisioningHttpMessageHandler { get; set; } = HttpMessageHandlerFactory.Create;
+        internal Func<AuthenticationCredentials, HttpMessageHandler> CreateProvisioningHttpMessageHandler { get; set; }
+
+        /// <summary>
+        /// The HTTP proxy that all of this client's network traffic, and that of the feature clients that use it, goes through.
+        /// See <see cref="ConnectionClientOptions.Proxy"/>.
+        /// </summary>
+        internal IWebProxy? Proxy { get; }
 
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
@@ -385,12 +392,18 @@ namespace Microsoft.Azure.Iot.Device
             _useCleanSession = options.UseCleanSession;
             _connectionAttemptTimeout = options.ConnectionAttemptTimeout;
 
-            // This is the basic MQTT client that has no reconnection/retry logic
-            MqttNetClientOptions mqttNetClientOptions = new()
+            IWebProxy? proxy = options.Proxy;
+            Proxy = proxy;
+            CreateProvisioningHttpMessageHandler = credentials => HttpMessageHandlerFactory.Create(credentials, proxy);
+
+            // This is the basic MQTT client that has no reconnection/retry logic. A user-supplied MQTT client keeps its own
+            // websocket and proxy settings; otherwise the one created here takes them from these options.
+            IMqttClient unmanagedMqttClient = options.MqttClient ?? new MqttNetClient(new MqttNetClientOptions
             {
                 EnableMqttLogs = options.EnableMqttLogging,
-            };
-            var unmanagedMqttClient = options.MqttClient ?? new MqttNetClient(mqttNetClientOptions);
+                UseWebsocket = options.UseWebsocket || proxy != null, // MQTT can only be tunnelled through an HTTP proxy over websockets
+                Proxy = proxy,
+            });
 
             // This is the wrapper that manages reconnection
             ManagedMqttConnection = new(unmanagedMqttClient, options.ConnectionAttemptTimeout, options.ConnectionRetryPolicy);

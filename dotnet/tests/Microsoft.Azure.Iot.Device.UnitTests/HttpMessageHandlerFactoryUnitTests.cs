@@ -24,7 +24,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                 ClientCertificate = certificate,
                 RemoteCertificateValidationCallback = validation,
                 LocalCertificateSelectionCallback = selection,
-            }));
+            }, proxy: null));
 
             Assert.Same(validation, handler.SslOptions.RemoteCertificateValidationCallback);
             Assert.Same(selection, handler.SslOptions.LocalCertificateSelectionCallback);
@@ -36,7 +36,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         {
             using X509Certificate2 certificate = CreateCertificate();
 
-            using var handler = Assert.IsType<SocketsHttpHandler>(HttpMessageHandlerFactory.Create(new AuthenticationCredentials { ClientCertificate = certificate }));
+            using var handler = Assert.IsType<SocketsHttpHandler>(HttpMessageHandlerFactory.Create(new AuthenticationCredentials { ClientCertificate = certificate }, proxy: null));
 
             Assert.Null(handler.SslOptions.RemoteCertificateValidationCallback);
             Assert.NotNull(handler.SslOptions.LocalCertificateSelectionCallback);
@@ -49,7 +49,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             using var handler = Assert.IsType<SocketsHttpHandler>(HttpMessageHandlerFactory.Create(new AuthenticationCredentials
             {
                 Password = Encoding.UTF8.GetBytes("SharedAccessSignature sr=x&sig=y&se=1"),
-            }));
+            }, proxy: null));
 
             Assert.Null(handler.SslOptions.ClientCertificates);
             Assert.Null(handler.SslOptions.LocalCertificateSelectionCallback);

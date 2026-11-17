@@ -75,6 +75,21 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
+        public async Task FileUploadGoesThroughTheConnectionClientsProxy()
+        {
+            using LoopbackConnectProxy proxy = new();
+            var connection = new FakeConnectionClient(new SwitchableAuthenticationProvider { Credentials = CreateSasCredentials() })
+            {
+                Proxy = new WebProxy(proxy.Address),
+            };
+            using var fileUploadClient = new FileUploadClient(connection);
+
+            await Assert.ThrowsAnyAsync<Exception>(() => GetSasUriAsync(fileUploadClient));
+
+            Assert.Equal($"CONNECT {HostName}:443 HTTP/1.1", Assert.Single(proxy.RequestLines));
+        }
+
+        [Fact]
         public async Task X509AuthenticationDoesNotSendAuthorizationHeader()
         {
             using RSA key = RSA.Create(2048);
@@ -386,6 +401,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             }
 
             public ConnectionContext Context { get; private set; } = null!;
+
+            public IWebProxy? Proxy { get; init; }
+
+            IWebProxy? IConnectionClient.Proxy => Proxy;
 
             // Re-provisioning produces a new connection context, as the real connection client does
             public void Reprovision(string iotHubHostName, string deviceId = DeviceId)
