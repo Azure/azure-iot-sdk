@@ -540,7 +540,10 @@ static void check_file_upload_notification(void)
              s_run.service, AZ_IOT_E2E_SAMPLE_FILE_UPLOAD_BLOB_NAME)
          && time(NULL) < end)
   {
-    if (!az_iot_e2e_service_do_work(s_run.service, E2E_SAMPLE_PUMP_MS))
+    /* One call can capture ours and then fail: ending the watcher would lose the capture. */
+    if (!az_iot_e2e_service_do_work(s_run.service, E2E_SAMPLE_PUMP_MS)
+        && !az_iot_e2e_service_file_notification_seen(
+            s_run.service, AZ_IOT_E2E_SAMPLE_FILE_UPLOAD_BLOB_NAME))
     {
       /* Unsettled notifications stay queued, so a new watcher still gets ours. */
       printf(
