@@ -104,7 +104,7 @@ env:
   E2E_RESOURCE_GROUP: CSDKE2EFast-${{ github.run_id }}-${{ github.run_attempt }}
   # 'true' when this run uses the shared environment (see header). Job-level
   # `if:` cannot read `env`, so the setup and teardown jobs repeat the expression.
-  E2E_SHARED: ${{ vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request' }}
+  E2E_SHARED: 'false'  # VERIFY: per-run hub
 
 jobs:
   # On pull requests, whether the e2e legs run; every other event runs them.
@@ -153,7 +153,7 @@ jobs:
       id-token: write   # azure/login OIDC
     name: setup (provision)
     needs: changes
-    if: ${{ needs.changes.outputs.run == 'true' && !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
+    if: ${{ needs.changes.outputs.run == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -170,7 +170,7 @@ jobs:
 
       - name: Provision resources
         id: provision
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@911deae8e24fbac9ecb4361f99ea962ab5e5e4b4 # main after #463 (storage account: allowBlobPublicAccess=false)
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@0811118868b2ce9d7aa775d8326a592f3e7d2e7b # VERIFY: Azure/iot-sdks-e2e-fx#466
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # The shared action defaults to EastUS; these pipelines run in
@@ -189,6 +189,7 @@ jobs:
           # always-run file-upload e2e (az_iot_tests_e2e_fileupload) can obtain a
           # SAS URI and upload a blob.
           enable-file-upload: 'true'
+          disable-local-auth: 'true'  # VERIFY
 
       # One Event Hubs consumer group per test job, e2e-<device index>: Event
       # Hubs allows 5 readers per partition per group, and the test-config leaves
@@ -201,6 +202,30 @@ jobs:
           for i in $(seq 0 11); do
             az iot hub consumer-group create -g "$E2E_RESOURCE_GROUP" --hub-name "$hub" -n "e2e-$i" -o none
           done
+
+      # VERIFY: the hub has local auth disabled and refuses its own policy key.
+      - name: Verify local auth is disabled
+        shell: pwsh
+        run: |
+          $hub = az iot hub list -g $env:E2E_RESOURCE_GROUP -o json | ConvertFrom-Json | Select-Object -First 1
+          Write-Host "disableLocalAuth=$($hub.properties.disableLocalAuth)"
+          if ($hub.properties.disableLocalAuth -ne $true) { throw 'hub allows local auth' }
+          $key = az iot hub policy show -g $env:E2E_RESOURCE_GROUP --hub-name $hub.name -n iothubowner --query primaryKey -o tsv
+          Write-Host "::add-mask::$key"
+          $r = $hub.properties.hostName; $se = [DateTimeOffset]::UtcNow.AddMinutes(5).ToUnixTimeSeconds()
+          $h = [Security.Cryptography.HMACSHA256]::new([Convert]::FromBase64String($key))
+          $sig = [Uri]::EscapeDataString([Convert]::ToBase64String($h.ComputeHash([Text.Encoding]::UTF8.GetBytes("$r`n$se"))))
+          $code = (Invoke-WebRequest -Method Post -Uri "https://$r/devices/query?api-version=2021-04-12" -SkipHttpErrorCheck `
+            -Headers @{ Authorization = "SharedAccessSignature sr=$r&sig=$sig&se=$se&skn=iothubowner" } `
+            -ContentType 'application/json' -Body '{"query":"SELECT deviceId FROM devices"}').StatusCode
+          Write-Host "SAS policy key -> HTTP $code"
+          if ($code -ne 401) { throw "expected 401 for the policy key, got $code" }
+          $tok = az account get-access-token --resource https://iothubs.azure.net --query accessToken -o tsv
+          Write-Host "::add-mask::$tok"
+          $code = (Invoke-WebRequest -Method Post -Uri "https://$r/devices/query?api-version=2021-04-12" -SkipHttpErrorCheck `
+            -Headers @{ Authorization = "Bearer $tok" } -ContentType 'application/json' -Body '{"query":"SELECT deviceId FROM devices"}').StatusCode
+          Write-Host "Entra token -> HTTP $code"
+          if ($code -ne 200) { throw "expected 200 for the token, got $code" }
 
       - name: Upload test config
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -244,7 +269,7 @@ jobs:
   hub-token:
     name: hub access token (Microsoft Entra mode)
     needs: [ changes, openssl ]
-    if: ${{ needs.changes.outputs.run == 'true' && vars.E2E_SHARED_IOTHUB_HOSTNAME != '' }}
+    if: ${{ needs.changes.outputs.run == 'true' && (vars.E2E_SHARED_IOTHUB_HOSTNAME || 'ewertons-mqttv3-hub-4f4fb8da.azure-devices.net') != '' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -278,7 +303,7 @@ jobs:
     needs: [ setup, openssl, hub-token ]
     # Runs after setup, or without it in shared mode (setup skipped); in Microsoft Entra mode, after
     # hub-token.
-    if: ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') && needs.openssl.result == 'success' && (needs.hub-token.result == 'success' || vars.E2E_SHARED_IOTHUB_HOSTNAME == '') }}
+    if: ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') && needs.openssl.result == 'success' && (needs.hub-token.result == 'success' || (vars.E2E_SHARED_IOTHUB_HOSTNAME || 'ewertons-mqttv3-hub-4f4fb8da.azure-devices.net') == '') }}
     # Runs pull-request code: no OIDC token (see hub-token).
     permissions:
       contents: read
@@ -395,13 +420,33 @@ jobs:
           name: e2e-test-config
           path: test_config
 
+      # VERIFY: per-run hub with local auth disabled -> the tests use hub-token's token.
+      - name: Unseal the hub access token (VERIFY per-run token)
+        if: env.E2E_SHARED != 'true'
+        shell: pwsh
+        env:
+          E2E_SHARED_GROUP_CA: ${{ secrets.E2E_SHARED_GROUP_CA }}
+          E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
+          E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
+          E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
+          E2E_SHARED_DPS_CS: ${{ secrets.E2E_SHARED_DPS_CS }}
+          E2E_SHARED_IOTHUB_HOSTNAME: unused.azure-devices.net
+          E2E_SHARED_IOTHUB_SEALED_SERVICE_ACCESS_TOKEN: ${{ needs.hub-token.outputs.sealed }}
+        run: |
+          $f = Join-Path $env:RUNNER_TEMP 'verify-token.ps1'
+          ./c/eng/e2e-shared-device.ps1 -RegistrationId verify-token -OutFile $f | Out-Null
+          . $f
+          Remove-Item $f
+          if (-not $env:IOTHUB_SERVICE_ACCESS_TOKEN) { throw 'no token' }
+          "IOTHUB_SERVICE_ACCESS_TOKEN=$env:IOTHUB_SERVICE_ACCESS_TOKEN" | Add-Content $env:GITHUB_ENV
+
       - name: Issue a device on the shared environment
         if: env.E2E_SHARED == 'true'
         shell: pwsh
         env:
           E2E_SHARED_GROUP_CA: ${{ secrets.E2E_SHARED_GROUP_CA }}
           E2E_SHARED_IOTHUB_CS: ${{ secrets.E2E_SHARED_IOTHUB_CS }}
-          E2E_SHARED_IOTHUB_HOSTNAME: ${{ vars.E2E_SHARED_IOTHUB_HOSTNAME }}
+          E2E_SHARED_IOTHUB_HOSTNAME: ${{ (vars.E2E_SHARED_IOTHUB_HOSTNAME || 'ewertons-mqttv3-hub-4f4fb8da.azure-devices.net') }}
           E2E_SHARED_IOTHUB_SEALED_SERVICE_ACCESS_TOKEN: ${{ needs.hub-token.outputs.sealed }}
           E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
           E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
@@ -616,7 +661,7 @@ jobs:
   esp32-qemu:
     name: esp32 qemu / ${{ matrix.target }}
     needs: [ changes, hub-token ]
-    if: ${{ !cancelled() && needs.changes.outputs.run == 'true' && (needs.hub-token.result == 'success' || vars.E2E_SHARED_IOTHUB_HOSTNAME == '') }}
+    if: ${{ !cancelled() && needs.changes.outputs.run == 'true' && (needs.hub-token.result == 'success' || (vars.E2E_SHARED_IOTHUB_HOSTNAME || 'ewertons-mqttv3-hub-4f4fb8da.azure-devices.net') == '') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     # Runs pull-request code: no OIDC token (see hub-token).
@@ -644,7 +689,7 @@ jobs:
         env:
           E2E_SHARED_GROUP_CA: ${{ secrets.E2E_SHARED_GROUP_CA }}
           E2E_SHARED_IOTHUB_CS: ${{ secrets.E2E_SHARED_IOTHUB_CS }}
-          E2E_SHARED_IOTHUB_HOSTNAME: ${{ vars.E2E_SHARED_IOTHUB_HOSTNAME }}
+          E2E_SHARED_IOTHUB_HOSTNAME: ${{ (vars.E2E_SHARED_IOTHUB_HOSTNAME || 'ewertons-mqttv3-hub-4f4fb8da.azure-devices.net') }}
           E2E_SHARED_IOTHUB_SEALED_SERVICE_ACCESS_TOKEN: ${{ needs.hub-token.outputs.sealed }}
           E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
           E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
@@ -750,7 +795,7 @@ jobs:
     # `env` (not from `needs.setup.outputs`), so a cancelled setup still gets torn
     # down; the destroy action no-ops when the group was never created. Skipped in
     # shared mode: the shared group outlives the run.
-    if: ${{ always() && needs.changes.outputs.run == 'true' && !(vars.E2E_SHARED_ID_SCOPE != '' && github.event_name == 'pull_request') }}
+    if: ${{ always() && needs.changes.outputs.run == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:

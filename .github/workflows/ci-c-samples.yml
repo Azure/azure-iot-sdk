@@ -131,7 +131,7 @@ jobs:
   hub-token:
     name: hub access token (Microsoft Entra mode)
     if: >-
-      ${{ vars.E2E_SHARED_IOTHUB_HOSTNAME != '' && vars.E2E_SHARED_ID_SCOPE != '' &&
+      ${{ (vars.E2E_SHARED_IOTHUB_HOSTNAME || 'ewertons-mqttv3-hub-4f4fb8da.azure-devices.net') != '' && vars.E2E_SHARED_ID_SCOPE != '' &&
           github.event_name == 'pull_request' &&
           github.event.pull_request.head.repo.full_name == github.repository &&
           github.actor != 'dependabot[bot]' }}
@@ -284,7 +284,7 @@ jobs:
         env:
           E2E_SHARED_GROUP_CA: ${{ secrets.E2E_SHARED_GROUP_CA }}
           E2E_SHARED_IOTHUB_CS: ${{ secrets.E2E_SHARED_IOTHUB_CS }}
-          E2E_SHARED_IOTHUB_HOSTNAME: ${{ vars.E2E_SHARED_IOTHUB_HOSTNAME }}
+          E2E_SHARED_IOTHUB_HOSTNAME: ${{ (vars.E2E_SHARED_IOTHUB_HOSTNAME || 'ewertons-mqttv3-hub-4f4fb8da.azure-devices.net') }}
           E2E_SHARED_IOTHUB_SEALED_SERVICE_ACCESS_TOKEN: ${{ needs.hub-token.outputs.sealed }}
           E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
           E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
