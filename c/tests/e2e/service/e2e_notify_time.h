@@ -7,6 +7,7 @@
 #define E2E_NOTIFY_TIME_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -45,6 +46,15 @@ extern "C"
    * @p now_s. A blob name that cannot be read decides nothing. @p body must be NUL-terminated.
    */
   bool e2e_notify_has_no_watcher(const char* body, int64_t now_s, int64_t stale_after_s);
+
+  /**
+   * @brief Copies the string value of the field @p name of a file-upload notification @p body,
+   * as it is in the JSON (escapes kept), into @p out. For diagnostics.
+   *
+   * @return true; false, with @p out empty, if the field is missing, is not a string, is
+   * truncated, or does not fit @p out_size bytes with its NUL. @p body must be NUL-terminated.
+   */
+  bool e2e_notify_read_string_field(const char* body, const char* name, char* out, size_t out_size);
 
 #ifdef __cplusplus
 }
