@@ -176,6 +176,11 @@ extern "C"
       int* out_unwatched,
       int* out_unparsed);
 
+  /** @brief Prints each notification delivered to the watcher (device, blob, enqueued time, AMQP
+   * delivery count, what it did with it), for a test whose wait timed out. Nothing when not
+   * watching. */
+  void az_iot_e2e_service_file_notification_dump(const az_iot_e2e_service* svc);
+
   /* Stop watching file-upload notifications. Safe to call when not watching. */
   void az_iot_e2e_service_file_notification_watch_end(az_iot_e2e_service* svc);
 

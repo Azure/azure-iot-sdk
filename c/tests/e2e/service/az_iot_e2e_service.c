@@ -383,7 +383,7 @@ bool az_iot_e2e_service_do_work(az_iot_e2e_service* svc, int timeout_ms)
   }
   if (svc->filenotify != NULL && !e2e_amqp_filenotify_do_work(svc->filenotify, slice))
   {
-    set_error(svc, "filenotify: connection failed");
+    set_error(svc, "filenotify: connection failed or receiver detached");
     return false;
   }
   return true;
@@ -577,6 +577,14 @@ void az_iot_e2e_service_file_notification_stats(
   if (out_unparsed != NULL)
   {
     *out_unparsed = 0;
+  }
+}
+
+void az_iot_e2e_service_file_notification_dump(const az_iot_e2e_service* svc)
+{
+  if (svc->filenotify != NULL)
+  {
+    e2e_amqp_filenotify_dump(svc->filenotify);
   }
 }
 

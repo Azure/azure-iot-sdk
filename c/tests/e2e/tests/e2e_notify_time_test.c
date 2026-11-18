@@ -3,9 +3,9 @@
 // information.
 
 /* SPDX-License-Identifier: MIT */
-/* Parsing of a file-upload notification's enqueuedTimeUtc, and which notifications have no
- * watcher. The watcher accepts (deletes) other devices' notifications without one, so anything
- * malformed must be rejected. No network or Azure resources are used. */
+/* Parsing of a file-upload notification's enqueuedTimeUtc and string fields, and which
+ * notifications have no watcher. The watcher accepts (deletes) other devices' notifications
+ * without one, so anything malformed must be rejected. No network or Azure resources are used. */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -201,6 +201,29 @@ static void test_blob_name_is_decoded_or_decides_nothing(void** state)
   assert_true(e2e_notify_has_no_watcher(unreadable_but_dated, 661, 600));
 }
 
+/* A string field is copied as it is in the JSON; one that cannot be copied whole is empty. */
+static void test_string_field_is_copied_whole_or_not_at_all(void** state)
+{
+  (void)state;
+  static const char body[]
+      = "{\"deviceId\" : \"dev-1\",\"blobName\":\"dev-1\\/a\\\"b.txt\",\"blobSizeInBytes\":42}";
+  char out[16];
+  assert_true(e2e_notify_read_string_field(body, "deviceId", out, sizeof(out)));
+  assert_string_equal("dev-1", out);
+  assert_true(e2e_notify_read_string_field(body, "blobName", out, sizeof(out)));
+  assert_string_equal("dev-1\\/a\\\"b.txt", out);
+
+  assert_false(e2e_notify_read_string_field(body, "blobSizeInBytes", out, sizeof(out)));
+  assert_string_equal("", out);
+  assert_false(e2e_notify_read_string_field(body, "enqueuedTimeUtc", out, sizeof(out)));
+  assert_false(e2e_notify_read_string_field("{\"deviceId\":\"dev-1", "deviceId", out, sizeof(out)));
+  char small[5];
+  assert_false(e2e_notify_read_string_field(body, "deviceId", small, sizeof(small)));
+  assert_string_equal("", small);
+  char exact[6];
+  assert_true(e2e_notify_read_string_field(body, "deviceId", exact, sizeof(exact)));
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -213,6 +236,7 @@ int main(void)
     cmocka_unit_test(test_utc_time_alone),
     cmocka_unit_test(test_no_watcher_for_unwatched_or_stale_blobs),
     cmocka_unit_test(test_blob_name_is_decoded_or_decides_nothing),
+    cmocka_unit_test(test_string_field_is_copied_whole_or_not_at_all),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

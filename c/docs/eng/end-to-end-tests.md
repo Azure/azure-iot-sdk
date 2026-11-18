@@ -365,7 +365,7 @@ Each test:
 | `unified/twin_get_patch` | A twin GET shows reported `sample` = `hello`, `$lastUpdated` after the start. |
 | `unified/direct_method_responder`, `direct_method_slow_responder` | Once the hub session is up, `echo` (`slowEcho`) answers 200 with the payload echoed; retried while the device is not subscribed. |
 | `unified/c2d_receiver` | Once the hub session is up, one C2D message is sent; the sample prints it and `Received N message(s).`, N >= 1. |
-| `unified/file_upload` | The hub's file-upload notification for that device and `sample-data/test.txt`. |
+| `unified/file_upload` | The hub's file-upload notification for that device and `sample-data/test.txt`, within 240 s: watchers of concurrent runs compete for the hub-wide endpoint. A lost watcher is reattached; on a miss, the test lists every notification delivered to it (device, blob, enqueued time, AMQP delivery count, disposition). |
 | `authentication/dps_sas_key` | Telemetry `"auth":"sas-key"`; the sample gets `AZ_IOT_DPS_ENROLLMENT_GROUP_KEY`. |
 | `authentication/user_provided_sas_token` | rc 0 only; it gets `AZ_IOT_DPS_SYMMETRIC_KEY` derived from the group key. |
 | `authentication/hsm_pkcs11` | Telemetry `"custody":"hardware"`; the device key in a SoftHSM2 token, `OPENSSL_CONF` (from `AZ_IOT_SAMPLES_E2E_PKCS11_OPENSSL_CONF`) for this sample only. |

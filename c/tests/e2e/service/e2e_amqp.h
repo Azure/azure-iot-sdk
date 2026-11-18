@@ -279,6 +279,8 @@ extern "C"
 #define E2E_AMQP_NOTIFY_CAPTURE_MAX 8
 #define E2E_AMQP_NOTIFY_BODY_MAX 2048
 #define E2E_AMQP_NOTIFY_HOLD_MAX 10
+#define E2E_AMQP_NOTIFY_LOG_MAX 32
+#define E2E_AMQP_NOTIFY_LOG_LINE_MAX 512
 
   /* A file-upload notification watcher: an AMQP connection to the IoT Hub service
    * endpoint with a single receiver on /messages/serviceBound/filenotifications.
@@ -317,6 +319,10 @@ extern "C"
     int released_count; /* released because they name another device */
     int unwatched_count; /* another device's that no watcher waits for: accepted */
     int unparsed_count; /* body missing or not a DATA body */
+    int64_t began_at_s; /* runner clock when the watch began */
+    /* One line per delivery (device, blob, enqueued time, delivery count, disposition), the newest
+     * overwriting the oldest: which notifications competing watchers bounce, and how often. */
+    char delivery_log[E2E_AMQP_NOTIFY_LOG_MAX][E2E_AMQP_NOTIFY_LOG_LINE_MAX];
 
     uint8_t incoming_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
     uint8_t outgoing_buffer[AZ_AMQP_DEFAULT_MAX_FRAME_SIZE];
@@ -354,7 +360,7 @@ extern "C"
       bool* attach_refused_out);
 
   /* Advance the watcher once, waiting up to @p wait_ms for socket I/O. Returns
-   * false if the connection has failed. */
+   * false if the connection has failed or the hub detached the receiver. */
   bool e2e_amqp_filenotify_do_work(e2e_amqp_filenotify* f, int wait_ms);
 
   /* Returns true if any captured notification body contains @p needle. */
@@ -368,6 +374,10 @@ extern "C"
       int* out_released,
       int* out_unwatched,
       int* out_unparsed);
+
+  /** @brief Prints the deliveries logged since the watch began, the newest
+   * #E2E_AMQP_NOTIFY_LOG_MAX of them, to stdout. Each was also printed when it arrived. */
+  void e2e_amqp_filenotify_dump(const e2e_amqp_filenotify* f);
 
   /* Detach the receiver and close the connection (best-effort). */
   void e2e_amqp_filenotify_end(e2e_amqp_filenotify* f);

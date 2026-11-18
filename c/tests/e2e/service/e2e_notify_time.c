@@ -7,6 +7,7 @@
 
 #include "az_iot_e2e_service.h"
 
+#include <stdio.h>
 #include <string.h>
 
 /**
@@ -68,6 +69,28 @@ static const char* skip_json_whitespace(const char* p)
   return p;
 }
 
+/**
+ * @brief Finds the string value of the field named @p quoted_name (the name in quotes) in @p body.
+ *
+ * @return The character after the value's opening quote; NULL if the field is missing or its value
+ * is not a string.
+ */
+static const char* find_string_value(const char* body, const char* quoted_name)
+{
+  const char* p = strstr(body, quoted_name);
+  if (p == NULL)
+  {
+    return NULL;
+  }
+  p = skip_json_whitespace(p + strlen(quoted_name));
+  if (*p != ':')
+  {
+    return NULL;
+  }
+  p = skip_json_whitespace(p + 1);
+  return (*p == '"') ? p + 1 : NULL;
+}
+
 bool e2e_utc_time_parse(const char* text, int64_t* out_epoch_s, const char** out_end)
 {
   const char* p = text;
@@ -116,28 +139,10 @@ bool e2e_utc_time_parse(const char* text, int64_t* out_epoch_s, const char** out
 
 bool e2e_notify_enqueued_time(const char* body, int64_t* out_epoch_s)
 {
-  static const char key[] = "\"enqueuedTimeUtc\"";
-  const char* p = strstr(body, key);
-  if (p == NULL)
-  {
-    return false;
-  }
-  p += sizeof(key) - 1;
-  p = skip_json_whitespace(p);
-  if (*p != ':')
-  {
-    return false;
-  }
-  p = skip_json_whitespace(p + 1);
-  if (*p != '"')
-  {
-    return false;
-  }
-  p++;
-
+  const char* p = find_string_value(body, "\"enqueuedTimeUtc\"");
   const char* end = NULL;
   int64_t epoch_s = 0;
-  if (!e2e_utc_time_parse(p, &epoch_s, &end) || *end != '"')
+  if (p == NULL || !e2e_utc_time_parse(p, &epoch_s, &end) || *end != '"')
   {
     return false;
   }
@@ -154,23 +159,11 @@ bool e2e_notify_enqueued_time(const char* body, int64_t* out_epoch_s)
  */
 static bool read_blob_name(const char* body, char* out, size_t out_size)
 {
-  static const char key[] = "\"blobName\"";
-  const char* p = strstr(body, key);
+  const char* p = find_string_value(body, "\"blobName\"");
   if (p == NULL)
   {
     return false;
   }
-  p = skip_json_whitespace(p + sizeof(key) - 1);
-  if (*p != ':')
-  {
-    return false;
-  }
-  p = skip_json_whitespace(p + 1);
-  if (*p != '"')
-  {
-    return false;
-  }
-  p++;
 
   bool in_device_id = true;
   size_t n = 0;
@@ -220,4 +213,32 @@ bool e2e_notify_has_no_watcher(const char* body, int64_t now_s, int64_t stale_af
   /* A blob name that cannot be read may be watched: only its age can tell. */
   int64_t enqueued_s;
   return e2e_notify_enqueued_time(body, &enqueued_s) && now_s - enqueued_s > stale_after_s;
+}
+
+bool e2e_notify_read_string_field(const char* body, const char* name, char* out, size_t out_size)
+{
+  char quoted_name[64];
+  int const quoted_length = snprintf(quoted_name, sizeof(quoted_name), "\"%s\"", name);
+  const char* value = (quoted_length > 0 && (size_t)quoted_length < sizeof(quoted_name))
+      ? find_string_value(body, quoted_name)
+      : NULL;
+  size_t length = 0;
+  for (; value != NULL && value[length] != '"' && value[length] != '\0'; length++)
+  {
+    if (value[length] == '\\' && value[length + 1] != '\0')
+    {
+      length++;
+    }
+  }
+  if (value == NULL || value[length] != '"' || length >= out_size)
+  {
+    if (out_size > 0)
+    {
+      out[0] = '\0';
+    }
+    return false;
+  }
+  memcpy(out, value, length);
+  out[length] = '\0';
+  return true;
 }
