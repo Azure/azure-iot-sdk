@@ -9,7 +9,8 @@ Writes the e2e test config for one device on a shared e2e environment.
 Issues a device certificate for -RegistrationId, signed by the shared DPS X.509 enrollment
 group's CA, and writes the test-config script the workflow sources (the variables the
 provisioning action emits), including the shared symmetric-key group's key for the SAS
-suites. Devices register through the groups on first connect, so no Azure call is made here.
+suites. Devices register through the groups on first connect, so no Azure call is made here
+other than taking the access token of Microsoft Entra mode.
 
 Default (ci-c-e2e), inputs from the environment (repository secrets/variables):
   E2E_SHARED_GROUP_CA        base64 of a PEM holding the group CA certificate and its private key
@@ -21,6 +22,14 @@ Default (ci-c-e2e), inputs from the environment (repository secrets/variables):
                              written as IOT_DPS_CONNECTION_STRING for the TPM suite's enrollments
   E2E_SHARED_IOTHUB_REGISTRY_CS  IoT Hub connection string with RegistryWrite, written as
                              IOTHUB_REGISTRY_CONNECTION_STRING for the TPM suite's device cleanup
+
+Microsoft Entra mode (hub with local authentication disabled), when E2E_SHARED_IOTHUB_HOSTNAME is
+set: E2E_SHARED_IOTHUB_CS and E2E_SHARED_IOTHUB_REGISTRY_CS are not used, and instead
+  E2E_SHARED_IOTHUB_HOSTNAME     IoT Hub host name, written as IOTHUB_HOSTNAME
+  E2E_SHARED_IOTHUB_SERVICE_ACCESS_TOKEN  (optional) access token for https://iothubs.azure.net,
+                             else taken from the Azure CLI login (IoT Hub Data Contributor on the
+                             hub); written as IOTHUB_SERVICE_ACCESS_TOKEN. Not refreshed: it lives
+                             60-90 minutes.
 
 -Csr (ci-c-e2e-csr), writes the IOT_DPS_GROUP_X509_* bootstrap identity instead:
   E2E_CSR_SHARED_GROUP_CA    base64 of a PEM holding the group's issuing CA certificate and its
@@ -43,14 +52,25 @@ Set-StrictMode -Version Latest
 
 $Vars = if ($Csr) { 'E2E_CSR_SHARED' } else { 'E2E_SHARED' }
 function Get-Shared([string]$Name) { [Environment]::GetEnvironmentVariable("${Vars}_$Name") }
+$Entra = -not $Csr -and -not [string]::IsNullOrWhiteSpace((Get-Shared 'IOTHUB_HOSTNAME'))
+$HubAuthorization = if ($Entra) { @('IOTHUB_HOSTNAME') } else { @('IOTHUB_CS', 'IOTHUB_REGISTRY_CS') }
 $Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE', 'SAS_GROUP_KEY') }
-            else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE', 'SAS_GROUP_KEY', 'DPS_CS', 'IOTHUB_REGISTRY_CS') }
+            else { @('GROUP_CA', 'EVENTHUB_CS', 'ID_SCOPE', 'SAS_GROUP_KEY', 'DPS_CS') + $HubAuthorization }
 $Missing = $Required | ForEach-Object { "${Vars}_$_" } |
     Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
 if ($Missing) { throw "Shared e2e environment not configured; missing: $($Missing -join ', ')." }
 
+$HubToken = Get-Shared 'IOTHUB_SERVICE_ACCESS_TOKEN'
+if ($Entra -and [string]::IsNullOrWhiteSpace($HubToken)) {
+    $HubToken = az account get-access-token --resource https://iothubs.azure.net --query accessToken -o tsv
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($HubToken)) {
+        throw 'No access token for https://iothubs.azure.net; log in with the Azure CLI first.'
+    }
+    if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host "::add-mask::$HubToken" }
+}
+
 if (-not $Csr) {
-    foreach ($Name in "${Vars}_IOTHUB_CS", "${Vars}_EVENTHUB_CS") {
+    foreach ($Name in @(if (-not $Entra) { "${Vars}_IOTHUB_CS" }) + "${Vars}_EVENTHUB_CS") {
         if ([Environment]::GetEnvironmentVariable($Name) -match 'SharedAccessKeyName=iothubowner') {
             throw "$Name uses the iothubowner policy; use the 'service' policy."
         }
@@ -110,7 +130,12 @@ $Lines = if ($Csr) {
     )
 } else {
     @(
-        Format-Assignment 'IOTHUB_CONNECTION_STRING' (Get-Shared 'IOTHUB_CS')
+        if ($Entra) {
+            Format-Assignment 'IOTHUB_HOSTNAME' (Get-Shared 'IOTHUB_HOSTNAME')
+            Format-Assignment 'IOTHUB_SERVICE_ACCESS_TOKEN' $HubToken
+        } else {
+            Format-Assignment 'IOTHUB_CONNECTION_STRING' (Get-Shared 'IOTHUB_CS')
+        }
         Format-Assignment 'IOTHUB_EVENTHUB_CONNECTION_STRING' (Get-Shared 'EVENTHUB_CS')
         Format-Assignment 'IOTHUB_EVENTHUB_CONSUMER_GROUP' $ConsumerGroup
         Format-Assignment 'IOT_DPS_ID_SCOPE' (Get-Shared 'ID_SCOPE')
@@ -119,7 +144,7 @@ $Lines = if ($Csr) {
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_KEY_$DeviceIndex" $KeyB64
         Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' (Get-Shared 'SAS_GROUP_KEY')
         Format-Assignment 'IOT_DPS_CONNECTION_STRING' (Get-Shared 'DPS_CS')
-        Format-Assignment 'IOTHUB_REGISTRY_CONNECTION_STRING' (Get-Shared 'IOTHUB_REGISTRY_CS')
+        if (-not $Entra) { Format-Assignment 'IOTHUB_REGISTRY_CONNECTION_STRING' (Get-Shared 'IOTHUB_REGISTRY_CS') }
     )
 }
 $OutDir = Split-Path -Parent $OutFile

@@ -91,7 +91,9 @@ Service configuration (set by the provisioning config script):
 
 | Env var | Meaning |
 | --- | --- |
-| `IOTHUB_CONNECTION_STRING` | IoT Hub service policy connection string (c2d / method / twin) |
+| `IOTHUB_CONNECTION_STRING` | IoT Hub service policy connection string (c2d / method / twin); optional with `IOTHUB_SERVICE_ACCESS_TOKEN` |
+| `IOTHUB_SERVICE_ACCESS_TOKEN` | Microsoft Entra access token for `https://iothubs.azure.net` (optional). When set, it authorizes every hub service call instead of SAS (`Bearer`, on REST and on the AMQP CBS put-token), for a hub with local authentication disabled |
+| `IOTHUB_HOSTNAME` | IoT Hub host name for `IOTHUB_SERVICE_ACCESS_TOKEN` (optional; else that of `IOTHUB_CONNECTION_STRING`) |
 | `IOTHUB_EVENTHUB_CONNECTION_STRING` | Event Hub-compatible endpoint connection string (telemetry) |
 | `IOTHUB_EVENTHUB_LISTEN_NAME` | Event Hub entity name (optional; else from the connection string) |
 | `IOTHUB_EVENTHUB_PARTITION_COUNT` | partitions to watch (optional; default 4) |
@@ -117,7 +119,8 @@ peer, with no live service.
 
 SAS tokens are built with OpenSSL (HMAC-SHA256 + base64) on both platforms. Note
 the two key conventions the facade handles: Event Hubs signs with the **raw** key
-string, while IoT Hub **base64-decodes** the key first.
+string, while IoT Hub **base64-decodes** the key first. With `IOTHUB_SERVICE_ACCESS_TOKEN` set,
+the IoT Hub calls send that token instead, and `IOTHUB_REGISTRY_CONNECTION_STRING` is not used.
 
 ### Scenarios
 
@@ -275,6 +278,24 @@ needs consumer groups
 `e2e-0`..`e2e-9` and file upload with notifications. Push and nightly runs always provision,
 except for `esp32-qemu`, which always uses the shared environment.
 Pull requests from forks get no secrets and fail.
+
+**Microsoft Entra mode.** When repository variable `E2E_SHARED_IOTHUB_HOSTNAME` is also set,
+the shared-environment jobs (`ci-c-e2e` `test` and `esp32-qemu`, `ci-c-samples` `samples`) log in
+with `azure/login` (OIDC, secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
+`AZURE_SUBSCRIPTION_ID`) right before the tests. `e2e-shared-device.ps1` then writes
+`IOTHUB_HOSTNAME` and an access token for `https://iothubs.azure.net` as
+`IOTHUB_SERVICE_ACCESS_TOKEN`, and the jobs log out. `E2E_SHARED_IOTHUB_CS` and
+`E2E_SHARED_IOTHUB_REGISTRY_CS` are not used, so the hub can have `disableLocalAuth=true`.
+Telemetry (Event Hub-compatible endpoint) and DPS keep their connection strings. The token is
+not refreshed and lives 60-90 minutes, longer than the jobs' timeouts. The mode needs:
+
+- role **IoT Hub Data Contributor** (`4fc6c259-987e-4a07-842e-c321cc9d413f`) for the
+  `AZURE_CLIENT_ID` principal, scoped to the shared hub;
+- a federated credential on that app registration with subject
+  `repo:Azure/azure-iot-sdk:pull_request`, so `azure/login` works in pull request jobs
+  (`esp32-qemu` also runs on push and nightly, under the branch subjects `setup` uses).
+
+These jobs then hold `id-token: write` while running pull request code from this repository.
 
 [`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml) has the same opt-in,
 keyed on `E2E_CSR_SHARED_ID_SCOPE`. It needs its own certificate-management environment

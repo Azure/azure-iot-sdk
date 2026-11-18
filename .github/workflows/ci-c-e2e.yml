@@ -51,9 +51,19 @@
 # so legs never share a device and no Azure call is made. Test code gets the
 # hub's 'service' policy key, plus, for the TPM suite, a DPS policy with
 # EnrollmentWrite + RegistrationStatusWrite and a hub policy with RegistryWrite
-# (its enrollment and device cleanup); the test job never logs in to Azure. Same
-# tests. Push and nightly runs always provision. Unset the variable to return to
-# per-run provisioning.
+# (its enrollment and device cleanup); the test job logs in to Azure only in
+# Microsoft Entra mode (below). Same tests. Push and nightly runs always
+# provision. Unset the variable to return to per-run provisioning.
+#
+# Microsoft Entra mode: when the repository variable E2E_SHARED_IOTHUB_HOSTNAME is
+# also set, the shared hub may have local authentication disabled. The hub's
+# policy keys are then not used: right before the tests, each job on the shared
+# environment (test, esp32-qemu) logs in to Azure (OIDC, AZURE_CLIENT_ID, which
+# holds IoT Hub Data Contributor on the hub), takes an access token for
+# https://iothubs.azure.net, logs out, and hands the tests the token
+# (IOTHUB_SERVICE_ACCESS_TOKEN) and host name. The token is not refreshed and
+# lives 60-90 minutes, longer than these jobs' timeouts. The Event Hub-compatible
+# endpoint and DPS keep their connection strings.
 
 name: ci-c-e2e
 
@@ -231,9 +241,10 @@ jobs:
     needs: [ setup, openssl ]
     # Runs after setup, or without it in shared mode (setup skipped).
     if: ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') && needs.openssl.result == 'success' }}
-    # Runs pull-request code: no Azure OIDC token.
+    # Runs pull-request code. Logs in to Azure only in Microsoft Entra mode (see header).
     permissions:
       contents: read
+      id-token: write   # azure/login OIDC, Microsoft Entra mode only
     strategy:
       fail-fast: false
       # Both OSes run in parallel. Linux is the faster leg, but Windows is kept
@@ -347,12 +358,23 @@ jobs:
           name: e2e-test-config
           path: test_config
 
+      # Microsoft Entra mode (see header): with this login, the next step takes the hub access
+      # token, then logs out.
+      - name: Azure Login via OIDC (Microsoft Entra mode)
+        if: env.E2E_SHARED == 'true' && vars.E2E_SHARED_IOTHUB_HOSTNAME != ''
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       - name: Issue a device on the shared environment
         if: env.E2E_SHARED == 'true'
         shell: pwsh
         env:
           E2E_SHARED_GROUP_CA: ${{ secrets.E2E_SHARED_GROUP_CA }}
           E2E_SHARED_IOTHUB_CS: ${{ secrets.E2E_SHARED_IOTHUB_CS }}
+          E2E_SHARED_IOTHUB_HOSTNAME: ${{ vars.E2E_SHARED_IOTHUB_HOSTNAME }}
           E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
           E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
           E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
@@ -368,6 +390,7 @@ jobs:
           ./c/eng/e2e-shared-device.ps1 -RegistrationId $env:E2E_REGISTRATION_ID `
             -DeviceIndex ([int]$env:E2E_DEVICE_INDEX) -ConsumerGroup $group `
             -OutFile test_config/set_test_env_vars.ps1
+          if ($env:E2E_SHARED_IOTHUB_HOSTNAME) { az account clear }  # the tests need only the token
 
       - name: Run e2e
         shell: pwsh
@@ -569,9 +592,10 @@ jobs:
     if: needs.changes.outputs.run == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    # Runs pull-request code: no Azure OIDC token.
+    # Runs pull-request code. Logs in to Azure only in Microsoft Entra mode (see header).
     permissions:
       contents: read
+      id-token: write   # azure/login OIDC, Microsoft Entra mode only
     strategy:
       fail-fast: false
       matrix:
@@ -589,11 +613,22 @@ jobs:
           # The ESP-IDF component builds azure-sdk-for-c from c/deps.
           submodules: true
 
+      # Microsoft Entra mode (see header): with this login, the next step takes the hub access
+      # token, then logs out.
+      - name: Azure Login via OIDC (Microsoft Entra mode)
+        if: vars.E2E_SHARED_IOTHUB_HOSTNAME != ''
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       - name: Issue a device on the shared environment
         shell: pwsh
         env:
           E2E_SHARED_GROUP_CA: ${{ secrets.E2E_SHARED_GROUP_CA }}
           E2E_SHARED_IOTHUB_CS: ${{ secrets.E2E_SHARED_IOTHUB_CS }}
+          E2E_SHARED_IOTHUB_HOSTNAME: ${{ vars.E2E_SHARED_IOTHUB_HOSTNAME }}
           E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
           E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
           E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
@@ -610,6 +645,7 @@ jobs:
           $group = 'e2e-' + (([long]$env:E2E_RUN_ID * 8 + $idx) % 10)
           ./c/eng/e2e-shared-device.ps1 -RegistrationId $regId -DeviceIndex $idx `
             -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
+          if ($env:E2E_SHARED_IOTHUB_HOSTNAME) { az account clear }  # the tests need only the token
           . ./test_config/set_test_env_vars.ps1
           $dir = Join-Path $env:RUNNER_TEMP 'esp32-device'
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
@@ -620,7 +656,12 @@ jobs:
           @(
             "E2E_ESP32_DEVICE_ID=$regId"
             "IOT_DPS_ID_SCOPE=$env:IOT_DPS_ID_SCOPE"
-            "IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING"
+            if ($env:IOTHUB_SERVICE_ACCESS_TOKEN) {
+              "IOTHUB_HOSTNAME=$env:IOTHUB_HOSTNAME"
+              "IOTHUB_SERVICE_ACCESS_TOKEN=$env:IOTHUB_SERVICE_ACCESS_TOKEN"
+            } else {
+              "IOTHUB_CONNECTION_STRING=$env:IOTHUB_CONNECTION_STRING"
+            }
             "IOTHUB_EVENTHUB_CONNECTION_STRING=$env:IOTHUB_EVENTHUB_CONNECTION_STRING"
             "IOTHUB_EVENTHUB_CONSUMER_GROUP=$env:IOTHUB_EVENTHUB_CONSUMER_GROUP"
           ) | Set-Content -Path (Join-Path $dir 'env')

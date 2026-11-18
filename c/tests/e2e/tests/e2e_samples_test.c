@@ -15,8 +15,9 @@
  * variable fails the test.
  *
  * Environment:
- *   service (not passed to the sample): IOTHUB_CONNECTION_STRING,
- * IOTHUB_EVENTHUB_CONNECTION_STRING, IOTHUB_EVENTHUB_CONSUMER_GROUP; IOT_DPS_CONNECTION_STRING and
+ *   service (not passed to the sample): IOTHUB_CONNECTION_STRING (or IOTHUB_HOSTNAME and
+ *     IOTHUB_SERVICE_ACCESS_TOKEN), IOTHUB_EVENTHUB_CONNECTION_STRING,
+ *     IOTHUB_EVENTHUB_CONSUMER_GROUP; IOT_DPS_CONNECTION_STRING and
  *     IOTHUB_REGISTRY_CONNECTION_STRING for the TPM samples' enrollment and device cleanup;
  *   device: AZ_IOT_DPS_ID_SCOPE, AZ_IOT_DPS_REGISTRATION_ID (the X.509 device, or for the CSR
  *     samples the bootstrap device; also the prefix of the other samples' registration IDs),
@@ -256,10 +257,16 @@ static void derive_device_key(
 static void make_child_environment(void)
 {
   static const char* const service_only[] = {
-    "IOTHUB_CONNECTION_STRING",       "IOTHUB_EVENTHUB_CONNECTION_STRING",
-    "IOTHUB_EVENTHUB_CONSUMER_GROUP", "IOTHUB_EVENTHUB_LISTEN_NAME",
-    "IOT_DPS_CONNECTION_STRING",      "IOTHUB_REGISTRY_CONNECTION_STRING",
-    "AZ_IOT_SAMPLES_E2E_PROXY_LOG",   "AZ_IOT_SAMPLES_E2E_PKCS11_OPENSSL_CONF",
+    "IOTHUB_CONNECTION_STRING",
+    "IOTHUB_EVENTHUB_CONNECTION_STRING",
+    "IOTHUB_EVENTHUB_CONSUMER_GROUP",
+    "IOTHUB_EVENTHUB_LISTEN_NAME",
+    "IOT_DPS_CONNECTION_STRING",
+    "IOTHUB_REGISTRY_CONNECTION_STRING",
+    "IOTHUB_HOSTNAME",
+    "IOTHUB_SERVICE_ACCESS_TOKEN",
+    "AZ_IOT_SAMPLES_E2E_PROXY_LOG",
+    "AZ_IOT_SAMPLES_E2E_PKCS11_OPENSSL_CONF",
     "AZ_IOT_DPS_SYMMETRIC_KEY",
   };
   for (size_t i = 0; i < sizeof(service_only) / sizeof(service_only[0]); ++i)

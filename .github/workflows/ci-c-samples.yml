@@ -17,7 +17,9 @@
 # E2E_SHARED_ID_SCOPE is set). Each leg issues its own device, device index 20 + slot (0..14
 # belong to ci-c-e2e), registration ID samples-<run>-<attempt>-<index>, and reads events on
 # consumer group samples-<slot>, which exists on the shared hub for this workflow only. Pushes and
-# manual runs provision a resource group per run and always delete it (teardown).
+# manual runs provision a resource group per run and always delete it (teardown). When
+# E2E_SHARED_IOTHUB_HOSTNAME is set, the shared hub's service side uses a Microsoft Entra access
+# token instead of its policy keys (Microsoft Entra mode, see ci-c-e2e.yml).
 #
 # CSR legs (samples_csr: dps_csr_managed, custom_certificate_provider, dps_persist_assignment,
 # hub_renew, dps_sas_key_issued_cert): OS x adapter, 4 in all, on a certificate-management
@@ -132,9 +134,10 @@ jobs:
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&
             github.actor != 'dependabot[bot]')) }}
-    # Runs pull-request code: no Azure OIDC token.
+    # Runs pull-request code. Logs in to Azure only in Microsoft Entra mode (see header).
     permissions:
       contents: read
+      id-token: write   # azure/login OIDC, Microsoft Entra mode only
     runs-on: ${{ matrix.os }}
     # Build ~10 min (Windows, libcurl not cached: ~20), a shard's samples ~8 min.
     timeout-minutes: 50
@@ -236,12 +239,23 @@ jobs:
           name: samples-test-config
           path: test_config
 
+      # Microsoft Entra mode (see header): with this login, the next step takes the hub access
+      # token, then logs out.
+      - name: Azure Login via OIDC (Microsoft Entra mode)
+        if: env.E2E_SHARED == 'true' && vars.E2E_SHARED_IOTHUB_HOSTNAME != ''
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
       - name: Issue a device on the shared environment
         if: env.E2E_SHARED == 'true'
         shell: pwsh
         env:
           E2E_SHARED_GROUP_CA: ${{ secrets.E2E_SHARED_GROUP_CA }}
           E2E_SHARED_IOTHUB_CS: ${{ secrets.E2E_SHARED_IOTHUB_CS }}
+          E2E_SHARED_IOTHUB_HOSTNAME: ${{ vars.E2E_SHARED_IOTHUB_HOSTNAME }}
           E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
           E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
           E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
@@ -254,6 +268,7 @@ jobs:
           ./c/eng/e2e-shared-device.ps1 -RegistrationId "samples-$($env:E2E_RUN_ID)-$($env:E2E_RUN_ATTEMPT)-$idx" `
             -DeviceIndex $idx -ConsumerGroup "samples-$($env:SAMPLES_SLOT)" `
             -OutFile test_config/set_test_env_vars.ps1
+          if ($env:E2E_SHARED_IOTHUB_HOSTNAME) { az account clear }  # the tests need only the token
 
       - name: Run the samples
         shell: pwsh
@@ -273,7 +288,8 @@ jobs:
           Remove-Item -Recurse -Force test_config
           foreach ($name in 'IOTHUB_CONNECTION_STRING', 'IOTHUB_EVENTHUB_CONNECTION_STRING',
                             'IOTHUB_EVENTHUB_LISTEN_NAME', 'IOTHUB_EVENTHUB_PARTITION_COUNT',
-                            'IOT_DPS_CONNECTION_STRING', 'IOTHUB_REGISTRY_CONNECTION_STRING') {
+                            'IOT_DPS_CONNECTION_STRING', 'IOTHUB_REGISTRY_CONNECTION_STRING',
+                            'IOTHUB_HOSTNAME', 'IOTHUB_SERVICE_ACCESS_TOKEN') {
             if ($config[$name]) { Set-Item "env:$name" $config[$name] }
           }
           $env:IOTHUB_EVENTHUB_CONSUMER_GROUP = "samples-$($env:SAMPLES_SLOT)"

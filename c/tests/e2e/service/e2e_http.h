@@ -28,10 +28,10 @@ extern "C"
 {
 #endif
 
-/* Sized for the IoT Hub service REST calls: the request buffer holds headers (incl. the
- * ~300 B SAS token) plus a ~3 KB desired-property body; the response buffer holds a full
- * twin GET with its $metadata. */
-#define E2E_HTTP_REQUEST_MAX 8192
+/* Sized for the IoT Hub service REST calls: the request buffer holds headers (incl. an
+ * authorization of up to 4 KB, a SAS or Microsoft Entra token) plus a ~3 KB desired-property
+ * body; the response buffer holds a full twin GET with its $metadata. */
+#define E2E_HTTP_REQUEST_MAX 12288
 #define E2E_HTTP_RESPONSE_MAX 32768
 
   typedef enum e2e_http_phase
