@@ -69,7 +69,12 @@
 #define E2E_SAMPLE_HUB_CONNECTED_MARKER "hub state=AZ_IOT_CONN_STATE_CONNECTED"
 
 #define E2E_SAMPLE_START_TIMEOUT_S 30
-#define E2E_SAMPLE_SERVICE_TIMEOUT_S 120 /* telemetry, notification or REST answer */
+#define E2E_SAMPLE_SERVICE_TIMEOUT_S 120 /* telemetry or REST answer */
+/* The file-upload notification. On the shared hub, watchers of concurrent runs compete for its
+ * hub-wide endpoint, and one has waited 125 s for its notification. As e2e_fileupload_test.c. */
+#define E2E_SAMPLE_FILE_NOTIFICATION_TIMEOUT_S 240
+/* The hub may drop the watcher's connection or detach its receiver while it waits. */
+#define E2E_SAMPLE_FILE_NOTIFICATION_MAX_REATTACH 5
 #define E2E_SAMPLE_WATCH_TIMEOUT_S 90 /* the Event Hub AMQP handshake can fail transiently */
 #define E2E_SAMPLE_RETRY_PAUSE_MS 2000
 #define E2E_SAMPLE_PUMP_MS 50
@@ -529,12 +534,25 @@ static void watch_file_upload_notifications(void)
 /** @brief The hub notified the upload of the sample's blob by the sample's device. */
 static void check_file_upload_notification(void)
 {
-  time_t const end = time(NULL) + E2E_SAMPLE_SERVICE_TIMEOUT_S;
+  int reattaches = 0;
+  time_t const end = time(NULL) + E2E_SAMPLE_FILE_NOTIFICATION_TIMEOUT_S;
   while (!az_iot_e2e_service_file_notification_seen(
              s_run.service, AZ_IOT_E2E_SAMPLE_FILE_UPLOAD_BLOB_NAME)
          && time(NULL) < end)
   {
-    pump();
+    if (!az_iot_e2e_service_do_work(s_run.service, E2E_SAMPLE_PUMP_MS))
+    {
+      /* Unsettled notifications stay queued, so a new watcher still gets ours. */
+      printf(
+          "[e2e] notification watch lost: %s; reattaching\n",
+          az_iot_e2e_service_last_error(s_run.service));
+      if (++reattaches > E2E_SAMPLE_FILE_NOTIFICATION_MAX_REATTACH)
+      {
+        fail_msg("notification watch lost %d times", reattaches);
+      }
+      az_iot_e2e_service_file_notification_watch_end(s_run.service);
+      watch_file_upload_notifications();
+    }
   }
   int delivered = 0, captured = 0, released = 0, unwatched = 0, unparsed = 0;
   az_iot_e2e_service_file_notification_stats(
@@ -546,8 +564,13 @@ static void check_file_upload_notification(void)
       released,
       unwatched,
       unparsed);
-  assert_true(az_iot_e2e_service_file_notification_seen(
-      s_run.service, AZ_IOT_E2E_SAMPLE_FILE_UPLOAD_BLOB_NAME));
+  bool const seen = az_iot_e2e_service_file_notification_seen(
+      s_run.service, AZ_IOT_E2E_SAMPLE_FILE_UPLOAD_BLOB_NAME);
+  if (!seen)
+  {
+    az_iot_e2e_service_file_notification_dump(s_run.service);
+  }
+  assert_true(seen);
 }
 
 /** @brief Reads the file @p path into a NUL-terminated heap buffer, or NULL; shared with the
