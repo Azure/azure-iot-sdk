@@ -10,7 +10,7 @@ Issues a device certificate for -RegistrationId, signed by the shared DPS X.509 
 group's CA, and writes the test-config script the workflow sources (the variables the
 provisioning action emits), including the shared symmetric-key group's key for the SAS
 suites. Devices register through the groups on first connect, so no Azure call is made here
-other than taking the access token of Microsoft Entra mode.
+other than, in Microsoft Entra mode without a token given, taking one from the Azure CLI login.
 
 Default (ci-c-e2e), inputs from the environment (repository secrets/variables):
   E2E_SHARED_GROUP_CA        base64 of a PEM holding the group CA certificate and its private key
@@ -26,10 +26,18 @@ Default (ci-c-e2e), inputs from the environment (repository secrets/variables):
 Microsoft Entra mode (hub with local authentication disabled), when E2E_SHARED_IOTHUB_HOSTNAME is
 set: E2E_SHARED_IOTHUB_CS and E2E_SHARED_IOTHUB_REGISTRY_CS are not used, and instead
   E2E_SHARED_IOTHUB_HOSTNAME     IoT Hub host name, written as IOTHUB_HOSTNAME
-  E2E_SHARED_IOTHUB_SERVICE_ACCESS_TOKEN  (optional) access token for https://iothubs.azure.net,
-                             else taken from the Azure CLI login (IoT Hub Data Contributor on the
-                             hub); written as IOTHUB_SERVICE_ACCESS_TOKEN. Not refreshed: it lives
-                             60-90 minutes.
+  E2E_SHARED_IOTHUB_SERVICE_ACCESS_TOKEN  (optional) access token for https://iothubs.azure.net;
+                             written as IOTHUB_SERVICE_ACCESS_TOKEN. Not refreshed: it lives
+                             60-90 minutes. Else, in this order:
+  E2E_SHARED_IOTHUB_SEALED_SERVICE_ACCESS_TOKEN  (optional) the token as -SealHubAccessToken
+                             wrote it, unsealed with E2E_SHARED_SAS_GROUP_KEY
+  the Azure CLI login        (IoT Hub Data Contributor on the hub)
+
+-SealHubAccessToken (Microsoft Entra mode): takes the hub access token from the Azure CLI login
+and writes it sealed (AES-256-GCM, key derived from E2E_SHARED_SAS_GROUP_KEY) as the step output
+'sealed', or to stdout outside GitHub Actions. This lets a job that runs no pull-request code log
+in and hand the token on through a job output, which is public in the run (a masked value would
+be dropped from it).
 
 -Csr (ci-c-e2e-csr), writes the IOT_DPS_GROUP_X509_* bootstrap identity instead:
   E2E_CSR_SHARED_GROUP_CA    base64 of a PEM holding the group's issuing CA certificate and its
@@ -39,12 +47,14 @@ set: E2E_SHARED_IOTHUB_CS and E2E_SHARED_IOTHUB_REGISTRY_CS are not used, and in
   E2E_CSR_SHARED_SAS_GROUP_KEY  primary key of the DPS symmetric-key enrollment group, linked to
                              the certificate policy
 #>
+[CmdletBinding(DefaultParameterSetName = 'Device')]
 param(
-    [Parameter(Mandatory)][ValidatePattern('^[a-z0-9][a-z0-9-]{0,127}$')][string]$RegistrationId,
-    [ValidateRange(0, 99)][int]$DeviceIndex = 0,
-    [ValidatePattern('^[A-Za-z0-9$._-]{1,50}$')][string]$ConsumerGroup = '$Default',
-    [switch]$Csr,
-    [string]$OutFile = 'test_config/set_test_env_vars.ps1'
+    [Parameter(Mandatory, ParameterSetName = 'Device')][ValidatePattern('^[a-z0-9][a-z0-9-]{0,127}$')][string]$RegistrationId,
+    [Parameter(ParameterSetName = 'Device')][ValidateRange(0, 99)][int]$DeviceIndex = 0,
+    [Parameter(ParameterSetName = 'Device')][ValidatePattern('^[A-Za-z0-9$._-]{1,50}$')][string]$ConsumerGroup = '$Default',
+    [Parameter(ParameterSetName = 'Device')][switch]$Csr,
+    [Parameter(ParameterSetName = 'Device')][string]$OutFile = 'test_config/set_test_env_vars.ps1',
+    [Parameter(Mandatory, ParameterSetName = 'SealHubAccessToken')][switch]$SealHubAccessToken
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,6 +62,60 @@ Set-StrictMode -Version Latest
 
 $Vars = if ($Csr) { 'E2E_CSR_SHARED' } else { 'E2E_SHARED' }
 function Get-Shared([string]$Name) { [Environment]::GetEnvironmentVariable("${Vars}_$Name") }
+
+function Get-HubAccessTokenFromAzureCli {
+    $Token = az account get-access-token --resource https://iothubs.azure.net --query accessToken -o tsv
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($Token)) {
+        throw 'No access token for https://iothubs.azure.net; log in with the Azure CLI first.'
+    }
+    $Token
+}
+
+function Hide-InWorkflowLog([string]$Value) {
+    if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host "::add-mask::$Value" }
+}
+
+# AES-256-GCM key: HMAC-SHA256 of a fixed label, keyed with the symmetric-key group's key, a secret
+# every job on the shared environment already holds.
+function Get-HubAccessTokenSealingKey {
+    $GroupKey = Get-Shared 'SAS_GROUP_KEY'
+    if ([string]::IsNullOrWhiteSpace($GroupKey)) { throw "${Vars}_SAS_GROUP_KEY is required to seal or unseal the hub access token." }
+    $Hmac = [System.Security.Cryptography.HMACSHA256]::new([Text.Encoding]::UTF8.GetBytes($GroupKey))
+    try { , $Hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes('e2e-shared hub access token sealing key')) }
+    finally { $Hmac.Dispose() }
+}
+
+# Sealed form: base64 of nonce (12 bytes) | tag (16 bytes) | ciphertext.
+function Protect-HubAccessToken([string]$Token) {
+    $Plain = [Text.Encoding]::UTF8.GetBytes($Token)
+    $Nonce = [byte[]]::new(12)
+    [System.Security.Cryptography.RandomNumberGenerator]::Fill($Nonce)
+    $Tag = [byte[]]::new(16)
+    $Cipher = [byte[]]::new($Plain.Length)
+    $Aes = [System.Security.Cryptography.AesGcm]::new((Get-HubAccessTokenSealingKey), 16)
+    try { $Aes.Encrypt($Nonce, $Plain, $Cipher, $Tag) } finally { $Aes.Dispose() }
+    [Convert]::ToBase64String([byte[]]($Nonce + $Tag + $Cipher))
+}
+
+function Unprotect-HubAccessToken([string]$Sealed) {
+    $Bytes = [Convert]::FromBase64String($Sealed)
+    if ($Bytes.Length -le 28) { throw 'The sealed hub access token is truncated.' }
+    $Cipher = [byte[]]$Bytes[28..($Bytes.Length - 1)]
+    $Plain = [byte[]]::new($Cipher.Length)
+    $Aes = [System.Security.Cryptography.AesGcm]::new((Get-HubAccessTokenSealingKey), 16)
+    try { $Aes.Decrypt([byte[]]$Bytes[0..11], $Cipher, [byte[]]$Bytes[12..27], $Plain) } finally { $Aes.Dispose() }
+    [Text.Encoding]::UTF8.GetString($Plain)
+}
+
+if ($SealHubAccessToken) {
+    $HubToken = Get-HubAccessTokenFromAzureCli
+    Hide-InWorkflowLog $HubToken
+    $Sealed = Protect-HubAccessToken $HubToken
+    if ($env:GITHUB_OUTPUT) { Add-Content -Path $env:GITHUB_OUTPUT -Value "sealed=$Sealed" -Encoding utf8NoBOM }
+    else { $Sealed }
+    return
+}
+
 $Entra = -not $Csr -and -not [string]::IsNullOrWhiteSpace((Get-Shared 'IOTHUB_HOSTNAME'))
 $HubAuthorization = if ($Entra) { @('IOTHUB_HOSTNAME') } else { @('IOTHUB_CS', 'IOTHUB_REGISTRY_CS') }
 $Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE', 'SAS_GROUP_KEY') }
@@ -62,11 +126,9 @@ if ($Missing) { throw "Shared e2e environment not configured; missing: $($Missin
 
 $HubToken = Get-Shared 'IOTHUB_SERVICE_ACCESS_TOKEN'
 if ($Entra -and [string]::IsNullOrWhiteSpace($HubToken)) {
-    $HubToken = az account get-access-token --resource https://iothubs.azure.net --query accessToken -o tsv
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($HubToken)) {
-        throw 'No access token for https://iothubs.azure.net; log in with the Azure CLI first.'
-    }
-    if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host "::add-mask::$HubToken" }
+    $SealedHubToken = Get-Shared 'IOTHUB_SEALED_SERVICE_ACCESS_TOKEN'
+    $HubToken = if ($SealedHubToken) { Unprotect-HubAccessToken $SealedHubToken } else { Get-HubAccessTokenFromAzureCli }
+    Hide-InWorkflowLog $HubToken
 }
 
 if (-not $Csr) {

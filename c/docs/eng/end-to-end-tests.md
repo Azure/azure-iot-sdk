@@ -280,11 +280,13 @@ except for `esp32-qemu`, which always uses the shared environment.
 Pull requests from forks get no secrets and fail.
 
 **Microsoft Entra mode.** When repository variable `E2E_SHARED_IOTHUB_HOSTNAME` is also set,
-the shared-environment jobs (`ci-c-e2e` `test` and `esp32-qemu`, `ci-c-samples` `samples`) log in
-with `azure/login` (OIDC, secrets `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`,
-`AZURE_SUBSCRIPTION_ID`) right before the tests. `e2e-shared-device.ps1` then writes
-`IOTHUB_HOSTNAME` and an access token for `https://iothubs.azure.net` as
-`IOTHUB_SERVICE_ACCESS_TOKEN`, and the jobs log out. `E2E_SHARED_IOTHUB_CS` and
+a `hub-token` job in each workflow logs in with `azure/login` (OIDC, secrets `AZURE_CLIENT_ID`,
+`AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`), takes an access token for
+`https://iothubs.azure.net` and passes it on sealed (`e2e-shared-device.ps1 -SealHubAccessToken`:
+AES-256-GCM, key derived from `E2E_SHARED_SAS_GROUP_KEY`), since a job output is public in the run.
+It runs no pull-request build or test code. The shared-environment jobs (`ci-c-e2e` `test` and
+`esp32-qemu`, `ci-c-samples` `samples`) get no OIDC token: `e2e-shared-device.ps1` unseals the
+token and writes it as `IOTHUB_SERVICE_ACCESS_TOKEN`, with `IOTHUB_HOSTNAME`. `E2E_SHARED_IOTHUB_CS` and
 `E2E_SHARED_IOTHUB_REGISTRY_CS` are not used, so the hub can have `disableLocalAuth=true`.
 Telemetry (Event Hub-compatible endpoint) and DPS keep their connection strings. The token is
 not refreshed and lives 60-90 minutes, longer than the jobs' timeouts. The mode needs:
@@ -292,10 +294,11 @@ not refreshed and lives 60-90 minutes, longer than the jobs' timeouts. The mode 
 - role **IoT Hub Data Contributor** (`4fc6c259-987e-4a07-842e-c321cc9d413f`) for the
   `AZURE_CLIENT_ID` principal, scoped to the shared hub;
 - a federated credential on that app registration with subject
-  `repo:Azure/azure-iot-sdk:pull_request`, so `azure/login` works in pull request jobs
-  (`esp32-qemu` also runs on push and nightly, under the branch subjects `setup` uses).
+  `repo:Azure/azure-iot-sdk:pull_request`, so `azure/login` works in pull request runs
+  (`ci-c-e2e` `hub-token` also runs on push and nightly for `esp32-qemu`, under the branch
+  subjects `setup` uses).
 
-These jobs then hold `id-token: write` while running pull request code from this repository.
+The jobs that run pull request code get the hub token for that run only, never an OIDC token.
 
 [`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml) has the same opt-in,
 keyed on `E2E_CSR_SHARED_ID_SCOPE`. It needs its own certificate-management environment

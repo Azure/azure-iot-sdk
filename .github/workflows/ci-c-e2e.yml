@@ -51,17 +51,20 @@
 # so legs never share a device and no Azure call is made. Test code gets the
 # hub's 'service' policy key, plus, for the TPM suite, a DPS policy with
 # EnrollmentWrite + RegistrationStatusWrite and a hub policy with RegistryWrite
-# (its enrollment and device cleanup); the test job logs in to Azure only in
-# Microsoft Entra mode (below). Same tests. Push and nightly runs always
+# (its enrollment and device cleanup); the test jobs never log in to Azure
+# (Microsoft Entra mode, below, logs in in a job of its own). Same tests. Push and nightly runs always
 # provision. Unset the variable to return to per-run provisioning.
 #
 # Microsoft Entra mode: when the repository variable E2E_SHARED_IOTHUB_HOSTNAME is
 # also set, the shared hub may have local authentication disabled. The hub's
-# policy keys are then not used: right before the tests, each job on the shared
-# environment (test, esp32-qemu) logs in to Azure (OIDC, AZURE_CLIENT_ID, which
-# holds IoT Hub Data Contributor on the hub), takes an access token for
-# https://iothubs.azure.net, logs out, and hands the tests the token
-# (IOTHUB_SERVICE_ACCESS_TOKEN) and host name. The token is not refreshed and
+# policy keys are then not used. The hub-token job, which runs no pull-request
+# build or test code, alone logs in to Azure (OIDC, AZURE_CLIENT_ID, which holds
+# IoT Hub Data Contributor on the hub), takes an access token for
+# https://iothubs.azure.net and hands it on sealed (c/eng/e2e-shared-device.ps1
+# -SealHubAccessToken): a job output is public in the run. The jobs on the shared
+# environment (test, esp32-qemu) have no OIDC token; they unseal the token and
+# hand it to the tests (IOTHUB_SERVICE_ACCESS_TOKEN) with the host name. It is
+# taken after the openssl job, right before the tests, is not refreshed, and
 # lives 60-90 minutes, longer than these jobs' timeouts. The Event Hub-compatible
 # endpoint and DPS keep their connection strings.
 
@@ -236,15 +239,49 @@ jobs:
         with:
           version: ${{ matrix.openssl }}
 
-  test:
-    name: ${{ matrix.os }}${{ matrix.os == 'ubuntu-24.04' && matrix.openssl != 'system' && format(' / OpenSSL {0}', matrix.openssl) || '' }} / ${{ matrix.group }}
-    needs: [ setup, openssl ]
-    # Runs after setup, or without it in shared mode (setup skipped).
-    if: ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') && needs.openssl.result == 'success' }}
-    # Runs pull-request code. Logs in to Azure only in Microsoft Entra mode (see header).
+  # Microsoft Entra mode (see header): the only job here that logs in to Azure on the shared
+  # environment. It checks out one script and runs nothing else from the pull request.
+  hub-token:
+    name: hub access token (Microsoft Entra mode)
+    needs: [ changes, openssl ]
+    if: ${{ needs.changes.outputs.run == 'true' && vars.E2E_SHARED_IOTHUB_HOSTNAME != '' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     permissions:
       contents: read
-      id-token: write   # azure/login OIDC, Microsoft Entra mode only
+      id-token: write   # azure/login OIDC
+    outputs:
+      sealed: ${{ steps.token.outputs.sealed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: c/eng/e2e-shared-device.ps1
+          sparse-checkout-cone-mode: false
+
+      - name: Azure Login via OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Take and seal the hub access token
+        id: token
+        shell: pwsh
+        env:
+          E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
+        run: ./c/eng/e2e-shared-device.ps1 -SealHubAccessToken
+
+  test:
+    name: ${{ matrix.os }}${{ matrix.os == 'ubuntu-24.04' && matrix.openssl != 'system' && format(' / OpenSSL {0}', matrix.openssl) || '' }} / ${{ matrix.group }}
+    needs: [ setup, openssl, hub-token ]
+    # Runs after setup, or without it in shared mode (setup skipped); in Microsoft Entra mode, after
+    # hub-token.
+    if: ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') && needs.openssl.result == 'success' && (needs.hub-token.result == 'success' || vars.E2E_SHARED_IOTHUB_HOSTNAME == '') }}
+    # Runs pull-request code: no OIDC token (see hub-token).
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       # Both OSes run in parallel. Linux is the faster leg, but Windows is kept
@@ -358,16 +395,6 @@ jobs:
           name: e2e-test-config
           path: test_config
 
-      # Microsoft Entra mode (see header): with this login, the next step takes the hub access
-      # token, then logs out.
-      - name: Azure Login via OIDC (Microsoft Entra mode)
-        if: env.E2E_SHARED == 'true' && vars.E2E_SHARED_IOTHUB_HOSTNAME != ''
-        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Issue a device on the shared environment
         if: env.E2E_SHARED == 'true'
         shell: pwsh
@@ -375,6 +402,7 @@ jobs:
           E2E_SHARED_GROUP_CA: ${{ secrets.E2E_SHARED_GROUP_CA }}
           E2E_SHARED_IOTHUB_CS: ${{ secrets.E2E_SHARED_IOTHUB_CS }}
           E2E_SHARED_IOTHUB_HOSTNAME: ${{ vars.E2E_SHARED_IOTHUB_HOSTNAME }}
+          E2E_SHARED_IOTHUB_SEALED_SERVICE_ACCESS_TOKEN: ${{ needs.hub-token.outputs.sealed }}
           E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
           E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
           E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
@@ -390,7 +418,6 @@ jobs:
           ./c/eng/e2e-shared-device.ps1 -RegistrationId $env:E2E_REGISTRATION_ID `
             -DeviceIndex ([int]$env:E2E_DEVICE_INDEX) -ConsumerGroup $group `
             -OutFile test_config/set_test_env_vars.ps1
-          if ($env:E2E_SHARED_IOTHUB_HOSTNAME) { az account clear }  # the tests need only the token
 
       - name: Run e2e
         shell: pwsh
@@ -588,14 +615,13 @@ jobs:
   # test legs' 0..11.
   esp32-qemu:
     name: esp32 qemu / ${{ matrix.target }}
-    needs: changes
-    if: needs.changes.outputs.run == 'true'
+    needs: [ changes, hub-token ]
+    if: ${{ !cancelled() && needs.changes.outputs.run == 'true' && (needs.hub-token.result == 'success' || vars.E2E_SHARED_IOTHUB_HOSTNAME == '') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 45
-    # Runs pull-request code. Logs in to Azure only in Microsoft Entra mode (see header).
+    # Runs pull-request code: no OIDC token (see hub-token).
     permissions:
       contents: read
-      id-token: write   # azure/login OIDC, Microsoft Entra mode only
     strategy:
       fail-fast: false
       matrix:
@@ -613,22 +639,13 @@ jobs:
           # The ESP-IDF component builds azure-sdk-for-c from c/deps.
           submodules: true
 
-      # Microsoft Entra mode (see header): with this login, the next step takes the hub access
-      # token, then logs out.
-      - name: Azure Login via OIDC (Microsoft Entra mode)
-        if: vars.E2E_SHARED_IOTHUB_HOSTNAME != ''
-        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
-        with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
-          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
-          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-
       - name: Issue a device on the shared environment
         shell: pwsh
         env:
           E2E_SHARED_GROUP_CA: ${{ secrets.E2E_SHARED_GROUP_CA }}
           E2E_SHARED_IOTHUB_CS: ${{ secrets.E2E_SHARED_IOTHUB_CS }}
           E2E_SHARED_IOTHUB_HOSTNAME: ${{ vars.E2E_SHARED_IOTHUB_HOSTNAME }}
+          E2E_SHARED_IOTHUB_SEALED_SERVICE_ACCESS_TOKEN: ${{ needs.hub-token.outputs.sealed }}
           E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
           E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
           E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
@@ -645,7 +662,6 @@ jobs:
           $group = 'e2e-' + (([long]$env:E2E_RUN_ID * 8 + $idx) % 10)
           ./c/eng/e2e-shared-device.ps1 -RegistrationId $regId -DeviceIndex $idx `
             -ConsumerGroup $group -OutFile test_config/set_test_env_vars.ps1
-          if ($env:E2E_SHARED_IOTHUB_HOSTNAME) { az account clear }  # the tests need only the token
           . ./test_config/set_test_env_vars.ps1
           $dir = Join-Path $env:RUNNER_TEMP 'esp32-device'
           New-Item -ItemType Directory -Path $dir -Force | Out-Null
@@ -759,7 +775,7 @@ jobs:
   # fails when any job failed or was cancelled (skipped jobs pass).
   gate:
     name: ci-c-e2e-gate
-    needs: [ changes, setup, openssl, test, esp32-qemu, coverage, teardown ]
+    needs: [ changes, setup, openssl, hub-token, test, esp32-qemu, coverage, teardown ]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
