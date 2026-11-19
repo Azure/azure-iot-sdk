@@ -1,0 +1,40 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Sets the output variable filter.relevant: true unless this is a PR that changes
+# none of the pipeline's inputs. Required pipelines run on every PR and use this
+# instead of PR path filters, so they always report a result.
+
+parameters:
+  # Whether changes under common/ are relevant.
+  - name: includeCommon
+    type: boolean
+  # The GitHub Actions workflow (without .yml) this pipeline mirrors.
+  - name: workflow
+    type: string
+
+steps:
+  - checkout: self
+    fetchDepth: '0'
+    persistCredentials: false
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+      $relevant = $true
+      if ($env:BUILD_REASON -eq 'PullRequest') {
+        # Both GitHub and Azure Repos validation builds check out a merge commit.
+        $files = @(git diff --name-only HEAD^1 HEAD)
+        if ($LASTEXITCODE -ne 0) { throw 'Could not determine PR changes.' }
+        $relevant = @($files | Where-Object {
+          ($_ -match '^dotnet/' -and $_ -notmatch '\.md$') -or
+          ($env:INCLUDE_COMMON -eq 'true' -and $_ -match '^common/' -and $_ -notmatch '\.md$') -or
+          $_ -match '^\.azure-pipelines/' -or
+          $_ -eq ".github/workflows/$env:WORKFLOW.yml"
+        }).Count -gt 0
+      }
+      Write-Host "##vso[task.setvariable variable=relevant;isOutput=true]$($relevant.ToString().ToLowerInvariant())"
+    name: filter
+    displayName: Detect .NET, shared code and pipeline changes
+    env:
+      ${{ if parameters.includeCommon }}:
+        INCLUDE_COMMON: 'true'
+      WORKFLOW: ${{ parameters.workflow }}

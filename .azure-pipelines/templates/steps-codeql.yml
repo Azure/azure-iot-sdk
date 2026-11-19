@@ -1,0 +1,43 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+steps:
+  - ${{ if eq(variables['Build.Repository.Provider'], 'TfsGit') }}:
+      - task: AdvancedSecurity-Codeql-Init@1
+        displayName: Initialize CodeQL
+        inputs:
+          languages: csharp
+          querysuite: security-extended
+          buildtype: Manual
+          enableAutomaticCodeQLInstall: true
+      - bash: bash .azure-pipelines/scripts/build-codeql.sh
+        displayName: Build library and samples
+      - task: AdvancedSecurity-Codeql-Analyze@1
+        displayName: Analyze and publish to Azure Repos
+        inputs:
+          WaitForProcessing: true
+  - ${{ else }}:
+      - bash: bash .azure-pipelines/scripts/codeql-github.sh
+        displayName: Analyze library and samples with CodeQL
+      - task: PublishPipelineArtifact@1
+        displayName: Publish CodeQL SARIF
+        condition: succeededOrFailed()
+        inputs:
+          targetPath: $(Build.ArtifactStagingDirectory)/codeql
+          artifact: codeql-dotnet
+      - bash: |
+          set -euo pipefail
+          if [[ -z "$GITHUB_TOKEN" || "$GITHUB_TOKEN" == '$('* ]]; then
+            echo "##vso[task.logissue type=error]Set the secret pipeline variable GitHubCodeScanningToken to upload code scanning results."
+            exit 1
+          fi
+          "$AGENT_TEMPDIRECTORY/codeql/codeql" github upload-results \
+            --sarif="$BUILD_ARTIFACTSTAGINGDIRECTORY/codeql/results.sarif" \
+            --repository="$BUILD_REPOSITORY_NAME" \
+            --ref="$BUILD_SOURCEBRANCH" \
+            --commit="$BUILD_SOURCEVERSION" \
+            --checkout-path="$BUILD_SOURCESDIRECTORY"
+        displayName: Publish code scanning alerts to GitHub
+        condition: and(succeeded(), ne(variables['System.PullRequest.IsFork'], 'True'))
+        env:
+          GITHUB_TOKEN: $(GitHubCodeScanningToken)
