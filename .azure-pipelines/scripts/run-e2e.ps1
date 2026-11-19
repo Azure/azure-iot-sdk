@@ -19,14 +19,15 @@ try {
 
     $env:AZ_IOT_DPS_ID_SCOPE = $env:IOT_DPS_ID_SCOPE
     if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
-    $testArguments = @(
-        'test', './dotnet/Project.slnx', '--no-build',
-        '--logger', 'trx',
-        '--results-directory', $env:COMMON_TESTRESULTSDIRECTORY
-    )
+    $testArguments = @('--no-build', '--logger', 'trx')
+    # Each project gets its own results directory so the pipeline can publish them as separately named runs.
+    $projects = [ordered]@{
+        integration = './dotnet/tests/Microsoft.Azure.Iot.Device.IntegrationTests/Microsoft.Azure.Iot.Device.IntegrationTests.csproj'
+    }
 
     switch ($env:E2E_SUITE) {
         'standard' {
+            $projects['unit'] = './dotnet/tests/Microsoft.Azure.Iot.Device.UnitTests/Microsoft.Azure.Iot.Device.UnitTests.csproj'
             $testArguments += @('--filter', 'Category!=CertificateManagement&Category!=Longhaul&Category!=FileUpload')
             $testArguments += @('--collect', 'XPlat Code Coverage', '--', 'xunit.parallelizeAssembly=true')
         }
@@ -82,8 +83,11 @@ try {
         default { throw 'Unknown test suite.' }
     }
 
-    & dotnet @testArguments
-    $exitCode = $LASTEXITCODE
+    foreach ($entry in $projects.GetEnumerator()) {
+        $resultsDirectory = Join-Path $env:COMMON_TESTRESULTSDIRECTORY $entry.Key
+        & dotnet test $entry.Value --results-directory $resultsDirectory @testArguments
+        if ($LASTEXITCODE -ne 0) { $exitCode = $LASTEXITCODE }
+    }
     if ($exitCode -eq 0 -and $env:E2E_SUITE -eq 'longhaul' -and
         -not (Test-Path (Join-Path $env:LONGHAUL_OUTPUT_DIRECTORY 'UnifiedMQTTv3Hub.json'))) {
         throw 'Longhaul produced no report; the test may have been skipped or the filter matched no tests.'
