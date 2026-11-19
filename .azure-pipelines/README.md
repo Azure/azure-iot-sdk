@@ -27,9 +27,13 @@ tests still run in the GitHub Actions workflows `ci-dotnet-e2e-mqttv5.yml`,
 1. Connect the GitHub repository to Azure Pipelines, or import it into Azure Repos.
    For GitHub, YAML `pr` triggers validate all target branches. For Azure Repos,
    configure **Build validation** branch policies instead: Azure Repos does not
-   implement YAML `pr` triggers. Make the build/format/advisory/CodeQL pipelines
-   required as appropriate; they always report a gate, even for unrelated PRs.
-   Do not add a path filter to these four required pipeline definitions.
+   implement YAML `pr` triggers. Make the build/format/advisory/CodeQL and
+   `ci-dotnet`/`ci-dotnet-e2e-csr` pipelines required as appropriate; they always
+   report a gate, even for unrelated PRs, and skip their work when a PR changes
+   none of their inputs. Do not add a PR path filter to these six required
+   pipeline definitions: a required check that never runs blocks the PR.
+   The e2e pipelines need the service connection, which fork PR builds should not
+   get (see 5), so fork PRs that change their inputs cannot pass them as-is.
 2. Use the Azure Resource Manager service connection named
    `aziotclb service connection`, configured with workload identity federation
    in the `azure-iot-sdks/azure-iot-sdk` project. For another project, change the
@@ -63,7 +67,7 @@ tests still run in the GitHub Actions workflows `ci-dotnet-e2e-mqttv5.yml`,
 
 The pipelines install .NET 10 explicitly and call the existing .NET build,
 formatting and advisory-check commands. Relevant-change detection skips expensive
-checks only on unrelated PRs; main, manual and scheduled runs execute them.
+checks, provisioning and tests only on unrelated PRs; main, manual and scheduled runs execute them.
 Test results appear in Azure Pipelines' Tests tab, coverage in Code Coverage,
 and raw results in pipeline artifacts. Longhaul Markdown is also attached to
 the run summary.
