@@ -23,8 +23,25 @@ parameters:
     default: 64
 
 jobs:
+  - ${{ if ne(parameters.suite, 'longhaul') }}:
+      - job: changes
+        displayName: Detect relevant changes
+        pool:
+          vmImage: ubuntu-latest
+        steps:
+          - template: steps-detect-changes.yml
+            parameters:
+              includeCommon: true
+              ${{ if eq(parameters.suite, 'csr') }}:
+                workflow: ci-dotnet-e2e-csr
+              ${{ else }}:
+                workflow: ci-dotnet
+
   - job: setup
     displayName: Provision test resources
+    ${{ if ne(parameters.suite, 'longhaul') }}:
+      dependsOn: changes
+      condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
     timeoutInMinutes: 30
     pool:
       vmImage: ubuntu-24.04
@@ -164,7 +181,8 @@ jobs:
   - job: teardown
     displayName: Delete test resources
     dependsOn: [setup, test]
-    condition: always()
+    # Also runs on failure or cancellation, but not when setup never ran.
+    condition: and(always(), ne(dependencies.setup.result, 'Skipped'))
     timeoutInMinutes: 15
     cancelTimeoutInMinutes: 15
     pool:
@@ -198,3 +216,32 @@ jobs:
         env:
           E2E_SUITE: ${{ parameters.suite }}
           E2E_RUN_ID: $(System.TeamProjectId)-$(Build.BuildId)
+
+  - ${{ if ne(parameters.suite, 'longhaul') }}:
+      - job: gate
+        displayName: ${{ parameters.suite }} gate
+        dependsOn: [changes, setup, test, teardown]
+        condition: always()
+        pool:
+          vmImage: ubuntu-latest
+        variables:
+          changesResult: $[ dependencies.changes.result ]
+          relevant: $[ dependencies.changes.outputs['filter.relevant'] ]
+          setupResult: $[ dependencies.setup.result ]
+          testResult: $[ dependencies.test.result ]
+        steps:
+          - checkout: none
+          - pwsh: |
+              if ($env:CHANGES_RESULT -ne 'Succeeded') {
+                throw "Change detection did not succeed ($env:CHANGES_RESULT)."
+              }
+              $expected = if ($env:RELEVANT -eq 'true') { 'Succeeded' } else { 'Skipped' }
+              if ($env:SETUP_RESULT -ne $expected -or $env:TEST_RESULT -ne $expected) {
+                throw "Expected setup and tests to be $expected (setup: $env:SETUP_RESULT, tests: $env:TEST_RESULT)."
+              }
+            displayName: Require successful detection and tests
+            env:
+              CHANGES_RESULT: $(changesResult)
+              RELEVANT: $(relevant)
+              SETUP_RESULT: $(setupResult)
+              TEST_RESULT: $(testResult)

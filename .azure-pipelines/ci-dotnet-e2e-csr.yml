@@ -7,13 +7,12 @@ trigger:
   paths:
     include: [dotnet/**, common/**, .azure-pipelines/**, .github/workflows/ci-dotnet-e2e-csr.yml]
     exclude: [dotnet/**/*.md, common/**/*.md]
+# No PR path filter: this pipeline is a required check, so it reports on every
+# PR and skips the tests itself when nothing relevant changed.
 pr:
   autoCancel: true
   branches:
     include: ['*']
-  paths:
-    include: [dotnet/**, common/**, .azure-pipelines/**, .github/workflows/ci-dotnet-e2e-csr.yml]
-    exclude: [dotnet/**/*.md, common/**/*.md]
 schedules:
   - cron: '0 11 * * *'
     displayName: Nightly certificate-management tests

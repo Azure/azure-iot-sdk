@@ -12,32 +12,13 @@ jobs:
     pool:
       vmImage: ubuntu-latest
     steps:
-      - checkout: self
-        fetchDepth: '0'
-        persistCredentials: false
-      - pwsh: |
-          $ErrorActionPreference = 'Stop'
-          $relevant = $true
-          if ($env:BUILD_REASON -eq 'PullRequest') {
-            # Both GitHub and Azure Repos validation builds check out a merge commit.
-            $files = @(git diff --name-only HEAD^1 HEAD)
-            if ($LASTEXITCODE -ne 0) { throw 'Could not determine PR changes.' }
-            $relevant = @($files | Where-Object {
-              ($_ -match '^dotnet/' -and $_ -notmatch '\.md$') -or
-              ($env:CHECK -in @('build', 'codeql') -and $_ -match '^common/' -and $_ -notmatch '\.md$') -or
-              $_ -match '^\.azure-pipelines/' -or
-              $_ -eq ".github/workflows/$env:WORKFLOW.yml"
-            }).Count -gt 0
-          }
-          Write-Host "##vso[task.setvariable variable=relevant;isOutput=true]$($relevant.ToString().ToLowerInvariant())"
-        name: filter
-        displayName: Detect .NET, shared code and pipeline changes
-        env:
-          CHECK: ${{ parameters.check }}
+      - template: steps-detect-changes.yml
+        parameters:
+          includeCommon: ${{ in(parameters.check, 'build', 'codeql') }}
           ${{ if eq(parameters.check, 'codeql') }}:
-            WORKFLOW: codeql-dotnet
+            workflow: codeql-dotnet
           ${{ else }}:
-            WORKFLOW: ci-dotnet-${{ parameters.check }}
+            workflow: ci-dotnet-${{ parameters.check }}
 
   - job: check
     displayName: ${{ parameters.check }}
