@@ -34,6 +34,8 @@
 #define E2E_HTTPS_IDEMPOTENT_TIMEOUT_S 20
 #define E2E_HTTPS_ATTEMPTS 3
 #define E2E_HTTPS_RETRY_PAUSE_MS 2000u
+/* Fits a hub SAS token, or "Bearer " and a Microsoft Entra access token (~1.5-3 KB). */
+#define E2E_HUB_AUTHORIZATION_MAX 4096
 
 /** @brief A REST call in a slot, with what it takes to send it again. */
 typedef struct
@@ -41,7 +43,7 @@ typedef struct
   e2e_http_request* http; /**< Non-NULL while the call is in flight. */
   const char* method; /**< A string literal. */
   char path[256];
-  char sas[512];
+  char authorization[E2E_HUB_AUTHORIZATION_MAX];
   char* body; /**< Heap copy; NULL for none. */
   bool idempotent;
   int attempt;
@@ -52,6 +54,8 @@ typedef struct
 struct az_iot_e2e_service
 {
   e2e_conn_info hub_info; /* IoT Hub service endpoint (method/twin/c2d) */
+  /* "Bearer <IOTHUB_SERVICE_ACCESS_TOKEN>"; empty when the hub is accessed with SAS tokens. */
+  char hub_bearer_authorization[E2E_HUB_AUTHORIZATION_MAX];
   e2e_conn_info eh_info; /* Event Hub-compatible endpoint (telemetry)   */
   char entity[128]; /* Event Hub entity name                       */
   char consumer_group[64]; /* Event Hub consumer group; empty = $Default */
@@ -100,6 +104,33 @@ static void set_error(az_iot_e2e_service* svc, const char* message)
 
 static int64_t sas_expiry(void) { return (int64_t)time(NULL) + E2E_SAS_TTL_SECONDS; }
 
+/**
+ * @brief Writes the Authorization value of a hub service request to @p out: the Entra bearer
+ * token when IOTHUB_SERVICE_ACCESS_TOKEN is set, else a SAS token signed with the key of @p policy.
+ */
+static bool hub_authorization_create(
+    const az_iot_e2e_service* svc,
+    const e2e_conn_info* policy,
+    char* out,
+    size_t out_size)
+{
+  if (svc->hub_bearer_authorization[0] != '\0')
+  {
+    const int length = snprintf(out, out_size, "%s", svc->hub_bearer_authorization);
+    return length > 0 && (size_t)length < out_size;
+  }
+  /* IoT Hub service SAS: HMAC key is base64-decode(key); audience is the host. */
+  return e2e_sas_token_create(
+      svc->hub_info.host, policy->key_name, policy->key, true, sas_expiry(), out, out_size);
+}
+
+/** @brief The AMQP CBS token type of the value hub_authorization_create() writes. */
+static const char* hub_cbs_token_type(const az_iot_e2e_service* svc)
+{
+  return svc->hub_bearer_authorization[0] != '\0' ? E2E_AMQP_CBS_TOKEN_TYPE_BEARER
+                                                  : AZ_AMQP_CBS_TOKEN_TYPE_SAS;
+}
+
 /** @brief Close and free REST slot @p slot, if in use. */
 static void end_slot(az_iot_e2e_service* svc, int slot)
 {
@@ -113,11 +144,43 @@ static void end_slot(az_iot_e2e_service* svc, int slot)
   memset(c, 0, sizeof(*c));
 }
 
+/**
+ * @brief Selects Microsoft Entra authorization of the hub service APIs with @p access_token, on
+ * host IOTHUB_HOSTNAME, else that of IOTHUB_CONNECTION_STRING.
+ *
+ * @return NULL on success, else a static description of the failure.
+ */
+static const char* hub_bearer_authorization_set(az_iot_e2e_service* svc, const char* access_token)
+{
+  char host[sizeof(svc->hub_info.host)];
+  if (env_copy("IOTHUB_HOSTNAME", host, sizeof(host)))
+  {
+    memcpy(svc->hub_info.host, host, sizeof(host));
+  }
+  if (svc->hub_info.host[0] == '\0')
+  {
+    return "IOTHUB_SERVICE_ACCESS_TOKEN needs IOTHUB_HOSTNAME or IOTHUB_CONNECTION_STRING";
+  }
+  const int length = snprintf(
+      svc->hub_bearer_authorization,
+      sizeof(svc->hub_bearer_authorization),
+      "Bearer %s",
+      access_token);
+  return (length > 0 && (size_t)length < sizeof(svc->hub_bearer_authorization))
+      ? NULL
+      : "IOTHUB_SERVICE_ACCESS_TOKEN is too long";
+}
+
 az_iot_e2e_service* az_iot_e2e_service_create(const char** error_out)
 {
   char hub_cs[512];
   char eh_cs[512];
-  if (!env_copy("IOTHUB_CONNECTION_STRING", hub_cs, sizeof(hub_cs)))
+  char access_token[E2E_HUB_AUTHORIZATION_MAX];
+  /* With an access token, the hub connection string is optional: it only names the host. */
+  const bool has_access_token
+      = env_copy("IOTHUB_SERVICE_ACCESS_TOKEN", access_token, sizeof(access_token));
+  const bool has_hub_cs = env_copy("IOTHUB_CONNECTION_STRING", hub_cs, sizeof(hub_cs));
+  if (!has_hub_cs && !has_access_token)
   {
     if (error_out != NULL)
     {
@@ -144,12 +207,23 @@ az_iot_e2e_service* az_iot_e2e_service_create(const char** error_out)
     return NULL;
   }
 
-  if (!e2e_conn_info_parse(hub_cs, &svc->hub_info))
+  if (has_hub_cs && !e2e_conn_info_parse(hub_cs, &svc->hub_info))
   {
     free(svc);
     if (error_out != NULL)
     {
       *error_out = "IOTHUB_CONNECTION_STRING is malformed";
+    }
+    return NULL;
+  }
+  const char* bearer_error
+      = has_access_token ? hub_bearer_authorization_set(svc, access_token) : NULL;
+  if (bearer_error != NULL)
+  {
+    free(svc);
+    if (error_out != NULL)
+    {
+      *error_out = bearer_error;
     }
     return NULL;
   }
@@ -505,18 +579,10 @@ bool az_iot_e2e_service_file_notification_watch_begin(
     return true; /* already watching */
   }
 
-  /* IoT Hub service SAS: HMAC key is base64-decode(key); audience is the host. */
-  char sas[512];
-  if (!e2e_sas_token_create(
-          svc->hub_info.host,
-          svc->hub_info.key_name,
-          svc->hub_info.key,
-          true,
-          sas_expiry(),
-          sas,
-          sizeof(sas)))
+  char authorization[E2E_HUB_AUTHORIZATION_MAX];
+  if (!hub_authorization_create(svc, &svc->hub_info, authorization, sizeof(authorization)))
   {
-    set_error(svc, "filenotify: failed to build SAS token");
+    set_error(svc, "filenotify: failed to build the hub authorization");
     return false;
   }
 
@@ -529,7 +595,13 @@ bool az_iot_e2e_service_file_notification_watch_begin(
 
   const char* err = NULL;
   if (!e2e_amqp_filenotify_begin(
-          svc->filenotify, svc->hub_info.host, sas, device_id, &err, attach_refused_out))
+          svc->filenotify,
+          svc->hub_info.host,
+          hub_cbs_token_type(svc),
+          authorization,
+          device_id,
+          &err,
+          attach_refused_out))
   {
     set_error(svc, (err != NULL) ? err : "filenotify: begin failed");
     free(svc->filenotify);
@@ -614,24 +686,23 @@ bool az_iot_e2e_service_send_c2d_with_properties(
     size_t payload_len,
     const az_iot_e2e_c2d_properties* properties)
 {
-  /* IoT Hub service SAS: HMAC key is base64-decode(key); audience is the host. */
-  char sas[512];
-  if (!e2e_sas_token_create(
-          svc->hub_info.host,
-          svc->hub_info.key_name,
-          svc->hub_info.key,
-          true,
-          sas_expiry(),
-          sas,
-          sizeof(sas)))
+  char authorization[E2E_HUB_AUTHORIZATION_MAX];
+  if (!hub_authorization_create(svc, &svc->hub_info, authorization, sizeof(authorization)))
   {
-    set_error(svc, "c2d: failed to build SAS token");
+    set_error(svc, "c2d: failed to build the hub authorization");
     return false;
   }
 
   const char* err = NULL;
   if (!e2e_amqp_send_c2d(
-          svc->hub_info.host, sas, device_id, payload, payload_len, properties, &err))
+          svc->hub_info.host,
+          hub_cbs_token_type(svc),
+          authorization,
+          device_id,
+          payload,
+          payload_len,
+          properties,
+          &err))
   {
     set_error(svc, (err != NULL) ? err : "c2d: send failed");
     return false;
@@ -639,19 +710,12 @@ bool az_iot_e2e_service_send_c2d_with_properties(
   return true;
 }
 
-/* Build the IoT Hub service SAS used for the REST APIs. */
-static bool build_hub_sas(az_iot_e2e_service* svc, char* out, size_t out_size)
+/** @brief Writes the Authorization value of a REST request to @p out. */
+static bool build_rest_authorization(az_iot_e2e_service* svc, char* out, size_t out_size)
 {
-  if (!e2e_sas_token_create(
-          svc->hub_info.host,
-          svc->hub_info.key_name,
-          svc->hub_info.key,
-          true,
-          sas_expiry(),
-          out,
-          out_size))
+  if (!hub_authorization_create(svc, &svc->hub_info, out, out_size))
   {
-    set_error(svc, "rest: failed to build SAS token");
+    set_error(svc, "rest: failed to build the hub authorization");
     return false;
   }
   return true;
@@ -671,7 +735,7 @@ static bool begin_attempt(az_iot_e2e_service* svc, rest_call* c)
   c->attempt++;
   c->attempt_start = time(NULL);
   c->next_attempt_at = 0;
-  if (!e2e_http_begin(c->http, svc->hub_info.host, c->method, c->path, c->sas, c->body))
+  if (!e2e_http_begin(c->http, svc->hub_info.host, c->method, c->path, c->authorization, c->body))
   {
     set_error(svc, e2e_http_error(c->http));
     return false;
@@ -688,7 +752,7 @@ static bool begin_request_in(
     int slot,
     const char* method,
     const char* path,
-    const char* sas,
+    const char* authorization,
     const char* body,
     bool idempotent)
 {
@@ -708,7 +772,7 @@ static bool begin_request_in(
   }
   c->method = method;
   snprintf(c->path, sizeof(c->path), "%s", path);
-  snprintf(c->sas, sizeof(c->sas), "%s", sas);
+  snprintf(c->authorization, sizeof(c->authorization), "%s", authorization);
   c->idempotent = idempotent;
   if (!begin_attempt(svc, c))
   {
@@ -723,11 +787,11 @@ static bool begin_request(
     az_iot_e2e_service* svc,
     const char* method,
     const char* path,
-    const char* sas,
+    const char* authorization,
     const char* body,
     bool idempotent)
 {
-  return begin_request_in(svc, 0, method, path, sas, body, idempotent);
+  return begin_request_in(svc, 0, method, path, authorization, body, idempotent);
 }
 
 /** @brief Start a direct-method invocation in @p slot. */
@@ -740,8 +804,8 @@ static bool begin_method_invoke(
     int response_timeout_s,
     int connect_timeout_s)
 {
-  char sas[512];
-  if (!build_hub_sas(svc, sas, sizeof(sas)))
+  char authorization[E2E_HUB_AUTHORIZATION_MAX];
+  if (!build_rest_authorization(svc, authorization, sizeof(authorization)))
   {
     return false;
   }
@@ -762,7 +826,7 @@ static bool begin_method_invoke(
     set_error(svc, "rest: method invocation body too large");
     return false;
   }
-  return begin_request_in(svc, slot, "POST", path, sas, body, false);
+  return begin_request_in(svc, slot, "POST", path, authorization, body, false);
 }
 
 bool az_iot_e2e_service_method_invoke_begin(
@@ -817,14 +881,14 @@ int az_iot_e2e_service_method_invoke_start(
 
 bool az_iot_e2e_service_twin_get_begin(az_iot_e2e_service* svc, const char* device_id)
 {
-  char sas[512];
-  if (!build_hub_sas(svc, sas, sizeof(sas)))
+  char authorization[E2E_HUB_AUTHORIZATION_MAX];
+  if (!build_rest_authorization(svc, authorization, sizeof(authorization)))
   {
     return false;
   }
   char path[256];
   snprintf(path, sizeof(path), "/twins/%s?api-version=%s", device_id, E2E_API_VERSION);
-  return begin_request(svc, "GET", path, sas, NULL, true);
+  return begin_request(svc, "GET", path, authorization, NULL, true);
 }
 
 bool az_iot_e2e_service_twin_patch_desired_begin(
@@ -832,8 +896,8 @@ bool az_iot_e2e_service_twin_patch_desired_begin(
     const char* device_id,
     const char* desired_json)
 {
-  char sas[512];
-  if (!build_hub_sas(svc, sas, sizeof(sas)))
+  char authorization[E2E_HUB_AUTHORIZATION_MAX];
+  if (!build_rest_authorization(svc, authorization, sizeof(authorization)))
   {
     return false;
   }
@@ -847,7 +911,7 @@ bool az_iot_e2e_service_twin_patch_desired_begin(
       "{\"properties\":{\"desired\":%s}}",
       (desired_json != NULL) ? desired_json : "{}");
   /* Sent again after a lost response, it sets the same values. */
-  return begin_request(svc, "PATCH", path, sas, body, true);
+  return begin_request(svc, "PATCH", path, authorization, body, true);
 }
 
 /**
@@ -1347,13 +1411,14 @@ bool az_iot_e2e_dps_enrollment_delete(const char* registration_id)
 
 bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* device_id)
 {
-  /* The policy of IOTHUB_REGISTRY_CONNECTION_STRING (RegistryWrite) when set, else
-   * that of the service's hub connection string. The request always goes to the
-   * service's host: a hub with a separate device hostname refuses service
+  /* The Entra access token when set. Else the policy of IOTHUB_REGISTRY_CONNECTION_STRING
+   * (RegistryWrite) when set, else that of the service's hub connection string. The request
+   * always goes to the service's host: a hub with a separate device hostname refuses service
    * operations on it. */
   e2e_conn_info info = svc->hub_info;
   char cs[512];
-  if (env_copy("IOTHUB_REGISTRY_CONNECTION_STRING", cs, sizeof(cs)))
+  if (svc->hub_bearer_authorization[0] == '\0'
+      && env_copy("IOTHUB_REGISTRY_CONNECTION_STRING", cs, sizeof(cs)))
   {
     e2e_conn_info registry;
     if (!e2e_conn_info_parse(cs, &registry))
@@ -1364,12 +1429,11 @@ bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* devic
     memcpy(info.key_name, registry.key_name, sizeof(info.key_name));
     memcpy(info.key, registry.key, sizeof(info.key));
   }
-  char sas[512];
+  char authorization[E2E_HUB_AUTHORIZATION_MAX];
   char path[256];
   int n = snprintf(path, sizeof(path), "/devices/%s?api-version=%s", device_id, E2E_API_VERSION);
   if (n <= 0 || (size_t)n >= sizeof(path)
-      || !e2e_sas_token_create(
-          info.host, info.key_name, info.key, true, sas_expiry(), sas, sizeof(sas)))
+      || !hub_authorization_create(svc, &info, authorization, sizeof(authorization)))
   {
     return false;
   }
@@ -1379,7 +1443,7 @@ bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* devic
       info.host,
       "DELETE",
       path,
-      sas,
+      authorization,
       NULL,
       NULL,
       NULL,

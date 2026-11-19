@@ -13,7 +13,12 @@
  * client charter intact: AMQP lives strictly in test code, behind this boundary.
  *
  * Configuration is read from the environment on create():
- *   IOTHUB_CONNECTION_STRING            IoT Hub service policy connection string
+ *   IOTHUB_CONNECTION_STRING            IoT Hub service policy connection string (optional
+ *                                       with IOTHUB_SERVICE_ACCESS_TOKEN)
+ *   IOTHUB_SERVICE_ACCESS_TOKEN         Microsoft Entra access token for https://iothubs.azure.net
+ *                                       (optional): authorizes the hub service APIs, not SAS
+ *   IOTHUB_HOSTNAME                     hub host with IOTHUB_SERVICE_ACCESS_TOKEN (optional;
+ *                                       else from IOTHUB_CONNECTION_STRING)
  *   IOTHUB_EVENTHUB_CONNECTION_STRING   Event Hub-compatible endpoint connection string
  *   IOTHUB_EVENTHUB_LISTEN_NAME         Event Hub entity name (optional; else from the CS)
  *   IOTHUB_EVENTHUB_PARTITION_COUNT     partition count to watch (optional; default 4)
@@ -366,9 +371,9 @@ extern "C"
   bool az_iot_e2e_dps_enrollment_delete(const char* registration_id);
 
   /* Deletes a device identity from the hub; a missing one counts as deleted.
-   * Signs with the policy of IOTHUB_REGISTRY_CONNECTION_STRING when set (one with
-   * RegistryWrite), else with that of the service's hub connection string; the
-   * request goes to the service's hub host either way. */
+   * Authorized by IOTHUB_SERVICE_ACCESS_TOKEN when set; else signs with the policy of
+   * IOTHUB_REGISTRY_CONNECTION_STRING when set (one with RegistryWrite), else with that of the
+   * service's hub connection string. The request goes to the service's hub host either way. */
   bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* device_id);
 
 #ifdef __cplusplus

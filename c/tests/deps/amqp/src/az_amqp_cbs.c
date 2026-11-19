@@ -226,8 +226,8 @@ AZ_NODISCARD az_result az_amqp_cbs_put_token(
   _AZ_RET(az_amqp_property_map_add_string(&ap, AZ_SPAN_FROM_STR("name"), audience));
   az_span const app_props = az_amqp_property_map_get_bytes(&ap);
 
-  // Body: amqp-value string = the token.
-  uint8_t body_buffer[2048];
+  // Body: amqp-value string = the token. Fits a 4 KB token, such as a Microsoft Entra access token.
+  uint8_t body_buffer[4096 + 8];
   if (az_span_size(token) + 8 > (int32_t)sizeof(body_buffer))
   {
     return AZ_ERROR_NOT_ENOUGH_SPACE;
