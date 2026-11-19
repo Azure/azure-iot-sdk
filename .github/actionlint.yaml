@@ -1,0 +1,4 @@
+self-hosted-runner:
+  # 1ES hosted pool of GitHub runners carrying the CI managed identity.
+  labels:
+    - 1ES.Pool=azure-iot-sdk-github-linux
