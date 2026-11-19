@@ -1,0 +1,187 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+  - name: azureLocation
+    type: string
+  - name: suite
+    type: string
+    values: [standard, csr, longhaul]
+  - name: os
+    type: string
+    default: ubuntu-24.04
+  - name: durationMinutes
+    type: number
+    default: 320
+  - name: minSuccessPercent
+    type: number
+    default: 99
+  - name: maxMemoryGrowthMb
+    type: number
+    default: 64
+
+jobs:
+  - job: setup
+    displayName: Provision test resources
+    timeoutInMinutes: 30
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+      - checkout: self
+        persistCredentials: false
+      - template: steps-e2e-framework.yml
+        parameters:
+          ${{ if eq(parameters.suite, 'csr') }}:
+            revision: 9109e1ce6d9d19bbc750f4715b85db1f5167190e
+          ${{ else }}:
+            revision: b96d2aa2eb2b36e1e4dfbdb04aa56cf3dccecf8a
+      - task: AzureCLI@2
+        name: configure
+        displayName: Provision and encrypt test configuration
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: pscore
+          scriptLocation: scriptPath
+          scriptPath: .azure-pipelines/scripts/provision.ps1
+          visibleAzLogin: false
+        env:
+          E2E_SUITE: ${{ parameters.suite }}
+          E2E_LOCATION: ${{ parameters.azureLocation }}
+          E2E_RUN_ID: $(System.TeamProjectId)-$(Build.BuildId)
+          E2E_FRAMEWORK_ROOT: $(Agent.TempDirectory)/iot-sdks-e2e-fx
+          E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
+          LONGHAUL_DURATION_MINUTES: ${{ parameters.durationMinutes }}
+          LONGHAUL_MIN_SUCCESS_PERCENT: ${{ parameters.minSuccessPercent }}
+          LONGHAUL_MAX_MANAGED_MEMORY_GROWTH_MB: ${{ parameters.maxMemoryGrowthMb }}
+      - task: PublishPipelineArtifact@1
+        displayName: Publish encrypted test configuration
+        inputs:
+          targetPath: $(Agent.TempDirectory)/test-config/test-config.encrypted
+          artifact: e2e-test-config
+
+  - job: test
+    displayName: Run ${{ parameters.suite }} tests
+    dependsOn: setup
+    variables:
+      configKey: $[ dependencies.setup.outputs['configure.configKey'] ]
+      DOTNET_NOLOGO: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    ${{ if eq(parameters.suite, 'longhaul') }}:
+      timeoutInMinutes: 360
+      pool:
+        vmImage: ${{ parameters.os }}
+    ${{ else }}:
+      timeoutInMinutes: 30
+      strategy:
+        ${{ if eq(parameters.suite, 'csr') }}:
+          maxParallel: 1
+        matrix:
+          Linux:
+            vmImage: ubuntu-24.04
+            deviceIndex: 0
+          Windows:
+            vmImage: windows-latest
+            deviceIndex: 1
+      pool:
+        vmImage: $(vmImage)
+    steps:
+      - template: steps-dotnet.yml
+      - pwsh: dotnet build Project.slnx
+        displayName: Build tests
+        workingDirectory: dotnet
+      - task: DownloadPipelineArtifact@2
+        displayName: Download encrypted test configuration
+        inputs:
+          buildType: current
+          artifactName: e2e-test-config
+          targetPath: $(Agent.TempDirectory)/test-config
+      - task: PowerShell@2
+        displayName: Run tests
+        inputs:
+          pwsh: true
+          targetType: filePath
+          filePath: .azure-pipelines/scripts/run-e2e.ps1
+        env:
+          CONFIG_KEY: $(configKey)
+          E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
+          E2E_SUITE: ${{ parameters.suite }}
+          ${{ if ne(parameters.suite, 'longhaul') }}:
+            DEVICE_INDEX: $(deviceIndex)
+          LONGHAUL_DURATION_MINUTES: ${{ parameters.durationMinutes }}
+          LONGHAUL_MIN_SUCCESS_PERCENT: ${{ parameters.minSuccessPercent }}
+          LONGHAUL_MAX_MANAGED_MEMORY_GROWTH_MB: ${{ parameters.maxMemoryGrowthMb }}
+      - task: PublishTestResults@2
+        condition: always()
+        inputs:
+          testResultsFormat: VSTest
+          testResultsFiles: '$(Common.TestResultsDirectory)/**/*.trx'
+          testRunTitle: .NET ${{ parameters.suite }} ($(Agent.OS))
+          failTaskOnFailedTests: true
+          failTaskOnMissingResultsFile: true
+      - ${{ if ne(parameters.suite, 'longhaul') }}:
+          - task: PublishCodeCoverageResults@2
+            condition: succeededOrFailed()
+            inputs:
+              summaryFileLocation: '$(Common.TestResultsDirectory)/**/coverage.cobertura.xml'
+              failIfCoverageEmpty: true
+      - ${{ if eq(parameters.suite, 'longhaul') }}:
+          - pwsh: |
+              $reports = @(Get-ChildItem "$env:BUILD_SOURCESDIRECTORY/longhaul-results" -Filter *.md -ErrorAction SilentlyContinue)
+              if ($reports.Count -eq 0) { Write-Warning 'Longhaul ended without an analysis report; see the test log.' }
+              foreach ($report in $reports) {
+                Write-Host "##vso[task.uploadsummary]$($report.FullName)"
+              }
+            displayName: Publish longhaul analysis
+            condition: always()
+          - task: PublishPipelineArtifact@1
+            displayName: Publish longhaul analysis files
+            condition: always()
+            inputs:
+              targetPath: $(Build.SourcesDirectory)/longhaul-results
+              artifact: longhaul-UnifiedMQTTv3Hub
+      - task: PublishPipelineArtifact@1
+        displayName: Publish raw test results
+        condition: always()
+        inputs:
+          targetPath: $(Common.TestResultsDirectory)
+          artifact: test-report-$(Agent.OS)
+
+  - job: teardown
+    displayName: Delete test resources
+    dependsOn: [setup, test]
+    condition: always()
+    timeoutInMinutes: 15
+    cancelTimeoutInMinutes: 15
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+      - checkout: none
+      - task: AzureCLI@2
+        displayName: Delete resource group if it exists
+        condition: always()
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: pscore
+          scriptLocation: inlineScript
+          visibleAzLogin: false
+          inlineScript: |
+            $ErrorActionPreference = 'Stop'
+            $prefix = switch ($env:E2E_SUITE) {
+              'standard' { 'DotnetE2ETestPipeline' }
+              'csr' { 'DotnetCertMgmtE2ETestPipeline' }
+              'longhaul' { 'DotnetLonghaul' }
+              default { throw 'Unknown test suite.' }
+            }
+            # Recompute independently of setup outputs, including on cancellation.
+            $rg = "$prefix-Ado-$env:E2E_RUN_ID"
+            $exists = az group exists --name $rg --only-show-errors
+            if ($LASTEXITCODE -ne 0) { throw "Could not check resource group $rg." }
+            if ($exists -eq 'true') {
+              az group delete --name $rg --yes --no-wait --only-show-errors
+              if ($LASTEXITCODE -ne 0) { throw "Could not queue deletion of $rg." }
+            }
+        env:
+          E2E_SUITE: ${{ parameters.suite }}
+          E2E_RUN_ID: $(System.TeamProjectId)-$(Build.BuildId)

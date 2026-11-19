@@ -1,0 +1,37 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+trigger:
+  branches:
+    include: [main]
+  paths:
+    include: [dotnet/**, common/**, .azure-pipelines/**, .github/workflows/ci-dotnet.yml]
+    exclude: [dotnet/**/*.md, common/**/*.md]
+pr:
+  autoCancel: true
+  branches:
+    include: ['*']
+  paths:
+    include: [dotnet/**, common/**, .azure-pipelines/**, .github/workflows/ci-dotnet.yml]
+    exclude: [dotnet/**/*.md, common/**/*.md]
+schedules:
+  - cron: '0 11 * * *'
+    displayName: Nightly end-to-end tests
+    branches:
+      include: [main]
+    always: true
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+    default: aziotclb service connection
+  - name: azureLocation
+    type: string
+    default: eastus2euap
+
+jobs:
+  - template: templates/jobs-e2e.yml
+    parameters:
+      azureServiceConnection: ${{ parameters.azureServiceConnection }}
+      azureLocation: ${{ parameters.azureLocation }}
+      suite: standard
