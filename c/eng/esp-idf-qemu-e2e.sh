@@ -10,8 +10,9 @@
 #   eng/esp-idf-qemu-e2e.sh <target> <cert.pem> <key.pem> [work-dir]
 #
 # Environment: E2E_ESP32_DEVICE_ID (the DPS registration id), IOT_DPS_ID_SCOPE, optional
-# IOT_DPS_GLOBAL_ENDPOINT, and the e2e service settings (IOTHUB_CONNECTION_STRING,
-# IOTHUB_EVENTHUB_CONNECTION_STRING, IOTHUB_EVENTHUB_CONSUMER_GROUP).
+# IOT_DPS_GLOBAL_ENDPOINT, and the e2e service settings (IOTHUB_CONNECTION_STRING or
+# IOTHUB_HOSTNAME and IOTHUB_SERVICE_ACCESS_TOKEN, IOTHUB_EVENTHUB_CONNECTION_STRING,
+# IOTHUB_EVENTHUB_CONSUMER_GROUP).
 set -euo pipefail
 
 if [ $# -lt 3 ]; then

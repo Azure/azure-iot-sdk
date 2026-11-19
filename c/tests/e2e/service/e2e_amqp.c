@@ -1284,7 +1284,8 @@ static void on_send_complete(
 
 bool e2e_amqp_send_c2d(
     const char* hub_host,
-    const char* sas_token,
+    const char* token_type,
+    const char* token,
     const char* device_id,
     const uint8_t* payload,
     size_t payload_len,
@@ -1308,7 +1309,7 @@ bool e2e_amqp_send_c2d(
   bool cbs_ok = false;
   bool sender_ok = false;
   az_span fqdn = az_span_create_from_str((char*)(uintptr_t)hub_host);
-  az_span token = az_span_create_from_str((char*)(uintptr_t)sas_token);
+  az_span token_span = az_span_create_from_str((char*)(uintptr_t)token);
 
   /* CBS audience for the IoT Hub service endpoint is the hub host. */
   int audience_length = snprintf(c->audience_buffer, sizeof(c->audience_buffer), "%s", hub_host);
@@ -1400,9 +1401,9 @@ bool e2e_amqp_send_c2d(
   e2e_amqp_put_token_result put_token = { 0 };
   if (az_result_failed(az_amqp_cbs_put_token(
           &c->cbs,
-          AZ_SPAN_FROM_STR(AZ_AMQP_CBS_TOKEN_TYPE_SAS),
+          az_span_create_from_str((char*)(uintptr_t)token_type),
           audience,
-          token,
+          token_span,
           0,
           on_put_token_complete,
           &put_token)))
@@ -1711,7 +1712,8 @@ static void on_filenotify_received(
 bool e2e_amqp_filenotify_begin(
     e2e_amqp_filenotify* f,
     const char* hub_host,
-    const char* sas_token,
+    const char* token_type,
+    const char* token,
     const char* match,
     const char** err_out,
     bool* attach_refused_out)
@@ -1719,7 +1721,7 @@ bool e2e_amqp_filenotify_begin(
   const char* err = NULL;
   bool attach_refused = false;
   az_span fqdn = az_span_create_from_str((char*)(uintptr_t)hub_host);
-  az_span token = az_span_create_from_str((char*)(uintptr_t)sas_token);
+  az_span token_span = az_span_create_from_str((char*)(uintptr_t)token);
 
   snprintf(f->match, sizeof(f->match), "%s", (match != NULL) ? match : "");
   f->began_at_s = (int64_t)time(NULL);
@@ -1819,9 +1821,9 @@ bool e2e_amqp_filenotify_begin(
   e2e_amqp_put_token_result put_token = { 0 };
   if (az_result_failed(az_amqp_cbs_put_token(
           &f->cbs,
-          AZ_SPAN_FROM_STR(AZ_AMQP_CBS_TOKEN_TYPE_SAS),
+          az_span_create_from_str((char*)(uintptr_t)token_type),
           audience,
-          token,
+          token_span,
           0,
           on_put_token_complete,
           &put_token)))

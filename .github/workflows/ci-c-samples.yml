@@ -17,7 +17,10 @@
 # E2E_SHARED_ID_SCOPE is set). Each leg issues its own device, device index 20 + slot (0..14
 # belong to ci-c-e2e), registration ID samples-<run>-<attempt>-<index>, and reads events on
 # consumer group samples-<slot>, which exists on the shared hub for this workflow only. Pushes and
-# manual runs provision a resource group per run and always delete it (teardown).
+# manual runs provision a resource group per run and always delete it (teardown). When
+# E2E_SHARED_IOTHUB_HOSTNAME is set, the shared hub's service side uses a Microsoft Entra access
+# token instead of its policy keys (Microsoft Entra mode, see ci-c-e2e.yml): the hub-token job
+# alone logs in to Azure, and hands the samples legs the token sealed.
 #
 # CSR legs (samples_csr: dps_csr_managed, custom_certificate_provider, dps_persist_assignment,
 # hub_renew, dps_sas_key_issued_cert): OS x adapter, 4 in all, on a certificate-management
@@ -123,16 +126,55 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+  # Microsoft Entra mode on the shared environment (see header): the only job here that logs in to
+  # Azure for it. It checks out one script and runs nothing else from the pull request.
+  hub-token:
+    name: hub access token (Microsoft Entra mode)
+    if: >-
+      ${{ (vars.E2E_SHARED_IOTHUB_HOSTNAME || 'ewertons-mqttv3-hub-4f4fb8da.azure-devices.net') != '' && vars.E2E_SHARED_ID_SCOPE != '' &&
+          github.event_name == 'pull_request' &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          github.actor != 'dependabot[bot]' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write   # azure/login OIDC
+    outputs:
+      sealed: ${{ steps.token.outputs.sealed }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: c/eng/e2e-shared-device.ps1
+          sparse-checkout-cone-mode: false
+
+      - name: Azure Login via OIDC
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Take and seal the hub access token
+        id: token
+        shell: pwsh
+        env:
+          E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
+        run: ./c/eng/e2e-shared-device.ps1 -SealHubAccessToken
+
   samples:
     name: ${{ matrix.os }} / ${{ matrix.adapter }} / shard ${{ matrix.shard }}
-    needs: setup
-    # After setup, or without it on the shared environment (setup skipped there).
+    needs: [ setup, hub-token ]
+    # After setup, or without it on the shared environment (setup skipped there); in Microsoft
+    # Entra mode, after hub-token (skipped otherwise).
     if: >-
       ${{ !cancelled() && (needs.setup.result == 'success' || needs.setup.result == 'skipped') &&
+          (needs.hub-token.result == 'success' || needs.hub-token.result == 'skipped') &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&
             github.actor != 'dependabot[bot]')) }}
-    # Runs pull-request code: no Azure OIDC token.
+    # Runs pull-request code: no OIDC token (see hub-token).
     permissions:
       contents: read
     runs-on: ${{ matrix.os }}
@@ -242,6 +284,8 @@ jobs:
         env:
           E2E_SHARED_GROUP_CA: ${{ secrets.E2E_SHARED_GROUP_CA }}
           E2E_SHARED_IOTHUB_CS: ${{ secrets.E2E_SHARED_IOTHUB_CS }}
+          E2E_SHARED_IOTHUB_HOSTNAME: ${{ (vars.E2E_SHARED_IOTHUB_HOSTNAME || 'ewertons-mqttv3-hub-4f4fb8da.azure-devices.net') }}
+          E2E_SHARED_IOTHUB_SEALED_SERVICE_ACCESS_TOKEN: ${{ needs.hub-token.outputs.sealed }}
           E2E_SHARED_EVENTHUB_CS: ${{ secrets.E2E_SHARED_EVENTHUB_CS }}
           E2E_SHARED_ID_SCOPE: ${{ vars.E2E_SHARED_ID_SCOPE }}
           E2E_SHARED_SAS_GROUP_KEY: ${{ secrets.E2E_SHARED_SAS_GROUP_KEY }}
@@ -273,7 +317,8 @@ jobs:
           Remove-Item -Recurse -Force test_config
           foreach ($name in 'IOTHUB_CONNECTION_STRING', 'IOTHUB_EVENTHUB_CONNECTION_STRING',
                             'IOTHUB_EVENTHUB_LISTEN_NAME', 'IOTHUB_EVENTHUB_PARTITION_COUNT',
-                            'IOT_DPS_CONNECTION_STRING', 'IOTHUB_REGISTRY_CONNECTION_STRING') {
+                            'IOT_DPS_CONNECTION_STRING', 'IOTHUB_REGISTRY_CONNECTION_STRING',
+                            'IOTHUB_HOSTNAME', 'IOTHUB_SERVICE_ACCESS_TOKEN') {
             if ($config[$name]) { Set-Item "env:$name" $config[$name] }
           }
           $env:IOTHUB_EVENTHUB_CONSUMER_GROUP = "samples-$($env:SAMPLES_SLOT)"
@@ -606,7 +651,7 @@ jobs:
   # One check name: fails when any job failed or was cancelled (skipped jobs pass).
   gate:
     name: ci-c-samples-gate
-    needs: [ setup, samples, teardown, setup-csr, samples-csr, teardown-csr ]
+    needs: [ setup, hub-token, samples, teardown, setup-csr, samples-csr, teardown-csr ]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
