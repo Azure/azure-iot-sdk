@@ -1,0 +1,41 @@
+# DO NOT MERGE. Checks that a job on the 1ES runner pool can sign in to Azure with the pool's
+# user-assigned managed identity (az login --identity), which needs no GitHub OIDC token exchange.
+name: probe-1es-managed-identity
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/probe-1es-managed-identity.yml
+
+permissions: {}
+
+jobs:
+  probe:
+    name: managed identity sign-in on 1ES pool
+    # Self-hosted runners must never run code from forks.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, '1ES.Pool=azure-iot-sdk-github-linux']
+    timeout-minutes: 15
+    steps:
+      - name: Azure Login via managed identity
+        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        with:
+          auth-type: IDENTITY
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Check ARM and IoT Hub access
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $Account = az account show -o json | ConvertFrom-Json
+          if ($LASTEXITCODE) { throw 'az account show failed.' }
+          Write-Host "Signed in as $($Account.user.type) $($Account.user.name) to subscription $($Account.id)"
+          $Groups = az group list --query 'length(@)' -o tsv
+          if ($LASTEXITCODE) { throw 'Listing resource groups failed.' }
+          Write-Host "Resource groups visible: $Groups"
+          $Token = az account get-access-token --resource https://iothubs.azure.net --query accessToken -o tsv
+          if ($LASTEXITCODE -or -not $Token) { throw 'No IoT Hub access token.' }
+          Write-Host "::add-mask::$Token"
+          Write-Host "IoT Hub access token issued ($($Token.Length) characters)."
