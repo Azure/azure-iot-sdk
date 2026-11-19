@@ -1,0 +1,19 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+parameters:
+  - name: revision
+    type: string
+    default: b96d2aa2eb2b36e1e4dfbdb04aa56cf3dccecf8a
+
+steps:
+  - bash: |
+      set -euo pipefail
+      git init "$FRAMEWORK_ROOT"
+      git -C "$FRAMEWORK_ROOT" remote add origin https://github.com/Azure/iot-sdks-e2e-fx.git
+      git -C "$FRAMEWORK_ROOT" fetch --depth 1 origin "$FRAMEWORK_REVISION"
+      git -C "$FRAMEWORK_ROOT" checkout --detach FETCH_HEAD
+    displayName: Fetch pinned e2e framework
+    env:
+      FRAMEWORK_ROOT: $(Agent.TempDirectory)/iot-sdks-e2e-fx
+      FRAMEWORK_REVISION: ${{ parameters.revision }}

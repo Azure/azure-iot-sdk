@@ -1,0 +1,38 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+trigger: none
+pr: none
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+    default: aziotclb service connection
+  - name: azureLocation
+    type: string
+    default: eastus2euap
+  - name: durationMinutes
+    displayName: Duration in minutes (1-320)
+    type: number
+    default: 320
+  - name: os
+    type: string
+    default: ubuntu-24.04
+    values: [ubuntu-24.04, windows-latest]
+  - name: minSuccessPercent
+    type: number
+    default: 99
+  - name: maxMemoryGrowthMb
+    type: number
+    default: 64
+
+jobs:
+  - template: templates/jobs-e2e.yml
+    parameters:
+      azureServiceConnection: ${{ parameters.azureServiceConnection }}
+      azureLocation: ${{ parameters.azureLocation }}
+      suite: longhaul
+      os: ${{ parameters.os }}
+      durationMinutes: ${{ parameters.durationMinutes }}
+      minSuccessPercent: ${{ parameters.minSuccessPercent }}
+      maxMemoryGrowthMb: ${{ parameters.maxMemoryGrowthMb }}

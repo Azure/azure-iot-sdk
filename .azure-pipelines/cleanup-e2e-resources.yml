@@ -1,0 +1,63 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+trigger: none
+pr: none
+schedules:
+  - cron: '0 2 * * *'
+    displayName: Nightly cleanup of leaked .NET resource groups
+    branches:
+      include: [main]
+    always: true
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+    default: aziotclb service connection
+  - name: prefixes
+    type: string
+    default: DotnetE2ETestPipeline-Ado-,DotnetCertMgmtE2ETestPipeline-Ado-,DotnetLonghaul-Ado-
+  - name: minimumAgeHours
+    type: number
+    default: 8
+
+jobs:
+  - job: cleanup
+    timeoutInMinutes: 30
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+      - checkout: self
+        persistCredentials: false
+      - template: templates/steps-e2e-framework.yml
+      - task: AzureCLI@2
+        displayName: Delete leaked test resources
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: pscore
+          scriptLocation: inlineScript
+          visibleAzLogin: false
+          inlineScript: |
+            $ErrorActionPreference = 'Stop'
+            Import-Module "$env:FRAMEWORK_ROOT/scripts/AzIotSdkTest/AzIotSdkTest.psd1"
+            $age = 0
+            if (-not [int]::TryParse($env:MINIMUM_AGE_HOURS, [ref]$age) -or $age -lt 1) {
+              throw 'minimumAgeHours must be a positive whole number.'
+            }
+            $prefixes = @($env:RG_PREFIXES -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            if ($prefixes.Count -eq 0) { throw 'At least one resource group prefix is required.' }
+            $failed = @()
+            foreach ($prefix in $prefixes) {
+              try {
+                Remove-LeftoverAzureResourceGroups -Prefix $prefix -MinimumAgeHours $age
+              }
+              catch {
+                Write-Warning "Cleanup failed for prefix '$prefix': $_"
+                $failed += $prefix
+              }
+            }
+            if ($failed.Count -gt 0) { throw "Cleanup failed for: $($failed -join ', ')" }
+        env:
+          FRAMEWORK_ROOT: $(Agent.TempDirectory)/iot-sdks-e2e-fx
+          RG_PREFIXES: ${{ parameters.prefixes }}
+          MINIMUM_AGE_HOURS: ${{ parameters.minimumAgeHours }}
