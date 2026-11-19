@@ -170,7 +170,7 @@ jobs:
 
       - name: Provision resources
         id: provision
-        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@0811118868b2ce9d7aa775d8326a592f3e7d2e7b # VERIFY: Azure/iot-sdks-e2e-fx#466
+        uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@2a897f5bb210febb13c969ff6b30b9d0e33b54c8 # VERIFY: iot-sdks-e2e-fx master after #466
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
           # The shared action defaults to EastUS; these pipelines run in
