@@ -112,12 +112,25 @@ jobs:
           LONGHAUL_DURATION_MINUTES: ${{ parameters.durationMinutes }}
           LONGHAUL_MIN_SUCCESS_PERCENT: ${{ parameters.minSuccessPercent }}
           LONGHAUL_MAX_MANAGED_MEMORY_GROWTH_MB: ${{ parameters.maxMemoryGrowthMb }}
+      - ${{ if eq(parameters.suite, 'standard') }}:
+          - task: PublishTestResults@2
+            displayName: Publish unit test results
+            condition: always()
+            inputs:
+              testResultsFormat: VSTest
+              testResultsFiles: '$(Common.TestResultsDirectory)/unit/**/*.trx'
+              testRunTitle: .NET unit tests ($(Agent.OS))
+              mergeTestResults: true
+              failTaskOnFailedTests: true
+              failTaskOnMissingResultsFile: true
       - task: PublishTestResults@2
+        displayName: Publish integration test results
         condition: always()
         inputs:
           testResultsFormat: VSTest
-          testResultsFiles: '$(Common.TestResultsDirectory)/**/*.trx'
-          testRunTitle: .NET ${{ parameters.suite }} ($(Agent.OS))
+          testResultsFiles: '$(Common.TestResultsDirectory)/integration/**/*.trx'
+          testRunTitle: .NET ${{ parameters.suite }} integration tests ($(Agent.OS))
+          mergeTestResults: true
           failTaskOnFailedTests: true
           failTaskOnMissingResultsFile: true
       - ${{ if ne(parameters.suite, 'longhaul') }}:
