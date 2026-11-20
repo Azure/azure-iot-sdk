@@ -4,12 +4,9 @@
 # No push trigger: both target branches require pull requests to be up to date and squash-merged,
 # so a merge lands exactly what its pull request run tested.
 trigger: none
-# No PR path filter: as a required check this pipeline reports on every PR and skips the tests
-# itself when nothing relevant changed.
-pr:
-  autoCancel: true
-  branches:
-    include: ['*']
+# No PR trigger yet: a PR run would create its own resources; PR runs return once they use the
+# shared, long-lived environment.
+pr: none
 # Azure Pipelines reads each branch's schedules from that branch's copy of this file.
 schedules:
   - cron: '0 11 * * *'

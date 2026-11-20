@@ -283,9 +283,10 @@ Pull requests from forks get no secrets and fail.
 **Azure Pipelines (local authentication disabled).**
 [`.azure-pipelines/ci-c-e2e.yml`](../../../.azure-pipelines/ci-c-e2e.yml) runs the same test
 matrix (three platforms by four groups, the same device indexes and consumer groups) on Azure
-Pipelines, without `esp32-qemu` and the coverage merge. It runs on pull requests and nightly
-(11:00 UTC on `main`, 14:00 UTC on `releases/public-preview`), not on pushes: both branches require
-pull requests to be up to date and squash-merged. Its hub is created with
+Pipelines, without `esp32-qemu` and the coverage merge. It runs nightly (11:00 UTC on `main`,
+14:00 UTC on `releases/public-preview`) and on demand. It has no pull request trigger yet: each
+run creates its own resources. It has no push trigger: both branches require pull requests to be
+up to date and squash-merged. Its hub is created with
 `disableLocalAuth=true` (`iot-sdks-e2e-fx` `-DisableLocalAuth`), which also grants the pipeline's
 service connection principal **IoT Hub Data Contributor** on it. Each test job takes that
 principal's access token for `https://iothubs.azure.net` right before the tests and passes it as
