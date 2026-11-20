@@ -1,0 +1,55 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Backstop for canceled agents and asynchronous resource-group deletion failures.
+# Register this YAML as a separate pipeline; only this project's MQTTv5 groups qualify.
+trigger: none
+pr: none
+schedules:
+  - cron: '0 2 * * *'
+    displayName: Clean up leaked MQTTv5 integration resources
+    branches:
+      include: [releases/public-preview]
+    always: true
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+    default: aziotclb service connection
+
+jobs:
+  - job: cleanup
+    timeoutInMinutes: 30
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+      - checkout: none
+      - task: AzureCLI@2
+        displayName: Delete owned MQTTv5 groups older than eight hours
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: pscore
+          scriptLocation: inlineScript
+          visibleAzLogin: false
+          inlineScript: |
+            $ErrorActionPreference = 'Stop'
+            $json = az group list --tag purpose=dotnet-mqttv5-e2e --only-show-errors -o json
+            if ($LASTEXITCODE -ne 0) { throw 'Could not list MQTTv5 resource groups.' }
+            $prefix = "DotnetMqttv5E2E-Ado-$env:SYSTEM_TEAMPROJECTID-"
+            $cutoff = [DateTimeOffset]::UtcNow.AddHours(-8)
+            $failed = @()
+            foreach ($group in ($json | ConvertFrom-Json)) {
+              if (-not $group.name.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) -or
+                  $group.tags.project -ne $env:SYSTEM_TEAMPROJECTID) { continue }
+              $created = [DateTimeOffset]::MinValue
+              if (-not [DateTimeOffset]::TryParse($group.tags.CreatedOn,
+                  [Globalization.CultureInfo]::InvariantCulture,
+                  [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$created)) {
+                Write-Warning "Skipping $($group.name): missing or invalid CreatedOn tag."
+                continue
+              }
+              if ($created -gt $cutoff) { continue }
+              az group delete --name $group.name --yes --no-wait --only-show-errors
+              if ($LASTEXITCODE -ne 0) { $failed += $group.name }
+            }
+            if ($failed.Count -gt 0) { throw "Could not queue deletion of: $($failed -join ', ')" }

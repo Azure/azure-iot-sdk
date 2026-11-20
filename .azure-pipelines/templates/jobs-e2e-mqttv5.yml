@@ -1,0 +1,185 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+  - name: azureLocation
+    type: string
+
+jobs:
+  - job: changes
+    displayName: Detect MQTTv5 test changes
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+      - checkout: self
+        fetchDepth: '0'
+        persistCredentials: false
+      - pwsh: |
+          $ErrorActionPreference = 'Stop'
+          $relevant = $true
+          if ($env:BUILD_REASON -eq 'PullRequest') {
+            $files = @(git diff --name-only HEAD^1 HEAD)
+            if ($LASTEXITCODE -ne 0) { throw 'Could not determine PR changes.' }
+            $relevant = @($files | Where-Object {
+              ($_ -match '^(dotnet|common)/' -and $_ -notmatch '\.md$') -or
+              $_ -match '^\.azure-pipelines/' -or
+              $_ -in @('.github/workflows/ci-dotnet-e2e-mqttv5.yml',
+                '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml',
+                'c/eng/e2e-mqttv5-adr-namespace.ps1')
+            }).Count -gt 0
+          }
+          Write-Host "##vso[task.setvariable variable=relevant;isOutput=true]$($relevant.ToString().ToLowerInvariant())"
+        name: filter
+        displayName: Detect relevant changes
+
+  - job: setup
+    displayName: Provision isolated MQTTv5 resources
+    dependsOn: changes
+    condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
+    timeoutInMinutes: 180
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+      - checkout: self
+        persistCredentials: false
+      - task: AzureCLI@2
+        name: configure
+        displayName: Provision hub, DPS and ADR; encrypt test configuration
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: pscore
+          scriptLocation: scriptPath
+          scriptPath: .azure-pipelines/scripts/provision-mqttv5.ps1
+          visibleAzLogin: false
+        env:
+          E2E_LOCATION: ${{ parameters.azureLocation }}
+          E2E_RUN_ID: $(System.TeamProjectId)-$(Build.BuildId)
+          E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/mqttv5-test-config
+      - task: PublishPipelineArtifact@1
+        displayName: Publish encrypted test configuration
+        inputs:
+          targetPath: $(Agent.TempDirectory)/mqttv5-test-config/test-config.encrypted
+          artifact: mqttv5-test-config
+
+  - job: test
+    displayName: Run MQTTv5 integration tests
+    dependsOn: setup
+    timeoutInMinutes: 30
+    variables:
+      configKey: $[ dependencies.setup.outputs['configure.configKey'] ]
+      DOTNET_NOLOGO: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    strategy:
+      matrix:
+        Linux:
+          vmImage: ubuntu-24.04
+        Windows:
+          vmImage: windows-latest
+    pool:
+      vmImage: $(vmImage)
+    steps:
+      - checkout: self
+        persistCredentials: false
+      - task: UseDotNet@2
+        displayName: Install .NET SDK
+        inputs:
+          packageType: sdk
+          version: 10.0.x
+      - pwsh: dotnet build Project.slnx
+        displayName: Build tests
+        workingDirectory: dotnet
+      - task: DownloadPipelineArtifact@2
+        displayName: Download encrypted test configuration
+        inputs:
+          buildType: current
+          artifactName: mqttv5-test-config
+          targetPath: $(Agent.TempDirectory)/mqttv5-test-config
+      - task: PowerShell@2
+        displayName: Run MQTTv5 integration tests
+        inputs:
+          pwsh: true
+          targetType: filePath
+          filePath: .azure-pipelines/scripts/run-mqttv5-e2e.ps1
+        env:
+          CONFIG_KEY: $(configKey)
+          E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/mqttv5-test-config
+      - task: PublishTestResults@2
+        displayName: Publish MQTTv5 test results
+        condition: always()
+        inputs:
+          testResultsFormat: VSTest
+          testResultsFiles: '$(Common.TestResultsDirectory)/mqttv5/*.trx'
+          testRunTitle: .NET MQTTv5 integration tests ($(Agent.OS))
+          mergeTestResults: true
+          failTaskOnFailedTests: true
+          failTaskOnMissingResultsFile: true
+      - task: PublishPipelineArtifact@1
+        displayName: Publish raw test results
+        condition: always()
+        inputs:
+          targetPath: $(Common.TestResultsDirectory)/mqttv5
+          artifact: test-report-mqttv5-$(Agent.OS)
+
+  - job: teardown
+    displayName: Delete MQTTv5 resources
+    dependsOn: [setup, test]
+    condition: and(always(), ne(dependencies.setup.result, 'Skipped'))
+    timeoutInMinutes: 15
+    cancelTimeoutInMinutes: 15
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+      - checkout: none
+      - task: AzureCLI@2
+        displayName: Delete per-run resource group
+        condition: always()
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: pscore
+          scriptLocation: inlineScript
+          visibleAzLogin: false
+          inlineScript: |
+            $ErrorActionPreference = 'Stop'
+            # Independent of setup outputs so partial provisioning can be canceled safely.
+            $rg = "DotnetMqttv5E2E-Ado-$env:E2E_RUN_ID"
+            $exists = az group exists --name $rg --only-show-errors
+            if ($LASTEXITCODE -ne 0) { throw "Could not check resource group $rg." }
+            if ($exists -eq 'true') {
+              az group delete --name $rg --yes --no-wait --only-show-errors
+              if ($LASTEXITCODE -ne 0) { throw "Could not queue deletion of $rg." }
+            }
+        env:
+          E2E_RUN_ID: $(System.TeamProjectId)-$(Build.BuildId)
+
+  - job: gate
+    displayName: MQTTv5 integration gate
+    dependsOn: [changes, setup, test, teardown]
+    condition: always()
+    pool:
+      vmImage: ubuntu-24.04
+    variables:
+      changesResult: $[ dependencies.changes.result ]
+      relevant: $[ dependencies.changes.outputs['filter.relevant'] ]
+      setupResult: $[ dependencies.setup.result ]
+      testResult: $[ dependencies.test.result ]
+      teardownResult: $[ dependencies.teardown.result ]
+    steps:
+      - checkout: none
+      - pwsh: |
+          if ($env:CHANGES_RESULT -ne 'Succeeded') {
+            throw "Change detection did not succeed ($env:CHANGES_RESULT)."
+          }
+          $expected = if ($env:RELEVANT -eq 'true') { 'Succeeded' } else { 'Skipped' }
+          if ($env:SETUP_RESULT -ne $expected -or $env:TEST_RESULT -ne $expected -or
+              $env:TEARDOWN_RESULT -ne $expected) {
+            throw "Expected setup, tests and teardown to be $expected (setup: $env:SETUP_RESULT, tests: $env:TEST_RESULT, teardown: $env:TEARDOWN_RESULT)."
+          }
+        displayName: Require successful detection, tests and cleanup
+        env:
+          CHANGES_RESULT: $(changesResult)
+          RELEVANT: $(relevant)
+          SETUP_RESULT: $(setupResult)
+          TEST_RESULT: $(testResult)
+          TEARDOWN_RESULT: $(teardownResult)
