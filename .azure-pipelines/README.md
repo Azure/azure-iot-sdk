@@ -15,7 +15,7 @@ each entry point below. All pipelines also support **Run pipeline**.
 | `ci-dotnet.yml` | Linux/Windows end-to-end tests, excluding certificate management, file upload and longhaul; also daily at 11:00 UTC |
 | `ci-dotnet-e2e-csr.yml` | Certificate-management tests on Linux/Windows, serialized; also daily at 11:00 UTC |
 | `longhaul-dotnet.yml` | Manual MQTTv3 longhaul with duration, OS, success-rate and memory-growth parameters |
-| `ci-c-e2e.yml` | C end-to-end tests (`ci-c-e2e` test legs: Linux on OpenSSL 3.0 and 4.1.0, Windows on 4.1.0, four groups each) against an IoT Hub with local authentication disabled; also daily at 11:00 UTC |
+| `ci-c-e2e.yml` | C end-to-end tests (`ci-c-e2e` test legs: Linux on OpenSSL 3.0 and 4.1.0, Windows on 4.1.0, four groups each) against an IoT Hub with local authentication disabled, on pull requests; also daily at 11:00 UTC on `main` and 14:00 UTC on `releases/public-preview` |
 | `cleanup-e2e-resources.yml` | Age-gated cleanup of leaked Azure Pipelines e2e resources; also daily at 02:00 UTC |
 
 ## Required configuration

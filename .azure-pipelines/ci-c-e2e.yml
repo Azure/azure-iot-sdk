@@ -1,23 +1,26 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-trigger:
-  branches:
-    include: [main, releases/public-preview]
-  paths:
-    include: [c/**, common/**, .azure-pipelines/**, .github/workflows/ci-c-e2e.yml]
-    exclude: [c/**/*.md, common/**/*.md]
+# No push trigger: both target branches require pull requests to be up to date and squash-merged,
+# so a merge lands exactly what its pull request run tested.
+trigger: none
 # No PR path filter: as a required check this pipeline reports on every PR and skips the tests
 # itself when nothing relevant changed.
 pr:
   autoCancel: true
   branches:
     include: ['*']
+# Azure Pipelines reads each branch's schedules from that branch's copy of this file.
 schedules:
   - cron: '0 11 * * *'
-    displayName: Nightly end-to-end tests
+    displayName: Nightly end-to-end tests (main)
     branches:
       include: [main]
+    always: true
+  - cron: '0 14 * * *'
+    displayName: Nightly end-to-end tests (releases/public-preview)
+    branches:
+      include: [releases/public-preview]
     always: true
 
 parameters:
