@@ -92,8 +92,9 @@ output variable. Temporary plaintext configuration and CSR keys are removed
 after use. Unlike GitHub Actions, Azure pipeline artifacts do not have a
 per-artifact one-day retention setting.
 
-Resource groups use `<workflow-prefix>-Ado-<project-id>-<build-id>`. Teardown
-reconstructs the name without setup outputs and uses `always()` with a
+Resource groups use `<workflow-prefix>-Ado-<project-id>-<build-id>`
+(`templates/variables-e2e-resource-group.yml`). Teardown takes the name from the
+same template, without setup outputs or a checkout, and uses `always()` with a
 15-minute cancellation grace period. The nightly janitor covers canceled agents
 and asynchronous deletion failures, including CSR resources, and ignores groups
 younger than eight hours. Groups without a parseable `CreatedOn` tag are stamped

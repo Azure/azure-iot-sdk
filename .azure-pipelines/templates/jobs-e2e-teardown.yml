@@ -1,8 +1,9 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# Deletes the resource group of an e2e run (scripts/e2e-resource-group.ps1). Also runs on failure
-# or cancellation, but not when setup never ran.
+# Deletes the resource group of an e2e run (variables-e2e-resource-group.yml). Also runs on failure
+# or cancellation, but not when setup never ran. Needs no checkout, so a failed or canceled fetch
+# does not leave the group behind.
 
 parameters:
   - name: azureServiceConnection
@@ -10,6 +11,7 @@ parameters:
   # E2E_SUITE of scripts/provision.ps1.
   - name: suite
     type: string
+    values: [standard, csr, longhaul, c-e2e]
   # The jobs to wait for; must include setup.
   - name: dependsOn
     type: object
@@ -23,10 +25,12 @@ jobs:
     cancelTimeoutInMinutes: 15
     pool:
       vmImage: ubuntu-24.04
+    variables:
+      - template: variables-e2e-resource-group.yml
+        parameters:
+          suite: ${{ parameters.suite }}
     steps:
-      - checkout: self
-        fetchDepth: '1'
-        persistCredentials: false
+      - checkout: none
       - task: AzureCLI@2
         displayName: Delete resource group if it exists
         condition: always()
@@ -37,8 +41,7 @@ jobs:
           visibleAzLogin: false
           inlineScript: |
             $ErrorActionPreference = 'Stop'
-            # Recompute independently of setup outputs, including on cancellation.
-            $rg = & ./.azure-pipelines/scripts/e2e-resource-group.ps1 -Suite $env:E2E_SUITE -RunId $env:E2E_RUN_ID
+            $rg = $env:E2E_RESOURCE_GROUP
             $exists = az group exists --name $rg --only-show-errors
             if ($LASTEXITCODE -ne 0) { throw "Could not check resource group $rg." }
             if ($exists -eq 'true') {
@@ -46,5 +49,4 @@ jobs:
               if ($LASTEXITCODE -ne 0) { throw "Could not queue deletion of $rg." }
             }
         env:
-          E2E_SUITE: ${{ parameters.suite }}
-          E2E_RUN_ID: $(System.TeamProjectId)-$(Build.BuildId)
+          E2E_RESOURCE_GROUP: $(e2eResourceGroup)

@@ -45,6 +45,10 @@ jobs:
     timeoutInMinutes: 30
     pool:
       vmImage: ubuntu-24.04
+    variables:
+      - template: variables-e2e-resource-group.yml
+        parameters:
+          suite: ${{ parameters.suite }}
     steps:
       - checkout: self
         persistCredentials: false
@@ -66,7 +70,7 @@ jobs:
         env:
           E2E_SUITE: ${{ parameters.suite }}
           E2E_LOCATION: ${{ parameters.azureLocation }}
-          E2E_RUN_ID: $(System.TeamProjectId)-$(Build.BuildId)
+          E2E_RESOURCE_GROUP: $(e2eResourceGroup)
           E2E_FRAMEWORK_ROOT: $(Agent.TempDirectory)/iot-sdks-e2e-fx
           E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
           LONGHAUL_DURATION_MINUTES: ${{ parameters.durationMinutes }}

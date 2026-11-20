@@ -19,7 +19,9 @@ if ($env:E2E_SUITE -eq 'longhaul') {
     }
 }
 
-$resourceGroup = & (Join-Path $PSScriptRoot 'e2e-resource-group.ps1') -Suite $env:E2E_SUITE -RunId $env:E2E_RUN_ID
+# templates/variables-e2e-resource-group.yml; teardown deletes it by the same name.
+$resourceGroup = $env:E2E_RESOURCE_GROUP
+if (-not $resourceGroup) { throw 'E2E_RESOURCE_GROUP is not set.' }
 Import-Module (Join-Path $env:E2E_FRAMEWORK_ROOT 'scripts/AzIotSdkTest/AzIotSdkTest.psd1')
 
 $arguments = @{
