@@ -5,8 +5,8 @@
 /* SPDX-License-Identifier: MIT */
 /* The telemetry watcher (service/e2e_amqp.c) against an in-memory peer that plays Event Hubs:
  * SASL, CBS authorization, receiver attach, detach and transfers with sequence-number
- * annotations. Covers replay dropping, the reconnect after a detached receiver and the setup
- * deadline. No network or Azure resources are used. */
+ * annotations. Covers replay dropping, the reconnect after a detached receiver, the setup
+ * deadline and the token type put to CBS. No network or Azure resources are used. */
 #include <stdarg.h>
 #include <stddef.h>
 #include <setjmp.h>
@@ -47,6 +47,8 @@ typedef struct
   const char* refused_attach; /* a link whose attach is answered, then detached, or NULL */
   uint32_t next_delivery_id;
   int connections_opened;
+  uint8_t put_token_frame[256]; /* the last CBS put-token TRANSFER, truncated */
+  size_t put_token_frame_size;
 } event_hubs_peer;
 
 static void peer_send(
@@ -245,6 +247,9 @@ static void peer_answer_frame(
     case DESC_TRANSFER:
       if ((uint32_t)peer_find_link(peer, "cbs-sender") == (uint32_t)fields[0].scalar.u64)
       {
+        peer->put_token_frame_size
+            = size < sizeof(peer->put_token_frame) ? size : sizeof(peer->put_token_frame);
+        memcpy(peer->put_token_frame, body, peer->put_token_frame_size);
         peer_answer_put_token(peer);
       }
       break;
@@ -351,7 +356,11 @@ static void peer_send_event(
 
 static event_hubs_peer g_peer;
 
-static e2e_amqp_telemetry* watcher_begin(int partition_count)
+/** @brief Starts a watcher on the peer, authorized with @p token of @p token_type. */
+static e2e_amqp_telemetry* watcher_begin_with_token(
+    int partition_count,
+    const char* token_type,
+    const char* token)
 {
   memset(&g_peer, 0, sizeof(g_peer));
   g_peer.io.answer = peer_answer;
@@ -362,9 +371,28 @@ static e2e_amqp_telemetry* watcher_begin(int partition_count)
   t->transport_override_impl = &g_peer.io;
   const char* err = NULL;
   assert_true(e2e_amqp_telemetry_begin(
-      t, "peer.example", "hub", NULL, 0, "sas", partition_count, NULL, &err));
+      t, "peer.example", "hub", NULL, 0, token_type, token, partition_count, NULL, &err));
   assert_int_equal(E2E_AMQP_TELEMETRY_PHASE_RECEIVING, t->phase);
   return t;
+}
+
+static e2e_amqp_telemetry* watcher_begin(int partition_count)
+{
+  return watcher_begin_with_token(partition_count, AZ_AMQP_CBS_TOKEN_TYPE_SAS, "sas");
+}
+
+/** @brief Whether the last put-token frame contains @p text. */
+static bool put_token_frame_contains(const char* text)
+{
+  size_t const length = strlen(text);
+  for (size_t i = 0; i + length <= g_peer.put_token_frame_size; i++)
+  {
+    if (memcmp(g_peer.put_token_frame + i, text, length) == 0)
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 static void watcher_end(e2e_amqp_telemetry* t)
@@ -542,6 +570,19 @@ static void test_a_refused_receiver_ends_the_setup_and_is_found(void** state)
   watcher_end(t);
 }
 
+/* A Microsoft Entra token is put to CBS as type "jwt", unchanged (no "Bearer " prefix). */
+static void test_an_access_token_is_put_as_a_jwt(void** state)
+{
+  (void)state;
+  e2e_amqp_telemetry* t = watcher_begin_with_token(1, AZ_AMQP_CBS_TOKEN_TYPE_JWT, "eyJ.entra.sig");
+
+  assert_true(put_token_frame_contains(AZ_AMQP_CBS_TOKEN_TYPE_JWT));
+  assert_true(put_token_frame_contains("eyJ.entra.sig"));
+  assert_false(put_token_frame_contains("Bearer"));
+  assert_false(put_token_frame_contains(AZ_AMQP_CBS_TOKEN_TYPE_SAS));
+  watcher_end(t);
+}
+
 int main(void)
 {
   const struct CMUnitTest tests[] = {
@@ -550,6 +591,7 @@ int main(void)
     cmocka_unit_test(test_a_detached_receiver_reconnects_and_keeps_its_state),
     cmocka_unit_test(test_the_setup_times_out_while_a_receiver_is_still_attaching),
     cmocka_unit_test(test_a_refused_receiver_ends_the_setup_and_is_found),
+    cmocka_unit_test(test_an_access_token_is_put_as_a_jwt),
   };
   return cmocka_run_group_tests(tests, NULL, NULL);
 }

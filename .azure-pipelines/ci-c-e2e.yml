@@ -1,0 +1,35 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# No push trigger: both target branches require pull requests to be up to date and squash-merged,
+# so a merge lands exactly what its pull request run tested.
+trigger: none
+# No PR trigger yet: a PR run would create its own resources; PR runs return once they use the
+# shared, long-lived environment.
+pr: none
+# Azure Pipelines reads each branch's schedules from that branch's copy of this file.
+schedules:
+  - cron: '0 11 * * *'
+    displayName: Nightly end-to-end tests (main)
+    branches:
+      include: [main]
+    always: true
+  - cron: '0 14 * * *'
+    displayName: Nightly end-to-end tests (releases/public-preview)
+    branches:
+      include: [releases/public-preview]
+    always: true
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+    default: aziotclb service connection
+  - name: azureLocation
+    type: string
+    default: eastus2euap
+
+jobs:
+  - template: templates/jobs-c-e2e.yml
+    parameters:
+      azureServiceConnection: ${{ parameters.azureServiceConnection }}
+      azureLocation: ${{ parameters.azureLocation }}

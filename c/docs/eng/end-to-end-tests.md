@@ -91,8 +91,11 @@ Service configuration (set by the provisioning config script):
 
 | Env var | Meaning |
 | --- | --- |
-| `IOTHUB_CONNECTION_STRING` | IoT Hub service policy connection string (c2d / method / twin) |
-| `IOTHUB_EVENTHUB_CONNECTION_STRING` | Event Hub-compatible endpoint connection string (telemetry) |
+| `IOTHUB_CONNECTION_STRING` | IoT Hub service policy connection string (c2d / method / twin); optional with `IOTHUB_SERVICE_ACCESS_TOKEN` |
+| `IOTHUB_SERVICE_ACCESS_TOKEN` | Microsoft Entra access token for `https://iothubs.azure.net` (optional). When set, it authorizes every hub service call instead of SAS (`Bearer`, on REST and on the AMQP CBS put-token), for a hub with local authentication disabled |
+| `IOTHUB_HOSTNAME` | IoT Hub host name for `IOTHUB_SERVICE_ACCESS_TOKEN` (optional; else that of `IOTHUB_CONNECTION_STRING`) |
+| `IOTHUB_EVENTHUB_CONNECTION_STRING` | Event Hub-compatible endpoint connection string (telemetry); no key needed with `IOTHUB_EVENTHUB_ACCESS_TOKEN` |
+| `IOTHUB_EVENTHUB_ACCESS_TOKEN` | Microsoft Entra access token for `https://eventhubs.azure.net` (optional). When set, telemetry is read with it (CBS token type `jwt`) instead of SAS. The built-in endpoint accepts only SAS, so this needs device messages routed to an Event Hub |
 | `IOTHUB_EVENTHUB_LISTEN_NAME` | Event Hub entity name (optional; else from the connection string) |
 | `IOTHUB_EVENTHUB_PARTITION_COUNT` | partitions to watch (optional; default 4) |
 | `IOTHUB_EVENTHUB_CONSUMER_GROUP` | consumer group to read (optional; default `$Default`) |
@@ -117,7 +120,8 @@ peer, with no live service.
 
 SAS tokens are built with OpenSSL (HMAC-SHA256 + base64) on both platforms. Note
 the two key conventions the facade handles: Event Hubs signs with the **raw** key
-string, while IoT Hub **base64-decodes** the key first.
+string, while IoT Hub **base64-decodes** the key first. With `IOTHUB_SERVICE_ACCESS_TOKEN` set,
+the IoT Hub calls send that token instead, and `IOTHUB_REGISTRY_CONNECTION_STRING` is not used.
 
 ### Scenarios
 
@@ -275,6 +279,27 @@ needs consumer groups
 `e2e-0`..`e2e-9` and file upload with notifications. Push and nightly runs always provision,
 except for `esp32-qemu`, which always uses the shared environment.
 Pull requests from forks get no secrets and fail.
+
+**Azure Pipelines (local authentication disabled).**
+[`.azure-pipelines/ci-c-e2e.yml`](../../../.azure-pipelines/ci-c-e2e.yml) runs the same test
+matrix (three platforms by four groups, the same device indexes and consumer groups) on Azure
+Pipelines, without `esp32-qemu` and the coverage merge. It runs nightly (11:00 UTC on `main`,
+14:00 UTC on `releases/public-preview`) and on demand. It has no pull request trigger yet: each
+run creates its own resources. It has no push trigger: both branches require pull requests to be
+up to date and squash-merged. Its hub is created with
+`disableLocalAuth=true` (`iot-sdks-e2e-fx` `-DisableLocalAuth`), which also grants the pipeline's
+service connection principal **IoT Hub Data Contributor** on it. Each test job takes that
+principal's access token for `https://iothubs.azure.net` right before the tests and passes it as
+`IOTHUB_SERVICE_ACCESS_TOKEN`; the tests run without the Azure CLI login. The token is not
+refreshed and lives 60-90 minutes, longer than a job. The built-in Event Hub-compatible endpoint
+accepts only shared access keys, so provisioning routes device messages to an Event Hub
+(`telemetry`, 4 partitions, consumer groups `e2e-0`..`e2e-11`) in a namespace with local
+authentication disabled. The hub sends with its system-assigned identity (**Azure Event Hubs Data
+Sender**); the tests read with the principal's token for `https://eventhubs.azure.net`
+(`IOTHUB_EVENTHUB_ACCESS_TOKEN`, **Azure Event Hubs Data Receiver**). Those role assignments take
+up to five minutes to apply, so each test job waits until five minutes after them before it runs
+the suites. DPS keeps its connection string. See [`.azure-pipelines/README.md`](../../../.azure-pipelines/README.md)
+for the scripts it shares with the .NET pipelines and the permissions it needs.
 
 [`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml) has the same opt-in,
 keyed on `E2E_CSR_SHARED_ID_SCOPE`. It needs its own certificate-management environment
