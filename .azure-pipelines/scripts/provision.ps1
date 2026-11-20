@@ -19,16 +19,11 @@ if ($env:E2E_SUITE -eq 'longhaul') {
     }
 }
 
-$prefix = switch ($env:E2E_SUITE) {
-    'standard' { 'DotnetE2ETestPipeline' }
-    'csr' { 'DotnetCertMgmtE2ETestPipeline' }
-    'longhaul' { 'DotnetLonghaul' }
-    default { throw 'Unknown test suite.' }
-}
+$resourceGroup = & (Join-Path $PSScriptRoot 'e2e-resource-group.ps1') -Suite $env:E2E_SUITE -RunId $env:E2E_RUN_ID
 Import-Module (Join-Path $env:E2E_FRAMEWORK_ROOT 'scripts/AzIotSdkTest/AzIotSdkTest.psd1')
 
 $arguments = @{
-    ResourceGroup = "$prefix-Ado-$env:E2E_RUN_ID"
+    ResourceGroup = $resourceGroup
     AzureLocation = $env:E2E_LOCATION
     IotHubX509ThumbprintDevices = 1
     DpsX509IndividualEnrollments = 2
@@ -42,7 +37,32 @@ if ($env:E2E_SUITE -eq 'csr') {
     $arguments.EnableCertificateManagement = $true
     $arguments.DpsSymmKeyGroupEnrollmentDevices = 1
 }
+if ($env:E2E_SUITE -eq 'c-e2e') {
+    # One enrollment and Event Hubs consumer group per test job (device index 0..11), a
+    # symmetric-key group for the SAS suite, and file upload. Local authentication is disabled,
+    # so the tests authorize hub service calls with a Microsoft Entra token.
+    $arguments.DpsX509IndividualEnrollments = 12
+    $arguments.DpsX509GroupEnrollmentDevices = 0
+    $arguments.DpsSymmKeyGroupEnrollmentDevices = 1
+    $arguments.EnableFileUpload = $true
+    $arguments.DisableLocalAuth = $true
+}
 $testEnvironment = New-AzIotTestEnvironment @arguments
+
+if ($env:E2E_SUITE -eq 'c-e2e') {
+    # The connection string names the hub; its key is unusable with local authentication disabled.
+    $hostName = ($testEnvironment.IotHub.ConnectionString -split ';' | Where-Object { $_ -like 'HostName=*' }) -replace '^HostName=', ''
+    $hubName = "$hostName".Split('.')[0]
+    if (-not $hubName) { throw 'Could not read the IoT Hub name from the test environment.' }
+    # The framework leaves file-upload notifications off; the file-upload suite needs them.
+    az iot hub update --name $hubName --resource-group $resourceGroup --fileupload-notifications true --only-show-errors | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Could not enable file-upload notifications on $hubName." }
+    # Event Hubs allows 5 readers per partition per consumer group.
+    foreach ($index in 0..11) {
+        az iot hub consumer-group create --hub-name $hubName --resource-group $resourceGroup --name "e2e-$index" --only-show-errors | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not create consumer group e2e-$index on $hubName." }
+    }
+}
 
 New-Item -ItemType Directory -Force $env:E2E_CONFIG_DIRECTORY | Out-Null
 $configPath = Join-Path $env:E2E_CONFIG_DIRECTORY 'set_test_env_vars.ps1'

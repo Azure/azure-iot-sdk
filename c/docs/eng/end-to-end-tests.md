@@ -91,7 +91,9 @@ Service configuration (set by the provisioning config script):
 
 | Env var | Meaning |
 | --- | --- |
-| `IOTHUB_CONNECTION_STRING` | IoT Hub service policy connection string (c2d / method / twin) |
+| `IOTHUB_CONNECTION_STRING` | IoT Hub service policy connection string (c2d / method / twin); optional with `IOTHUB_SERVICE_ACCESS_TOKEN` |
+| `IOTHUB_SERVICE_ACCESS_TOKEN` | Microsoft Entra access token for `https://iothubs.azure.net` (optional). When set, it authorizes every hub service call instead of SAS (`Bearer`, on REST and on the AMQP CBS put-token), for a hub with local authentication disabled |
+| `IOTHUB_HOSTNAME` | IoT Hub host name for `IOTHUB_SERVICE_ACCESS_TOKEN` (optional; else that of `IOTHUB_CONNECTION_STRING`) |
 | `IOTHUB_EVENTHUB_CONNECTION_STRING` | Event Hub-compatible endpoint connection string (telemetry) |
 | `IOTHUB_EVENTHUB_LISTEN_NAME` | Event Hub entity name (optional; else from the connection string) |
 | `IOTHUB_EVENTHUB_PARTITION_COUNT` | partitions to watch (optional; default 4) |
@@ -117,7 +119,8 @@ peer, with no live service.
 
 SAS tokens are built with OpenSSL (HMAC-SHA256 + base64) on both platforms. Note
 the two key conventions the facade handles: Event Hubs signs with the **raw** key
-string, while IoT Hub **base64-decodes** the key first.
+string, while IoT Hub **base64-decodes** the key first. With `IOTHUB_SERVICE_ACCESS_TOKEN` set,
+the IoT Hub calls send that token instead, and `IOTHUB_REGISTRY_CONNECTION_STRING` is not used.
 
 ### Scenarios
 
@@ -275,6 +278,18 @@ needs consumer groups
 `e2e-0`..`e2e-9` and file upload with notifications. Push and nightly runs always provision,
 except for `esp32-qemu`, which always uses the shared environment.
 Pull requests from forks get no secrets and fail.
+
+**Azure Pipelines (local authentication disabled).**
+[`.azure-pipelines/ci-c-e2e.yml`](../../../.azure-pipelines/ci-c-e2e.yml) runs the same test
+matrix (three platforms by four groups, the same device indexes and consumer groups) on Azure
+Pipelines, without `esp32-qemu` and the coverage merge. Its hub is created with
+`disableLocalAuth=true` (`iot-sdks-e2e-fx` `-DisableLocalAuth`), which also grants the pipeline's
+service connection principal **IoT Hub Data Contributor** on it. Each test job takes that
+principal's access token for `https://iothubs.azure.net` right before the tests and passes it as
+`IOTHUB_SERVICE_ACCESS_TOKEN`; the tests run without the Azure CLI login. The token is not
+refreshed and lives 60-90 minutes, longer than a job. Telemetry (Event Hub-compatible endpoint)
+and DPS keep their connection strings. See [`.azure-pipelines/README.md`](../../../.azure-pipelines/README.md)
+for the scripts it shares with the .NET pipelines and the permissions it needs.
 
 [`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml) has the same opt-in,
 keyed on `E2E_CSR_SHARED_ID_SCOPE`. It needs its own certificate-management environment

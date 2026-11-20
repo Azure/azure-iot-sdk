@@ -1,0 +1,50 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# The job a required e2e pipeline reports: succeeds when change detection succeeded and every job
+# in `jobs` succeeded, or, for a PR with no relevant change, was skipped. Runs after teardown.
+
+parameters:
+  - name: displayName
+    type: string
+  # The jobs that run only for relevant changes.
+  - name: jobs
+    type: object
+
+jobs:
+  - job: gate
+    displayName: ${{ parameters.displayName }}
+    dependsOn:
+      - changes
+      - teardown
+      - ${{ each job in parameters.jobs }}:
+          - ${{ job }}
+    condition: always()
+    pool:
+      vmImage: ubuntu-latest
+    variables:
+      changesResult: $[ dependencies.changes.result ]
+      relevant: $[ dependencies.changes.outputs['filter.relevant'] ]
+      ${{ each job in parameters.jobs }}:
+        result_${{ job }}: $[ dependencies.${{ job }}.result ]
+    steps:
+      - checkout: none
+      - pwsh: |
+          if ($env:CHANGES_RESULT -ne 'Succeeded') {
+            throw "Change detection did not succeed ($env:CHANGES_RESULT)."
+          }
+          $expected = if ($env:RELEVANT -eq 'true') { 'Succeeded' } else { 'Skipped' }
+          $results = @($env:JOBS -split ',' | ForEach-Object {
+            [pscustomobject]@{ Job = $_; Result = [Environment]::GetEnvironmentVariable("RESULT_$($_.ToUpperInvariant())") }
+          })
+          $unexpected = @($results | Where-Object Result -ne $expected)
+          if ($unexpected.Count -gt 0) {
+            throw "Expected $($env:JOBS -replace ',', ', ') to be $expected ($(($results | ForEach-Object { "$($_.Job): $($_.Result)" }) -join ', '))."
+          }
+        displayName: Require successful detection and tests
+        env:
+          CHANGES_RESULT: $(changesResult)
+          RELEVANT: $(relevant)
+          JOBS: ${{ join(',', parameters.jobs) }}
+          ${{ each job in parameters.jobs }}:
+            RESULT_${{ upper(job) }}: $(result_${{ job }})

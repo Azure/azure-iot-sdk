@@ -5,7 +5,7 @@ trigger: none
 pr: none
 schedules:
   - cron: '0 2 * * *'
-    displayName: Nightly cleanup of leaked .NET resource groups
+    displayName: Nightly cleanup of leaked e2e resource groups
     branches:
       include: [main]
     always: true
@@ -16,7 +16,7 @@ parameters:
     default: aziotclb service connection
   - name: prefixes
     type: string
-    default: DotnetE2ETestPipeline-Ado-,DotnetCertMgmtE2ETestPipeline-Ado-,DotnetLonghaul-Ado-
+    default: DotnetE2ETestPipeline-Ado-,DotnetCertMgmtE2ETestPipeline-Ado-,DotnetLonghaul-Ado-,CSDKE2E-Ado-
   - name: minimumAgeHours
     type: number
     default: 8
