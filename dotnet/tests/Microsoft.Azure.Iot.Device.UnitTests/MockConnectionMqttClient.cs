@@ -38,8 +38,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         public Func<MqttDisconnect, Task>? OnDisconnect { get; set; }
 
         /// <summary>
-        /// When set, a publish to an MQTTv5 birth topic (<c>ih/{deviceId}/srv/presence</c>) is answered with a simulated
-        /// birth-ack.
+        /// When set, an MQTTv5 birth (see <see cref="IsBirth"/>) is answered with a simulated birth-ack.
         /// </summary>
         public bool AutoRespondToBirth { get; set; }
 
@@ -237,14 +236,25 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             }
         }
 
+        /// <summary>
+        /// Whether this is an MQTTv5 birth: a publish to <c>ih/srv/{deviceId}</c> with user property <c>type=birth:1</c>.
+        /// </summary>
+        public static bool IsBirth([System.Diagnostics.CodeAnalysis.NotNullWhen(true)] MqttPublish? publish)
+        {
+            return publish != null
+                && publish.Topic.StartsWith("ih/srv/", StringComparison.Ordinal)
+                && publish.UserProperties.TryGetProperty("type", out string? type)
+                && type == "birth:1";
+        }
+
         private void SimulateBirthAckIfBirthPublish(MqttPublish publish)
         {
-            if (!publish.Topic.StartsWith("ih/", StringComparison.Ordinal) || !publish.Topic.EndsWith("/srv/presence", StringComparison.Ordinal))
+            if (!IsBirth(publish))
             {
                 return;
             }
 
-            string deviceId = publish.Topic.Split('/')[1];
+            string deviceId = publish.Topic.Split('/')[2];
             MqttPublish birthAck = new()
             {
                 Topic = $"ih/{deviceId}/dev/presence",

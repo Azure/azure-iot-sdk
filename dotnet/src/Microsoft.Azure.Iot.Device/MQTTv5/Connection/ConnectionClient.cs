@@ -328,7 +328,7 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
 
             MqttPublish birthMessage = new MqttPublish()
             {
-                Topic = string.Format(System.Globalization.CultureInfo.InvariantCulture, "ih/{0}/srv/presence", deviceId),
+                Topic = IConnectionClient.ServiceBoundTopic.Replace(IConnectionClient.DeviceIdPlaceholder, deviceId, StringComparison.Ordinal),
                 CorrelationData = connectNonce.ToByteArray(bigEndian: true),
                 Payload = birth.ToByteArray(),
                 ContentType = ProtobufContentType,
