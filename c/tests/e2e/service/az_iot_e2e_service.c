@@ -97,6 +97,19 @@ static bool env_copy(const char* name, char* dst, size_t cap)
 #endif
 }
 
+/** @brief Whether environment variable @p name is set and non-empty, whatever its length. */
+static bool env_is_set(const char* name)
+{
+#ifdef _WIN32
+  size_t needed = 0;
+  (void)getenv_s(&needed, NULL, 0, name);
+  return needed > 1;
+#else
+  const char* value = getenv(name);
+  return value != NULL && value[0] != '\0';
+#endif
+}
+
 static void set_error(az_iot_e2e_service* svc, const char* message)
 {
   snprintf(svc->last_error, sizeof(svc->last_error), "%s", (message != NULL) ? message : "unknown");
@@ -179,6 +192,15 @@ az_iot_e2e_service* az_iot_e2e_service_create(const char** error_out)
   /* With an access token, the hub connection string is optional: it only names the host. */
   const bool has_access_token
       = env_copy("IOTHUB_SERVICE_ACCESS_TOKEN", access_token, sizeof(access_token));
+  /* A token too long to copy must not fall back to SAS: on Windows, env_copy() then fails. */
+  if (!has_access_token && env_is_set("IOTHUB_SERVICE_ACCESS_TOKEN"))
+  {
+    if (error_out != NULL)
+    {
+      *error_out = "IOTHUB_SERVICE_ACCESS_TOKEN is too long";
+    }
+    return NULL;
+  }
   const bool has_hub_cs = env_copy("IOTHUB_CONNECTION_STRING", hub_cs, sizeof(hub_cs));
   if (!has_hub_cs && !has_access_token)
   {

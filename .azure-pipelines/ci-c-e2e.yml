@@ -5,7 +5,7 @@ trigger:
   branches:
     include: [main, releases/public-preview]
   paths:
-    include: [c/**, common/**, .azure-pipelines/**]
+    include: [c/**, common/**, .azure-pipelines/**, .github/workflows/ci-c-e2e.yml]
     exclude: [c/**/*.md, common/**/*.md]
 # No PR path filter: as a required check this pipeline reports on every PR and skips the tests
 # itself when nothing relevant changed.
