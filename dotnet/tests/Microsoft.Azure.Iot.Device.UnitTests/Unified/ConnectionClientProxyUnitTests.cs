@@ -8,7 +8,10 @@ using Microsoft.Azure.Iot.Device.MQTTnetAdapter;
 using Microsoft.Azure.Iot.Device.Retry;
 using Microsoft.Azure.Iot.Device.Unified.Connection;
 using Microsoft.Azure.Iot.Device.Unified.Models;
+using Moq;
+using MQTTnet;
 using System.Net;
+using System.Reflection;
 using System.Text;
 using Xunit;
 
@@ -57,6 +60,49 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
 
             Assert.Contains($"CONNECT {GlobalDeviceEndpoint}:443 HTTP/1.1", mqttClientProxy.RequestLines);
             Assert.Empty(connectionClientProxy.RequestLines);
+        }
+
+        [Theory]
+        [InlineData(true, false)]
+        [InlineData(false, true)]
+        public async Task SuppliedMqttClientsWebsocketSettingTakesPrecedenceForMqttConnections(
+            bool connectionClientUsesWebsocket,
+            bool mqttClientUsesWebsocket)
+        {
+            using MqttNetClient mqttClient = new(new MqttNetClientOptions { UseWebsocket = mqttClientUsesWebsocket });
+            Mock<MQTTnet.IMqttClient> underlyingClient = new();
+            MqttClientOptions? connectOptions = null;
+            underlyingClient
+                .Setup(client => client.ConnectAsync(It.IsAny<MqttClientOptions>(), It.IsAny<CancellationToken>()))
+                .Callback<MqttClientOptions, CancellationToken>((options, _) => connectOptions = options)
+                .ThrowsAsync(new InvalidOperationException("Stop before opening a network connection."));
+
+            FieldInfo underlyingClientField = typeof(MqttNetClient)
+                .GetField("_underlyingClient", BindingFlags.NonPublic | BindingFlags.Instance)!;
+            ((MQTTnet.IMqttClient)underlyingClientField.GetValue(mqttClient)!).Dispose();
+            underlyingClientField.SetValue(mqttClient, underlyingClient.Object);
+
+            using ConnectionClient connectionClient = new(new ConnectionClientOptions
+            {
+                UseWebsocket = connectionClientUsesWebsocket,
+                ConnectionRetryPolicy = new NoRetry(),
+                MqttClient = mqttClient,
+            });
+
+            await ProvisionExpectingFailureAsync(connectionClient);
+
+            underlyingClient.Verify(
+                client => client.ConnectAsync(It.IsAny<MqttClientOptions>(), It.IsAny<CancellationToken>()),
+                Times.Once);
+            Assert.NotNull(connectOptions);
+            if (mqttClientUsesWebsocket)
+            {
+                Assert.IsType<MqttClientWebSocketOptions>(connectOptions.ChannelOptions);
+            }
+            else
+            {
+                Assert.IsType<MqttClientTcpOptions>(connectOptions.ChannelOptions);
+            }
         }
 
         private static async Task ProvisionExpectingFailureAsync(ConnectionClient connectionClient)
