@@ -7,7 +7,7 @@
  * through the public API and the in-memory mock_mqtt_iface.
  *
  * The MQTTv5 protocol is a probe / probe-ack / exec / result handshake over two
- * flat topics -- ih/{device}/dev/methods inbound and ih/{device}/srv/methods
+ * flat topics -- ih/{device}/dev/methods inbound and ih/srv/{device}
  * outbound -- discriminated by a `type` user property, with the request id in
  * MQTT v5 Correlation Data and protobuf payloads. Neither topic names the
  * method: the name arrives in the probe and has to survive until the exec.
@@ -74,7 +74,7 @@
 #define DM_TEST_HOLDS_TWO_AT_ONCE (CONCURRENT_CAPACITY >= 2 && NOTICE_CAPACITY >= 2)
 
 #define DEV_TOPIC "ih/ut-device/dev/methods"
-#define SRV_TOPIC "ih/ut-device/srv/methods"
+#define SRV_TOPIC "ih/srv/ut-device"
 
 /* Some tests turn on a budget actually elapsing, and the budgets are whole
  * seconds off a monotonic clock with no test seam behind it. Anything under a
@@ -416,8 +416,7 @@ static void ack_presence_subscription(fixture* fx)
 /* Echo the birth nonce back as a birth-ack so the session reaches CONNECTED. */
 static void send_birth_ack(fixture* fx)
 {
-  const az_iot_mock_call* birth
-      = find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, "ih/ut-device/srv/presence");
+  const az_iot_mock_call* birth = find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, "ih/srv/ut-device");
   assert_non_null(birth);
   assert_int_equal(birth->correlation_data_len, 16);
 
@@ -2117,7 +2116,7 @@ static void a_probe_after_the_birth_before_its_ack_is_answered_once_connected(vo
   fixture* fx = (fixture*)*state;
   open_conn(fx);
   ack_presence_subscription(fx);
-  assert_non_null(find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, "ih/ut-device/srv/presence"));
+  assert_non_null(find_call(fx->mock, AZ_IOT_MOCK_CALL_PUBLISH, "ih/srv/ut-device"));
 
   uint8_t request_id[16];
   make_request_id(request_id, 0xD2);
@@ -3119,7 +3118,7 @@ static void reassign_and_reconnect(fixture* fx, const char* new_hub, const char*
   const char* device_id = new_device_id != NULL ? new_device_id : "ut-device";
   char presence_out[64];
   char presence_in[64];
-  snprintf(presence_out, sizeof(presence_out), "ih/%s/srv/presence", device_id);
+  snprintf(presence_out, sizeof(presence_out), "ih/srv/%s", device_id);
   snprintf(presence_in, sizeof(presence_in), "ih/%s/dev/presence", device_id);
   open_conn(fx);
   ack_presence_subscription(fx);
@@ -3176,7 +3175,9 @@ static void assert_replies_are_dropped_on_reassignment(
   for (size_t i = 0; i < n; ++i)
   {
     const az_iot_mock_call* c = az_iot_mock_mqtt_client_call_at(fx->mock, i);
-    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH && strstr(c->topic, "/srv/methods") != NULL)
+    if (c->kind == AZ_IOT_MOCK_CALL_PUBLISH
+        && (strcmp(c->user_type, "probe-ack:1") == 0 || strcmp(c->user_type, "abandon:1") == 0
+            || strcmp(c->user_type, "result:1") == 0))
     {
       replies++;
     }

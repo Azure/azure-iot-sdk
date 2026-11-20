@@ -181,7 +181,7 @@ extern "C"
 /** @brief Default for az_iot_mqttv5_twin_client_set_request_timeout(). */
 #define AZ_IOT_MQTTV5_TWIN_REQUEST_TIMEOUT_MS_DEFAULT 60000u
 
-/** @brief Longest `ih/{device_id}/srv/twin` topic, with its terminator. */
+/** @brief Longest `ih/{device_id}/dev/twin` or `ih/srv/{device_id}` topic, with its terminator. */
 #define AZ_IOT_MQTTV5_TWIN_TOPIC_MAX 192u
 
 /** @brief Largest encoded GET body: three varint fields. */

@@ -1506,7 +1506,7 @@ extern "C"
 #endif
 /* MQTT user name, terminator included. */
 #define AZ_IOT_MQTT_USERNAME_BUF 256
-/* Buffer sizing the ih/{deviceId}/srv|dev/presence topics built for the
+/* Buffer sizing the ih/srv/{deviceId} and ih/{deviceId}/dev/presence topics built for the
  * MQTTv5 birth handshake. */
 #ifndef AZ_IOT_PRESENCE_TOPIC_BUF
 #define AZ_IOT_PRESENCE_TOPIC_BUF 256
@@ -2057,7 +2057,7 @@ extern "C"
 
     /* MQTTv5 presence (birth) handshake. After CONNACK on a HUB_MQTT_V5 (v5)
      * session the client SUBSCRIBEs to ih/{deviceId}/dev/#, PUBLISHes a birth
-     * message to ih/{deviceId}/srv/presence, and only announces CONNECTED once
+     * message to ih/srv/{deviceId}, and only announces CONNECTED once
      * it receives a birth-ack -- matched by the exact ih/{deviceId}/dev/presence
      * topic -- whose correlation data matches `nonce`.
      * MQTTv3/DPS sessions leave phase == AZ_IOT_PRESENCE_PHASE_NONE. */

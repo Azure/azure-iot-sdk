@@ -160,7 +160,7 @@ static void open_v5(fixture* test)
     assert_int_equal(az_iot_connection_client_do_work(&test->connection, 0), AZ_IOT_OK);
   }
 
-  const az_iot_mock_call* birth = find_publish(test, "ih/" DEVICE_ID "/srv/presence");
+  const az_iot_mock_call* birth = find_publish(test, "ih/srv/" DEVICE_ID);
   assert_non_null(birth);
   assert_int_equal(birth->correlation_data_len, 16);
 
@@ -791,7 +791,7 @@ static void dps_hub_connect(dps_fixture* fx, const char* device_id)
   (void)az_iot_connection_client_do_work(&fx->connection, 0);
 
   char topic[64];
-  (void)snprintf(topic, sizeof(topic), "ih/%s/srv/presence", device_id);
+  (void)snprintf(topic, sizeof(topic), "ih/srv/%s", device_id);
   const az_iot_mock_call* birth = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_PUBLISH);
   assert_non_null(birth);
   assert_string_equal(birth->topic, topic);

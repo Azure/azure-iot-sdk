@@ -19,6 +19,7 @@ software updates. APIs may change before a stable release.
 - `do_work()` waits when there is no MQTT session.
 - The DPS TPM sample has a tpm2-tss ESAPI backend, and a certificate renewal that the hub failed
   transiently is resent in the end-to-end tests.
+- mqttv5: the birth, direct method replies and twin requests are published on `ih/srv/{device_id}`.
 
 ### Features Added
 
