@@ -45,6 +45,9 @@ extern "C"
  * message limit plus the properties and annotations the hub adds, so an oversized message the
  * hub accepted is still seen. The link silently drops a larger one. */
 #define E2E_AMQP_RECV_MESSAGE_MAX (1280 * 1024)
+/* CBS token type of a Microsoft Entra access token sent as "Bearer <token>", as the .NET service
+ * SDK does (IotHubTokenCredentialProperties). AZ_AMQP_CBS_TOKEN_TYPE_JWT is the alternative. */
+#define E2E_AMQP_CBS_TOKEN_TYPE_BEARER "Bearer"
 
   /** @brief One received telemetry message: a body prefix and every property, as text. */
   typedef struct e2e_amqp_capture
@@ -262,14 +265,15 @@ extern "C"
   void e2e_amqp_telemetry_end(e2e_amqp_telemetry* t);
 
   /* Send one cloud-to-device message to @p device_id via the IoT Hub service AMQP
-   * endpoint (@p hub_host:5671), authorizing with @p sas_token (audience = hub
-   * host). Blocks (pumping internally) until IoT Hub accepts the message or an
+   * endpoint (@p hub_host:5671), authorizing with @p token of CBS type @p token_type
+   * (audience = hub host). Blocks (pumping internally) until IoT Hub accepts the message or an
    * error/timeout occurs. Opens and tears down its own short-lived connection.
    * Returns true only when the delivery outcome is `accepted`. @p properties may
    * be NULL. */
   bool e2e_amqp_send_c2d(
       const char* hub_host,
-      const char* sas_token,
+      const char* token_type,
+      const char* token,
       const char* device_id,
       const uint8_t* payload,
       size_t payload_len,
@@ -333,7 +337,7 @@ extern "C"
     char audience_buffer[256];
   } e2e_amqp_filenotify;
 
-  /* Connect to @p hub_host:5671, CBS-authorize the hub host with @p sas_token and
+  /* Connect to @p hub_host:5671, CBS-authorize the hub host with @p token of type @p token_type and
    * attach a receiver to the file-notification node.
    *
    * The notification node is HUB-WIDE, so several test legs can be listening at
@@ -354,7 +358,8 @@ extern "C"
   bool e2e_amqp_filenotify_begin(
       e2e_amqp_filenotify* f,
       const char* hub_host,
-      const char* sas_token,
+      const char* token_type,
+      const char* token,
       const char* match,
       const char** err_out,
       bool* attach_refused_out);
