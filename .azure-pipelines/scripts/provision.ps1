@@ -88,10 +88,20 @@ try {
 
     # Pipeline artifacts have run-level retention, not GitHub's per-artifact one-day TTL.
     # Transport only ciphertext; pass the random AES key as a secret job output.
+    # AES-GCM, not SecureString: ConvertTo-SecureString caps input at 64 KiB, and the C config is larger.
+    # The file is nonce (12 bytes), tag (16 bytes), then ciphertext.
     $key = [Security.Cryptography.RandomNumberGenerator]::GetBytes(32)
-    $config = ConvertTo-SecureString (Get-Content $configPath -Raw) -AsPlainText -Force
-    ConvertFrom-SecureString $config -Key $key |
-        Set-Content (Join-Path $env:E2E_CONFIG_DIRECTORY 'test-config.encrypted')
+    $plaintext = [IO.File]::ReadAllBytes($configPath)
+    $nonce = [Security.Cryptography.RandomNumberGenerator]::GetBytes(12)
+    $tag = [byte[]]::new(16)
+    $ciphertext = [byte[]]::new($plaintext.Length)
+    $aes = [Security.Cryptography.AesGcm]::new($key, 16)
+    try { $aes.Encrypt($nonce, $plaintext, $ciphertext, $tag) } finally { $aes.Dispose() }
+    $encrypted = [byte[]]::new(28 + $ciphertext.Length)
+    [Array]::Copy($nonce, 0, $encrypted, 0, 12)
+    [Array]::Copy($tag, 0, $encrypted, 12, 16)
+    [Array]::Copy($ciphertext, 0, $encrypted, 28, $ciphertext.Length)
+    [IO.File]::WriteAllBytes((Join-Path $env:E2E_CONFIG_DIRECTORY 'test-config.encrypted'), $encrypted)
     $encodedKey = [Convert]::ToBase64String($key)
     Write-Host "##vso[task.setvariable variable=configKey;isOutput=true;issecret=true]$encodedKey"
 }
