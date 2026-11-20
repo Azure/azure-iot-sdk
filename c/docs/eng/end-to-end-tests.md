@@ -261,14 +261,16 @@ The `test` jobs share the one resource group provisioned by `setup`, and
 are never leaked.
 
 **Shared environment (temporary, opt-in).** When repository variable
-`E2E_SHARED_ID_SCOPE` is set, pull request runs skip `setup`/`teardown` and use a
-long-lived IoT Hub + DPS. Each job issues its own device certificate from the DPS
+`E2E_MQTTV3_SHARED_ID_SCOPE` is set, pull request runs skip `setup`/`teardown` and use a
+long-lived IoT Hub + DPS: the mqttv3 environment, with no ADR link or certificate policy
+(nothing in `ci-c-e2e` needs certificate management). Each job issues its own device certificate from the DPS
 X.509 enrollment group's CA ([`c/eng/e2e-shared-device.ps1`](../../eng/e2e-shared-device.ps1));
 the SAS suite registers under the DPS symmetric-key enrollment group. Inputs are repository
-secrets `E2E_SHARED_GROUP_CA`, `E2E_SHARED_IOTHUB_CS` and `E2E_SHARED_EVENTHUB_CS`
-(`service` policy only), `E2E_SHARED_SAS_GROUP_KEY` (the symmetric-key group's primary
-key), and, for the TPM suite, `E2E_SHARED_DPS_CS` (DPS policy with EnrollmentWrite and
-RegistrationStatusWrite) and `E2E_SHARED_IOTHUB_REGISTRY_CS` (hub policy with RegistryWrite).
+secrets `E2E_MQTTV3_SHARED_GROUP_CA`, `E2E_MQTTV3_SHARED_IOTHUB_CS` and `E2E_MQTTV3_SHARED_EVENTHUB_CS`
+(`service` policy only), `E2E_MQTTV3_SHARED_SAS_GROUP_KEY` (the symmetric-key group's primary
+key), and, for the TPM suite, `E2E_MQTTV3_SHARED_DPS_CS` (DPS policy with EnrollmentWrite and
+RegistrationStatusWrite) and `E2E_MQTTV3_SHARED_IOTHUB_REGISTRY_CS` (hub policy with RegistryWrite).
+Variable `E2E_MQTTV3_SHARED_DPS_HOST` optionally sets the DPS device endpoint.
 The TPM suite deletes its enrollment and device; other devices the runs register stay in the
 shared hub and are removed manually. The hub
 needs consumer groups
@@ -278,8 +280,8 @@ Pull requests from forks get no secrets and fail.
 
 [`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml) has the same opt-in,
 keyed on `E2E_CSR_SHARED_ID_SCOPE`. It needs its own certificate-management environment
-(ADR-linked hub and DPS; a DPS without a managed identity cannot be linked), so it
-cannot reuse the one above. Each run issues a bootstrap device with
+(ADR-linked hub and DPS; a DPS without a managed identity cannot be linked) and reads only
+`E2E_CSR_SHARED_*`, so the two workflows never share an environment. Each run issues a bootstrap device with
 `e2e-shared-device.ps1 -Csr` from secret `E2E_CSR_SHARED_GROUP_CA` (the group's issuing
 CA certificate and key, then its root); its Linux and Windows legs each issue their own. A
 provisioned run has one bootstrap device, so its legs run one after the other. `E2E_CSR_SHARED_DPS_HOST` optionally sets the DPS
