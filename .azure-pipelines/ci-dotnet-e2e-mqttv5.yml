@@ -1,0 +1,31 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Requires a trusted ARM service connection with resource creation/deletion and
+# role-assignment write permissions, and a subscription enabled for MQTTv5.
+# For Azure Repos, configure PR build validation through branch policies.
+trigger: none
+pr:
+  autoCancel: true
+  branches:
+    include: ['*']
+schedules:
+  - cron: '45 11 * * *'
+    displayName: Nightly MQTTv5 integration tests
+    branches:
+      include: [releases/public-preview]
+    always: true
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+    default: aziotclb service connection
+  - name: azureLocation
+    type: string
+    default: eastus2euap
+
+jobs:
+  - template: templates/jobs-e2e-mqttv5.yml
+    parameters:
+      azureServiceConnection: ${{ parameters.azureServiceConnection }}
+      azureLocation: ${{ parameters.azureLocation }}
