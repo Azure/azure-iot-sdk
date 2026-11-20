@@ -21,21 +21,28 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
     /// </remarks>
     internal sealed class HttpProvisioner
     {
+        private readonly HttpClient? _httpClient;
         private readonly Func<AuthenticationCredentials, HttpMessageHandler> _createHandler;
         private readonly IRetryPolicy _retryPolicy;
         private readonly TimeSpan _requestTimeout;
         private readonly ProvisioningServiceRetryAfter _serviceRetryAfter;
 
+        /// <param name="httpClient">
+        /// The user-supplied HTTP client to send every request with, or null to create one per attempt with
+        /// <paramref name="createHandler"/>. A user-supplied HTTP client is never changed or disposed.
+        /// </param>
         /// <param name="createHandler">Creates the handler that sends requests with the given boot credentials.</param>
         /// <param name="retryPolicy">The policy that decides whether, and when, to retry a transient failure.</param>
         /// <param name="requestTimeout">How long to wait for each HTTPS request.</param>
         /// <param name="serviceRetryAfter">Tracks the Retry-After the service asks for.</param>
         public HttpProvisioner(
+            HttpClient? httpClient,
             Func<AuthenticationCredentials, HttpMessageHandler> createHandler,
             IRetryPolicy retryPolicy,
             TimeSpan requestTimeout,
             ProvisioningServiceRetryAfter serviceRetryAfter)
         {
+            _httpClient = httpClient;
             _createHandler = createHandler;
             _retryPolicy = retryPolicy;
             _requestTimeout = requestTimeout;
@@ -56,7 +63,9 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
                 {
                     AuthenticationCredentials credentials = await authentication.GetPrimaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false);
                     using var provisioningHttpClient = new ProvisioningHttpClient(
-                        _createHandler(credentials),
+                        // Each request has its own timeout, so that a timeout can be told apart from cancellation.
+                        _httpClient ?? new HttpClient(_createHandler(credentials), disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan },
+                        ownsHttpClient: _httpClient == null,
                         run.Settings.GlobalEndpointAddress,
                         run.Settings.IdScope,
                         registrationId,

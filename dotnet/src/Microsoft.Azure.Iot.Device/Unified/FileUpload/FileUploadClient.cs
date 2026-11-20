@@ -30,12 +30,21 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
     public class FileUploadClient : IDisposable
     {
         private bool _isDisposed = false;
-        private bool _isUserSuppliedHttpClientInitialized = false;
         private readonly object _httpClientLock = new();
         private HttpClientLease? _httpClient;
         private readonly IConnectionClient _connection;
         private readonly Func<AuthenticationCredentials, HttpMessageHandler> _createHttpMessageHandler;
 
+        /// <summary>
+        /// Create a file upload client.
+        /// </summary>
+        /// <param name="connection">The connection client whose device this client uploads files for.</param>
+        /// <remarks>
+        /// File upload operations are done over HTTPS only when connected to an MQTTv3 IoT hub. These requests are sent with the
+        /// <see cref="Unified.Models.ConnectionClientOptions.HttpClient"/> of the connection client, if one was supplied. Otherwise, this client
+        /// creates its own HTTP client, which uses <see cref="Unified.Models.ConnectionClientOptions.Proxy"/> and is replaced whenever the device's
+        /// TLS credentials change or the device is re-provisioned to a different IoT hub.
+        /// </remarks>
         public FileUploadClient(IConnectionClient connection)
             : this(connection, credentials => HttpMessageHandlerFactory.Create(credentials, connection.Proxy))
         {
@@ -45,35 +54,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         internal FileUploadClient(IConnectionClient connection, Func<AuthenticationCredentials, HttpMessageHandler> createHttpMessageHandler)
         {
             _connection = connection;
-            _httpClient = null;
+            _httpClient = connection.HttpClient is { } userSuppliedHttpClient
+                ? new HttpClientLease(userSuppliedHttpClient, credentials: null, iotHubHostName: null, ownsClient: false)
+                : null;
             _createHttpMessageHandler = createHttpMessageHandler;
-        }
-
-        /// <summary>
-        /// Create a file upload client that uses a user-provided http client when applicable.
-        /// </summary>
-        /// <param name="connection"></param>
-        /// <param name="httpClient">The user-supplied HTTP client for this client to use when applicable</param>
-        /// <remarks>
-        /// <para>
-        /// File upload operations are done over HTTP only when connected to an MQTTv3 IoT hub.
-        /// </para>
-        /// <para>
-        /// When the provided <see cref="IConnectionClient"/> authenticates with a client certificate, you must configure the custom HTTP client to present that same certificate,
-        /// and to apply any <see cref="AuthenticationProvider.RemoteCertificateValidationCallback"/> or <see cref="AuthenticationProvider.LocalCertificateSelectionCallback"/> the device uses.
-        /// When it authenticates with a SAS token, this client adds the token to each request's Authorization header. In either case, this client will set the base address of the http client
-        /// to target the IoT Hub endpoint correctly, and requests always target the IoT hub the device is currently assigned to. Unlike the HTTP client this client creates for itself,
-        /// a user-supplied HTTP client is not replaced when the device's TLS credentials change or the device is re-provisioned to a different IoT hub.
-        /// </para>
-        /// <para>
-        /// A user-supplied HTTP client does not use <see cref="Unified.Models.ConnectionClientOptions.Proxy"/>, so configure it with any proxy the device needs.
-        /// </para>
-        /// </remarks>
-        public FileUploadClient(IConnectionClient connection, HttpClient httpClient)
-        {
-            _connection = connection;
-            _httpClient = new HttpClientLease(httpClient, credentials: null, iotHubHostName: null, ownsClient: false);
-            _createHttpMessageHandler = credentials => HttpMessageHandlerFactory.Create(credentials, connection.Proxy);
         }
 
         private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage requestMessage, ConnectionContext currentConnectionContext, CancellationToken cancellationToken)
@@ -123,11 +107,6 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
                     // The old one is disposed once its in-flight requests complete since disposing an HTTP client cancels its pending requests.
                     _httpClient.Release();
                     _httpClient = CreateHttpClient(currentConnectionContext, credentials);
-                }
-                else if (!_httpClient.OwnsClient && !_isUserSuppliedHttpClientInitialized)
-                {
-                    // Requests use absolute URIs, so preserve the caller's HTTP client configuration.
-                    _isUserSuppliedHttpClientInitialized = true;
                 }
 
                 _httpClient.AddReference();
@@ -317,8 +296,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         /// <param name="disposing">true to release both managed and unmanaged resources; false to releases only unmanaged resources.</param>
         public void Dispose(bool disposing)
         {
-            // Dispose the underlying HTTP client depending on if it was user-supplied and if the disposing flag is set
-            DisposeHttpClient(disposeUserSuppliedHttpClient: disposing);
+            DisposeHttpClient();
 
             if (disposing)
             {
@@ -332,25 +310,19 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         public void Dispose()
         {
             GC.SuppressFinalize(this);
-            DisposeHttpClient(disposeUserSuppliedHttpClient: true);
+            DisposeHttpClient();
             _connection.Dispose();
         }
 
-        private void DisposeHttpClient(bool disposeUserSuppliedHttpClient)
+        private void DisposeHttpClient()
         {
             lock (_httpClientLock)
             {
-                if (_httpClient != null && !_isDisposed)
+                // A user-supplied HTTP client belongs to the application, so only an HTTP client this client created is disposed,
+                // once any in-flight requests complete.
+                if (_httpClient != null && !_isDisposed && _httpClient.OwnsClient)
                 {
-                    if (_httpClient.OwnsClient)
-                    {
-                        // Disposed once any in-flight requests complete
-                        _httpClient.Release();
-                    }
-                    else if (disposeUserSuppliedHttpClient)
-                    {
-                        _httpClient.Client.Dispose();
-                    }
+                    _httpClient.Release();
                 }
 
                 _isDisposed = true;

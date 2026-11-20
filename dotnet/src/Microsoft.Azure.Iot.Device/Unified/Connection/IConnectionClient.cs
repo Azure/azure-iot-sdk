@@ -51,6 +51,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         internal IWebProxy? Proxy => null;
 
         /// <summary>
+        /// The user-supplied HTTP client that feature clients send their HTTPS requests with, or null to have them create
+        /// their own. See <see cref="ConnectionClientOptions.HttpClient"/>.
+        /// </summary>
+        internal HttpClient? HttpClient => null;
+
+        /// <summary>
         /// Raised whenever the connection to IoT hub is lost or closed, before any reconnection starts.
         /// </summary>
         internal event Action? ConnectionLost { add { } remove { } }

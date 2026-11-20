@@ -23,6 +23,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
         private const string JsonMediaType = "application/json";
 
         private readonly HttpClient _httpClient;
+        private readonly bool _ownsHttpClient;
         private readonly string _registrationsUri;
         private readonly string _registrationId;
         private readonly string _apiVersion;
@@ -37,7 +38,11 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
         private bool _tpmChallengeAnswered;
         private string? _tpmKeyName;
 
-        /// <param name="handler">The handler that sends requests. It is disposed with this client.</param>
+        /// <param name="httpClient">
+        /// The HTTP client that sends requests. Every request uses an absolute URI, so its base address is ignored, and its
+        /// settings are never changed.
+        /// </param>
+        /// <param name="ownsHttpClient">True to dispose <paramref name="httpClient"/> with this client.</param>
         /// <param name="globalEndpointAddress">The Device Provisioning Service host name.</param>
         /// <param name="idScope">The ID scope of the Device Provisioning Service instance.</param>
         /// <param name="registrationId">The registration ID of this device.</param>
@@ -52,7 +57,8 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
         /// again with a SAS token the TPM signs with that key.
         /// </param>
         public ProvisioningHttpClient(
-            HttpMessageHandler handler,
+            HttpClient httpClient,
+            bool ownsHttpClient,
             string globalEndpointAddress,
             string idScope,
             string registrationId,
@@ -63,8 +69,8 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
             Action<TimeSpan?> onRetryAfter,
             TpmAuthenticationProvider tpm)
         {
-            // Each request has its own timeout, applied below, so that a timeout can be told apart from cancellation.
-            _httpClient = new HttpClient(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
+            _httpClient = httpClient;
+            _ownsHttpClient = ownsHttpClient;
             _registrationsUri = $"https://{globalEndpointAddress}/{Uri.EscapeDataString(idScope)}/registrations/{Uri.EscapeDataString(registrationId)}";
             _registrationId = registrationId;
             _apiVersion = apiVersion;
@@ -187,7 +193,11 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
             }
             catch (OperationCanceledException e) when (!cancellationToken.IsCancellationRequested)
             {
-                throw new DeviceException($"Timed out after {_requestTimeout} waiting for Device Provisioning Service to respond to {method} {uri}.", e)
+                // When this request's own timeout did not fire, the HTTP client's timeout did (as can that of a user-supplied HTTP client).
+                string message = timeout.IsCancellationRequested
+                    ? $"Timed out after {_requestTimeout} waiting for Device Provisioning Service to respond to {method} {uri}."
+                    : $"The HTTP client timed out waiting for Device Provisioning Service to respond to {method} {uri}.";
+                throw new DeviceException(message, e)
                 {
                     Retryability = ErrorRetryability.Retryable,
                     IsContained = false,
@@ -345,7 +355,10 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
 
         public void Dispose()
         {
-            _httpClient.Dispose();
+            if (_ownsHttpClient)
+            {
+                _httpClient.Dispose();
+            }
         }
 
         /// <summary>

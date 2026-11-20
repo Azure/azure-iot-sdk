@@ -111,6 +111,37 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ProvisioningOverHttpUsesTheSuppliedHttpClientWithoutChangingOrDisposingIt()
+        {
+            FakeDpsHandler dps = new(request => !request.Headers.Contains("Authorization")
+                ? Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(PrimaryKey) }.ToJsonString())
+                : Respond(HttpStatusCode.OK, AssignedTpm(PrimaryKey)));
+            using HttpClient httpClient = new(dps);
+            TimeSpan userTimeout = httpClient.Timeout;
+
+            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
+            TestConnectionClient connectionClient = new(new Device.Unified.Models.ConnectionClientOptions
+            {
+                MqttClient = mockMqttClient,
+                HttpClient = httpClient,
+            })
+            {
+                CreateProvisioningHttpMessageHandler = _ => throw new InvalidOperationException("The supplied HTTP client should be used."),
+            };
+
+            await connectionClient
+                .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            connectionClient.Dispose();
+
+            // Challenged, then registered, both through the supplied HTTP client, which is still usable afterwards.
+            Assert.Equal(2, dps.Requests.Count);
+            Assert.Equal(userTimeout, httpClient.Timeout);
+            using HttpResponseMessage response = await httpClient.GetAsync($"https://{GlobalDeviceEndpoint}/", TestContext.Current.CancellationToken);
+            Assert.Equal(3, dps.Requests.Count);
+        }
+
+        [Fact]
         public async Task DisconnectCancelsProvisioningOverHttp()
         {
             TaskCompletionSource requestReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);

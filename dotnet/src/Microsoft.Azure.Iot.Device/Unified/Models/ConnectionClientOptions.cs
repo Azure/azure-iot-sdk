@@ -52,6 +52,44 @@ namespace Microsoft.Azure.Iot.Device.Unified.Models
         public IMqttClient? MqttClient { get; set; }
 
         /// <summary>
+        /// The HTTP client to send this client's HTTPS requests with, and those of the feature clients that use it. If null (the default),
+        /// HTTP clients are created for you.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// This HTTP client is used for every HTTPS request a device makes:
+        /// </para>
+        /// <list type="bullet">
+        /// <item><description>Requests to Device Provisioning Service, such as provisioning with a <see cref="Authentication.TpmAuthenticationProvider"/>.</description></item>
+        /// <item><description>Requests to IoT hub made by a <see cref="FileUpload.FileUploadClient"/>, which only uses HTTPS when connected to an MQTTv3 IoT hub.</description></item>
+        /// </list>
+        /// <para>
+        /// Every request uses an absolute URI that targets the Device Provisioning Service or IoT hub it is meant for, so this HTTP client can be shared
+        /// across both, and its <see cref="System.Net.Http.HttpClient.BaseAddress"/> is ignored. This SDK never changes this HTTP client's settings and never disposes it,
+        /// so dispose it yourself once this connection client and its feature clients are disposed. Provisioning requests are bounded by
+        /// <see cref="ConnectionAttemptTimeout"/> as well as by this HTTP client's own <see cref="System.Net.Http.HttpClient.Timeout"/>.
+        /// </para>
+        /// <para>
+        /// When a request authenticates with a SAS token (including one signed by a TPM), this SDK adds the token to the request's Authorization header.
+        /// Otherwise, the request authenticates with the device's client certificate, so configure this HTTP client to present it, along with any
+        /// <see cref="Authentication.AuthenticationProvider.RemoteCertificateValidationCallback"/> or
+        /// <see cref="Authentication.AuthenticationProvider.LocalCertificateSelectionCallback"/> the device uses.
+        /// </para>
+        /// <para>
+        /// This HTTP client does not use <see cref="Proxy"/>, so configure it with any proxy the device needs.
+        /// </para>
+        /// <para>
+        /// Warning: unlike the HTTP clients this SDK creates for you, this HTTP client is never replaced when the device's TLS credentials change.
+        /// A client certificate is bound to an HTTP client's handler when it is created, so if the device authenticates with a client certificate
+        /// that is later replaced (for example, by a certificate that IoT hub issues through certificate management, or by falling back to the
+        /// device's secondary credentials), HTTPS requests sent with this HTTP client keep presenting the old certificate and may be rejected.
+        /// Leave this null if the device's client certificate can change.
+        /// </para>
+        /// This value is read once when the connection client is constructed.
+        /// </remarks>
+        public HttpClient? HttpClient { get; set; }
+
+        /// <summary>
         /// True to make MQTT connections over websockets on port 443 rather than over TCP on port 8883. False (the default) to use TCP,
         /// unless <see cref="Proxy"/> is set.
         /// </summary>
@@ -76,12 +114,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.Models
         /// When <see cref="MqttClient"/> is null, the <see cref="MqttNetClient"/> created for you uses websockets whenever a proxy is set,
         /// regardless of <see cref="UseWebsocket"/>.</description></item>
         /// <item><description>HTTPS requests to Device Provisioning Service, such as provisioning with a <see cref="Authentication.TpmAuthenticationProvider"/>.</description></item>
-        /// <item><description>HTTPS requests to IoT hub made by a <see cref="FileUpload.FileUploadClient"/> that creates its own HTTP client.</description></item>
+        /// <item><description>HTTPS requests to IoT hub made by a <see cref="FileUpload.FileUploadClient"/>.</description></item>
         /// </list>
         /// <para>
         /// A supplied <see cref="MqttClient"/> keeps its own proxy and websocket settings for MQTT connections, such as
-        /// <see cref="MqttNetAdapter.MqttNetClientOptions.Proxy"/>, which take precedence over this proxy. HTTPS requests still use this proxy.
-        /// Likewise, an <see cref="HttpClient"/> that you supply to a <see cref="FileUpload.FileUploadClient"/> must be configured to use a proxy itself.
+        /// <see cref="MqttNetAdapter.MqttNetClientOptions.Proxy"/>, which take precedence over this proxy. Likewise, a supplied
+        /// <see cref="HttpClient"/> keeps its own proxy settings for HTTPS requests, so configure it to use a proxy itself.
         /// </para>
         /// <para>
         /// When null, HTTPS requests use the system's default proxy settings (such as the HTTPS_PROXY environment variable), while the
