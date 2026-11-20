@@ -80,7 +80,8 @@ static bool env_copy(const char* name, char* dst, size_t cap)
   dst[0] = '\0';
 #ifdef _WIN32
   size_t needed = 0;
-  if (getenv_s(&needed, dst, cap, name) != 0 || needed == 0)
+  /* needed counts the terminator, so an empty value gives 1. */
+  if (getenv_s(&needed, dst, cap, name) != 0 || needed <= 1)
   {
     dst[0] = '\0';
     return false;
