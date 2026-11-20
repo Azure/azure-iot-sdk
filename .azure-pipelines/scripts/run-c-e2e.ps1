@@ -2,12 +2,13 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 # Runs one C e2e job (jobs-c-e2e.yml): one device of the provisioned environment and one group of
-# suites, then, for the core group on Linux, the PKCS#11 custody suite. The service calls of the
-# tests use IOTHUB_SERVICE_ACCESS_TOKEN (Microsoft Entra), since the hub has local auth disabled.
+# suites, then, for the core group on Linux, the PKCS#11 custody suite. The hub has local auth
+# disabled, so the tests use Microsoft Entra tokens: IOTHUB_SERVICE_ACCESS_TOKEN for hub service
+# calls, IOTHUB_EVENTHUB_ACCESS_TOKEN to read the Event Hub that telemetry is routed to.
 
 $ErrorActionPreference = 'Stop'
 
-foreach ($name in @('IOTHUB_SERVICE_ACCESS_TOKEN', 'E2E_PRESET', 'E2E_GROUP', 'E2E_DEVICE_INDEX_OS',
+foreach ($name in @('IOTHUB_SERVICE_ACCESS_TOKEN', 'IOTHUB_EVENTHUB_ACCESS_TOKEN', 'E2E_PRESET', 'E2E_GROUP', 'E2E_DEVICE_INDEX_OS',
                     'E2E_DEVICE_INDEX_GROUP', 'E2E_TESTS', 'E2E_TESTS_EXCLUDE', 'E2E_RUN_ID',
                     'E2E_RESULTS_DIRECTORY')) {
     if (-not (Get-Item "env:$name" -ErrorAction SilentlyContinue).Value) { throw "$name is not set." }

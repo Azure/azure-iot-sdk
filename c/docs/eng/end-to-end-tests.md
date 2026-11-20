@@ -94,7 +94,8 @@ Service configuration (set by the provisioning config script):
 | `IOTHUB_CONNECTION_STRING` | IoT Hub service policy connection string (c2d / method / twin); optional with `IOTHUB_SERVICE_ACCESS_TOKEN` |
 | `IOTHUB_SERVICE_ACCESS_TOKEN` | Microsoft Entra access token for `https://iothubs.azure.net` (optional). When set, it authorizes every hub service call instead of SAS (`Bearer`, on REST and on the AMQP CBS put-token), for a hub with local authentication disabled |
 | `IOTHUB_HOSTNAME` | IoT Hub host name for `IOTHUB_SERVICE_ACCESS_TOKEN` (optional; else that of `IOTHUB_CONNECTION_STRING`) |
-| `IOTHUB_EVENTHUB_CONNECTION_STRING` | Event Hub-compatible endpoint connection string (telemetry) |
+| `IOTHUB_EVENTHUB_CONNECTION_STRING` | Event Hub-compatible endpoint connection string (telemetry); no key needed with `IOTHUB_EVENTHUB_ACCESS_TOKEN` |
+| `IOTHUB_EVENTHUB_ACCESS_TOKEN` | Microsoft Entra access token for `https://eventhubs.azure.net` (optional). When set, telemetry is read with it (CBS token type `jwt`) instead of SAS. The built-in endpoint accepts only SAS, so this needs device messages routed to an Event Hub |
 | `IOTHUB_EVENTHUB_LISTEN_NAME` | Event Hub entity name (optional; else from the connection string) |
 | `IOTHUB_EVENTHUB_PARTITION_COUNT` | partitions to watch (optional; default 4) |
 | `IOTHUB_EVENTHUB_CONSUMER_GROUP` | consumer group to read (optional; default `$Default`) |
@@ -287,8 +288,13 @@ Pipelines, without `esp32-qemu` and the coverage merge. Its hub is created with
 service connection principal **IoT Hub Data Contributor** on it. Each test job takes that
 principal's access token for `https://iothubs.azure.net` right before the tests and passes it as
 `IOTHUB_SERVICE_ACCESS_TOKEN`; the tests run without the Azure CLI login. The token is not
-refreshed and lives 60-90 minutes, longer than a job. Telemetry (Event Hub-compatible endpoint)
-and DPS keep their connection strings. See [`.azure-pipelines/README.md`](../../../.azure-pipelines/README.md)
+refreshed and lives 60-90 minutes, longer than a job. The built-in Event Hub-compatible endpoint
+accepts only shared access keys, so provisioning routes device messages to an Event Hub
+(`telemetry`, 4 partitions, consumer groups `e2e-0`..`e2e-11`) in a namespace with local
+authentication disabled. The hub sends with its system-assigned identity (**Azure Event Hubs Data
+Sender**); the tests read with the principal's token for `https://eventhubs.azure.net`
+(`IOTHUB_EVENTHUB_ACCESS_TOKEN`, **Azure Event Hubs Data Receiver**). DPS keeps its connection
+string. See [`.azure-pipelines/README.md`](../../../.azure-pipelines/README.md)
 for the scripts it shares with the .NET pipelines and the permissions it needs.
 
 [`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml) has the same opt-in,

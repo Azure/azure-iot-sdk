@@ -57,6 +57,8 @@ struct az_iot_e2e_service
   /* "Bearer <IOTHUB_SERVICE_ACCESS_TOKEN>"; empty when the hub is accessed with SAS tokens. */
   char hub_bearer_authorization[E2E_HUB_AUTHORIZATION_MAX];
   e2e_conn_info eh_info; /* Event Hub-compatible endpoint (telemetry)   */
+  /* IOTHUB_EVENTHUB_ACCESS_TOKEN; empty when the Event Hub is read with SAS tokens. */
+  char eh_access_token[E2E_AMQP_TOKEN_MAX];
   char entity[128]; /* Event Hub entity name                       */
   char consumer_group[64]; /* Event Hub consumer group; empty = $Default */
   int partition_count;
@@ -93,7 +95,13 @@ static bool env_copy(const char* name, char* dst, size_t cap)
   {
     return false;
   }
-  snprintf(dst, cap, "%s", value);
+  /* A value that does not fit fails, as getenv_s() does on Windows. */
+  const int length = snprintf(dst, cap, "%s", value);
+  if (length < 0 || (size_t)length >= cap)
+  {
+    dst[0] = '\0';
+    return false;
+  }
   return true;
 #endif
 }
@@ -109,6 +117,20 @@ static bool env_is_set(const char* name)
   const char* value = getenv(name);
   return value != NULL && value[0] != '\0';
 #endif
+}
+
+/**
+ * @brief Copies access token @p name into @p dst, or empties @p dst when it is unset.
+ *
+ * @return false when the token is set but does not fit @p dst: it must not fall back to SAS.
+ */
+static bool env_copy_access_token(const char* name, char* dst, size_t cap)
+{
+  if (env_copy(name, dst, cap))
+  {
+    return true;
+  }
+  return !env_is_set(name);
 }
 
 static void set_error(az_iot_e2e_service* svc, const char* message)
@@ -190,11 +212,7 @@ az_iot_e2e_service* az_iot_e2e_service_create(const char** error_out)
   char hub_cs[512];
   char eh_cs[512];
   char access_token[E2E_HUB_AUTHORIZATION_MAX];
-  /* With an access token, the hub connection string is optional: it only names the host. */
-  const bool has_access_token
-      = env_copy("IOTHUB_SERVICE_ACCESS_TOKEN", access_token, sizeof(access_token));
-  /* A token too long to copy must not fall back to SAS: on Windows, env_copy() then fails. */
-  if (!has_access_token && env_is_set("IOTHUB_SERVICE_ACCESS_TOKEN"))
+  if (!env_copy_access_token("IOTHUB_SERVICE_ACCESS_TOKEN", access_token, sizeof(access_token)))
   {
     if (error_out != NULL)
     {
@@ -202,6 +220,8 @@ az_iot_e2e_service* az_iot_e2e_service_create(const char** error_out)
     }
     return NULL;
   }
+  /* With an access token, the hub connection string is optional: it only names the host. */
+  const bool has_access_token = access_token[0] != '\0';
   const bool has_hub_cs = env_copy("IOTHUB_CONNECTION_STRING", hub_cs, sizeof(hub_cs));
   if (!has_hub_cs && !has_access_token)
   {
@@ -250,7 +270,19 @@ az_iot_e2e_service* az_iot_e2e_service_create(const char** error_out)
     }
     return NULL;
   }
-  if (!e2e_conn_info_parse(eh_cs, &svc->eh_info))
+  if (!env_copy_access_token(
+          "IOTHUB_EVENTHUB_ACCESS_TOKEN", svc->eh_access_token, sizeof(svc->eh_access_token)))
+  {
+    free(svc);
+    if (error_out != NULL)
+    {
+      *error_out = "IOTHUB_EVENTHUB_ACCESS_TOKEN is too long";
+    }
+    return NULL;
+  }
+  /* With an access token, the Event Hub connection string needs no key: it only names the host. */
+  if (!e2e_conn_info_parse(eh_cs, &svc->eh_info)
+      && (svc->eh_access_token[0] == '\0' || svc->eh_info.host[0] == '\0'))
   {
     free(svc);
     if (error_out != NULL)
@@ -337,15 +369,17 @@ static bool telemetry_watch_start(
     const char* device_id,
     int64_t enqueued_after_ms)
 {
-  /* Event Hubs authorizes the entity audience with a SAS whose HMAC key is the
-   * raw key string (NOT base64-decoded) — the Event Hubs/Service Bus convention. */
+  /* Event Hubs authorizes the entity audience with a Microsoft Entra token, else with a SAS whose
+   * HMAC key is the raw key string (NOT base64-decoded) — the Event Hubs/Service Bus convention. */
   /* Sized for the widest possible "amqps://<host>/<entity>": host[256] + entity[128]
    * plus scheme and separator. A tighter bound trips GCC -Werror=format-truncation. */
   char audience[512];
   snprintf(audience, sizeof(audience), "amqps://%s/%s", svc->eh_info.host, svc->entity);
 
+  const bool has_access_token = svc->eh_access_token[0] != '\0';
   char sas[512];
-  if (!e2e_sas_token_create(
+  if (!has_access_token
+      && !e2e_sas_token_create(
           audience, svc->eh_info.key_name, svc->eh_info.key, false, sas_expiry(), sas, sizeof(sas)))
   {
     set_error(svc, "telemetry: failed to build SAS token");
@@ -375,7 +409,8 @@ static bool telemetry_watch_start(
           svc->entity,
           svc->consumer_group,
           enqueued_after_ms,
-          sas,
+          has_access_token ? AZ_AMQP_CBS_TOKEN_TYPE_JWT : AZ_AMQP_CBS_TOKEN_TYPE_SAS,
+          has_access_token ? svc->eh_access_token : sas,
           svc->partition_count,
           capture_filter,
           &err))

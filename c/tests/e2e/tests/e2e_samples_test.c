@@ -259,6 +259,7 @@ static void make_child_environment(void)
   static const char* const service_only[] = {
     "IOTHUB_CONNECTION_STRING",
     "IOTHUB_EVENTHUB_CONNECTION_STRING",
+    "IOTHUB_EVENTHUB_ACCESS_TOKEN",
     "IOTHUB_EVENTHUB_CONSUMER_GROUP",
     "IOTHUB_EVENTHUB_LISTEN_NAME",
     "IOT_DPS_CONNECTION_STRING",

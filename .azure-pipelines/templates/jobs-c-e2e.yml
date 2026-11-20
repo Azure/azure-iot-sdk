@@ -187,7 +187,7 @@ jobs:
       # Taken after the build, so its 60-90 minutes cover the tests. The tests run without the
       # Azure CLI login, which this task removes.
       - task: AzureCLI@2
-        displayName: Get IoT Hub access token
+        displayName: Get IoT Hub and Event Hubs access tokens
         inputs:
           azureSubscription: ${{ parameters.azureServiceConnection }}
           scriptType: pscore
@@ -195,9 +195,11 @@ jobs:
           visibleAzLogin: false
           inlineScript: |
             $ErrorActionPreference = 'Stop'
-            $token = az account get-access-token --resource https://iothubs.azure.net --query accessToken -o tsv --only-show-errors
-            if ($LASTEXITCODE -ne 0 -or -not $token) { throw 'Could not get an access token for https://iothubs.azure.net.' }
-            Write-Host "##vso[task.setvariable variable=hubAccessToken;issecret=true]$token"
+            foreach ($resource in @{ hubAccessToken = 'https://iothubs.azure.net'; eventHubsAccessToken = 'https://eventhubs.azure.net' }.GetEnumerator()) {
+              $token = az account get-access-token --resource $resource.Value --query accessToken -o tsv --only-show-errors
+              if ($LASTEXITCODE -ne 0 -or -not $token) { throw "Could not get an access token for $($resource.Value)." }
+              Write-Host "##vso[task.setvariable variable=$($resource.Key);issecret=true]$token"
+            }
       - task: PowerShell@2
         displayName: Run tests
         inputs:
@@ -209,6 +211,7 @@ jobs:
           CONFIG_KEY: $(configKey)
           E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
           IOTHUB_SERVICE_ACCESS_TOKEN: $(hubAccessToken)
+          IOTHUB_EVENTHUB_ACCESS_TOKEN: $(eventHubsAccessToken)
           E2E_OPENSSL: $(openssl)
           E2E_PRESET: $(preset)
           E2E_GROUP: $(group)

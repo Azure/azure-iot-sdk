@@ -19,7 +19,10 @@
  *                                       (optional): authorizes the hub service APIs, not SAS
  *   IOTHUB_HOSTNAME                     hub host with IOTHUB_SERVICE_ACCESS_TOKEN (optional;
  *                                       else from IOTHUB_CONNECTION_STRING)
- *   IOTHUB_EVENTHUB_CONNECTION_STRING   Event Hub-compatible endpoint connection string
+ *   IOTHUB_EVENTHUB_CONNECTION_STRING   Event Hub-compatible endpoint connection string (no key
+ *                                       needed with IOTHUB_EVENTHUB_ACCESS_TOKEN)
+ *   IOTHUB_EVENTHUB_ACCESS_TOKEN        Microsoft Entra token for Event Hubs (optional):
+ *                                       reads telemetry with it (CBS "jwt"), not SAS
  *   IOTHUB_EVENTHUB_LISTEN_NAME         Event Hub entity name (optional; else from the CS)
  *   IOTHUB_EVENTHUB_PARTITION_COUNT     partition count to watch (optional; default 4)
  *   IOTHUB_EVENTHUB_CONSUMER_GROUP      consumer group to read (optional; default $Default)

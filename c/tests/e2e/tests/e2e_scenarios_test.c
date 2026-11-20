@@ -25,7 +25,7 @@
  *     AZ_IOT_DPS_GLOBAL_ENDPOINT (optional)
  *   Service:
  *     IOTHUB_CONNECTION_STRING (or IOTHUB_HOSTNAME and IOTHUB_SERVICE_ACCESS_TOKEN),
- *     IOTHUB_EVENTHUB_CONNECTION_STRING,
+ *     IOTHUB_EVENTHUB_CONNECTION_STRING, IOTHUB_EVENTHUB_ACCESS_TOKEN (optional),
  *     IOTHUB_EVENTHUB_LISTEN_NAME (optional), IOTHUB_EVENTHUB_PARTITION_COUNT (optional)
  *
  * The device id targeted by the service side is the DPS registration id (the

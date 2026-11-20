@@ -48,6 +48,8 @@ extern "C"
 /* CBS token type of a Microsoft Entra access token sent as "Bearer <token>", as the .NET service
  * SDK does (IotHubTokenCredentialProperties). AZ_AMQP_CBS_TOKEN_TYPE_JWT is the alternative. */
 #define E2E_AMQP_CBS_TOKEN_TYPE_BEARER "Bearer"
+/* Fits an Event Hubs SAS token or a Microsoft Entra access token (~1.5-3 KB). */
+#define E2E_AMQP_TOKEN_MAX 4096
 
   /** @brief One received telemetry message: a body prefix and every property, as text. */
   typedef struct e2e_amqp_capture
@@ -140,13 +142,16 @@ extern "C"
     uint8_t filter_buffer[256];
     az_span filter; /* encoded enqueued-time filter in filter_buffer, or empty */
     char host[256];
-    char sas_token[512];
+    const char* token_type; /* CBS type of token; a string literal */
+    char token[E2E_AMQP_TOKEN_MAX];
   } e2e_amqp_telemetry;
 
   /**
-   * @brief Connects to @p eh_host:5671, CBS-authorizes @p sas_token against the entity and
+   * @brief Connects to @p eh_host:5671, CBS-authorizes @p token against the entity and
    * attaches one receiver per partition, within #E2E_AMQP_SETUP_TIMEOUT_S.
    *
+   * @param[in] token_type CBS type of @p token: #AZ_AMQP_CBS_TOKEN_TYPE_SAS for an Event Hubs SAS
+   * token, #AZ_AMQP_CBS_TOKEN_TYPE_JWT for a Microsoft Entra access token. A string literal.
    * @param[in] consumer_group Consumer group to read from; `NULL` or empty selects `$Default`.
    * @param[in] enqueued_after_ms Only messages enqueued after this Unix time (ms) are delivered;
    * 0 reads from the start of the stream.
@@ -160,7 +165,8 @@ extern "C"
       const char* entity_path,
       const char* consumer_group,
       int64_t enqueued_after_ms,
-      const char* sas_token,
+      const char* token_type,
+      const char* token,
       int partition_count,
       const char* capture_filter,
       const char** err_out);

@@ -37,10 +37,13 @@ each entry point below. All pipelines also support **Run pipeline**.
    points. Authorize only those pipelines to use it. It must have the same
    resource-provisioning and role-assignment permissions as the GitHub workflows'
    Azure identity (IoT Hub, DPS, and ADR/certificate management for CSR).
-   `ci-c-e2e` creates its hub with local authentication disabled and grants the
-   service connection's principal **IoT Hub Data Contributor** on it, so that
-   principal also needs `Microsoft.Authorization/roleAssignments/write` on the
-   test resource groups (for example Owner, or User Access Administrator).
+   `ci-c-e2e` creates its hub and an Event Hubs namespace with local
+   authentication disabled. It grants the service connection's principal
+   **IoT Hub Data Contributor** on the hub and **Azure Event Hubs Data Receiver**
+   on the Event Hub, and the hub's identity **Azure Event Hubs Data Sender**, so
+   that principal also needs `Microsoft.Authorization/roleAssignments/write` on
+   the test resource groups (for example Owner, User Access Administrator, or
+   Role Based Access Control Administrator limited to those roles).
    The default region is `eastus2euap`, matching the existing workflows; change
    `azureLocation` if the subscription uses a different region.
 3. Configure CodeQL for the source host. For **Azure Repos**, enable GitHub Code
@@ -78,9 +81,12 @@ Provisioning uses the same pinned `Azure/iot-sdks-e2e-fx` PowerShell module and
 configuration renderer as GitHub Actions, including the CSR-specific revision.
 File upload remains disabled for .NET. `ci-c-e2e` pins a revision with
 `-DisableLocalAuth`: its hub accepts no shared access keys, and each test job
-passes the service connection's Microsoft Entra token for
-`https://iothubs.azure.net` to the tests (`IOTHUB_SERVICE_ACCESS_TOKEN`). Devices,
-DPS and the Event Hub-compatible endpoint keep their own credentials. The generated configuration is encrypted before
+passes the service connection's Microsoft Entra tokens to the tests: for
+`https://iothubs.azure.net` (`IOTHUB_SERVICE_ACCESS_TOKEN`) and for
+`https://eventhubs.azure.net` (`IOTHUB_EVENTHUB_ACCESS_TOKEN`). The built-in Event
+Hub-compatible endpoint accepts only shared access keys, so device telemetry is
+routed to an Event Hub with local authentication disabled, read with that token.
+Devices and DPS keep their own credentials. The generated configuration is encrypted before
 artifact publication; a random AES key is passed to the test job as a secret
 output variable. Temporary plaintext configuration and CSR keys are removed
 after use. Unlike GitHub Actions, Azure pipeline artifacts do not have a
