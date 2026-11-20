@@ -120,11 +120,11 @@ static bool env_is_set(const char* name)
 }
 
 /**
- * @brief Copies access token @p name into @p dst, or empties @p dst when it is unset.
+ * @brief Copies optional variable @p name into @p dst, or empties @p dst when it is unset.
  *
- * @return false when the token is set but does not fit @p dst: it must not fall back to SAS.
+ * @return false when @p name is set but does not fit @p dst: it must not fall back to a default.
  */
-static bool env_copy_access_token(const char* name, char* dst, size_t cap)
+static bool env_copy_optional(const char* name, char* dst, size_t cap)
 {
   if (env_copy(name, dst, cap))
   {
@@ -189,7 +189,11 @@ static void end_slot(az_iot_e2e_service* svc, int slot)
 static const char* hub_bearer_authorization_set(az_iot_e2e_service* svc, const char* access_token)
 {
   char host[sizeof(svc->hub_info.host)];
-  if (env_copy("IOTHUB_HOSTNAME", host, sizeof(host)))
+  if (!env_copy_optional("IOTHUB_HOSTNAME", host, sizeof(host)))
+  {
+    return "IOTHUB_HOSTNAME is too long";
+  }
+  if (host[0] != '\0')
   {
     memcpy(svc->hub_info.host, host, sizeof(host));
   }
@@ -212,7 +216,7 @@ az_iot_e2e_service* az_iot_e2e_service_create(const char** error_out)
   char hub_cs[512];
   char eh_cs[512];
   char access_token[E2E_HUB_AUTHORIZATION_MAX];
-  if (!env_copy_access_token("IOTHUB_SERVICE_ACCESS_TOKEN", access_token, sizeof(access_token)))
+  if (!env_copy_optional("IOTHUB_SERVICE_ACCESS_TOKEN", access_token, sizeof(access_token)))
   {
     if (error_out != NULL)
     {
@@ -270,7 +274,7 @@ az_iot_e2e_service* az_iot_e2e_service_create(const char** error_out)
     }
     return NULL;
   }
-  if (!env_copy_access_token(
+  if (!env_copy_optional(
           "IOTHUB_EVENTHUB_ACCESS_TOKEN", svc->eh_access_token, sizeof(svc->eh_access_token)))
   {
     free(svc);

@@ -97,6 +97,8 @@ if ($env:E2E_SUITE -eq 'c-e2e') {
             --role $grant.Role --scope $eventHubId --only-show-errors | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Could not assign $($grant.Role) on $eventHub to $($grant.Principal)." }
     }
+    # Event Hubs role assignments take up to five minutes to apply; run-c-e2e.ps1 waits until then.
+    $eventHubReadableAfter = [DateTimeOffset]::UtcNow.AddMinutes(5).ToUnixTimeSeconds()
 
     # Creating an identity-based endpoint can fail until the hub's new role propagates.
     for ($attempt = 1; ; $attempt++) {
@@ -125,6 +127,7 @@ try {
         Add-Content $configPath @(
             "`$env:IOTHUB_EVENTHUB_CONNECTION_STRING = 'Endpoint=sb://$eventHubsNamespace.servicebus.windows.net/;EntityPath=$eventHub'"
             "`$env:IOTHUB_EVENTHUB_PARTITION_COUNT = '4'"
+            "`$env:E2E_EVENTHUB_READABLE_AFTER = '$eventHubReadableAfter'"
         )
     }
 

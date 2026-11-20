@@ -23,6 +23,9 @@ $keyBase64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_KEY_$index" -ErrorAction Sil
 if (-not $registrationId -or -not $certificateBase64 -or -not $keyBase64) {
     throw "The test configuration has no X.509 device $index."
 }
+if (-not $env:E2E_EVENTHUB_READABLE_AFTER) {
+    throw 'The test configuration has no E2E_EVENTHUB_READABLE_AFTER.'
+}
 if (-not $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY) {
     throw 'The test configuration has no DPS symmetric-key enrollment group (IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY).'
 }
@@ -52,6 +55,13 @@ $buildDirectory = "c/build/$($env:E2E_PRESET)"
 $configuration = if ($IsWindows) { @('-C', 'Debug') } else { @() }
 $resultsPrefix = Join-Path $env:E2E_RESULTS_DIRECTORY "c-e2e-$($env:AGENT_OS)-$($env:E2E_OPENSSL)-$($env:E2E_GROUP)"
 New-Item -ItemType Directory -Path $env:E2E_RESULTS_DIRECTORY -Force | Out-Null
+
+# Until the Event Hubs Data Receiver role applies, reading telemetry is refused (provision.ps1).
+$wait = [long]$env:E2E_EVENTHUB_READABLE_AFTER - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+if ($wait -gt 0) {
+    Write-Host "Waiting $wait seconds for the Event Hubs role assignments to apply."
+    Start-Sleep -Seconds $wait
+}
 
 ctest --test-dir $buildDirectory @configuration -R $env:E2E_TESTS -E $env:E2E_TESTS_EXCLUDE `
     --verbose --no-tests=error --timeout 900 --output-junit "$resultsPrefix.xml"

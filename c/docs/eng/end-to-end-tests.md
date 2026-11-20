@@ -293,8 +293,9 @@ accepts only shared access keys, so provisioning routes device messages to an Ev
 (`telemetry`, 4 partitions, consumer groups `e2e-0`..`e2e-11`) in a namespace with local
 authentication disabled. The hub sends with its system-assigned identity (**Azure Event Hubs Data
 Sender**); the tests read with the principal's token for `https://eventhubs.azure.net`
-(`IOTHUB_EVENTHUB_ACCESS_TOKEN`, **Azure Event Hubs Data Receiver**). DPS keeps its connection
-string. See [`.azure-pipelines/README.md`](../../../.azure-pipelines/README.md)
+(`IOTHUB_EVENTHUB_ACCESS_TOKEN`, **Azure Event Hubs Data Receiver**). Those role assignments take
+up to five minutes to apply, so each test job waits until five minutes after them before it runs
+the suites. DPS keeps its connection string. See [`.azure-pipelines/README.md`](../../../.azure-pipelines/README.md)
 for the scripts it shares with the .NET pipelines and the permissions it needs.
 
 [`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml) has the same opt-in,
