@@ -62,8 +62,6 @@ The `main` branch contains the MQTTv3-only SDK; MQTTv5 implementation and sample
 `releases/public-preview`. For published-version examples, use the pinned links under
 [Choose a version](#choose-a-version), rather than assuming either branch matches a released package.
 
-## Key features
-
 **Main + preview** means supported in both `main` and `releases/public-preview`. **Preview only**
 means supported only in `releases/public-preview`, whose APIs remain subject to change.
 **Not supported** means unavailable in either branch, not a delivery commitment.
@@ -92,6 +90,7 @@ means supported only in `releases/public-preview`, whose APIs remain subject to 
 | HTTPS transport for provisioning / messaging | Not supported | |
 | TPM authentication through DPS | Not supported | |
 | Software updates via DPS | Not supported | |
+| TPM authentication support | Main + preview | *Provision and authenticate with a key held in a TPM through `TpmAuthenticationProvider` and your own `ITpmProvider`. Device Provisioning Service only supports TPM attestation over HTTPS, so the SDK provisions TPM devices over HTTPS. Only works with MQTTv3 IoT Hubs, since TPM authentication uses SAS tokens. See the [TpmAuthenticationSample](./samples/Unified/TpmAuthenticationSample/)
 
 ### Capability limitations
 

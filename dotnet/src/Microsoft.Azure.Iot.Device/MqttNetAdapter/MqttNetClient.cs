@@ -113,21 +113,22 @@ namespace Microsoft.Azure.Iot.Device.MQTTnetAdapter
             else
             {
                 string? uriString = connect.WebsocketUri;
+                IWebProxy? proxy = _proxy;
                 optionsBuilder.WithWebSocketServer(options =>
                 {
                     options.WithUri(uriString);
                     options.WithSubProtocols(new List<string> { "mqtt" });
 
-                    if (_proxy != null && uriString != null)
+                    if (proxy != null && uriString != null)
                     {
                         Uri serviceUri = new(uriString);
-                        Uri? proxyUri = _proxy.GetProxy(serviceUri);
+                        Uri? proxyUri = proxy.GetProxy(serviceUri);
 
                         options.WithProxyOptions(proxyOptions =>
                         {
-                            if (_proxy.Credentials != null)
+                            if (proxy.Credentials != null)
                             {
-                                NetworkCredential? credentials = _proxy.Credentials.GetCredential(serviceUri, "Basic");
+                                NetworkCredential? credentials = proxy.Credentials.GetCredential(serviceUri, "Basic");
                                 if (credentials != null)
                                 {
                                     string username = credentials.UserName;

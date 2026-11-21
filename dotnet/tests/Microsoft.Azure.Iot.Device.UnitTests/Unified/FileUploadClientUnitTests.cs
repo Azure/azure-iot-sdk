@@ -28,7 +28,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         {
             var authentication = new SymmetricKeyAuthenticationProvider("registration-id", "0ne00000000", new byte[] { 0x01, 0x02, 0x03 }, null);
             var handler = new CapturingHandler();
-            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(authentication), new HttpClient(handler));
+            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(authentication) { CreateHandler = _ => handler });
 
             await fileUploadClient.GetFileUploadSasUriAsync(new FileUploadSasUriRequest { BlobName = "file.txt" }, TestContext.Current.CancellationToken);
             await fileUploadClient.CompleteFileUploadSasUriAsync(new FileUploadCompletionNotification { CorrelationId = "id", IsSuccess = true }, TestContext.Current.CancellationToken);
@@ -45,10 +45,10 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         public async Task FileUploadDoesNotChangeMqttCredentialSelectionWhenSecondaryCredentialsAreUnavailable()
         {
             var authentication = new SwitchableAuthenticationProvider { Credentials = CreateSasCredentials() };
-            var connection = new FakeConnectionClient(authentication);
+            var connection = new FakeConnectionClient(authentication) { CreateHandler = _ => new CapturingHandler() };
             connection.Context.IssuedClientCertificates = ["issued-certificate"];
             connection.Context.UsesSecondaryCredentials = true;
-            using var fileUploadClient = new FileUploadClient(connection, new HttpClient(new CapturingHandler()));
+            using var fileUploadClient = new FileUploadClient(connection);
 
             await GetSasUriAsync(fileUploadClient);
 
@@ -67,11 +67,26 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             var connection = new FakeConnectionClient(authentication);
             connection.Context.UsesSecondaryCredentials = true;
             var handler = new CapturingHandler();
-            using var fileUploadClient = new FileUploadClient(connection, _ => handler);
+            using var fileUploadClient = CreateFileUploadClient(connection, _ => handler);
 
             await GetSasUriAsync(fileUploadClient);
 
             Assert.Equal(Encoding.UTF8.GetString(secondaryCredentials.Password), Assert.Single(handler.AuthorizationHeaders));
+        }
+
+        [Fact]
+        public async Task FileUploadGoesThroughTheConnectionClientsProxy()
+        {
+            using LoopbackConnectProxy proxy = new();
+            var connection = new FakeConnectionClient(new SwitchableAuthenticationProvider { Credentials = CreateSasCredentials() })
+            {
+                Proxy = new WebProxy(proxy.Address),
+            };
+            using var fileUploadClient = new FileUploadClient(connection);
+
+            await Assert.ThrowsAnyAsync<Exception>(() => GetSasUriAsync(fileUploadClient));
+
+            Assert.Equal($"CONNECT {HostName}:443 HTTP/1.1", Assert.Single(proxy.RequestLines));
         }
 
         [Fact]
@@ -81,7 +96,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             using X509Certificate2 certificate = new CertificateRequest($"CN={DeviceId}", key, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1)
                 .CreateSelfSigned(DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(1));
             var handler = new CapturingHandler();
-            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(new X509AuthenticationProvider(certificate, null)), new HttpClient(handler));
+            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(new X509AuthenticationProvider(certificate, null)) { CreateHandler = _ => handler });
 
             await fileUploadClient.GetFileUploadSasUriAsync(new FileUploadSasUriRequest { BlobName = "file.txt" }, TestContext.Current.CancellationToken);
 
@@ -95,7 +110,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             using X509Certificate2 secondCertificate = CreateCertificate();
             var authentication = new SwitchableAuthenticationProvider { Credentials = CreateSasCredentials() };
             var handlers = new List<(X509Certificate2? Certificate, CapturingHandler Handler)>();
-            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(authentication), credentials =>
+            using var fileUploadClient = CreateFileUploadClient(new FakeConnectionClient(authentication), credentials =>
             {
                 var handler = new CapturingHandler();
                 handlers.Add((credentials.ClientCertificate, handler));
@@ -140,7 +155,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             var authentication = new SwitchableAuthenticationProvider { Credentials = new AuthenticationCredentials { ClientCertificate = firstCertificate } };
             var firstRequestGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var handlers = new List<CapturingHandler>();
-            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(authentication), _ =>
+            using var fileUploadClient = CreateFileUploadClient(new FakeConnectionClient(authentication), _ =>
             {
                 var handler = new CapturingHandler(handlers.Count == 0 ? firstRequestGate.Task : null);
                 handlers.Add(handler);
@@ -175,7 +190,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             connection.Context.UsesSecondaryCredentials = true;
             var firstRequestGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var handlers = new List<(X509Certificate2? Certificate, CapturingHandler Handler)>();
-            using var fileUploadClient = new FileUploadClient(connection, credentials =>
+            using var fileUploadClient = CreateFileUploadClient(connection, credentials =>
             {
                 var handler = new CapturingHandler(handlers.Count == 0 ? firstRequestGate.Task : null);
                 handlers.Add((credentials.ClientCertificate, handler));
@@ -211,7 +226,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
                 Credentials = new AuthenticationCredentials { RemoteCertificateValidationCallback = firstValidation },
             };
             var handlerCredentials = new List<AuthenticationCredentials>();
-            using var fileUploadClient = new FileUploadClient(new FakeConnectionClient(authentication), credentials =>
+            using var fileUploadClient = CreateFileUploadClient(new FakeConnectionClient(authentication), credentials =>
             {
                 handlerCredentials.Add(credentials);
                 return new CapturingHandler();
@@ -233,46 +248,6 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Same(selection, handlerCredentials[2].LocalCertificateSelectionCallback);
         }
 
-        [Fact]
-        public void HttpMessageHandlerAppliesCredentialTlsSettings()
-        {
-            using X509Certificate2 certificate = CreateCertificate();
-            RemoteCertificateValidationCallback validation = (_, _, _, errors) => errors == SslPolicyErrors.None;
-            LocalCertificateSelectionCallback selection = (_, _, _, _, _) => null!;
-
-            using var handler = Assert.IsType<SocketsHttpHandler>(FileUploadClient.CreateHttpMessageHandler(new AuthenticationCredentials
-            {
-                ClientCertificate = certificate,
-                RemoteCertificateValidationCallback = validation,
-                LocalCertificateSelectionCallback = selection,
-            }));
-
-            Assert.Same(validation, handler.SslOptions.RemoteCertificateValidationCallback);
-            Assert.Same(selection, handler.SslOptions.LocalCertificateSelectionCallback);
-            Assert.Same(certificate, Assert.Single(handler.SslOptions.ClientCertificates!));
-        }
-
-        [Fact]
-        public void HttpMessageHandlerPresentsClientCertificateWithoutSelectionCallback()
-        {
-            using X509Certificate2 certificate = CreateCertificate();
-
-            using var handler = Assert.IsType<SocketsHttpHandler>(FileUploadClient.CreateHttpMessageHandler(new AuthenticationCredentials { ClientCertificate = certificate }));
-
-            Assert.Null(handler.SslOptions.RemoteCertificateValidationCallback);
-            Assert.NotNull(handler.SslOptions.LocalCertificateSelectionCallback);
-            Assert.Same(certificate, handler.SslOptions.LocalCertificateSelectionCallback(this, HostName, new X509CertificateCollection(), null, Array.Empty<string>()));
-        }
-
-        [Fact]
-        public void HttpMessageHandlerHasNoClientCertificateForSasCredentials()
-        {
-            using var handler = Assert.IsType<SocketsHttpHandler>(FileUploadClient.CreateHttpMessageHandler(CreateSasCredentials()));
-
-            Assert.Null(handler.SslOptions.ClientCertificates);
-            Assert.Null(handler.SslOptions.LocalCertificateSelectionCallback);
-        }
-
         private static Task<FileUploadSasUriResponse> GetSasUriAsync(FileUploadClient fileUploadClient)
         {
             return fileUploadClient.GetFileUploadSasUriAsync(new FileUploadSasUriRequest { BlobName = "file.txt" }, TestContext.Current.CancellationToken);
@@ -285,7 +260,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             var authentication = new SwitchableAuthenticationProvider { Credentials = CreateSasCredentials() };
             var connection = new FakeConnectionClient(authentication);
             var handlers = new List<CapturingHandler>();
-            using var fileUploadClient = new FileUploadClient(connection, _ =>
+            using var fileUploadClient = CreateFileUploadClient(connection, _ =>
             {
                 var handler = new CapturingHandler();
                 handlers.Add(handler);
@@ -309,30 +284,13 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
         }
 
         [Fact]
-        public async Task UserSuppliedHttpClientTargetsReprovisionedIotHub()
-        {
-            const string newHostName = "other-hub.azure-devices.net";
-            var connection = new FakeConnectionClient(new SwitchableAuthenticationProvider { Credentials = CreateSasCredentials() });
-            var handler = new CapturingHandler();
-            using var httpClient = new HttpClient(handler);
-            using var fileUploadClient = new FileUploadClient(connection, httpClient);
-
-            await GetSasUriAsync(fileUploadClient);
-            connection.Reprovision(newHostName);
-            await GetSasUriAsync(fileUploadClient);
-
-            Assert.Equal(new[] { HostName, newHostName }, handler.RequestUris.Select(uri => uri.Host));
-            Assert.False(handler.IsDisposed);
-        }
-
-        [Fact]
         public async Task RequestUrisEscapeDeviceIdAsPathSegment()
         {
             const string deviceId = "device?one";
-            var connection = new FakeConnectionClient(new SwitchableAuthenticationProvider { Credentials = CreateSasCredentials() });
-            connection.Reprovision(HostName, deviceId);
             var handler = new CapturingHandler();
-            using var fileUploadClient = new FileUploadClient(connection, new HttpClient(handler));
+            var connection = new FakeConnectionClient(new SwitchableAuthenticationProvider { Credentials = CreateSasCredentials() }) { CreateHandler = _ => handler };
+            connection.Reprovision(HostName, deviceId);
+            using var fileUploadClient = new FileUploadClient(connection);
 
             await GetSasUriAsync(fileUploadClient);
             await fileUploadClient.CompleteFileUploadSasUriAsync(new FileUploadCompletionNotification { CorrelationId = "id", IsSuccess = true }, TestContext.Current.CancellationToken);
@@ -340,6 +298,12 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             Assert.Equal(
                 s_expectedEscapedRequestPaths,
                 handler.RequestUris.Select(uri => uri.GetComponents(UriComponents.Path, UriFormat.UriEscaped)));
+        }
+
+        private static FileUploadClient CreateFileUploadClient(FakeConnectionClient connection, Func<AuthenticationCredentials, HttpMessageHandler> createHandler)
+        {
+            connection.CreateHandler = createHandler;
+            return new FileUploadClient(connection);
         }
 
         private static X509Certificate2 CreateCertificate()
@@ -426,6 +390,18 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.Unified
             }
 
             public ConnectionContext Context { get; private set; } = null!;
+
+            public IWebProxy? Proxy { get; init; }
+
+            IWebProxy? IConnectionClient.Proxy => Proxy;
+
+            /// <summary>
+            /// Creates the handler of each HTTP client the file upload client asks for, or null to create the same handlers the connection client does.
+            /// </summary>
+            public Func<AuthenticationCredentials, HttpMessageHandler>? CreateHandler { get; set; }
+
+            HttpClient IConnectionClient.CreateHttpClient(AuthenticationCredentials credentials)
+                => new(CreateHandler?.Invoke(credentials) ?? HttpMessageHandlerFactory.Create(credentials, Proxy));
 
             // Re-provisioning produces a new connection context, as the real connection client does
             public void Reprovision(string iotHubHostName, string deviceId = DeviceId)

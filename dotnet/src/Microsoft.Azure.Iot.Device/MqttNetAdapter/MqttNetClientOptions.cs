@@ -11,6 +11,9 @@ namespace Microsoft.Azure.Iot.Device.MqttNetAdapter
         /// <summary>
         /// Whether to connect this mqtt client using websockets or not.
         /// </summary>
+        /// <remarks>
+        /// Websockets are required for this client to connect through <see cref="Proxy"/>.
+        /// </remarks>
         public bool UseWebsocket { get; set; }
 
         /// <summary>
@@ -21,6 +24,12 @@ namespace Microsoft.Azure.Iot.Device.MqttNetAdapter
         /// <summary>
         /// The HTTP proxy to connect through. Only used if <see cref="UseWebsocket"/> is set to true.
         /// </summary>
+        /// <remarks>
+        /// This only applies to this client's MQTT connections. When this client is supplied to a connection client through
+        /// <see cref="Unified.Models.ConnectionClientOptions.MqttClient"/>, this proxy and <see cref="UseWebsocket"/> take precedence over
+        /// <see cref="Unified.Models.ConnectionClientOptions.Proxy"/> and <see cref="Unified.Models.ConnectionClientOptions.UseWebsocket"/>
+        /// for MQTT connections, while the connection client's HTTPS requests still use <see cref="Unified.Models.ConnectionClientOptions.Proxy"/>.
+        /// </remarks>
         public IWebProxy? Proxy { get; set; }
 
         /// <summary>

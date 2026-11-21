@@ -84,6 +84,12 @@ namespace Microsoft.Azure.Iot.Device.Provisioning.Models
         [JsonPropertyName("x509")]
         public X509RegistrationResult? X509 { get; set; }
 
+        /// <summary>
+        /// The registration result for TPM attestation.
+        /// </summary>
+        [JsonPropertyName("tpm")]
+        public TpmRegistrationResult? Tpm { get; set; }
+
         [JsonPropertyName("issuedCertificateChain")]
         public IReadOnlyList<string>? IssuedClientCertificateChain { get; set; }
 

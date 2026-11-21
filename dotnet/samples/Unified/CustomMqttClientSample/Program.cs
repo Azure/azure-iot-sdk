@@ -24,7 +24,7 @@ internal class Program
         {
             EnableMqttLogs = false,
             UseWebsocket = false,
-            Proxy = null, // With a custom MQTT client, you can configure it to connect through websockets and through HTTP proxies
+            Proxy = null, // A custom MQTT client's websocket and proxy settings take precedence over ConnectionClientOptions.UseWebsocket and Proxy for MQTT connections
         };
         IMqttClient mqttClient = new MqttNetClient(mqttNetClientOptions);
 
