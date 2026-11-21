@@ -245,6 +245,10 @@ namespace Microsoft.Azure.Iot.Device
         // deliberate disconnect or disposal) stops the run whichever transport carries it.
         private ProvisioningRun? _currentProvisioningRun;
 
+        // Serializes publishing a provisioning run, together with targeting Device Provisioning Service, against the
+        // cleanup of the run it replaces, so that a run that outlives its replacement never cleans up after it.
+        private readonly object _currentProvisioningRunLock = new();
+
         // The inputs of the most recent provisioning run, kept for the lifetime of this client so that a connection
         // that faults on this device's identity can be recovered from by provisioning again with the same credentials.
         private ProvisioningSettings? _lastProvisioningSettings;
@@ -1519,35 +1523,41 @@ namespace Microsoft.Azure.Iot.Device
             _lastProvisioningSettings = provisioningSettings;
             _lastProvisioningAuthentication = authentication;
 
-            // From here on, every connection this client establishes targets DPS, so every connection (including the ones
-            // the connection layer re-establishes on its own) runs the provisioning flow.
-            Trace.TraceInformation("ConnectionClient's current endpoint is now DPS");
-            CurrentEndpoint = ConnectionEndpoint.DeviceProvisioningService;
-
-            // A connection to DPS never crosses over to re-provisioning on the retry policy's hub-unreachable guidance;
-            // that only applies to hub connections. Clear the flag so a DPS reconnection just retries DPS under the usual
-            // policy.
-            ManagedMqttConnection.CanReprovision = false;
-
-            // Tell the connection layer (and, through it, the retry policy) that every connection it now maintains
-            // targets Device Provisioning Service. This also waits for any feature operation meant for IoT hub that is
-            // still in flight to finish, so that none of them can be sent over the DPS connection established below.
-            await ManagedMqttConnection.SwitchEndpointAsync(ConnectionEndpoint.DeviceProvisioningService, cancellationToken);
-
-            // This client is establishing a connection again, so any earlier fault no longer describes its state.
-            ClearUnrecoverableFault();
-
-            // Every provisioning run starts again with the primary boot credentials.
-            _usesSecondaryBootCredentials = false;
-
             // Device Provisioning Service only supports TPM attestation over HTTPS; every other attestation registers over MQTT.
             TpmAuthenticationProvider? tpmAuthentication = authentication as TpmAuthenticationProvider;
 
             using ProvisioningRun run = new(provisioningSettings, authentication, cancellationToken);
-            Volatile.Write(ref _currentProvisioningRun, run);
+
+            // A canceled run can still be finishing a step that does not observe cancellation, such as a TPM key import,
+            // after this one starts. Taking ownership here, before targeting DPS, keeps that run from undoing either.
+            lock (_currentProvisioningRunLock)
+            {
+                Volatile.Write(ref _currentProvisioningRun, run);
+
+                // From here on, every connection this client establishes targets DPS, so every connection (including the
+                // ones the connection layer re-establishes on its own) runs the provisioning flow.
+                Trace.TraceInformation("ConnectionClient's current endpoint is now DPS");
+                CurrentEndpoint = ConnectionEndpoint.DeviceProvisioningService;
+            }
 
             try
             {
+                // A connection to DPS never crosses over to re-provisioning on the retry policy's hub-unreachable guidance;
+                // that only applies to hub connections. Clear the flag so a DPS reconnection just retries DPS under the usual
+                // policy.
+                ManagedMqttConnection.CanReprovision = false;
+
+                // Tell the connection layer (and, through it, the retry policy) that every connection it now maintains
+                // targets Device Provisioning Service. This also waits for any feature operation meant for IoT hub that is
+                // still in flight to finish, so that none of them can be sent over the DPS connection established below.
+                await ManagedMqttConnection.SwitchEndpointAsync(ConnectionEndpoint.DeviceProvisioningService, cancellationToken);
+
+                // This client is establishing a connection again, so any earlier fault no longer describes its state.
+                ClearUnrecoverableFault();
+
+                // Every provisioning run starts again with the primary boot credentials.
+                _usesSecondaryBootCredentials = false;
+
                 // A disconnect that started before this run was published could not cancel it, so check for one.
                 ThrowIfDeliberatelyDisconnectedSince(deliberateDisconnectCount);
 
@@ -1569,13 +1579,23 @@ namespace Microsoft.Azure.Iot.Device
             }
             finally
             {
-                // Stop any provisioning flow that is still waiting on a DPS response now that no one is listening for its result.
-                CancelCurrentProvisioningFlow();
-                Interlocked.CompareExchange(ref _currentProvisioningRun, null, run);
-                Trace.TraceInformation("ConnectionClient's current endpoint is now neither Hub or DPS");
-                CurrentEndpoint = ConnectionEndpoint.None;
+                // Only the current run cleans up. A newer run owns the provisioning flow, the endpoint and the connection
+                // to DPS, so a run it replaced must leave them alone.
+                bool ownsRun;
+                lock (_currentProvisioningRunLock)
+                {
+                    ownsRun = ReferenceEquals(Volatile.Read(ref _currentProvisioningRun), run);
+                    if (ownsRun)
+                    {
+                        // Stop any provisioning flow that is still waiting on a DPS response now that no one is listening for its result.
+                        CancelCurrentProvisioningFlow();
+                        Volatile.Write(ref _currentProvisioningRun, null);
+                        Trace.TraceInformation("ConnectionClient's current endpoint is now neither Hub or DPS");
+                        CurrentEndpoint = ConnectionEndpoint.None;
+                    }
+                }
 
-                if (tpmAuthentication == null)
+                if (ownsRun && tpmAuthentication == null)
                 {
                     // Always close the MQTT connection once provisioning has finished so that the connection can be
                     // re-established against the assigned IoT hub.

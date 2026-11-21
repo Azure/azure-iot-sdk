@@ -8,6 +8,7 @@ using System.Net.Security;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using Microsoft.Azure.Iot.Device.Exceptions;
 
 namespace Microsoft.Azure.Iot.Device.Authentication
 {
@@ -43,8 +44,10 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         private readonly TimeSpan _dpsSasTokenTimeToLive;
 
         // Set, under _tpmLock, while the TPM holds the key Device Provisioning Service challenged it with in place of the
-        // IoT Hub key, so that IoT Hub tokens wait for the IoT Hub key instead of being signed with the wrong one.
-        private TaskCompletionSource? _iotHubKeyReplaced;
+        // IoT Hub key, so that IoT Hub tokens are never signed with the wrong key. Pending while registration may still
+        // install the IoT Hub key, so IoT Hub tokens wait for it; completed with false once registration ended without
+        // installing it, so IoT Hub tokens fail until an IoT Hub key is imported.
+        private TaskCompletionSource<bool>? _iotHubKeyReplaced;
 
         /// <summary>
         /// Creates a provider that authenticates with a TPM.
@@ -223,16 +226,16 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         }
 
         /// <summary>
-        /// Imports the key Device Provisioning Service challenged the TPM with. Until the IoT Hub key replaces it, or
-        /// <see cref="EndProvisioningKeyUse"/> is called, IoT Hub tokens wait rather than being signed with it.
+        /// Imports the key Device Provisioning Service challenged the TPM with. Until the IoT Hub key replaces it, IoT Hub
+        /// tokens wait rather than being signed with it, and fail once <see cref="EndProvisioningKeyUse"/> is called.
         /// </summary>
         internal Task ImportProvisioningKeyAsync(byte[] encryptedKey, CancellationToken cancellationToken)
         {
             return WithTpmAsync(async () =>
             {
-                if (_iotHubKeyReplaced == null)
+                if (_iotHubKeyReplaced is not { Task.IsCompleted: false })
                 {
-                    Volatile.Write(ref _iotHubKeyReplaced, new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously));
+                    Volatile.Write(ref _iotHubKeyReplaced, new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
                 }
 
                 await _tpm.ImportKeyAsync(encryptedKey, cancellationToken).ConfigureAwait(false);
@@ -243,23 +246,24 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <summary>
         /// Imports the key the device authenticates with IoT Hub with, and lets IoT Hub tokens be signed with it.
         /// </summary>
-        internal async Task ImportIotHubKeyAsync(byte[] encryptedKey, CancellationToken cancellationToken)
+        internal Task ImportIotHubKeyAsync(byte[] encryptedKey, CancellationToken cancellationToken)
         {
-            await WithTpmAsync(async () =>
+            return WithTpmAsync(async () =>
             {
                 await _tpm.ImportKeyAsync(encryptedKey, cancellationToken).ConfigureAwait(false);
+                Interlocked.Exchange(ref _iotHubKeyReplaced, null)?.TrySetResult(true);
                 return true;
-            }, cancellationToken).ConfigureAwait(false);
-
-            EndProvisioningKeyUse();
+            }, cancellationToken);
         }
 
         /// <summary>
-        /// Releases IoT Hub tokens waiting for the IoT Hub key, once registration has ended however it ended.
+        /// Releases IoT Hub tokens waiting for the IoT Hub key once registration has ended, however it ended. If the
+        /// IoT Hub key was not installed, they fail, as do later ones until an IoT Hub key is imported, because the TPM
+        /// only holds Device Provisioning Service's key.
         /// </summary>
         internal void EndProvisioningKeyUse()
         {
-            Interlocked.Exchange(ref _iotHubKeyReplaced, null)?.TrySetResult();
+            Volatile.Read(ref _iotHubKeyReplaced)?.TrySetResult(false);
         }
 
         /// <summary>
@@ -279,11 +283,15 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 
         private async Task<string> BuildSasTokenAsync(string keyName, string target, TimeSpan timeToLive, bool withIotHubKey, CancellationToken cancellationToken)
         {
-            string expiresOn = DateTimeOffset.UtcNow.Add(timeToLive).ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
             string audience = WebUtility.UrlEncode(target);
-            byte[] toSign = Encoding.UTF8.GetBytes(string.Concat(audience, "\n", expiresOn));
+            string expiresOn = string.Empty;
 
-            byte[] hmac = await SignAsync(toSign, withIotHubKey, cancellationToken).ConfigureAwait(false);
+            // The expiry is only set once the key is ready to sign with, so that waiting for it does not use up the token's lifetime.
+            byte[] hmac = await SignAsync(() =>
+            {
+                expiresOn = DateTimeOffset.UtcNow.Add(timeToLive).ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture);
+                return Encoding.UTF8.GetBytes(string.Concat(audience, "\n", expiresOn));
+            }, withIotHubKey, cancellationToken).ConfigureAwait(false);
             string signature = Convert.ToBase64String(hmac);
 
             var buffer = new StringBuilder();
@@ -311,16 +319,22 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         }
 
         /// <summary>
-        /// Signs with the key the TPM holds, first waiting for the IoT Hub key to be installed when
-        /// <paramref name="withIotHubKey"/> is set and registration has replaced it with Device Provisioning Service's key.
+        /// Signs the data <paramref name="createData"/> returns with the key the TPM holds, first waiting for the IoT Hub
+        /// key to be installed when <paramref name="withIotHubKey"/> is set and registration has replaced it with Device
+        /// Provisioning Service's key. The data is created under the TPM lock, just before it is signed.
         /// </summary>
-        private async Task<byte[]> SignAsync(byte[] data, bool withIotHubKey, CancellationToken cancellationToken)
+        private async Task<byte[]> SignAsync(Func<byte[]> createData, bool withIotHubKey, CancellationToken cancellationToken)
         {
             while (true)
             {
-                if (withIotHubKey && Volatile.Read(ref _iotHubKeyReplaced) is { } iotHubKeyReplaced)
+                if (withIotHubKey && Volatile.Read(ref _iotHubKeyReplaced) is { } iotHubKeyReplaced
+                    && !await iotHubKeyReplaced.Task.WaitAsync(cancellationToken).ConfigureAwait(false))
                 {
-                    await iotHubKeyReplaced.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+                    throw new DeviceException("The TPM holds the key Device Provisioning Service challenged it with, because registration ended without installing the IoT Hub key. The device must provision again before it can authenticate with IoT Hub.")
+                    {
+                        Retryability = ErrorRetryability.IdentityTerminal,
+                        IsContained = false,
+                    };
                 }
 
                 await _tpmLock.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -329,7 +343,7 @@ namespace Microsoft.Azure.Iot.Device.Authentication
                     // Registration may have imported Device Provisioning Service's key again since the wait above.
                     if (!withIotHubKey || Volatile.Read(ref _iotHubKeyReplaced) == null)
                     {
-                        return await _tpm.SignAsync(data, cancellationToken).ConfigureAwait(false);
+                        return await _tpm.SignAsync(createData(), cancellationToken).ConfigureAwait(false);
                     }
                 }
                 finally

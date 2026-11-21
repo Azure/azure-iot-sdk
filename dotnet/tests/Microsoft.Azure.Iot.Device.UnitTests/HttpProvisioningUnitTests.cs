@@ -220,6 +220,79 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task ARunCanceledDuringTheFinalTpmKeyImportLeavesTheRunThatReplacedItAlone()
+        {
+            byte[] firstHubKey = Encoding.UTF8.GetBytes("some-first-hub-key-for-unit-tests");
+            byte[] secondHubKey = Encoding.UTF8.GetBytes("some-second-hub-key-for-unit-tests");
+            int registrations = 0;
+            TaskCompletionSource secondRegistrationReceived = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource finishSecondRegistration = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            FakeDpsHandler dps = new(async (request, cancellationToken) =>
+            {
+                if (!request.Headers.Contains("Authorization"))
+                {
+                    return Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(PrimaryKey) }.ToJsonString());
+                }
+
+                if (Interlocked.Increment(ref registrations) == 1)
+                {
+                    return Respond(HttpStatusCode.OK, AssignedTpm(firstHubKey));
+                }
+
+                secondRegistrationReceived.TrySetResult();
+                await finishSecondRegistration.Task.WaitAsync(cancellationToken);
+                return Respond(HttpStatusCode.OK, AssignedTpm(secondHubKey));
+            });
+
+            TaskCompletionSource firstHubKeyImportStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource finishFirstHubKeyImport = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            FakeTpm firstTpm = new()
+            {
+                OnImport = key =>
+                {
+                    if (!key.SequenceEqual(firstHubKey))
+                    {
+                        return Task.CompletedTask;
+                    }
+
+                    firstHubKeyImportStarted.TrySetResult();
+                    return finishFirstHubKeyImport.Task;
+                },
+            };
+
+            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
+
+            Task<ConnectionContext> firstProvisioning = connectionClient.ProvisionAndConnectAsync(
+                CreateSettings(),
+                new TpmAuthenticationProvider(RegistrationId, IdScope, firstTpm),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            await firstHubKeyImportStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+            // The application provisions again while the TPM is still importing the first run's key.
+            Task<ConnectionContext> secondProvisioning = connectionClient.ProvisionAndConnectAsync(
+                CreateSettings(),
+                new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()),
+                cancellationToken: TestContext.Current.CancellationToken);
+            await secondRegistrationReceived.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+
+            finishFirstHubKeyImport.SetResult();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await firstProvisioning.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            // The first run ending did not take the endpoint away from the run that replaced it.
+            Assert.Equal(ConnectionEndpoint.DeviceProvisioningService, connectionClient.CurrentEndpoint);
+
+            finishSecondRegistration.SetResult();
+            ConnectionContext context = await secondProvisioning.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            Assert.Equal(AssignedHub, context.IotHubHostName);
+            Assert.Equal(ConnectionEndpoint.IotHub, connectionClient.CurrentEndpoint);
+            Assert.Equal(1, mockMqttClient.ConnectAttemptCount);
+        }
+
+        [Fact]
         public async Task IotHubTokensWaitForTheIotHubKeyWhileRegistrationHoldsTheChallengeKey()
         {
             byte[] dpsKey = Encoding.UTF8.GetBytes("some-dps-key-for-unit-tests");
@@ -241,7 +314,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
-        public async Task IotHubTokensAreReleasedWhenRegistrationEndsWithoutAnIotHubKey()
+        public async Task IotHubTokensFailUntilAnIotHubKeyIsImportedWhenRegistrationEndsWithoutOne()
         {
             FakeDpsHandler dps = new(_ => Respond(HttpStatusCode.Unauthorized, new JsonObject
             {
@@ -257,11 +330,64 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     .ProvisionAndConnectAsync(CreateSettings(), authentication, cancellationToken: TestContext.Current.CancellationToken)
                     .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
 
-            // Nothing is left waiting for a key that registration will never install.
+            // Nothing is left waiting for a key that registration will never install, and nothing is signed with the
+            // challenge key the TPM still holds.
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
+                async () => await authentication
+                    .GetPrimaryOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, null, TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+            Assert.Equal(ErrorRetryability.IdentityTerminal, exception.Retryability);
+
+            byte[] hubKey = Encoding.UTF8.GetBytes("some-hub-key-for-unit-tests");
+            await authentication.ImportIotHubKeyAsync(hubKey, TestContext.Current.CancellationToken);
             AuthenticationCredentials credentials = await authentication
                 .GetPrimaryOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, null, TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
-            Assert.NotNull(credentials.Password);
+            AssertSignedSasToken(Encoding.UTF8.GetString(credentials.Password!), hubKey, $"{AssignedHub}/devices/{DeviceId}", null);
+        }
+
+        [Fact]
+        public async Task IotHubTokensWaitingForTheIotHubKeyFailWhenRegistrationEndsWithoutOne()
+        {
+            byte[] dpsKey = Encoding.UTF8.GetBytes("some-dps-key-for-unit-tests");
+            TpmAuthenticationProvider authentication = new(RegistrationId, IdScope, new FakeTpm());
+            await authentication.ImportIotHubKeyAsync(PrimaryKey, TestContext.Current.CancellationToken);
+
+            await authentication.ImportProvisioningKeyAsync(dpsKey, TestContext.Current.CancellationToken);
+            Task<AuthenticationCredentials> credentials = authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
+                AssignedHub, DeviceId, null, TestContext.Current.CancellationToken);
+
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.False(credentials.IsCompleted);
+
+            authentication.EndProvisioningKeyUse();
+            DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
+                async () => await credentials.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+            Assert.Equal(ErrorRetryability.IdentityTerminal, exception.Retryability);
+        }
+
+        [Fact]
+        public async Task IotHubTokensThatWaitedForTheIotHubKeyExpireAfterTheirFullLifetime()
+        {
+            TimeSpan timeToLive = TimeSpan.FromSeconds(2);
+            byte[] dpsKey = Encoding.UTF8.GetBytes("some-dps-key-for-unit-tests");
+            byte[] hubKey = Encoding.UTF8.GetBytes("some-hub-key-for-unit-tests");
+            TpmAuthenticationProvider authentication = new(RegistrationId, IdScope, new FakeTpm(), iotHubSasTokenTimeToLive: timeToLive);
+
+            await authentication.ImportProvisioningKeyAsync(dpsKey, TestContext.Current.CancellationToken);
+            Task<AuthenticationCredentials> credentials = authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
+                AssignedHub, DeviceId, null, TestContext.Current.CancellationToken);
+
+            // Registration takes longer than the token's lifetime to install the IoT Hub key.
+            await Task.Delay(timeToLive + TimeSpan.FromMilliseconds(500), TestContext.Current.CancellationToken);
+            long hubKeyImportedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            await authentication.ImportIotHubKeyAsync(hubKey, TestContext.Current.CancellationToken);
+
+            AuthenticationCredentials signed = await credentials.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            string sasToken = Encoding.UTF8.GetString(signed.Password!);
+            AssertSignedSasToken(sasToken, hubKey, $"{AssignedHub}/devices/{DeviceId}", null);
+            long expiresOn = long.Parse(WebUtility.UrlDecode(sasToken.Split('&').Single(field => field.StartsWith("se=", StringComparison.Ordinal))[3..]), System.Globalization.CultureInfo.InvariantCulture);
+            Assert.True(expiresOn >= hubKeyImportedAt + (long)timeToLive.TotalSeconds, $"The token expires at {expiresOn}, before its lifetime from when it was signed.");
         }
 
         [Fact]

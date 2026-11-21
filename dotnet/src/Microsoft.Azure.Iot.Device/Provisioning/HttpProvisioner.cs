@@ -61,7 +61,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
             finally
             {
                 // However registration ended, stop holding back IoT Hub signing: once the IoT Hub key is installed this
-                // is a no-op, and otherwise there is no other key coming for it to wait for.
+                // is a no-op, and otherwise no IoT Hub key is coming, so IoT Hub signing fails until one is imported.
                 authentication.EndProvisioningKeyUse();
             }
         }
