@@ -54,15 +54,19 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
         {
             string registrationId = authentication.GetRegistrationId();
 
+            // Identifies this registration to the TPM, so that its end only affects IoT Hub signing if no later
+            // registration has imported Device Provisioning Service's key since.
+            object provisioningKeyOwner = new();
+
             try
             {
-                return await RegisterWithRetryAsync(run, authentication, registrationId, cancellationToken).ConfigureAwait(false);
+                return await RegisterWithRetryAsync(run, authentication, registrationId, provisioningKeyOwner, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
                 // However registration ended, stop holding back IoT Hub signing: once the IoT Hub key is installed this
                 // is a no-op, and otherwise no IoT Hub key is coming, so IoT Hub signing fails until one is imported.
-                authentication.EndProvisioningKeyUse();
+                authentication.EndProvisioningKeyUse(provisioningKeyOwner);
             }
         }
 
@@ -70,6 +74,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
             ProvisioningRun run,
             TpmAuthenticationProvider authentication,
             string registrationId,
+            object provisioningKeyOwner,
             CancellationToken cancellationToken)
         {
             uint attempt = 0;
@@ -89,7 +94,8 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
                         _requestTimeout,
                         ProvisioningDefaults.OperationPollingInterval,
                         _serviceRetryAfter.Capture,
-                        authentication);
+                        authentication,
+                        provisioningKeyOwner);
 
                     return await provisioningHttpClient
                         .RegisterAsync(run.RequestPayload.Payload, run.RequestPayload.ClientCertificateSigningRequest, cancellationToken)

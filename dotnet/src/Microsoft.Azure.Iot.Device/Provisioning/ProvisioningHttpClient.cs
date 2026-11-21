@@ -31,6 +31,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
         private readonly TimeSpan _minimumPollingInterval;
         private readonly Action<TimeSpan?> _onRetryAfter;
         private readonly TpmAuthenticationProvider _tpm;
+        private readonly object _provisioningKeyOwner;
 
         // Set once this registration has answered Device Provisioning Service's TPM challenge, after which every request
         // carries a SAS token signed by the TPM.
@@ -54,6 +55,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
         /// unauthenticated; Device Provisioning Service answers it with a key for the TPM to import, and the request is sent
         /// again with a SAS token the TPM signs with that key.
         /// </param>
+        /// <param name="provisioningKeyOwner">Identifies the registration this client belongs to when importing Device Provisioning Service's key.</param>
         public ProvisioningHttpClient(
             HttpClient httpClient,
             string globalEndpointAddress,
@@ -64,7 +66,8 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
             TimeSpan requestTimeout,
             TimeSpan minimumPollingInterval,
             Action<TimeSpan?> onRetryAfter,
-            TpmAuthenticationProvider tpm)
+            TpmAuthenticationProvider tpm,
+            object provisioningKeyOwner)
         {
             // Each request has its own timeout, applied below, so that a timeout can be told apart from cancellation.
             _httpClient = httpClient;
@@ -77,6 +80,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
             _minimumPollingInterval = minimumPollingInterval;
             _onRetryAfter = onRetryAfter;
             _tpm = tpm;
+            _provisioningKeyOwner = provisioningKeyOwner;
         }
 
         /// <summary>
@@ -286,7 +290,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
             }
 
             Trace.TraceInformation("Device Provisioning Service challenged the TPM; importing its key and registering again");
-            await _tpm.ImportProvisioningKeyAsync(DecodeTpmKey(challenge.AuthenticationKey), cancellationToken).ConfigureAwait(false);
+            await _tpm.ImportProvisioningKeyAsync(_provisioningKeyOwner, DecodeTpmKey(challenge.AuthenticationKey), cancellationToken).ConfigureAwait(false);
             _tpmKeyName = challenge.KeyName;
             _tpmChallengeAnswered = true;
             return true;

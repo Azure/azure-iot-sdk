@@ -49,6 +49,11 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         // installing it, so IoT Hub tokens fail until an IoT Hub key is imported.
         private TaskCompletionSource<bool>? _iotHubKeyReplaced;
 
+        // The registration that imported Device Provisioning Service's key last, and so the only one whose end may fail
+        // IoT Hub tokens. Guarded, together with replacing _iotHubKeyReplaced, by _iotHubKeyReplacedLock.
+        private object? _provisioningKeyOwner;
+        private readonly object _iotHubKeyReplacedLock = new();
+
         /// <summary>
         /// Creates a provider that authenticates with a TPM.
         /// </summary>
@@ -227,15 +232,24 @@ namespace Microsoft.Azure.Iot.Device.Authentication
 
         /// <summary>
         /// Imports the key Device Provisioning Service challenged the TPM with. Until the IoT Hub key replaces it, IoT Hub
-        /// tokens wait rather than being signed with it, and fail once <see cref="EndProvisioningKeyUse"/> is called.
+        /// tokens wait rather than being signed with it, and fail once <see cref="EndProvisioningKeyUse"/> is called for
+        /// <paramref name="owner"/>.
         /// </summary>
-        internal Task ImportProvisioningKeyAsync(byte[] encryptedKey, CancellationToken cancellationToken)
+        /// <param name="owner">Identifies the registration importing the key, which becomes the one whose end decides IoT Hub tokens.</param>
+        /// <param name="encryptedKey">The key Device Provisioning Service challenged the TPM with.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        internal Task ImportProvisioningKeyAsync(object owner, byte[] encryptedKey, CancellationToken cancellationToken)
         {
             return WithTpmAsync(async () =>
             {
-                if (_iotHubKeyReplaced is not { Task.IsCompleted: false })
+                lock (_iotHubKeyReplacedLock)
                 {
-                    Volatile.Write(ref _iotHubKeyReplaced, new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
+                    if (_iotHubKeyReplaced is not { Task.IsCompleted: false })
+                    {
+                        Volatile.Write(ref _iotHubKeyReplaced, new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously));
+                    }
+
+                    _provisioningKeyOwner = owner;
                 }
 
                 await _tpm.ImportKeyAsync(encryptedKey, cancellationToken).ConfigureAwait(false);
@@ -251,7 +265,14 @@ namespace Microsoft.Azure.Iot.Device.Authentication
             return WithTpmAsync(async () =>
             {
                 await _tpm.ImportKeyAsync(encryptedKey, cancellationToken).ConfigureAwait(false);
-                Interlocked.Exchange(ref _iotHubKeyReplaced, null)?.TrySetResult(true);
+                TaskCompletionSource<bool>? iotHubKeyReplaced;
+                lock (_iotHubKeyReplacedLock)
+                {
+                    iotHubKeyReplaced = Interlocked.Exchange(ref _iotHubKeyReplaced, null);
+                    _provisioningKeyOwner = null;
+                }
+
+                iotHubKeyReplaced?.TrySetResult(true);
                 return true;
             }, cancellationToken);
         }
@@ -259,11 +280,26 @@ namespace Microsoft.Azure.Iot.Device.Authentication
         /// <summary>
         /// Releases IoT Hub tokens waiting for the IoT Hub key once registration has ended, however it ended. If the
         /// IoT Hub key was not installed, they fail, as do later ones until an IoT Hub key is imported, because the TPM
-        /// only holds Device Provisioning Service's key.
+        /// only holds Device Provisioning Service's key. Does nothing if another registration has imported Device
+        /// Provisioning Service's key since <paramref name="owner"/> did, because that registration may still install the
+        /// IoT Hub key.
         /// </summary>
-        internal void EndProvisioningKeyUse()
+        /// <param name="owner">Identifies the registration that ended, as passed to <see cref="ImportProvisioningKeyAsync"/>.</param>
+        internal void EndProvisioningKeyUse(object owner)
         {
-            Volatile.Read(ref _iotHubKeyReplaced)?.TrySetResult(false);
+            TaskCompletionSource<bool>? iotHubKeyReplaced;
+            lock (_iotHubKeyReplacedLock)
+            {
+                if (!ReferenceEquals(_provisioningKeyOwner, owner))
+                {
+                    return;
+                }
+
+                iotHubKeyReplaced = Volatile.Read(ref _iotHubKeyReplaced);
+                _provisioningKeyOwner = null;
+            }
+
+            iotHubKeyReplaced?.TrySetResult(false);
         }
 
         /// <summary>

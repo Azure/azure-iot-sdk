@@ -301,7 +301,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             TpmAuthenticationProvider authentication = new(RegistrationId, IdScope, tpm);
             await authentication.ImportIotHubKeyAsync(PrimaryKey, TestContext.Current.CancellationToken);
 
-            await authentication.ImportProvisioningKeyAsync(dpsKey, TestContext.Current.CancellationToken);
+            await authentication.ImportProvisioningKeyAsync(new object(), dpsKey, TestContext.Current.CancellationToken);
             Task<AuthenticationCredentials> credentials = authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
                 AssignedHub, DeviceId, null, TestContext.Current.CancellationToken);
 
@@ -353,17 +353,43 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             TpmAuthenticationProvider authentication = new(RegistrationId, IdScope, new FakeTpm());
             await authentication.ImportIotHubKeyAsync(PrimaryKey, TestContext.Current.CancellationToken);
 
-            await authentication.ImportProvisioningKeyAsync(dpsKey, TestContext.Current.CancellationToken);
+            object registration = new();
+            await authentication.ImportProvisioningKeyAsync(registration, dpsKey, TestContext.Current.CancellationToken);
             Task<AuthenticationCredentials> credentials = authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
                 AssignedHub, DeviceId, null, TestContext.Current.CancellationToken);
 
             await Task.Delay(100, TestContext.Current.CancellationToken);
             Assert.False(credentials.IsCompleted);
 
-            authentication.EndProvisioningKeyUse();
+            authentication.EndProvisioningKeyUse(registration);
             DeviceException exception = await Assert.ThrowsAsync<DeviceException>(
                 async () => await credentials.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
             Assert.Equal(ErrorRetryability.IdentityTerminal, exception.Retryability);
+        }
+
+        [Fact]
+        public async Task AnEarlierRegistrationEndingDoesNotFailIotHubTokensWaitingOnTheRegistrationThatReplacedIt()
+        {
+            byte[] dpsKey = Encoding.UTF8.GetBytes("some-dps-key-for-unit-tests");
+            byte[] hubKey = Encoding.UTF8.GetBytes("some-hub-key-for-unit-tests");
+            TpmAuthenticationProvider authentication = new(RegistrationId, IdScope, new FakeTpm());
+            await authentication.ImportIotHubKeyAsync(PrimaryKey, TestContext.Current.CancellationToken);
+
+            object firstRegistration = new();
+            object secondRegistration = new();
+            await authentication.ImportProvisioningKeyAsync(firstRegistration, dpsKey, TestContext.Current.CancellationToken);
+            await authentication.ImportProvisioningKeyAsync(secondRegistration, dpsKey, TestContext.Current.CancellationToken);
+            Task<AuthenticationCredentials> credentials = authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
+                AssignedHub, DeviceId, null, TestContext.Current.CancellationToken);
+
+            // The replaced registration ends late, while the one that replaced it may still install the IoT Hub key.
+            authentication.EndProvisioningKeyUse(firstRegistration);
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.False(credentials.IsCompleted);
+
+            await authentication.ImportIotHubKeyAsync(hubKey, TestContext.Current.CancellationToken);
+            AuthenticationCredentials signed = await credentials.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            AssertSignedSasToken(Encoding.UTF8.GetString(signed.Password!), hubKey, $"{AssignedHub}/devices/{DeviceId}", null);
         }
 
         [Fact]
@@ -374,7 +400,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             byte[] hubKey = Encoding.UTF8.GetBytes("some-hub-key-for-unit-tests");
             TpmAuthenticationProvider authentication = new(RegistrationId, IdScope, new FakeTpm(), iotHubSasTokenTimeToLive: timeToLive);
 
-            await authentication.ImportProvisioningKeyAsync(dpsKey, TestContext.Current.CancellationToken);
+            await authentication.ImportProvisioningKeyAsync(new object(), dpsKey, TestContext.Current.CancellationToken);
             Task<AuthenticationCredentials> credentials = authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
                 AssignedHub, DeviceId, null, TestContext.Current.CancellationToken);
 
