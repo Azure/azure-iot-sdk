@@ -1551,9 +1551,17 @@ namespace Microsoft.Azure.Iot.Device
                 // A disconnect that started before this run was published could not cancel it, so check for one.
                 ThrowIfDeliberatelyDisconnectedSince(deliberateDisconnectCount);
 
-                return tpmAuthentication != null
+                DeviceRegistrationResult registrationResult = tpmAuthentication != null
                     ? await CreateHttpProvisioner().RegisterAsync(run, tpmAuthentication, run.Token)
                     : await ProvisionOverMqttAsync(run, deliberateDisconnectCount);
+
+                // Registration can finish after a disconnect cancelled it, for example while a TPM that does not observe
+                // cancellation imports the final key. The disconnect takes precedence, so never hand back a result that
+                // would connect this client to the hub after the disconnect completed.
+                run.Token.ThrowIfCancellationRequested();
+                ThrowIfDeliberatelyDisconnectedSince(deliberateDisconnectCount);
+
+                return registrationResult;
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested && run.IsCancellationRequested)
             {
@@ -1576,9 +1584,11 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
+        // Re-provisioning retries every failed registration itself (see ReprovisionWithRetryAsync), so on that flow the
+        // HTTP provisioner makes a single attempt; retrying there too would multiply the attempts the policy allows.
         private HttpProvisioner CreateHttpProvisioner() => new(
             CreateHttpClient,
-            _connectionRetryPolicy,
+            _isOnReprovisioningFlow.Value ? null : _connectionRetryPolicy,
             _connectionAttemptTimeout,
             _provisioningServiceRetryAfter);
 

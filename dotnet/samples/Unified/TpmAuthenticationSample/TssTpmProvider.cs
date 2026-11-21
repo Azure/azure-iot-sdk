@@ -146,7 +146,8 @@ namespace TpmAuthenticationSample
             {
                 ObjectDisposedException.ThrowIf(_disposed, this);
 
-                DeletePersistedKey();
+                // The key imported before stays persisted until its replacement is loaded, so that a malformed blob or
+                // a failing TPM command leaves the device able to authenticate with it.
 
                 // Take the pieces out of the blob Device Provisioning Service sent.
                 var marshaller = new Marshaller(encryptedKey, DataRepresentation.Tpm);
@@ -179,10 +180,12 @@ namespace TpmAuthenticationSample
                     encryptedWrappingKey,
                     new SymDefObject(TpmAlgId.Aes, 128, TpmAlgId.Cfb));
 
-                // Persist the key so that it survives restarts, then unload the transient copy.
+                // Persist the key in place of the one imported before so that it survives restarts, then unload the
+                // transient copy.
                 TpmHandle loadedKey = _tpm2.Load(new TpmHandle(StorageRootKeyHandle), importedKey, keyPublic);
                 try
                 {
+                    DeletePersistedKey();
                     _tpm2.EvictControl(TpmHandle.RhOwner, loadedKey, new TpmHandle(PersistedKeyHandle));
                 }
                 finally

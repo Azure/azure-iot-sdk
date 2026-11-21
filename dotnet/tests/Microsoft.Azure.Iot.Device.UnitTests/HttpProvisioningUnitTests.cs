@@ -177,6 +177,94 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
+        public async Task DisconnectDuringTheFinalTpmKeyImportDoesNotConnectToTheHub()
+        {
+            byte[] hubKey = Encoding.UTF8.GetBytes("some-hub-key-for-unit-tests");
+            FakeDpsHandler dps = new(request => !request.Headers.Contains("Authorization")
+                ? Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(PrimaryKey) }.ToJsonString())
+                : Respond(HttpStatusCode.OK, AssignedTpm(hubKey)));
+
+            TaskCompletionSource hubKeyImportStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            TaskCompletionSource finishHubKeyImport = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            FakeTpm tpm = new()
+            {
+                OnImport = key =>
+                {
+                    if (!key.SequenceEqual(hubKey))
+                    {
+                        return Task.CompletedTask;
+                    }
+
+                    hubKeyImportStarted.TrySetResult();
+                    return finishHubKeyImport.Task;
+                },
+            };
+
+            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
+
+            Task<ConnectionContext> provisioning = connectionClient.ProvisionAndConnectAsync(
+                CreateSettings(),
+                new TpmAuthenticationProvider(RegistrationId, IdScope, tpm),
+                cancellationToken: TestContext.Current.CancellationToken);
+
+            await hubKeyImportStarted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            await connectionClient.DisconnectAsync(cancellationToken: TestContext.Current.CancellationToken);
+
+            // The TPM finishes importing the key regardless, but the disconnect already completed.
+            finishHubKeyImport.SetResult();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await provisioning.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+            Assert.Equal(0, mockMqttClient.ConnectAttemptCount);
+        }
+
+        [Fact]
+        public async Task IotHubTokensWaitForTheIotHubKeyWhileRegistrationHoldsTheChallengeKey()
+        {
+            byte[] dpsKey = Encoding.UTF8.GetBytes("some-dps-key-for-unit-tests");
+            byte[] hubKey = Encoding.UTF8.GetBytes("some-hub-key-for-unit-tests");
+            FakeTpm tpm = new();
+            TpmAuthenticationProvider authentication = new(RegistrationId, IdScope, tpm);
+            await authentication.ImportIotHubKeyAsync(PrimaryKey, TestContext.Current.CancellationToken);
+
+            await authentication.ImportProvisioningKeyAsync(dpsKey, TestContext.Current.CancellationToken);
+            Task<AuthenticationCredentials> credentials = authentication.GetPrimaryOperationalAuthenticationCredentialsAsync(
+                AssignedHub, DeviceId, null, TestContext.Current.CancellationToken);
+
+            await Task.Delay(100, TestContext.Current.CancellationToken);
+            Assert.False(credentials.IsCompleted);
+
+            await authentication.ImportIotHubKeyAsync(hubKey, TestContext.Current.CancellationToken);
+            AuthenticationCredentials signed = await credentials.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            AssertSignedSasToken(Encoding.UTF8.GetString(signed.Password!), hubKey, $"{AssignedHub}/devices/{DeviceId}", null);
+        }
+
+        [Fact]
+        public async Task IotHubTokensAreReleasedWhenRegistrationEndsWithoutAnIotHubKey()
+        {
+            FakeDpsHandler dps = new(_ => Respond(HttpStatusCode.Unauthorized, new JsonObject
+            {
+                ["authenticationKey"] = Convert.ToBase64String(PrimaryKey),
+            }.ToJsonString()));
+
+            using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
+            using TestConnectionClient connectionClient = CreateClient(mockMqttClient, dps);
+            TpmAuthenticationProvider authentication = new(RegistrationId, IdScope, new FakeTpm());
+
+            await Assert.ThrowsAsync<DeviceException>(
+                async () => await connectionClient
+                    .ProvisionAndConnectAsync(CreateSettings(), authentication, cancellationToken: TestContext.Current.CancellationToken)
+                    .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken));
+
+            // Nothing is left waiting for a key that registration will never install.
+            AuthenticationCredentials credentials = await authentication
+                .GetPrimaryOperationalAuthenticationCredentialsAsync(AssignedHub, DeviceId, null, TestContext.Current.CancellationToken)
+                .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
+            Assert.NotNull(credentials.Password);
+        }
+
+        [Fact]
         public async Task TpmProvisioningAnswersTheChallengeAndAuthenticatesWithTheImportedKeys()
         {
             byte[] dpsKey = Encoding.UTF8.GetBytes("some-dps-key-for-unit-tests");
@@ -490,7 +578,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
             // Re-provisioning is the only way left to recover, so giving up on it tells the application the connection is gone.
             await connectionFaulted.Task.WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
             Assert.Equal(1, registrations);
-            Assert.Contains(dps.Requests.Skip(2), request => request.Method == HttpMethod.Put);
+
+            // Re-provisioning owns the retries: the first attempt and two retries each sent one register request.
+            Assert.Equal(3, dps.Requests.Skip(2).Count(request => request.Method == HttpMethod.Put));
         }
 
         [Fact]
@@ -812,15 +902,22 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             public List<byte[]> ImportedKeys { get; } = new();
 
+            /// <summary>Runs before each import completes, without observing cancellation, as a TPM command does.</summary>
+            public Func<byte[], Task>? OnImport { get; set; }
+
             public Task<byte[]> GetEndorsementKeyAsync(CancellationToken cancellationToken = default) => Task.FromResult(EndorsementKey);
 
             public Task<byte[]> GetStorageRootKeyAsync(CancellationToken cancellationToken = default) => Task.FromResult(StorageRootKey);
 
-            public Task ImportKeyAsync(byte[] encryptedKey, CancellationToken cancellationToken = default)
+            public async Task ImportKeyAsync(byte[] encryptedKey, CancellationToken cancellationToken = default)
             {
+                if (OnImport != null)
+                {
+                    await OnImport(encryptedKey);
+                }
+
                 ImportedKeys.Add(encryptedKey);
                 _key = encryptedKey;
-                return Task.CompletedTask;
             }
 
             public Task<byte[]> SignAsync(byte[] data, CancellationToken cancellationToken = default)

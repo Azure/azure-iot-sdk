@@ -286,7 +286,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
             }
 
             Trace.TraceInformation("Device Provisioning Service challenged the TPM; importing its key and registering again");
-            await _tpm.ImportKeyAsync(DecodeTpmKey(challenge.AuthenticationKey), cancellationToken).ConfigureAwait(false);
+            await _tpm.ImportProvisioningKeyAsync(DecodeTpmKey(challenge.AuthenticationKey), cancellationToken).ConfigureAwait(false);
             _tpmKeyName = challenge.KeyName;
             _tpmChallengeAnswered = true;
             return true;
@@ -309,7 +309,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
                 throw new Exception("Device Provisioning Service assigned this TPM device without the key it authenticates with IoT Hub with.");
             }
 
-            await _tpm.ImportKeyAsync(DecodeTpmKey(authenticationKey), cancellationToken).ConfigureAwait(false);
+            await _tpm.ImportIotHubKeyAsync(DecodeTpmKey(authenticationKey), cancellationToken).ConfigureAwait(false);
         }
 
         private static byte[] DecodeTpmKey(string authenticationKey)

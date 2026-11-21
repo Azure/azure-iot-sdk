@@ -22,19 +22,22 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
     internal sealed class HttpProvisioner
     {
         private readonly Func<AuthenticationCredentials, HttpClient> _createHttpClient;
-        private readonly IRetryPolicy _retryPolicy;
+        private readonly IRetryPolicy? _retryPolicy;
         private readonly TimeSpan _requestTimeout;
         private readonly ProvisioningServiceRetryAfter _serviceRetryAfter;
 
         /// <param name="createHttpClient">
         /// Creates a new HTTP client, presenting the given boot credentials, for each attempt. Each one is disposed once its attempt ends.
         /// </param>
-        /// <param name="retryPolicy">The policy that decides whether, and when, to retry a transient failure.</param>
+        /// <param name="retryPolicy">
+        /// The policy that decides whether, and when, to retry a transient failure, or null to make a single attempt and
+        /// leave retrying to the caller.
+        /// </param>
         /// <param name="requestTimeout">How long to wait for each HTTPS request.</param>
         /// <param name="serviceRetryAfter">Tracks the Retry-After the service asks for.</param>
         public HttpProvisioner(
             Func<AuthenticationCredentials, HttpClient> createHttpClient,
-            IRetryPolicy retryPolicy,
+            IRetryPolicy? retryPolicy,
             TimeSpan requestTimeout,
             ProvisioningServiceRetryAfter serviceRetryAfter)
         {
@@ -50,6 +53,25 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
             CancellationToken cancellationToken)
         {
             string registrationId = authentication.GetRegistrationId();
+
+            try
+            {
+                return await RegisterWithRetryAsync(run, authentication, registrationId, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                // However registration ended, stop holding back IoT Hub signing: once the IoT Hub key is installed this
+                // is a no-op, and otherwise there is no other key coming for it to wait for.
+                authentication.EndProvisioningKeyUse();
+            }
+        }
+
+        private async Task<DeviceRegistrationResult> RegisterWithRetryAsync(
+            ProvisioningRun run,
+            TpmAuthenticationProvider authentication,
+            string registrationId,
+            CancellationToken cancellationToken)
+        {
             uint attempt = 0;
 
             while (true)
@@ -73,7 +95,7 @@ namespace Microsoft.Azure.Iot.Device.Provisioning
                         .RegisterAsync(run.RequestPayload.Payload, run.RequestPayload.ClientCertificateSigningRequest, cancellationToken)
                         .ConfigureAwait(false);
                 }
-                catch (DeviceException e) when (e.Retryability == ErrorRetryability.Retryable && !cancellationToken.IsCancellationRequested)
+                catch (DeviceException e) when (_retryPolicy != null && e.Retryability == ErrorRetryability.Retryable && !cancellationToken.IsCancellationRequested)
                 {
                     if (attempt < uint.MaxValue)
                     {
