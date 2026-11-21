@@ -33,31 +33,21 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         private readonly object _httpClientLock = new();
         private HttpClientLease? _httpClient;
         private readonly IConnectionClient _connection;
-        private readonly Func<AuthenticationCredentials, HttpMessageHandler> _createHttpMessageHandler;
 
         /// <summary>
         /// Create a file upload client.
         /// </summary>
         /// <param name="connection">The connection client whose device this client uploads files for.</param>
         /// <remarks>
-        /// File upload operations are done over HTTPS only when connected to an MQTTv3 IoT hub. These requests are sent with the
-        /// <see cref="Unified.Models.ConnectionClientOptions.HttpClient"/> of the connection client, if one was supplied. Otherwise, this client
-        /// creates its own HTTP client, which uses <see cref="Unified.Models.ConnectionClientOptions.Proxy"/> and is replaced whenever the device's
-        /// TLS credentials change or the device is re-provisioned to a different IoT hub.
+        /// File upload operations are done over HTTPS only when connected to an MQTTv3 IoT hub. These requests are sent with HTTP clients
+        /// created by the connection client's <see cref="Unified.Models.ConnectionClientOptions.HttpClientFactory"/>, if one was supplied, or
+        /// otherwise by this SDK using <see cref="Unified.Models.ConnectionClientOptions.Proxy"/>. A new HTTP client is created whenever the
+        /// device's TLS credentials change or the device is re-provisioned to a different IoT hub, and this client disposes each HTTP client
+        /// once it is replaced or this client is disposed.
         /// </remarks>
         public FileUploadClient(IConnectionClient connection)
-            : this(connection, credentials => HttpMessageHandlerFactory.Create(credentials, connection.Proxy))
-        {
-        }
-
-        // Lets tests observe the HTTP clients this client creates for each set of credentials.
-        internal FileUploadClient(IConnectionClient connection, Func<AuthenticationCredentials, HttpMessageHandler> createHttpMessageHandler)
         {
             _connection = connection;
-            _httpClient = connection.HttpClient is { } userSuppliedHttpClient
-                ? new HttpClientLease(userSuppliedHttpClient, credentials: null, iotHubHostName: null, ownsClient: false)
-                : null;
-            _createHttpMessageHandler = createHttpMessageHandler;
         }
 
         private async Task<HttpResponseMessage> SendAsync(HttpRequestMessage requestMessage, ConnectionContext currentConnectionContext, CancellationToken cancellationToken)
@@ -97,13 +87,12 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
                 {
                     _httpClient = CreateHttpClient(currentConnectionContext, credentials);
                 }
-                else if (_httpClient.OwnsClient
-                    && (!HasSameTlsSettings(_httpClient.Credentials!, credentials)
-                        || !string.Equals(_httpClient.IotHubHostName, currentConnectionContext.IotHubHostName, StringComparison.OrdinalIgnoreCase)))
+                else if (!HasSameTlsSettings(_httpClient.Credentials, credentials)
+                    || !string.Equals(_httpClient.IotHubHostName, currentConnectionContext.IotHubHostName, StringComparison.OrdinalIgnoreCase))
                 {
                     // The client certificate and TLS callbacks are bound to the handler when the HTTP client is created, so apply changed ones
-                    // (for example, a certificate issued by certificate management) through a new HTTP client. Likewise, an HTTP client's base address
-                    // can't change once it has sent a request, so a device re-provisioned to a different IoT hub also needs a new HTTP client.
+                    // (for example, a certificate issued by certificate management) through a new HTTP client. Likewise, a device re-provisioned
+                    // to a different IoT hub gets a new HTTP client so that connections to the previous IoT hub are not kept open.
                     // The old one is disposed once its in-flight requests complete since disposing an HTTP client cancels its pending requests.
                     _httpClient.Release();
                     _httpClient = CreateHttpClient(currentConnectionContext, credentials);
@@ -116,12 +105,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
 
         private HttpClientLease CreateHttpClient(ConnectionContext currentConnectionContext, AuthenticationCredentials credentials)
         {
-            HttpClient httpClient = new(_createHttpMessageHandler(credentials))
-            {
-                BaseAddress = new Uri("https://" + currentConnectionContext.IotHubHostName)
-            };
-
-            return new HttpClientLease(httpClient, credentials, currentConnectionContext.IotHubHostName, ownsClient: true);
+            // Requests use absolute URIs, so the new HTTP client is used as the connection client created it.
+            return new HttpClientLease(_connection.CreateHttpClient(credentials), credentials, currentConnectionContext.IotHubHostName);
         }
 
         private static bool HasSameTlsSettings(AuthenticationCredentials first, AuthenticationCredentials second)
@@ -155,37 +140,31 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
             // Starts with the reference held by the file upload client while this is its current HTTP client.
             private int _references = 1;
 
-            public HttpClientLease(HttpClient client, AuthenticationCredentials? credentials, string? iotHubHostName, bool ownsClient)
+            public HttpClientLease(HttpClient client, AuthenticationCredentials credentials, string iotHubHostName)
             {
                 Client = client;
                 Credentials = credentials;
                 IotHubHostName = iotHubHostName;
-                OwnsClient = ownsClient;
             }
 
             public HttpClient Client { get; }
 
             /// <summary>
-            /// The credentials whose TLS settings an HTTP client created by this file upload client was configured with.
+            /// The credentials whose TLS settings the HTTP client was created with.
             /// </summary>
-            public AuthenticationCredentials? Credentials { get; }
+            public AuthenticationCredentials Credentials { get; }
 
             /// <summary>
-            /// The IoT hub that the base address of an HTTP client created by this file upload client targets.
+            /// The IoT hub that the device was assigned to when the HTTP client was created.
             /// </summary>
-            public string? IotHubHostName { get; }
-
-            /// <summary>
-            /// False for a user-supplied HTTP client, which is never replaced or disposed when released.
-            /// </summary>
-            public bool OwnsClient { get; }
+            public string IotHubHostName { get; }
 
             public void AddReference() => _references++;
 
             public void Release()
             {
                 _references--;
-                if (_references == 0 && OwnsClient)
+                if (_references == 0)
                 {
                     Client.Dispose();
                 }
@@ -318,9 +297,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.FileUpload
         {
             lock (_httpClientLock)
             {
-                // A user-supplied HTTP client belongs to the application, so only an HTTP client this client created is disposed,
-                // once any in-flight requests complete.
-                if (_httpClient != null && !_isDisposed && _httpClient.OwnsClient)
+                // Disposed once any in-flight requests complete.
+                if (_httpClient != null && !_isDisposed)
                 {
                     _httpClient.Release();
                 }

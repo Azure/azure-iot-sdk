@@ -52,42 +52,42 @@ namespace Microsoft.Azure.Iot.Device.Unified.Models
         public IMqttClient? MqttClient { get; set; }
 
         /// <summary>
-        /// The HTTP client to send this client's HTTPS requests with, and those of the feature clients that use it. If null (the default),
+        /// Creates the HTTP clients that this client, and the feature clients that use it, send their HTTPS requests with. If null (the default),
         /// HTTP clients are created for you.
         /// </summary>
         /// <remarks>
         /// <para>
-        /// This HTTP client is used for every HTTPS request a device makes:
+        /// HTTP clients are used for every HTTPS request a device makes:
         /// </para>
         /// <list type="bullet">
         /// <item><description>Requests to Device Provisioning Service, such as provisioning with a <see cref="Authentication.TpmAuthenticationProvider"/>.</description></item>
         /// <item><description>Requests to IoT hub made by a <see cref="FileUpload.FileUploadClient"/>, which only uses HTTPS when connected to an MQTTv3 IoT hub.</description></item>
         /// </list>
         /// <para>
-        /// Every request uses an absolute URI that targets the Device Provisioning Service or IoT hub it is meant for, so this HTTP client can be shared
-        /// across both, and its <see cref="System.Net.Http.HttpClient.BaseAddress"/> is ignored. This SDK never changes this HTTP client's settings and never disposes it,
-        /// so dispose it yourself once this connection client and its feature clients are disposed. Provisioning requests are bounded by
-        /// <see cref="ConnectionAttemptTimeout"/> as well as by this HTTP client's own <see cref="System.Net.Http.HttpClient.Timeout"/>.
+        /// This factory is called with the device's current TLS credentials each time a new HTTP client is needed: for each provisioning attempt
+        /// (with the device's boot credentials), and by each file upload client when it first sends a request and again whenever the device's
+        /// operational TLS credentials change (for example, when IoT hub issues a new certificate through certificate management, or the device
+        /// falls back to its secondary credentials) or the device is re-provisioned to a different IoT hub.
         /// </para>
         /// <para>
-        /// When a request authenticates with a SAS token (including one signed by a TPM), this SDK adds the token to the request's Authorization header.
-        /// Otherwise, the request authenticates with the device's client certificate, so configure this HTTP client to present it, along with any
-        /// <see cref="Authentication.AuthenticationProvider.RemoteCertificateValidationCallback"/> or
-        /// <see cref="Authentication.AuthenticationProvider.LocalCertificateSelectionCallback"/> the device uses.
+        /// Return a new HTTP client on each call that presents <see cref="Authentication.AuthenticationCredentials.ClientCertificate"/>, if any,
+        /// and applies <see cref="Authentication.AuthenticationCredentials.RemoteCertificateValidationCallback"/> and
+        /// <see cref="Authentication.AuthenticationCredentials.LocalCertificateSelectionCallback"/>, if set. When a request authenticates with a
+        /// SAS token instead (including one signed by a TPM), this SDK adds the token to the request's Authorization header itself.
         /// </para>
         /// <para>
-        /// This HTTP client does not use <see cref="Proxy"/>, so configure it with any proxy the device needs.
+        /// This SDK owns every HTTP client this factory returns, and disposes it once it is replaced or its user is disposed, so do not return
+        /// an HTTP client that is shared with anything else. Every request uses an absolute URI that targets the Device Provisioning Service or
+        /// IoT hub it is meant for. Provisioning requests are bounded by <see cref="ConnectionAttemptTimeout"/> rather than by
+        /// <see cref="HttpClient.Timeout"/>, which this SDK sets to <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> on the HTTP clients
+        /// it uses for provisioning.
         /// </para>
         /// <para>
-        /// Warning: unlike the HTTP clients this SDK creates for you, this HTTP client is never replaced when the device's TLS credentials change.
-        /// A client certificate is bound to an HTTP client's handler when it is created, so if the device authenticates with a client certificate
-        /// that is later replaced (for example, by a certificate that IoT hub issues through certificate management, or by falling back to the
-        /// device's secondary credentials), HTTPS requests sent with this HTTP client keep presenting the old certificate and may be rejected.
-        /// Leave this null if the device's client certificate can change.
+        /// The HTTP clients this factory creates do not use <see cref="Proxy"/>, so configure them with any proxy the device needs.
         /// </para>
         /// This value is read once when the connection client is constructed.
         /// </remarks>
-        public HttpClient? HttpClient { get; set; }
+        public Func<Authentication.AuthenticationCredentials, HttpClient>? HttpClientFactory { get; set; }
 
         /// <summary>
         /// True to make MQTT connections over websockets on port 443 rather than over TCP on port 8883. False (the default) to use TCP,
@@ -118,8 +118,8 @@ namespace Microsoft.Azure.Iot.Device.Unified.Models
         /// </list>
         /// <para>
         /// A supplied <see cref="MqttClient"/> keeps its own proxy and websocket settings for MQTT connections, such as
-        /// <see cref="MqttNetAdapter.MqttNetClientOptions.Proxy"/>, which take precedence over this proxy. Likewise, a supplied
-        /// <see cref="HttpClient"/> keeps its own proxy settings for HTTPS requests, so configure it to use a proxy itself.
+        /// <see cref="MqttNetAdapter.MqttNetClientOptions.Proxy"/>, which take precedence over this proxy. Likewise, the HTTP clients that a supplied
+        /// <see cref="HttpClientFactory"/> creates keep their own proxy settings for HTTPS requests, so configure them to use a proxy themselves.
         /// </para>
         /// <para>
         /// When null, HTTPS requests use the system's default proxy settings (such as the HTTPS_PROXY environment variable), while the

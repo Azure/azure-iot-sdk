@@ -44,7 +44,7 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
 
         IWebProxy? IConnectionClient.Proxy => Proxy;
 
-        HttpClient? IConnectionClient.HttpClient => HttpClient;
+        HttpClient IConnectionClient.CreateHttpClient(Authentication.AuthenticationCredentials credentials) => CreateHttpClient(credentials);
 
         event Action? IConnectionClient.ConnectionLost
         {

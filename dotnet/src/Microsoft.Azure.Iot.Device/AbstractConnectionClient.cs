@@ -358,22 +358,17 @@ namespace Microsoft.Azure.Iot.Device
         private readonly TimeSpan _connectionAttemptTimeout;
 
         /// <summary>
-        /// Creates the handler that sends HTTPS requests to Device Provisioning Service with the given boot credentials.
+        /// Creates the HTTP clients that this client, and the feature clients that use it, send their HTTPS requests with, given the TLS credentials
+        /// to present. The caller owns and disposes each one. See <see cref="ConnectionClientOptions.HttpClientFactory"/>.
         /// Replaceable so that tests can intercept the requests.
         /// </summary>
-        internal Func<AuthenticationCredentials, HttpMessageHandler> CreateProvisioningHttpMessageHandler { get; set; }
+        internal Func<AuthenticationCredentials, HttpClient> CreateHttpClient { get; set; }
 
         /// <summary>
         /// The HTTP proxy that all of this client's network traffic, and that of the feature clients that use it, goes through.
         /// See <see cref="ConnectionClientOptions.Proxy"/>.
         /// </summary>
         internal IWebProxy? Proxy { get; }
-
-        /// <summary>
-        /// The user-supplied HTTP client that this client, and the feature clients that use it, send their HTTPS requests with,
-        /// or null to have them create their own. See <see cref="ConnectionClientOptions.HttpClient"/>.
-        /// </summary>
-        internal HttpClient? HttpClient { get; }
 
         /// <summary>
         /// Construct a new <see cref="ConnectionClient"/>
@@ -400,8 +395,7 @@ namespace Microsoft.Azure.Iot.Device
 
             IWebProxy? proxy = options.Proxy;
             Proxy = proxy;
-            CreateProvisioningHttpMessageHandler = credentials => HttpMessageHandlerFactory.Create(credentials, proxy);
-            HttpClient = options.HttpClient;
+            CreateHttpClient = options.HttpClientFactory ?? (credentials => new HttpClient(HttpMessageHandlerFactory.Create(credentials, proxy)));
 
             // This is the basic MQTT client that has no reconnection/retry logic. A user-supplied MQTT client keeps its own
             // websocket and proxy settings; otherwise the one created here takes them from these options.
@@ -1583,8 +1577,7 @@ namespace Microsoft.Azure.Iot.Device
         }
 
         private HttpProvisioner CreateHttpProvisioner() => new(
-            HttpClient,
-            CreateProvisioningHttpMessageHandler,
+            CreateHttpClient,
             _connectionRetryPolicy,
             _connectionAttemptTimeout,
             _provisioningServiceRetryAfter);

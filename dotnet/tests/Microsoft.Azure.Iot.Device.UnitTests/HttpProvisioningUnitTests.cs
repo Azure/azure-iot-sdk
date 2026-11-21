@@ -111,34 +111,43 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
         }
 
         [Fact]
-        public async Task ProvisioningOverHttpUsesTheSuppliedHttpClientWithoutChangingOrDisposingIt()
+        public async Task ProvisioningOverHttpCreatesEachAttemptsHttpClientWithTheSuppliedFactoryAndDisposesIt()
         {
-            FakeDpsHandler dps = new(request => !request.Headers.Contains("Authorization")
-                ? Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(PrimaryKey) }.ToJsonString())
-                : Respond(HttpStatusCode.OK, AssignedTpm(PrimaryKey)));
-            using HttpClient httpClient = new(dps);
-            TimeSpan userTimeout = httpClient.Timeout;
+            int requestCount = 0;
+            FakeDpsHandler dps = new(request =>
+            {
+                if (Interlocked.Increment(ref requestCount) == 1)
+                {
+                    return Respond(HttpStatusCode.ServiceUnavailable, "{}");
+                }
+
+                return !request.Headers.Contains("Authorization")
+                    ? Respond(HttpStatusCode.Unauthorized, new JsonObject { ["authenticationKey"] = Convert.ToBase64String(PrimaryKey) }.ToJsonString())
+                    : Respond(HttpStatusCode.OK, AssignedTpm(PrimaryKey));
+            });
+            ConcurrentQueue<DisposalTrackingHttpClient> httpClients = new();
 
             using MockConnectionMqttClient mockMqttClient = CreateAcceptingMqttClient();
-            TestConnectionClient connectionClient = new(new Device.Unified.Models.ConnectionClientOptions
+            using TestConnectionClient connectionClient = new(new Device.Unified.Models.ConnectionClientOptions
             {
                 MqttClient = mockMqttClient,
-                HttpClient = httpClient,
-            })
-            {
-                CreateProvisioningHttpMessageHandler = _ => throw new InvalidOperationException("The supplied HTTP client should be used."),
-            };
+                ConnectionRetryPolicy = new ImmediateRetryPolicy(),
+                HttpClientFactory = _ =>
+                {
+                    DisposalTrackingHttpClient httpClient = new(dps);
+                    httpClients.Enqueue(httpClient);
+                    return httpClient;
+                },
+            });
 
             await connectionClient
                 .ProvisionAndConnectAsync(CreateSettings(), new TpmAuthenticationProvider(RegistrationId, IdScope, new FakeTpm()), cancellationToken: TestContext.Current.CancellationToken)
                 .WaitAsync(s_testTimeout, TestContext.Current.CancellationToken);
-            connectionClient.Dispose();
 
-            // Challenged, then registered, both through the supplied HTTP client, which is still usable afterwards.
-            Assert.Equal(2, dps.Requests.Count);
-            Assert.Equal(userTimeout, httpClient.Timeout);
-            using HttpResponseMessage response = await httpClient.GetAsync($"https://{GlobalDeviceEndpoint}/", TestContext.Current.CancellationToken);
+            // The throttled attempt and the attempt that was challenged then registered each got their own HTTP client.
             Assert.Equal(3, dps.Requests.Count);
+            Assert.Equal(2, httpClients.Count);
+            Assert.All(httpClients, httpClient => Assert.True(httpClient.IsDisposed));
         }
 
         [Fact]
@@ -846,7 +855,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             return new TestConnectionClient(options)
             {
-                CreateProvisioningHttpMessageHandler = _ => dps,
+                CreateHttpClient = _ => new HttpClient(dps),
             };
         }
 
@@ -932,6 +941,22 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
                     timestamp));
 
                 return await _respond(request, cancellationToken);
+            }
+        }
+
+        private sealed class DisposalTrackingHttpClient : HttpClient
+        {
+            public DisposalTrackingHttpClient(HttpMessageHandler handler)
+                : base(handler)
+            {
+            }
+
+            public bool IsDisposed { get; private set; }
+
+            protected override void Dispose(bool disposing)
+            {
+                IsDisposed = true;
+                base.Dispose(disposing);
             }
         }
 

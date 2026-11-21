@@ -21,15 +21,10 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [InlineData(false, false)]
         public async Task TestFileUpload(bool testAgainstClassicHub, bool withProvidedHttpClient)
         {
-            // The device's certificate is only known once it is set up, but the HTTP client must be supplied when the connection client is
-            // constructed. A handler's settings can still change until it sends its first request, so the certificate is added to it afterwards.
-            HttpClientHandler? handler = withProvidedHttpClient ? new HttpClientHandler() : null;
-            using HttpClient? userProvidedHttpClient = handler == null ? null : new HttpClient(handler);
             UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(
                 testAgainstClassicHub,
-                new ConnectionClientOptions { HttpClient = userProvidedHttpClient },
+                new ConnectionClientOptions { HttpClientFactory = withProvidedHttpClient ? CreateUserHttpClient : null },
                 cancellationToken: TestContext.Current.CancellationToken);
-            handler?.ClientCertificates.Add(Assert.IsType<X509AuthenticationProvider>(testDeviceContext.AuthenticationProvider).PrimaryClientCertificate);
 
             FileUploadClient fileUploadClient = new(testDeviceContext.ConnectionClient);
 
@@ -44,12 +39,11 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [InlineData(true)]
         public async Task TestFileUpload_SymmetricKey(bool withProvidedHttpClient)
         {
-            using HttpClient? userProvidedHttpClient = withProvidedHttpClient ? new HttpClient() : null;
             UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
-                new ConnectionClientOptions { HttpClient = userProvidedHttpClient },
+                new ConnectionClientOptions { HttpClientFactory = withProvidedHttpClient ? CreateUserHttpClient : null },
                 cancellationToken: TestContext.Current.CancellationToken);
 
-            // Neither HTTP client is configured with a client certificate, so IoT Hub can only authenticate these requests with the SAS token
+            // There is no client certificate to present, so IoT Hub can only authenticate these requests with the SAS token
             Assert.IsType<SymmetricKeyAuthenticationProvider>(testDeviceContext.AuthenticationProvider);
             Assert.Null(testDeviceContext.ConnectionContext.IssuedClientCertificates);
             FileUploadClient fileUploadClient = new(testDeviceContext.ConnectionClient);
@@ -58,6 +52,20 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 
             await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
             fileUploadClient.Dispose();
+        }
+
+        /// <summary>
+        /// Creates HTTP clients the way an application's <see cref="ConnectionClientOptions.HttpClientFactory"/> might, presenting the device's client certificate, if any.
+        /// </summary>
+        private static HttpClient CreateUserHttpClient(AuthenticationCredentials credentials)
+        {
+            var handler = new HttpClientHandler();
+            if (credentials.ClientCertificate != null)
+            {
+                handler.ClientCertificates.Add(credentials.ClientCertificate);
+            }
+
+            return new HttpClient(handler);
         }
 
         /// <summary>
