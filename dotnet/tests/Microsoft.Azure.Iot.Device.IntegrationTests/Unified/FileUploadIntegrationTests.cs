@@ -13,6 +13,7 @@ using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
+    [Trait("Category", "FileUpload")]
     public class FileUploadIntegrationTests
     {
         [Theory(Timeout = Setup.TestTimeoutMilliseconds)]

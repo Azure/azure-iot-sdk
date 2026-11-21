@@ -356,10 +356,12 @@ static bool await_notification(
 {
   time_t start = time(NULL);
   int reattaches = 0;
+  bool watcher_lost = false;
   *out_saw_unwanted = false;
 
   for (;;)
   {
+    /* A pump that failed may have captured first: read the captures before reattaching. */
     if (unwanted_blob != NULL && az_iot_e2e_service_file_notification_seen(fx->svc, unwanted_blob))
     {
       *out_saw_unwanted = true;
@@ -376,7 +378,7 @@ static bool await_notification(
       return false;
     }
 
-    if (!pump(fx, 500))
+    if (watcher_lost)
     {
       fprintf(
           stderr,
@@ -392,6 +394,7 @@ static bool await_notification(
             az_iot_e2e_service_last_error(fx->svc));
       }
     }
+    watcher_lost = !pump(fx, 500);
   }
 }
 

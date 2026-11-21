@@ -1,0 +1,100 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+parameters:
+  - name: check
+    type: string
+    values: [build, format, vulnerable-packages, codeql]
+
+jobs:
+  - job: changes
+    displayName: Detect relevant changes
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - template: steps-detect-changes.yml
+        parameters:
+          includeCommon: ${{ in(parameters.check, 'build', 'codeql') }}
+          ${{ if eq(parameters.check, 'codeql') }}:
+            workflow: codeql-dotnet
+          ${{ else }}:
+            workflow: ci-dotnet-${{ parameters.check }}
+
+  - job: check
+    displayName: ${{ parameters.check }}
+    dependsOn: changes
+    condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
+    ${{ if eq(parameters.check, 'build') }}:
+      timeoutInMinutes: 30
+      strategy:
+        matrix:
+          Linux:
+            vmImage: ubuntu-latest
+          Windows:
+            vmImage: windows-latest
+      pool:
+        vmImage: $(vmImage)
+    ${{ else }}:
+      pool:
+        vmImage: ubuntu-latest
+      ${{ if eq(parameters.check, 'format') }}:
+        timeoutInMinutes: 15
+      ${{ if eq(parameters.check, 'vulnerable-packages') }}:
+        timeoutInMinutes: 20
+      ${{ if eq(parameters.check, 'codeql') }}:
+        timeoutInMinutes: 45
+    variables:
+      DOTNET_NOLOGO: '1'
+      DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+    steps:
+      - template: steps-dotnet.yml
+      - ${{ if eq(parameters.check, 'build') }}:
+          - pwsh: dotnet build Project.slnx --configuration Release
+            displayName: Build
+            workingDirectory: dotnet
+          - pwsh: >
+              dotnet test tests/Microsoft.Azure.Iot.Device.UnitTests/Microsoft.Azure.Iot.Device.UnitTests.csproj
+              --configuration Release --no-build
+              --logger "trx;LogFileName=unit-tests.trx"
+              --results-directory "$(Agent.TempDirectory)/unit-test-results"
+            displayName: Unit tests
+            workingDirectory: dotnet
+          - task: PublishTestResults@2
+            condition: succeededOrFailed()
+            inputs:
+              testResultsFormat: VSTest
+              testResultsFiles: '$(Agent.TempDirectory)/unit-test-results/**/*.trx'
+              testRunTitle: Unit tests ($(Agent.OS))
+              failTaskOnFailedTests: true
+              failTaskOnMissingResultsFile: true
+      - ${{ if eq(parameters.check, 'format') }}:
+          - bash: bash dotnet/eng/check-format.sh
+            displayName: Check formatting
+      - ${{ if eq(parameters.check, 'vulnerable-packages') }}:
+          - bash: bash dotnet/eng/check-vulnerable-packages.sh
+            displayName: Check vulnerable packages
+      - ${{ if eq(parameters.check, 'codeql') }}:
+          - template: steps-codeql.yml
+
+  - job: gate
+    displayName: ${{ parameters.check }} gate
+    dependsOn: [changes, check]
+    condition: always()
+    pool:
+      vmImage: ubuntu-latest
+    variables:
+      changesResult: $[ dependencies.changes.result ]
+      checkResult: $[ dependencies.check.result ]
+    steps:
+      - checkout: none
+      - pwsh: |
+          if ($env:CHANGES_RESULT -ne 'Succeeded') {
+            throw "Change detection did not succeed ($env:CHANGES_RESULT)."
+          }
+          if ($env:CHECK_RESULT -notin @('Succeeded', 'Skipped')) {
+            throw "The check did not succeed ($env:CHECK_RESULT)."
+          }
+        displayName: Require successful detection and check
+        env:
+          CHANGES_RESULT: $(changesResult)
+          CHECK_RESULT: $(checkResult)

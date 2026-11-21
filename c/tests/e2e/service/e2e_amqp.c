@@ -1588,6 +1588,56 @@ static void release_held(e2e_amqp_filenotify* f, bool all)
   f->held_count = kept;
 }
 
+/**
+ * @brief Prints delivery number #e2e_amqp_filenotify.delivered_count with its @p disposition and
+ * keeps it for e2e_amqp_filenotify_dump().
+ *
+ * @param[in] body The notification, NUL-terminated; empty if it has none.
+ */
+static void log_delivery(
+    e2e_amqp_filenotify* f,
+    az_amqp_message const* message,
+    const char* body,
+    const char* disposition)
+{
+  /* Absent unless the hub sends a header; then each redelivery should count up. */
+  char delivery_count[16] = "?";
+  az_amqp_message_header header;
+  if (az_result_succeeded(az_amqp_message_get_header(message, &header)))
+  {
+    (void)snprintf(delivery_count, sizeof(delivery_count), "%u", (unsigned)header.delivery_count);
+  }
+  char device_id[129];
+  char blob_name[160];
+  char enqueued_time[40];
+  if (!e2e_notify_read_string_field(body, "deviceId", device_id, sizeof(device_id)))
+  {
+    (void)snprintf(device_id, sizeof(device_id), "?");
+  }
+  if (!e2e_notify_read_string_field(body, "blobName", blob_name, sizeof(blob_name)))
+  {
+    (void)snprintf(blob_name, sizeof(blob_name), "?");
+  }
+  if (!e2e_notify_read_string_field(body, "enqueuedTimeUtc", enqueued_time, sizeof(enqueued_time)))
+  {
+    (void)snprintf(enqueued_time, sizeof(enqueued_time), "?");
+  }
+
+  char* line = f->delivery_log[(f->delivered_count - 1) % E2E_AMQP_NOTIFY_LOG_MAX];
+  (void)snprintf(
+      line,
+      E2E_AMQP_NOTIFY_LOG_LINE_MAX,
+      "#%d at +%llds %s: deviceId=%s blobName=%s enqueuedTimeUtc=%s deliveryCount=%s",
+      f->delivered_count,
+      (long long)((int64_t)time(NULL) - f->began_at_s),
+      disposition,
+      device_id,
+      blob_name,
+      enqueued_time,
+      delivery_count);
+  printf("[e2e amqp] file notification %s\n", line);
+}
+
 static void on_filenotify_received(
     az_amqp_link* link,
     az_amqp_message const* message,
@@ -1603,6 +1653,7 @@ static void on_filenotify_received(
       || body_kind != AZ_AMQP_MESSAGE_BODY_KIND_DATA || az_span_size(body) <= 0)
   {
     f->unparsed_count++;
+    log_delivery(f, message, "", "accepted (undecodable)");
     E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
     return;
   }
@@ -1626,6 +1677,7 @@ static void on_filenotify_received(
     if (e2e_notify_has_no_watcher(text, (int64_t)time(NULL), E2E_AMQP_NOTIFY_STALE_S))
     {
       f->unwatched_count++;
+      log_delivery(f, message, text, "accepted (no watcher)");
       E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
       return;
     }
@@ -1633,11 +1685,13 @@ static void on_filenotify_received(
      * loop; hold it briefly (see e2e_amqp_filenotify_do_work). */
     if (f->held_count < E2E_AMQP_NOTIFY_HOLD_MAX)
     {
+      log_delivery(f, message, text, "held, then released (another watcher's)");
       f->held[f->held_count].delivery_number = delivery->number;
       f->held[f->held_count].held_at_s = (int64_t)time(NULL);
       f->held_count++;
       return;
     }
+    log_delivery(f, message, text, "released (another watcher's)");
     f->released_count++;
     E2E_AMQP_DISCARD(az_amqp_link_release(link, delivery->number));
     return;
@@ -1649,6 +1703,7 @@ static void on_filenotify_received(
     f->captured_count++;
   }
 
+  log_delivery(f, message, text, "captured");
   /* Settle ours so the hub does not redeliver it to a later run. */
   E2E_AMQP_DISCARD(az_amqp_link_accept(link, delivery->number));
 }
@@ -1667,6 +1722,7 @@ bool e2e_amqp_filenotify_begin(
   az_span token = az_span_create_from_str((char*)(uintptr_t)sas_token);
 
   snprintf(f->match, sizeof(f->match), "%s", (match != NULL) ? match : "");
+  f->began_at_s = (int64_t)time(NULL);
 
   /* CBS audience for the IoT Hub service endpoint is the hub host. snprintf
    * reports what it WOULD have written, so a longer host must not be turned
@@ -1867,7 +1923,8 @@ bool e2e_amqp_filenotify_do_work(e2e_amqp_filenotify* f, int wait_ms)
   {
     release_held(f, false);
   }
-  return ok;
+  /* A receiver the hub detached gets nothing more, though the connection lives on. */
+  return ok && az_amqp_link_get_state(&f->receiver) == AZ_AMQP_LINK_STATE_ATTACHED;
 }
 
 bool e2e_amqp_filenotify_seen(const e2e_amqp_filenotify* f, const char* needle)
@@ -1909,6 +1966,21 @@ void e2e_amqp_filenotify_stats(
   if (out_unparsed != NULL)
   {
     *out_unparsed = f->unparsed_count;
+  }
+}
+
+void e2e_amqp_filenotify_dump(const e2e_amqp_filenotify* f)
+{
+  int const first = (f->delivered_count > E2E_AMQP_NOTIFY_LOG_MAX)
+      ? f->delivered_count - E2E_AMQP_NOTIFY_LOG_MAX
+      : 0;
+  printf(
+      "[e2e amqp] file notifications delivered since the watch began: %d%s\n",
+      f->delivered_count,
+      (first > 0) ? " (the oldest not kept)" : "");
+  for (int i = first; i < f->delivered_count; i++)
+  {
+    printf("[e2e amqp]   %s\n", f->delivery_log[i % E2E_AMQP_NOTIFY_LOG_MAX]);
   }
 }
 
