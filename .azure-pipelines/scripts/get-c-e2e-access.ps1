@@ -10,8 +10,9 @@
 # (with E2E_CSR, E2E-CSR-SHARED-*) secrets from that vault and writes the job's test configuration
 # (c/eng/e2e-shared-device.ps1 -EntraAuthentication, or -Csr) to
 # E2E_CONFIG_DIRECTORY/set_test_env_vars.ps1, with a new device at index
-# E2E_DEVICE_INDEX_OS * 4 + E2E_DEVICE_INDEX_GROUP. The configuration holds keys: import-test-config.ps1
-# reads and deletes it.
+# E2E_DEVICE_INDEX_OS * 4 + E2E_DEVICE_INDEX_GROUP or, for a samples job, at index E2E_SAMPLES_SLOT
+# with consumer group samples-<slot>. The configuration holds keys: import-test-config.ps1 reads and
+# deletes it.
 
 $ErrorActionPreference = 'Stop'
 $csr = $env:E2E_CSR -eq 'true'
@@ -26,7 +27,11 @@ if (-not $csr) {
 
 if (-not $env:E2E_SHARED_KEY_VAULT) { return }
 
-foreach ($name in @('E2E_DEVICE_INDEX_OS', 'E2E_DEVICE_INDEX_GROUP', 'E2E_RUN_ID', 'E2E_CONFIG_DIRECTORY', 'BUILD_BUILDID')) {
+$samples = [bool]$env:E2E_SAMPLES_SLOT
+if ($samples -and $csr) { throw 'E2E_SAMPLES_SLOT and E2E_CSR cannot be combined.' }
+$required = @('E2E_RUN_ID', 'E2E_CONFIG_DIRECTORY', 'BUILD_BUILDID')
+if (-not $samples) { $required += @('E2E_DEVICE_INDEX_OS', 'E2E_DEVICE_INDEX_GROUP') }
+foreach ($name in $required) {
     if (-not (Get-Item "env:$name" -ErrorAction SilentlyContinue).Value) { throw "$name is not set." }
 }
 
@@ -43,11 +48,19 @@ foreach ($name in $names) {
     Set-Item "env:$($prefix)_$name" $value
 }
 
+$outFile = Join-Path $env:E2E_CONFIG_DIRECTORY 'set_test_env_vars.ps1'
+if ($samples) {
+    # Consumer groups samples-0..samples-7 of the shared Event Hub, one per samples job.
+    $slot = [int]$env:E2E_SAMPLES_SLOT
+    & (Join-Path $PSScriptRoot '../../c/eng/e2e-shared-device.ps1') -EntraAuthentication `
+        -RegistrationId "ci-ado-samples-$($env:E2E_RUN_ID)-$slot" -DeviceIndex $slot -ConsumerGroup "samples-$slot" `
+        -OutFile $outFile
+    return
+}
 $index = [int]$env:E2E_DEVICE_INDEX_OS * 4 + [int]$env:E2E_DEVICE_INDEX_GROUP
 if ($csr) {
     & (Join-Path $PSScriptRoot '../../c/eng/e2e-shared-device.ps1') -Csr `
-        -RegistrationId "ci-ado-csr-$($env:E2E_RUN_ID)-$index" -DeviceIndex $index `
-        -OutFile (Join-Path $env:E2E_CONFIG_DIRECTORY 'set_test_env_vars.ps1')
+        -RegistrationId "ci-ado-csr-$($env:E2E_RUN_ID)-$index" -DeviceIndex $index -OutFile $outFile
     return
 }
 # Consumer groups e2e-0..e2e-11 of the shared Event Hub. Event Hubs allows 5 readers per partition
@@ -56,4 +69,4 @@ if ($csr) {
 $consumerGroup = 'e2e-' + (([long]$env:BUILD_BUILDID + $index) % 12)
 & (Join-Path $PSScriptRoot '../../c/eng/e2e-shared-device.ps1') -EntraAuthentication `
     -RegistrationId "ci-ado-$($env:E2E_RUN_ID)-$index" -DeviceIndex $index -ConsumerGroup $consumerGroup `
-    -OutFile (Join-Path $env:E2E_CONFIG_DIRECTORY 'set_test_env_vars.ps1')
+    -OutFile $outFile

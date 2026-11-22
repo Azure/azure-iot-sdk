@@ -15,7 +15,7 @@ each entry point below. All pipelines also support **Run pipeline**.
 | `ci-dotnet.yml` | Linux/Windows end-to-end tests, excluding certificate management, file upload and longhaul; also daily at 11:00 UTC |
 | `ci-dotnet-e2e-csr.yml` | Certificate-management tests on Linux/Windows, serialized; also daily at 11:00 UTC |
 | `longhaul-dotnet.yml` | Manual MQTTv3 longhaul with duration, OS, success-rate and memory-growth parameters |
-| `ci-c-e2e.yml` | C end-to-end tests (Linux on OpenSSL 3.0 and 4.1.0, Windows on 4.1.0, four groups each; the certificate-management (CSR) suites on Linux and Windows; the ESP32 sample in QEMU; merged Linux coverage and, outside pull requests, the coverage combined with the unit tests') against IoT Hubs with local authentication disabled: on pull requests the shared environments, daily at 11:00 UTC on `main` and 14:00 UTC on `releases/public-preview` its own |
+| `ci-c-e2e.yml` | C end-to-end tests (Linux on OpenSSL 3.0 and 4.1.0, Windows on 4.1.0, four groups each; the certificate-management (CSR) suites on Linux and Windows; the connecting samples and the CSR samples on Linux and Windows; the ESP32 sample in QEMU; merged Linux coverage and, outside pull requests, the coverage combined with the unit tests') against IoT Hubs with local authentication disabled: on pull requests the shared environments, daily at 11:00 UTC on `main` and 14:00 UTC on `releases/public-preview` its own |
 | `cleanup-e2e-resources.yml` | Age-gated cleanup of leaked Azure Pipelines e2e resources; also daily at 02:00 UTC |
 
 ## Required configuration
@@ -90,10 +90,15 @@ passes the service connection's Microsoft Entra tokens to the tests: for
 `https://eventhubs.azure.net` (`IOTHUB_EVENTHUB_ACCESS_TOKEN`). The built-in Event
 Hub-compatible endpoint accepts only shared access keys, so device telemetry is
 routed to an Event Hub with local authentication disabled, read with that token.
-Devices and DPS keep their own credentials. The CSR jobs make no hub service
-calls and take no tokens. On pull requests, `ci-c-e2e` skips provisioning: each
-job reads the shared environment's settings from Key Vault and issues its own
-device (`scripts/get-c-e2e-access.ps1`). A provisioned run's
+Devices and DPS keep their own credentials. The CSR e2e jobs make no hub service
+calls and take no tokens. The samples jobs run on their own hub, so that their
+file-upload watchers do not compete with the e2e tests'
+(`scripts/run-c-samples.ps1`). On pull requests, `ci-c-e2e` skips provisioning:
+each job reads the shared environment's settings from Key Vault and issues its
+own device (`scripts/get-c-e2e-access.ps1`). The CSR samples, whose checks the
+shared CSR environment cannot serve, always provision theirs; once Azure Device
+Registration links that hub, `az iot hub` refuses to update it, so its routing
+is written through Azure Resource Manager. A provisioned run's
 configuration is encrypted before artifact publication; a random AES key is passed to the test job as a secret
 output variable. Temporary plaintext configuration and CSR keys are removed
 after use. Unlike GitHub Actions, Azure pipeline artifacts do not have a

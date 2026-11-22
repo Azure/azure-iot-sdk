@@ -1,16 +1,18 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# The C e2e tests, the certificate-management (CSR) e2e tests, the ESP32 sample in QEMU, their
-# merged Linux coverage and, outside pull requests, the coverage report combined with the unit
-# tests'. The test jobs run against a per-run IoT Hub with local authentication disabled: setup
-# provisions it and grants the service connection's principal IoT Hub Data Contributor, and teardown
-# deletes it; setup_csr and teardown_csr do the same for a certificate-management environment (DPS
-# linked to Azure Device Registration). With sharedEnvironment, they run on the shared, long-lived
-# environments instead, whose secrets sharedKeyVault holds, with no setup or teardown. The ESP32
-# jobs always run on the shared environment. Every job but the CSR ones passes the principal's
-# Microsoft Entra tokens to the tests for the hub service calls and to read telemetry; devices keep
-# their X.509 and SAS credentials with DPS. The CSR suites make no hub service calls.
+# The C e2e tests, the certificate-management (CSR) e2e tests, the samples, the ESP32 sample in
+# QEMU, their merged Linux coverage and, outside pull requests, the coverage report combined with
+# the unit tests'. The test jobs run against a per-run IoT Hub with local authentication disabled:
+# setup provisions it and grants the service connection's principal IoT Hub Data Contributor, and
+# teardown deletes it; setup_csr and teardown_csr do the same for a certificate-management
+# environment (DPS linked to Azure Device Registration), and the samples' setup and teardown jobs
+# for theirs. With sharedEnvironment, they run on the shared, long-lived environments instead, whose
+# secrets sharedKeyVault holds, with no setup or teardown; but the CSR samples, which the shared CSR
+# environment cannot serve, always provision theirs. The ESP32 jobs always run on the shared
+# environment. Every job but the CSR e2e ones passes the principal's Microsoft Entra tokens to the
+# tests for the hub service calls and to read telemetry; devices keep their X.509 and SAS
+# credentials with DPS. The CSR e2e suites make no hub service calls.
 
 parameters:
   - name: azureServiceConnection
@@ -63,8 +65,9 @@ parameters:
         groupIndex: 3
         tests: '^az_iot_tests_e2e_sas(_az_mqtt)?$'
         testsExclude: custody
-  # The provisioned environments (not with sharedEnvironment): E2E_SUITE of scripts/provision.ps1,
-  # the jobs that provision and delete it and those that test on it, and its configuration artifact.
+  # The provisioned environments: E2E_SUITE of scripts/provision.ps1, the jobs that provision and
+  # delete it and those that test on it, and its configuration artifact. Not with sharedEnvironment,
+  # but those alwaysProvisioned.
   - name: suites
     type: object
     default:
@@ -74,6 +77,7 @@ parameters:
         testJob: test
         configArtifact: e2e-test-config
         timeoutInMinutes: 30
+        alwaysProvisioned: false
       # Certificate management (ADR) provisioning is the slower.
       - suite: c-e2e-csr
         setupJob: setup_csr
@@ -81,6 +85,23 @@ parameters:
         testJob: test_csr
         configArtifact: e2e-csr-test-config
         timeoutInMinutes: 60
+        alwaysProvisioned: false
+      - suite: c-samples
+        setupJob: setup_samples
+        teardownJob: teardown_samples
+        testJob: samples
+        configArtifact: samples-test-config
+        timeoutInMinutes: 30
+        alwaysProvisioned: false
+      # The shared CSR environment holds no hub or Event Hub access, which the CSR samples' checks
+      # need.
+      - suite: c-samples-csr
+        setupJob: setup_samples_csr
+        teardownJob: teardown_samples_csr
+        testJob: samples_csr
+        configArtifact: samples-csr-test-config
+        timeoutInMinutes: 60
+        alwaysProvisioned: true
   # The CSR jobs, each on its own bootstrap device of the certificate-management environment: device
   # index groupIndex (0..1). Their OpenSSL builds are the openssl job's.
   - name: csrPlatforms
@@ -96,6 +117,29 @@ parameters:
         openssl: 4.1.0
         preset: windows-msvc-debug
         groupIndex: 1
+  # The samples jobs: OS x adapter x shard, each on the device and consumer group (samples-<slot>)
+  # of its slot (0..7). Shard 0 is the slow unified samples (scripts/run-c-samples.ps1), shard 1 the
+  # others. The image's OpenSSL, as the samples' users have.
+  - name: samplesLegs
+    type: object
+    default:
+      - { name: Linux_paho_0, vmImage: ubuntu-24.04, preset: linux-gcc-debug, adapter: paho, shard: 0, slot: 0 }
+      - { name: Linux_paho_1, vmImage: ubuntu-24.04, preset: linux-gcc-debug, adapter: paho, shard: 1, slot: 1 }
+      - { name: Linux_az_mqtt_0, vmImage: ubuntu-24.04, preset: linux-gcc-debug, adapter: az_mqtt, shard: 0, slot: 2 }
+      - { name: Linux_az_mqtt_1, vmImage: ubuntu-24.04, preset: linux-gcc-debug, adapter: az_mqtt, shard: 1, slot: 3 }
+      - { name: Windows_paho_0, vmImage: windows-latest, preset: windows-msvc-debug, adapter: paho, shard: 0, slot: 4 }
+      - { name: Windows_paho_1, vmImage: windows-latest, preset: windows-msvc-debug, adapter: paho, shard: 1, slot: 5 }
+      - { name: Windows_az_mqtt_0, vmImage: windows-latest, preset: windows-msvc-debug, adapter: az_mqtt, shard: 0, slot: 6 }
+      - { name: Windows_az_mqtt_1, vmImage: windows-latest, preset: windows-msvc-debug, adapter: az_mqtt, shard: 1, slot: 7 }
+  # The CSR samples jobs: OS x adapter, each on the bootstrap identity of its slot (0..3). The
+  # Windows ones, the slower builds, first.
+  - name: samplesCsrLegs
+    type: object
+    default:
+      - { name: Windows_paho, vmImage: windows-latest, preset: windows-msvc-debug, adapter: paho, slot: 2 }
+      - { name: Windows_az_mqtt, vmImage: windows-latest, preset: windows-msvc-debug, adapter: az_mqtt, slot: 3 }
+      - { name: Linux_paho, vmImage: ubuntu-24.04, preset: linux-gcc-debug, adapter: paho, slot: 0 }
+      - { name: Linux_az_mqtt, vmImage: ubuntu-24.04, preset: linux-gcc-debug, adapter: az_mqtt, slot: 1 }
 
 jobs:
   - job: changes
@@ -109,8 +153,8 @@ jobs:
           sourceRoot: c
           workflow: ci-c-e2e
 
-  - ${{ if not(parameters.sharedEnvironment) }}:
-    - ${{ each suite in parameters.suites }}:
+  - ${{ each suite in parameters.suites }}:
+    - ${{ if or(not(parameters.sharedEnvironment), suite.alwaysProvisioned) }}:
       - job: ${{ suite.setupJob }}
         displayName: Provision test resources (${{ suite.suite }})
         dependsOn: changes
@@ -127,8 +171,9 @@ jobs:
             persistCredentials: false
           - template: steps-e2e-framework.yml
             parameters:
-              # master with the -DisableLocalAuth opt-in (Azure/iot-sdks-e2e-fx#466).
-              revision: 2a897f5bb210febb13c969ff6b30b9d0e33b54c8
+              # master with -DisableLocalAuth (Azure/iot-sdks-e2e-fx#466) and telemetry routed to an
+              # Event Hub through ARM (Add-AzIotEventHubTelemetryRoute, Azure/iot-sdks-e2e-fx#468).
+              revision: c920634091202c1d97aa9342d4512289af7a52f0
           - task: AzureCLI@2
             name: configure
             displayName: Provision and encrypt test configuration
@@ -233,6 +278,70 @@ jobs:
         parameters:
           azureServiceConnection: ${{ parameters.azureServiceConnection }}
           sharedEnvironment: ${{ parameters.sharedEnvironment }}
+          sharedKeyVault: ${{ parameters.sharedKeyVault }}
+          csr: true
+
+  # The samples (c/tests/e2e/tests/e2e_samples_test.c): each connecting sample, built with its
+  # pipeline hooks, is a CTest test labelled samples_mqttv3 that runs it to its end and checks what
+  # the service saw. c/docs/eng/end-to-end-tests.md, "Samples".
+  - job: samples
+    displayName: Run C samples
+    ${{ if parameters.sharedEnvironment }}:
+      dependsOn: [changes]
+    ${{ else }}:
+      dependsOn: [changes, setup_samples]
+      variables:
+        configKey: $[ dependencies.setup_samples.outputs['configure.configKey'] ]
+    condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
+    # Build ~10 min (Windows, libcurl not cached: ~20), a shard's samples ~8 min.
+    timeoutInMinutes: 50
+    strategy:
+      matrix:
+        ${{ each leg in parameters.samplesLegs }}:
+          ${{ leg.name }}:
+            vmImage: ${{ leg.vmImage }}
+            openssl: system
+            preset: ${{ leg.preset }}
+            adapter: ${{ leg.adapter }}
+            shard: ${{ leg.shard }}
+            slot: ${{ leg.slot }}
+    pool:
+      vmImage: $(vmImage)
+    steps:
+      - template: steps-c-samples-test.yml
+        parameters:
+          azureServiceConnection: ${{ parameters.azureServiceConnection }}
+          sharedEnvironment: ${{ parameters.sharedEnvironment }}
+          sharedKeyVault: ${{ parameters.sharedKeyVault }}
+
+  # The certificate-management samples (label samples_csr), always on a provisioned environment.
+  - job: samples_csr
+    displayName: Run C CSR samples
+    dependsOn: [changes, setup_samples_csr]
+    condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
+    variables:
+      configKey: $[ dependencies.setup_samples_csr.outputs['configure.configKey'] ]
+    # Build ~10 min (Windows, libcurl not cached: ~20), the CSR samples ~10 min.
+    timeoutInMinutes: 50
+    strategy:
+      # Two at a time: with all four registering with a CSR at once, DPS left some registrations
+      # unanswered past the samples' 60 s.
+      maxParallel: 2
+      matrix:
+        ${{ each leg in parameters.samplesCsrLegs }}:
+          ${{ leg.name }}:
+            vmImage: ${{ leg.vmImage }}
+            openssl: system
+            preset: ${{ leg.preset }}
+            adapter: ${{ leg.adapter }}
+            slot: ${{ leg.slot }}
+    pool:
+      vmImage: $(vmImage)
+    steps:
+      - template: steps-c-samples-test.yml
+        parameters:
+          azureServiceConnection: ${{ parameters.azureServiceConnection }}
+          sharedEnvironment: false
           sharedKeyVault: ${{ parameters.sharedKeyVault }}
           csr: true
 
@@ -444,14 +553,8 @@ jobs:
         displayName: Stop the broker
         condition: always()
 
-  - ${{ if parameters.sharedEnvironment }}:
-    - template: jobs-e2e-gate.yml
-      parameters:
-        displayName: C e2e gate
-        teardownJobs: []
-        jobs: [openssl, test, test_csr, coverage, esp32_qemu]
-  - ${{ else }}:
-    - ${{ each suite in parameters.suites }}:
+  - ${{ each suite in parameters.suites }}:
+    - ${{ if or(not(parameters.sharedEnvironment), suite.alwaysProvisioned) }}:
       - template: jobs-e2e-teardown.yml
         parameters:
           azureServiceConnection: ${{ parameters.azureServiceConnection }}
@@ -461,8 +564,15 @@ jobs:
           setupJob: ${{ suite.setupJob }}
           dependsOn: [ '${{ suite.setupJob }}', '${{ suite.testJob }}' ]
 
+  - ${{ if parameters.sharedEnvironment }}:
     - template: jobs-e2e-gate.yml
       parameters:
         displayName: C e2e gate
-        teardownJobs: [teardown, teardown_csr]
-        jobs: [setup, setup_csr, openssl, test, test_csr, coverage, esp32_qemu]
+        teardownJobs: [teardown_samples_csr]
+        jobs: [setup_samples_csr, openssl, test, test_csr, coverage, esp32_qemu, samples, samples_csr]
+  - ${{ else }}:
+    - template: jobs-e2e-gate.yml
+      parameters:
+        displayName: C e2e gate
+        teardownJobs: [teardown, teardown_csr, teardown_samples, teardown_samples_csr]
+        jobs: [setup, setup_csr, setup_samples, setup_samples_csr, openssl, test, test_csr, coverage, esp32_qemu, samples, samples_csr]
