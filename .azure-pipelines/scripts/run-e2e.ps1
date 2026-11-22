@@ -14,11 +14,17 @@ try {
     $projects = [ordered]@{
         integration = './dotnet/tests/Microsoft.Azure.Iot.Device.IntegrationTests/Microsoft.Azure.Iot.Device.IntegrationTests.csproj'
     }
+    # A test that runs longer than the hang timeout aborts the run instead of the job timeout.
+    # The console lists every finished test, and the blame sequence file and mini dumps land in
+    # the published raw test results, so the hung test and its thread stacks can be identified.
+    $hangDiagnosticArguments = @('--logger', 'console;verbosity=normal',
+        '--blame-hang-timeout', '5m', '--blame-hang-dump-type', 'mini')
 
     switch ($env:E2E_SUITE) {
         'standard' {
             $projects['unit'] = './dotnet/tests/Microsoft.Azure.Iot.Device.UnitTests/Microsoft.Azure.Iot.Device.UnitTests.csproj'
             $testArguments += @('--filter', 'Category!=CertificateManagement&Category!=Longhaul&Category!=FileUpload')
+            $testArguments += $hangDiagnosticArguments
             $testArguments += @('--collect', 'XPlat Code Coverage', '--', 'xunit.parallelizeAssembly=true')
         }
         'csr' {
@@ -59,6 +65,7 @@ try {
                 [IO.File]::WriteAllText($env:AZ_IOT_TRUSTED_CA, $bundle.ToString())
             }
             $testArguments += @('--filter', 'Category=CertificateManagement&Category!=FileUpload')
+            $testArguments += $hangDiagnosticArguments
             $testArguments += @('--collect', 'XPlat Code Coverage', '--', 'xunit.parallelizeAssembly=true')
         }
         'longhaul' {
