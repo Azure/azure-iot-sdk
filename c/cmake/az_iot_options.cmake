@@ -57,7 +57,7 @@ option(AZ_IOT_BUILD_CONFORMANCE_TESTS "Register the tests that need a reachable 
 # the whole point is that dropping these cases cannot be silent.
 option(AZ_IOT_BUILD_CONFORMANCE_TESTS_TLS "Include the TLS certificate-validation conformance tests (needs OpenSSL)" OFF)
 # CSR-based DPS enrollment needs an enrollment linked to a signing CA, which
-# only the dedicated ci-c-e2e-csr workflow provisions. Same rule as above: the
+# only the CSR jobs of the ci-c-e2e pipeline provision. Same rule as above: the
 # test is built when it is going to be run, not built-and-skipped.
 option(AZ_IOT_BUILD_E2E_CSR    "Build the CSR enrollment e2e test (needs a CA-linked DPS enrollment)" OFF)
 # The PKCS#11 custody tests drive a REAL token (SoftHSM2 in CI) through an

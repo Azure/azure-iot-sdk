@@ -1,0 +1,130 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# The steps of a C e2e test job (jobs-c-e2e.yml): build, get the job's device, run its suites
+# (scripts/run-c-e2e.ps1), publish the results and, for preset linux-gcc-e2e-coverage, the coverage
+# tracefile. Reads the job's matrix variables vmImage, openssl, preset, osIndex, group, groupIndex,
+# tests and, but with csr, testsExclude.
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+  - name: sharedEnvironment
+    type: boolean
+  - name: sharedKeyVault
+    type: string
+  # The certificate-management (CSR) suites, which need no hub access tokens.
+  - name: csr
+    type: boolean
+    default: false
+
+steps:
+  - checkout: self
+    fetchDepth: '1'
+    persistCredentials: false
+  - template: steps-c-toolchain.yml
+  - bash: |
+      set -euo pipefail
+      if [ "$E2E_CSR" = True ]; then
+        bash c/eng/apt-install.sh ninja-build
+      else
+        # softhsm2 and opensc hold the custody suite's device key in a PKCS#11 token; meson and
+        # pkg-config build the OpenSSL pkcs11 provider (c/eng/setup-pkcs11-provider.sh).
+        bash c/eng/apt-install.sh ninja-build softhsm2 opensc meson pkg-config
+      fi
+      python3 -m pip install --upgrade 'gcovr==7.2'
+    displayName: Install build tools (Linux)
+    condition: and(succeeded(), eq(variables['Agent.OS'], 'Linux'))
+    env:
+      E2E_CSR: ${{ parameters.csr }}
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+      $configure = @('--preset', $env:PRESET, '-DAZ_IOT_BUILD_E2E=ON', '-DAZ_IOT_WITH_AZ_MQTT=ON')
+      if ($env:E2E_CSR -eq 'true') {
+        $configure += '-DAZ_IOT_BUILD_E2E_CSR=ON'
+        $targets = @('az_iot_tests_e2e_csr', 'az_iot_tests_e2e_csr_sas', 'az_iot_tests_e2e_csr_az_mqtt',
+          'az_iot_tests_e2e_csr_sas_az_mqtt')
+      } else {
+        $configure += '-DAZ_IOT_WITH_PAHO=ON'
+        # The custody suite needs an OpenSSL pkcs11 provider, which only the Linux jobs build.
+        if ($IsLinux) { $configure += '-DAZ_IOT_BUILD_E2E_PKCS11=ON' }
+        $targets = @('az_iot_tests_e2e', 'az_iot_tests_e2e_process', 'az_iot_tests_e2e_fileupload',
+          'az_iot_tests_e2e_transport', 'az_iot_tests_e2e_amqp_link', 'az_iot_tests_e2e_notify_time',
+          'az_iot_tests_e2e_http_headers', 'az_iot_tests_e2e_amqp_capture', 'az_iot_tests_e2e_amqp_telemetry',
+          'az_iot_tests_e2e_sas', 'az_iot_tests_e2e_tpm', 'az_iot_tests_e2e_az_mqtt',
+          'az_iot_tests_e2e_fileupload_az_mqtt', 'az_iot_tests_e2e_transport_az_mqtt',
+          'az_iot_tests_e2e_sas_az_mqtt', 'az_iot_tests_e2e_tpm_az_mqtt')
+        if ($IsLinux) {
+          $targets += @('az_iot_tests_e2e_custody', 'az_iot_tests_e2e_custody_az_mqtt', 'az_iot_tests_e2e_amqp_transport_sigpipe')
+        }
+      }
+      cmake @configure
+      if ($LASTEXITCODE -ne 0) { throw "CMake configure failed ($LASTEXITCODE)." }
+      $config = if ($IsWindows) { @('--config', 'Debug') } else { @() }
+      cmake --build --preset $env:PRESET @config --target @targets
+      if ($LASTEXITCODE -ne 0) { throw "Build failed ($LASTEXITCODE)." }
+    displayName: Build e2e tests
+    workingDirectory: c
+    env:
+      PRESET: $(preset)
+      E2E_CSR: ${{ parameters.csr }}
+  - ${{ if not(parameters.sharedEnvironment) }}:
+    - task: DownloadPipelineArtifact@2
+      displayName: Download encrypted test configuration
+      inputs:
+        buildType: current
+        artifactName: ${{ iif(parameters.csr, 'e2e-csr-test-config', 'e2e-test-config') }}
+        targetPath: $(Agent.TempDirectory)/test-config
+  # Taken after the build, so its 60-90 minutes cover the tests. The tests run without the
+  # Azure CLI login, which this task removes. A CSR job on a provisioned environment needs neither.
+  - ${{ if or(parameters.sharedEnvironment, not(parameters.csr)) }}:
+    - template: steps-c-e2e-access.yml
+      parameters:
+        azureServiceConnection: ${{ parameters.azureServiceConnection }}
+        csr: ${{ parameters.csr }}
+        ${{ if parameters.sharedEnvironment }}:
+          sharedKeyVault: ${{ parameters.sharedKeyVault }}
+  - task: PowerShell@2
+    displayName: Run tests
+    inputs:
+      pwsh: true
+      targetType: filePath
+      filePath: .azure-pipelines/scripts/run-c-e2e.ps1
+      workingDirectory: $(Build.SourcesDirectory)
+    env:
+      ${{ if not(parameters.sharedEnvironment) }}:
+        CONFIG_KEY: $(configKey)
+      ${{ if not(parameters.csr) }}:
+        IOTHUB_SERVICE_ACCESS_TOKEN: $(hubAccessToken)
+        IOTHUB_EVENTHUB_ACCESS_TOKEN: $(eventHubsAccessToken)
+        E2E_TESTS_EXCLUDE: $(testsExclude)
+      E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
+      E2E_OPENSSL: $(openssl)
+      E2E_PRESET: $(preset)
+      E2E_GROUP: $(group)
+      E2E_DEVICE_INDEX_OS: $(osIndex)
+      E2E_DEVICE_INDEX_GROUP: $(groupIndex)
+      E2E_TESTS: $(tests)
+      E2E_RUN_ID: $(Build.BuildId)-$(System.JobAttempt)
+      E2E_RESULTS_DIRECTORY: $(Common.TestResultsDirectory)
+  - task: PublishTestResults@2
+    displayName: Publish test results
+    condition: always()
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: '$(Common.TestResultsDirectory)/**/*.xml'
+      testRunTitle: C e2e $(System.JobDisplayName)
+      failTaskOnMissingResultsFile: true
+  # Not on failure: a failed run leaves partial coverage data.
+  - bash: bash eng/collect-coverage.sh build/linux-gcc-e2e-coverage "coverage/$TRACE.json" "$TRACE"
+    displayName: Collect coverage (Linux)
+    condition: and(succeeded(), eq(variables['preset'], 'linux-gcc-e2e-coverage'))
+    workingDirectory: c
+    env:
+      TRACE: ${{ iif(parameters.csr, 'e2e-csr', 'e2e-linux') }}
+  - task: PublishPipelineArtifact@1
+    displayName: Publish coverage tracefile (Linux)
+    condition: and(succeeded(), eq(variables['preset'], 'linux-gcc-e2e-coverage'))
+    inputs:
+      targetPath: c/coverage/${{ iif(parameters.csr, 'e2e-csr', 'e2e-linux') }}.json
+      artifact: ${{ iif(parameters.csr, 'coverage-trace-e2e-csr', 'coverage-trace-e2e-linux-$(group)') }}

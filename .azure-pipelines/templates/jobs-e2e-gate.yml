@@ -2,8 +2,8 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 # The job a required e2e pipeline reports: succeeds when change detection succeeded and every job
-# in `jobs` succeeded, or, for a PR with no relevant change, was skipped. Runs after teardown, if
-# any.
+# in `jobs` succeeded, or, for a PR with no relevant change, was skipped. Runs after the teardown
+# jobs, if any.
 
 parameters:
   - name: displayName
@@ -11,18 +11,18 @@ parameters:
   # The jobs that run only for relevant changes.
   - name: jobs
     type: object
-  # False for pipelines with no teardown job.
-  - name: waitForTeardown
-    type: boolean
-    default: true
+  # The teardown jobs to wait for; empty for pipelines with none.
+  - name: teardownJobs
+    type: object
+    default: [teardown]
 
 jobs:
   - job: gate
     displayName: ${{ parameters.displayName }}
     dependsOn:
       - changes
-      - ${{ if parameters.waitForTeardown }}:
-          - teardown
+      - ${{ each job in parameters.teardownJobs }}:
+          - ${{ job }}
       - ${{ each job in parameters.jobs }}:
           - ${{ job }}
     condition: always()

@@ -11,16 +11,26 @@ parameters:
   # E2E_SUITE of scripts/provision.ps1.
   - name: suite
     type: string
-    values: [standard, csr, longhaul, c-e2e]
-  # The jobs to wait for; must include setup.
+    values: [standard, csr, longhaul, c-e2e, c-e2e-csr]
+  # The job that provisions the resource group.
+  - name: setupJob
+    type: string
+    default: setup
+  # The jobs to wait for; must include setupJob.
   - name: dependsOn
     type: object
+  - name: name
+    type: string
+    default: teardown
+  - name: displayName
+    type: string
+    default: Delete test resources
 
 jobs:
-  - job: teardown
-    displayName: Delete test resources
+  - job: ${{ parameters.name }}
+    displayName: ${{ parameters.displayName }}
     dependsOn: ${{ parameters.dependsOn }}
-    condition: and(always(), ne(dependencies.setup.result, 'Skipped'))
+    condition: and(always(), ne(dependencies.${{ parameters.setupJob }}.result, 'Skipped'))
     timeoutInMinutes: 15
     cancelTimeoutInMinutes: 15
     pool:

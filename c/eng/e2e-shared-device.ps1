@@ -30,7 +30,8 @@ E2E_SHARED_IOTHUB_REGISTRY_CS:
   E2E_SHARED_EVENTHUB_KEYLESS_CS      Event Hub connection string without a key (Endpoint, EntityPath)
   E2E_SHARED_EVENTHUB_PARTITION_COUNT that Event Hub's partition count (optional; tests default to 4)
 
--Csr (ci-c-e2e-csr), writes the IOT_DPS_GROUP_X509_* bootstrap identity instead:
+-Csr (Azure Pipelines ci-c-e2e, CSR suites) writes the IOT_DPS_GROUP_X509_*_<DeviceIndex> bootstrap
+identity instead, from:
   E2E_CSR_SHARED_GROUP_CA    base64 of a PEM holding the group's issuing CA certificate and its
                              private key, then any CA certificates above it (issuer first)
   E2E_CSR_SHARED_ID_SCOPE    DPS ID scope
@@ -117,9 +118,9 @@ $KeyB64 = ConvertTo-B64 $Rsa.ExportRSAPrivateKeyPem()
 $Lines = if ($Csr) {
     @(
         Format-Assignment 'IOT_DPS_ID_SCOPE' $env:E2E_CSR_SHARED_ID_SCOPE
-        Format-Assignment 'IOT_DPS_GROUP_X509_REGISTRATION_ID' $RegistrationId
-        Format-Assignment 'IOT_DPS_GROUP_X509_CERTIFICATE' (ConvertTo-B64 $Chain)
-        Format-Assignment 'IOT_DPS_GROUP_X509_KEY' $KeyB64
+        Format-Assignment "IOT_DPS_GROUP_X509_REGISTRATION_ID_$DeviceIndex" $RegistrationId
+        Format-Assignment "IOT_DPS_GROUP_X509_CERTIFICATE_$DeviceIndex" (ConvertTo-B64 $Chain)
+        Format-Assignment "IOT_DPS_GROUP_X509_KEY_$DeviceIndex" $KeyB64
         if ($env:E2E_CSR_SHARED_DPS_HOST) { Format-Assignment 'IOT_DPS_GLOBAL_ENDPOINT' $env:E2E_CSR_SHARED_DPS_HOST }
         Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' $env:E2E_CSR_SHARED_SAS_GROUP_KEY
     )
@@ -158,7 +159,7 @@ $OutDir = Split-Path -Parent $OutFile
 if ($OutDir) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
 Set-Content -Path $OutFile -Value $Lines -Encoding utf8NoBOM
 if ($Csr) {
-    Write-Host "Wrote $OutFile for CSR bootstrap device '$RegistrationId'."
+    Write-Host "Wrote $OutFile for CSR bootstrap device '$RegistrationId' (device index $DeviceIndex)."
 } else {
     Write-Host "Wrote $OutFile for '$RegistrationId' (device index $DeviceIndex, consumer group $ConsumerGroup)."
 }

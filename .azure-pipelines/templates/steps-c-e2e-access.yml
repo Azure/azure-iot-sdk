@@ -1,8 +1,8 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# Sets the secret variables hubAccessToken and eventHubsAccessToken for a C e2e job and, with
-# sharedKeyVault, writes its shared-environment test configuration to
+# Sets the secret variables hubAccessToken and eventHubsAccessToken for a C e2e job (not with csr)
+# and, with sharedKeyVault, writes its shared-environment test configuration to
 # $(Agent.TempDirectory)/test-config (scripts/get-c-e2e-access.ps1). The job's later steps run
 # without the Azure CLI login, which this task removes.
 
@@ -13,6 +13,10 @@ parameters:
   - name: sharedKeyVault
     type: string
     default: ''
+  # For the CSR suites, which need no tokens: requires sharedKeyVault.
+  - name: csr
+    type: boolean
+    default: false
   # The device index is deviceIndexOs * 4 + deviceIndexGroup.
   - name: deviceIndexOs
     type: string
@@ -23,7 +27,9 @@ parameters:
 
 steps:
   - task: AzureCLI@2
-    ${{ if parameters.sharedKeyVault }}:
+    ${{ if parameters.csr }}:
+      displayName: Get a shared-environment CSR bootstrap device
+    ${{ elseif parameters.sharedKeyVault }}:
       displayName: Get access tokens and a shared-environment device
     ${{ else }}:
       displayName: Get IoT Hub and Event Hubs access tokens
@@ -34,6 +40,8 @@ steps:
       scriptPath: .azure-pipelines/scripts/get-c-e2e-access.ps1
       visibleAzLogin: false
     env:
+      ${{ if parameters.csr }}:
+        E2E_CSR: 'true'
       ${{ if parameters.sharedKeyVault }}:
         E2E_SHARED_KEY_VAULT: ${{ parameters.sharedKeyVault }}
         E2E_DEVICE_INDEX_OS: ${{ parameters.deviceIndexOs }}

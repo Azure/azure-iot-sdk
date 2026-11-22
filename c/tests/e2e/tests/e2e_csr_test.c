@@ -20,9 +20,9 @@
  *      certificate reaches CONNECTED.
  *
  * This requires a DPS enrollment (group) linked to a signing CA so DPS issues an
- * operational cert - a setup only the ci-c-e2e-csr workflow provisions. It is
- * therefore built only when AZ_IOT_BUILD_E2E_CSR is set, which that workflow
- * passes. There is no runtime gate: if this binary exists, it runs, and if it
+ * operational cert - a setup only the ci-c-e2e pipeline's CSR jobs provision. It
+ * is therefore built only when AZ_IOT_BUILD_E2E_CSR is set, which those jobs
+ * pass. There is no runtime gate: if this binary exists, it runs, and if it
  * cannot run it should not have been built.
  *
  * Environment:
@@ -632,8 +632,8 @@ static void test_each_role_falls_back_to_its_next_certificate(void** state)
 int main(void)
 {
   /* No environment gate. Whether this test exists is decided at build time by
-   * AZ_IOT_BUILD_E2E_CSR, which only the ci-c-e2e-csr workflow sets -- it is
-   * the one that provisions a DPS enrollment linked to a signing CA. Building
+   * AZ_IOT_BUILD_E2E_CSR, which only the ci-c-e2e pipeline's CSR jobs set --
+   * they run where a DPS enrollment is linked to a signing CA. Building
    * the test and then having it excuse itself hid the fact that it was not
    * running anywhere else. */
 
