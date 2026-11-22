@@ -9,8 +9,9 @@
 # files on that branch. Its slots are 3 hours after main's, so the two
 # branches' e2e runs do not share the Azure resources at the same time:
 #
+# Azure Pipelines' ci-c-e2e schedules both branches itself.
+#
 #   main (own schedule)                      releases/public-preview (here)
-#   11:00 ci-c-e2e                           14:00
 #   -     ci-c-e2e-mqttv5 (preview only)     14:30
 #   12:00 ci-c-e2e-csr                       15:00
 #   -     ci-c-e2e-adu (preview only)        15:00
@@ -24,7 +25,6 @@ name: ci-c-public-preview-nightly
 
 on:
   schedule:
-    - cron: '0 14 * * *'
     - cron: '30 14 * * *'
     - cron: '0 15 * * *'
     - cron: '0 16 * * *'
@@ -55,9 +55,8 @@ jobs:
         run: |
           set -euo pipefail
           set -f
-          all="ci-c-e2e.yml ci-c-e2e-mqttv5.yml ci-c-e2e-csr.yml ci-c-e2e-adu.yml codeql-c.yml ci-c-coverage-combined.yml ci-c-yocto.yml"
+          all="ci-c-e2e-mqttv5.yml ci-c-e2e-csr.yml ci-c-e2e-adu.yml codeql-c.yml ci-c-coverage-combined.yml ci-c-yocto.yml"
           case "$SCHEDULE" in
-            '0 14 * * *')   workflows="ci-c-e2e.yml" ;;
             '30 14 * * *')  workflows="ci-c-e2e-mqttv5.yml" ;;
             '0 15 * * *')
               workflows="ci-c-e2e-csr.yml ci-c-e2e-adu.yml"

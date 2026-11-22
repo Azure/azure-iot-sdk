@@ -1,10 +1,10 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# Runs one C e2e job (jobs-c-e2e.yml): one device of the provisioned environment and one group of
-# suites, then, for the core group on Linux, the PKCS#11 custody suite. The hub has local auth
-# disabled, so the tests use Microsoft Entra tokens: IOTHUB_SERVICE_ACCESS_TOKEN for hub service
-# calls, IOTHUB_EVENTHUB_ACCESS_TOKEN to read the Event Hub that telemetry is routed to.
+# Runs one C e2e job (jobs-c-e2e.yml): one device of the provisioned or the shared environment and
+# one group of suites, then, for the core group on Linux, the PKCS#11 custody suite. The tests use
+# Microsoft Entra tokens: IOTHUB_SERVICE_ACCESS_TOKEN for hub service calls,
+# IOTHUB_EVENTHUB_ACCESS_TOKEN to read the Event Hub that telemetry is routed to.
 
 $ErrorActionPreference = 'Stop'
 
@@ -46,8 +46,9 @@ $env:AZ_IOT_TRUSTED_CA = & ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $deviceDi
 if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 $env:AZ_IOT_DPS_SAS_GROUP_KEY = $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY
 $env:AZ_IOT_DPS_SAS_REGISTRATION_ID = "sas-$($env:E2E_RUN_ID)-$index"
-# Each job reads events on its own consumer group (provision.ps1).
-$env:IOTHUB_EVENTHUB_CONSUMER_GROUP = "e2e-$index"
+# On a provisioned environment (encrypted configuration), each job reads events on its own consumer
+# group (provision.ps1). The shared environment's configuration names one.
+if ($env:CONFIG_KEY) { $env:IOTHUB_EVENTHUB_CONSUMER_GROUP = "e2e-$index" }
 # Schannel handshake and renegotiation trace of the service harness.
 if ($IsWindows) { $env:AZ_AMQP_TLS_DEBUG = '1' }
 

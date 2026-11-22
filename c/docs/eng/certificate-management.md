@@ -421,7 +421,7 @@ Under [`samples/authentication/`](../../samples/authentication/README.md). Each 
 
 ## E2E tests
 
-In `tests/e2e/tests/`, run by [`ci-c-e2e.yml`](../../../.github/workflows/ci-c-e2e.yml) and
+In `tests/e2e/tests/`, run by [`ci-c-e2e.yml`](../../../.azure-pipelines/ci-c-e2e.yml) and
 [`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml). See
 [end-to-end-tests.md](end-to-end-tests.md).
 

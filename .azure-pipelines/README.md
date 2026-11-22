@@ -1,7 +1,7 @@
 # Azure Pipelines
 
-These are Azure DevOps Services counterparts of the .NET workflows and of the C
-end-to-end tests in `.github/workflows`.
+These are Azure DevOps Services counterparts of the .NET workflows in
+`.github/workflows`, and the C end-to-end tests.
 
 Create a separate Azure Pipeline using **Existing Azure Pipelines YAML file** for
 each entry point below. All pipelines also support **Run pipeline**.
@@ -15,7 +15,7 @@ each entry point below. All pipelines also support **Run pipeline**.
 | `ci-dotnet.yml` | Linux/Windows end-to-end tests, excluding certificate management, file upload and longhaul; also daily at 11:00 UTC |
 | `ci-dotnet-e2e-csr.yml` | Certificate-management tests on Linux/Windows, serialized; also daily at 11:00 UTC |
 | `longhaul-dotnet.yml` | Manual MQTTv3 longhaul with duration, OS, success-rate and memory-growth parameters |
-| `ci-c-e2e.yml` | C end-to-end tests (`ci-c-e2e` test legs: Linux on OpenSSL 3.0 and 4.1.0, Windows on 4.1.0, four groups each) against an IoT Hub with local authentication disabled, daily at 11:00 UTC on `main` and 14:00 UTC on `releases/public-preview` (no pull request trigger yet) |
+| `ci-c-e2e.yml` | C end-to-end tests (Linux on OpenSSL 3.0 and 4.1.0, Windows on 4.1.0, four groups each; the ESP32 sample in QEMU; merged Linux coverage) against an IoT Hub with local authentication disabled: on pull requests the shared environment, daily at 11:00 UTC on `main` and 14:00 UTC on `releases/public-preview` its own |
 | `cleanup-e2e-resources.yml` | Age-gated cleanup of leaked Azure Pipelines e2e resources; also daily at 02:00 UTC |
 
 ## Required configuration
@@ -24,8 +24,7 @@ each entry point below. All pipelines also support **Run pipeline**.
    For GitHub, YAML `pr` triggers validate all target branches. For Azure Repos,
    configure **Build validation** branch policies instead: Azure Repos does not
    implement YAML `pr` triggers. Make the build/format/advisory/CodeQL and
-   `ci-dotnet`/`ci-dotnet-e2e-csr` pipelines required as appropriate (`ci-c-e2e`
-   has no PR trigger yet);
+   `ci-dotnet`/`ci-dotnet-e2e-csr`/`ci-c-e2e` pipelines required as appropriate;
    they always report a gate, even for unrelated PRs, and skip their work when a
    PR changes none of their inputs. Do not add a PR path filter to these required
    pipeline definitions: a required check that never runs blocks the PR.
@@ -45,6 +44,10 @@ each entry point below. All pipelines also support **Run pipeline**.
    that principal also needs `Microsoft.Authorization/roleAssignments/write` on
    the test resource groups (for example Owner, User Access Administrator, or
    Role Based Access Control Administrator limited to those roles).
+   For `ci-c-e2e` pull requests and its ESP32 jobs, it also needs **Key Vault
+   Secrets User** on the shared environment's vault (`sharedKeyVault`, default
+   `kv-aziotclb`), **IoT Hub Data Contributor** on its hub and **Azure Event Hubs
+   Data Receiver** on its Event Hub (`c/docs/eng/end-to-end-tests.md`).
    The default region is `eastus2euap`, matching the existing workflows; change
    `azureLocation` if the subscription uses a different region.
 3. Configure CodeQL for the source host. For **Azure Repos**, enable GitHub Code
@@ -87,8 +90,10 @@ passes the service connection's Microsoft Entra tokens to the tests: for
 `https://eventhubs.azure.net` (`IOTHUB_EVENTHUB_ACCESS_TOKEN`). The built-in Event
 Hub-compatible endpoint accepts only shared access keys, so device telemetry is
 routed to an Event Hub with local authentication disabled, read with that token.
-Devices and DPS keep their own credentials. The generated configuration is encrypted before
-artifact publication; a random AES key is passed to the test job as a secret
+Devices and DPS keep their own credentials. On pull requests, `ci-c-e2e` skips
+provisioning: each job reads the shared environment's settings from Key Vault and
+issues its own device (`scripts/get-c-e2e-access.ps1`). A provisioned run's
+configuration is encrypted before artifact publication; a random AES key is passed to the test job as a secret
 output variable. Temporary plaintext configuration and CSR keys are removed
 after use. Unlike GitHub Actions, Azure pipeline artifacts do not have a
 per-artifact one-day retention setting.
