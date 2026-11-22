@@ -699,7 +699,7 @@ static bool encode_enqueued_after_filter(az_span buffer, int64_t after_ms, az_sp
 }
 
 /**
- * @brief Keeps what the setup steps and e2e_amqp_telemetry_restart() need: host, SAS token,
+ * @brief Keeps what the setup steps and e2e_amqp_telemetry_restart() need: host, CBS token,
  * audience, receive buffers, enqueued-time filter and partition source addresses.
  *
  * @return NULL, or the static reason of the failure.
@@ -710,7 +710,8 @@ static const char* telemetry_prepare(
     const char* entity_path,
     const char* consumer_group,
     int64_t enqueued_after_ms,
-    const char* sas_token,
+    const char* token_type,
+    const char* token,
     int partition_count,
     const char* capture_filter)
 {
@@ -732,10 +733,11 @@ static const char* telemetry_prepare(
   }
   t->partition_count = partition_count;
 
+  t->token_type = token_type;
   const int host_length = snprintf(t->host, sizeof(t->host), "%s", eh_host);
-  const int token_length = snprintf(t->sas_token, sizeof(t->sas_token), "%s", sas_token);
+  const int token_length = snprintf(t->token, sizeof(t->token), "%s", token);
   if (host_length < 0 || host_length >= (int)sizeof(t->host) || token_length < 0
-      || token_length >= (int)sizeof(t->sas_token))
+      || token_length >= (int)sizeof(t->token))
   {
     return E2E_ERR_TELEMETRY_PARAMETER_TOO_LONG;
   }
@@ -915,9 +917,9 @@ static const char* telemetry_advance_setup(e2e_amqp_telemetry* t)
       t->put_token = (e2e_amqp_put_token_result){ 0 };
       if (az_result_failed(az_amqp_cbs_put_token(
               &t->cbs,
-              AZ_SPAN_FROM_STR(AZ_AMQP_CBS_TOKEN_TYPE_SAS),
+              az_span_create_from_str((char*)(uintptr_t)t->token_type),
               az_span_create_from_str(t->audience_buffer),
-              az_span_create_from_str(t->sas_token),
+              az_span_create_from_str(t->token),
               0,
               on_put_token_complete,
               &t->put_token)))
@@ -993,7 +995,8 @@ bool e2e_amqp_telemetry_begin(
     const char* entity_path,
     const char* consumer_group,
     int64_t enqueued_after_ms,
-    const char* sas_token,
+    const char* token_type,
+    const char* token,
     int partition_count,
     const char* capture_filter,
     const char** err_out)
@@ -1004,7 +1007,8 @@ bool e2e_amqp_telemetry_begin(
       entity_path,
       consumer_group,
       enqueued_after_ms,
-      sas_token,
+      token_type,
+      token,
       partition_count,
       capture_filter);
   if (err == NULL)
@@ -1284,7 +1288,8 @@ static void on_send_complete(
 
 bool e2e_amqp_send_c2d(
     const char* hub_host,
-    const char* sas_token,
+    const char* token_type,
+    const char* token,
     const char* device_id,
     const uint8_t* payload,
     size_t payload_len,
@@ -1308,7 +1313,7 @@ bool e2e_amqp_send_c2d(
   bool cbs_ok = false;
   bool sender_ok = false;
   az_span fqdn = az_span_create_from_str((char*)(uintptr_t)hub_host);
-  az_span token = az_span_create_from_str((char*)(uintptr_t)sas_token);
+  az_span token_span = az_span_create_from_str((char*)(uintptr_t)token);
 
   /* CBS audience for the IoT Hub service endpoint is the hub host. */
   int audience_length = snprintf(c->audience_buffer, sizeof(c->audience_buffer), "%s", hub_host);
@@ -1400,9 +1405,9 @@ bool e2e_amqp_send_c2d(
   e2e_amqp_put_token_result put_token = { 0 };
   if (az_result_failed(az_amqp_cbs_put_token(
           &c->cbs,
-          AZ_SPAN_FROM_STR(AZ_AMQP_CBS_TOKEN_TYPE_SAS),
+          az_span_create_from_str((char*)(uintptr_t)token_type),
           audience,
-          token,
+          token_span,
           0,
           on_put_token_complete,
           &put_token)))
@@ -1711,7 +1716,8 @@ static void on_filenotify_received(
 bool e2e_amqp_filenotify_begin(
     e2e_amqp_filenotify* f,
     const char* hub_host,
-    const char* sas_token,
+    const char* token_type,
+    const char* token,
     const char* match,
     const char** err_out,
     bool* attach_refused_out)
@@ -1719,7 +1725,7 @@ bool e2e_amqp_filenotify_begin(
   const char* err = NULL;
   bool attach_refused = false;
   az_span fqdn = az_span_create_from_str((char*)(uintptr_t)hub_host);
-  az_span token = az_span_create_from_str((char*)(uintptr_t)sas_token);
+  az_span token_span = az_span_create_from_str((char*)(uintptr_t)token);
 
   snprintf(f->match, sizeof(f->match), "%s", (match != NULL) ? match : "");
   f->began_at_s = (int64_t)time(NULL);
@@ -1819,9 +1825,9 @@ bool e2e_amqp_filenotify_begin(
   e2e_amqp_put_token_result put_token = { 0 };
   if (az_result_failed(az_amqp_cbs_put_token(
           &f->cbs,
-          AZ_SPAN_FROM_STR(AZ_AMQP_CBS_TOKEN_TYPE_SAS),
+          az_span_create_from_str((char*)(uintptr_t)token_type),
           audience,
-          token,
+          token_span,
           0,
           on_put_token_complete,
           &put_token)))

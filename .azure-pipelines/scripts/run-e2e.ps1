@@ -2,20 +2,10 @@
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 $ErrorActionPreference = 'Stop'
-$key = [Convert]::FromBase64String($env:CONFIG_KEY)
-$encrypted = Get-Content (Join-Path $env:E2E_CONFIG_DIRECTORY 'test-config.encrypted') -Raw
-$secureConfig = ConvertTo-SecureString $encrypted.Trim() -Key $key
-$config = [Net.NetworkCredential]::new('', $secureConfig).Password
-$configPath = Join-Path $env:AGENT_TEMPDIRECTORY ("test-config-" + [Guid]::NewGuid().ToString('N') + '.ps1')
 $certificateDirectory = $null
 $exitCode = 0
 try {
-    Set-Content $configPath $config
-    . $configPath
-    foreach ($item in (Get-ChildItem Env: | Where-Object { $_.Name -match '^(IOTHUB_|IOT_DPS_|PROVISIONING_)' })) {
-        $value = $item.Value.Replace('%', '%AZP25').Replace("`r", '%0D').Replace("`n", '%0A')
-        Write-Host "##vso[task.setsecret]$value"
-    }
+    & (Join-Path $PSScriptRoot 'import-test-config.ps1')
 
     $env:AZ_IOT_DPS_ID_SCOPE = $env:IOT_DPS_ID_SCOPE
     if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
@@ -24,11 +14,17 @@ try {
     $projects = [ordered]@{
         integration = './dotnet/tests/Microsoft.Azure.Iot.Device.IntegrationTests/Microsoft.Azure.Iot.Device.IntegrationTests.csproj'
     }
+    # A test that runs longer than the hang timeout aborts the run instead of the job timeout.
+    # The console lists every finished test, and the blame sequence file and mini dumps land in
+    # the published raw test results, so the hung test and its thread stacks can be identified.
+    $hangDiagnosticArguments = @('--logger', 'console;verbosity=normal',
+        '--blame-hang-timeout', '5m', '--blame-hang-dump-type', 'mini')
 
     switch ($env:E2E_SUITE) {
         'standard' {
             $projects['unit'] = './dotnet/tests/Microsoft.Azure.Iot.Device.UnitTests/Microsoft.Azure.Iot.Device.UnitTests.csproj'
             $testArguments += @('--filter', 'Category!=CertificateManagement&Category!=Longhaul&Category!=FileUpload&Hub!=MQTTv5')
+            $testArguments += $hangDiagnosticArguments
             $testArguments += @('--collect', 'XPlat Code Coverage', '--', 'xunit.parallelizeAssembly=true')
         }
         'csr' {
@@ -69,6 +65,7 @@ try {
                 [IO.File]::WriteAllText($env:AZ_IOT_TRUSTED_CA, $bundle.ToString())
             }
             $testArguments += @('--filter', 'Category=CertificateManagement&Category!=FileUpload&Hub!=MQTTv5')
+            $testArguments += $hangDiagnosticArguments
             $testArguments += @('--collect', 'XPlat Code Coverage', '--', 'xunit.parallelizeAssembly=true')
         }
         'longhaul' {
@@ -94,7 +91,6 @@ try {
     }
 }
 finally {
-    Remove-Item $configPath -Force -ErrorAction SilentlyContinue
     if ($certificateDirectory) {
         Remove-Item (Join-Path $certificateDirectory 'device-cert.pem') -Force -ErrorAction SilentlyContinue
         Remove-Item (Join-Path $certificateDirectory 'device-key.pem') -Force -ErrorAction SilentlyContinue

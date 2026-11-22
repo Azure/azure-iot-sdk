@@ -285,6 +285,9 @@ namespace Microsoft.Azure.Iot.Device.UnitTests
 
             lock (PublishedMessages)
             {
+                // Like the connection client, a publish canceled while it waited for the connection is never sent, even when
+                // the reconnect completes before the cancellation callbacks have run.
+                cancellationToken.ThrowIfCancellationRequested();
                 PublishedMessages.Add(publish);
                 PublishCancellationTokens.Add(cancellationToken);
             }

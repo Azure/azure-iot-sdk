@@ -45,6 +45,10 @@ jobs:
     timeoutInMinutes: 30
     pool:
       vmImage: ubuntu-24.04
+    variables:
+      - template: variables-e2e-resource-group.yml
+        parameters:
+          suite: ${{ parameters.suite }}
     steps:
       - checkout: self
         persistCredentials: false
@@ -66,7 +70,7 @@ jobs:
         env:
           E2E_SUITE: ${{ parameters.suite }}
           E2E_LOCATION: ${{ parameters.azureLocation }}
-          E2E_RUN_ID: $(System.TeamProjectId)-$(Build.BuildId)
+          E2E_RESOURCE_GROUP: $(e2eResourceGroup)
           E2E_FRAMEWORK_ROOT: $(Agent.TempDirectory)/iot-sdks-e2e-fx
           E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
           LONGHAUL_DURATION_MINUTES: ${{ parameters.durationMinutes }}
@@ -178,70 +182,14 @@ jobs:
           targetPath: $(Common.TestResultsDirectory)
           artifact: test-report-$(Agent.OS)
 
-  - job: teardown
-    displayName: Delete test resources
-    dependsOn: [setup, test]
-    # Also runs on failure or cancellation, but not when setup never ran.
-    condition: and(always(), ne(dependencies.setup.result, 'Skipped'))
-    timeoutInMinutes: 15
-    cancelTimeoutInMinutes: 15
-    pool:
-      vmImage: ubuntu-24.04
-    steps:
-      - checkout: none
-      - task: AzureCLI@2
-        displayName: Delete resource group if it exists
-        condition: always()
-        inputs:
-          azureSubscription: ${{ parameters.azureServiceConnection }}
-          scriptType: pscore
-          scriptLocation: inlineScript
-          visibleAzLogin: false
-          inlineScript: |
-            $ErrorActionPreference = 'Stop'
-            $prefix = switch ($env:E2E_SUITE) {
-              'standard' { 'DotnetE2ETestPipeline' }
-              'csr' { 'DotnetCertMgmtE2ETestPipeline' }
-              'longhaul' { 'DotnetLonghaul' }
-              default { throw 'Unknown test suite.' }
-            }
-            # Recompute independently of setup outputs, including on cancellation.
-            $rg = "$prefix-Ado-$env:E2E_RUN_ID"
-            $exists = az group exists --name $rg --only-show-errors
-            if ($LASTEXITCODE -ne 0) { throw "Could not check resource group $rg." }
-            if ($exists -eq 'true') {
-              az group delete --name $rg --yes --no-wait --only-show-errors
-              if ($LASTEXITCODE -ne 0) { throw "Could not queue deletion of $rg." }
-            }
-        env:
-          E2E_SUITE: ${{ parameters.suite }}
-          E2E_RUN_ID: $(System.TeamProjectId)-$(Build.BuildId)
+  - template: jobs-e2e-teardown.yml
+    parameters:
+      azureServiceConnection: ${{ parameters.azureServiceConnection }}
+      suite: ${{ parameters.suite }}
+      dependsOn: [setup, test]
 
   - ${{ if ne(parameters.suite, 'longhaul') }}:
-      - job: gate
-        displayName: ${{ parameters.suite }} gate
-        dependsOn: [changes, setup, test, teardown]
-        condition: always()
-        pool:
-          vmImage: ubuntu-latest
-        variables:
-          changesResult: $[ dependencies.changes.result ]
-          relevant: $[ dependencies.changes.outputs['filter.relevant'] ]
-          setupResult: $[ dependencies.setup.result ]
-          testResult: $[ dependencies.test.result ]
-        steps:
-          - checkout: none
-          - pwsh: |
-              if ($env:CHANGES_RESULT -ne 'Succeeded') {
-                throw "Change detection did not succeed ($env:CHANGES_RESULT)."
-              }
-              $expected = if ($env:RELEVANT -eq 'true') { 'Succeeded' } else { 'Skipped' }
-              if ($env:SETUP_RESULT -ne $expected -or $env:TEST_RESULT -ne $expected) {
-                throw "Expected setup and tests to be $expected (setup: $env:SETUP_RESULT, tests: $env:TEST_RESULT)."
-              }
-            displayName: Require successful detection and tests
-            env:
-              CHANGES_RESULT: $(changesResult)
-              RELEVANT: $(relevant)
-              SETUP_RESULT: $(setupResult)
-              TEST_RESULT: $(testResult)
+      - template: jobs-e2e-gate.yml
+        parameters:
+          displayName: ${{ parameters.suite }} gate
+          jobs: [setup, test]

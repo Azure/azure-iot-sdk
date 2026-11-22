@@ -1,0 +1,31 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# The resource group of an e2e run, <prefix>-Ado-<project id>-<build id>, as $(e2eResourceGroup).
+# Setup and teardown both include it, so teardown needs neither setup outputs nor a checkout.
+# cleanup-e2e-resources.yml deletes leaked groups by these prefixes.
+
+parameters:
+  # E2E_SUITE of scripts/provision.ps1.
+  - name: suite
+    type: string
+    values: [standard, csr, longhaul, c-e2e, c-e2e-csr, c-samples, c-samples-csr]
+
+variables:
+  - name: e2eResourceGroupPrefix
+    ${{ if eq(parameters.suite, 'standard') }}:
+      value: DotnetE2ETestPipeline
+    ${{ if eq(parameters.suite, 'csr') }}:
+      value: DotnetCertMgmtE2ETestPipeline
+    ${{ if eq(parameters.suite, 'longhaul') }}:
+      value: DotnetLonghaul
+    ${{ if eq(parameters.suite, 'c-e2e') }}:
+      value: CSDKE2E
+    ${{ if eq(parameters.suite, 'c-e2e-csr') }}:
+      value: CSDKE2ECert
+    ${{ if eq(parameters.suite, 'c-samples') }}:
+      value: CSDKE2ESamples
+    ${{ if eq(parameters.suite, 'c-samples-csr') }}:
+      value: CSDKE2ESamplesCert
+  - name: e2eResourceGroup
+    value: $(e2eResourceGroupPrefix)-Ado-$(System.TeamProjectId)-$(Build.BuildId)
