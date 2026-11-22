@@ -4,9 +4,11 @@
 # No push trigger: both target branches require pull requests to be up to date and squash-merged,
 # so a merge lands exactly what its pull request run tested.
 trigger: none
-# No PR trigger yet: a PR run would create its own resources; PR runs return once they use the
-# shared, long-lived environment.
-pr: none
+# PR runs test on the shared, long-lived environment; scheduled and manual runs provision their own
+# (parameter environment).
+pr:
+  branches:
+    include: [main, releases/public-preview]
 # Azure Pipelines reads each branch's schedules from that branch's copy of this file.
 schedules:
   - cron: '0 11 * * *'
@@ -27,9 +29,20 @@ parameters:
   - name: azureLocation
     type: string
     default: eastus2euap
+  # auto: the shared environment for pull requests, a provisioned one otherwise.
+  - name: environment
+    type: string
+    default: auto
+    values: [auto, shared, provisioned]
+  # Holds the shared environment's E2E-SHARED-* secrets.
+  - name: sharedKeyVault
+    type: string
+    default: kv-aziotclb
 
 jobs:
   - template: templates/jobs-c-e2e.yml
     parameters:
       azureServiceConnection: ${{ parameters.azureServiceConnection }}
       azureLocation: ${{ parameters.azureLocation }}
+      sharedEnvironment: ${{ or(eq(parameters.environment, 'shared'), and(eq(parameters.environment, 'auto'), eq(variables['Build.Reason'], 'PullRequest'))) }}
+      sharedKeyVault: ${{ parameters.sharedKeyVault }}

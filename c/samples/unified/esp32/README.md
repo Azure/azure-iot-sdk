@@ -162,6 +162,6 @@ CI (`ci-c`, job `esp-idf`) builds this sample for esp32, esp32c3, esp32s3 and es
 address, with ESP-IDF v6.1; the default profile for esp32 also with v6.0, the minimum. Any compiler
 warning fails the build.
 
-`ci-c-e2e` (job `esp32-qemu`) runs it in QEMU on esp32, esp32c3 and esp32s3 (the last two with the
+The Azure Pipelines `ci-c-e2e` pipeline (job `esp32_qemu`) runs it in QEMU on esp32, esp32c3 and esp32s3 (the last two with the
 key in DS) against an IoT Hub: telemetry, the `echo` method and a desired-version acknowledgement
 ([ESP32 in QEMU](../../../docs/eng/end-to-end-tests.md#esp32-in-qemu)).

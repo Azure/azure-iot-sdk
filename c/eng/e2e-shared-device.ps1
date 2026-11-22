@@ -11,7 +11,7 @@ group's CA, and writes the test-config script the workflow sources (the variable
 provisioning action emits), including the shared symmetric-key group's key for the SAS
 suites. Devices register through the groups on first connect, so no Azure call is made here.
 
-Default (ci-c-e2e), inputs from the environment (repository secrets/variables):
+Default (ci-c-samples), inputs from the environment (repository secrets/variables):
   E2E_SHARED_GROUP_CA        base64 of a PEM holding the group CA certificate and its private key
   E2E_SHARED_IOTHUB_CS       IoT Hub 'service' policy connection string
   E2E_SHARED_EVENTHUB_CS     Event Hub-compatible endpoint connection string, 'service' policy
@@ -21,6 +21,14 @@ Default (ci-c-e2e), inputs from the environment (repository secrets/variables):
                              written as IOT_DPS_CONNECTION_STRING for the TPM suite's enrollments
   E2E_SHARED_IOTHUB_REGISTRY_CS  IoT Hub connection string with RegistryWrite, written as
                              IOTHUB_REGISTRY_CONNECTION_STRING for the TPM suite's device cleanup
+
+-EntraAuthentication (Azure Pipelines ci-c-e2e) is for a hub and Event Hub read with Microsoft
+Entra tokens, which the caller sets (IOTHUB_SERVICE_ACCESS_TOKEN, IOTHUB_EVENTHUB_ACCESS_TOKEN). It
+reads no IoT Hub or Event Hubs keys: instead of E2E_SHARED_IOTHUB_CS, E2E_SHARED_EVENTHUB_CS and
+E2E_SHARED_IOTHUB_REGISTRY_CS:
+  E2E_SHARED_IOTHUB_HOSTNAME          IoT Hub host name
+  E2E_SHARED_EVENTHUB_KEYLESS_CS      Event Hub connection string without a key (Endpoint, EntityPath)
+  E2E_SHARED_EVENTHUB_PARTITION_COUNT that Event Hub's partition count (optional; tests default to 4)
 
 -Csr (ci-c-e2e-csr), writes the IOT_DPS_GROUP_X509_* bootstrap identity instead:
   E2E_CSR_SHARED_GROUP_CA    base64 of a PEM holding the group's issuing CA certificate and its
@@ -35,21 +43,28 @@ param(
     [ValidateRange(0, 99)][int]$DeviceIndex = 0,
     [ValidatePattern('^[A-Za-z0-9$._-]{1,50}$')][string]$ConsumerGroup = '$Default',
     [switch]$Csr,
+    [switch]$EntraAuthentication,
     [string]$OutFile = 'test_config/set_test_env_vars.ps1'
 )
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+if ($Csr -and $EntraAuthentication) { throw '-Csr and -EntraAuthentication cannot be combined.' }
 
 $Vars = if ($Csr) { 'E2E_CSR_SHARED' } else { 'E2E_SHARED' }
 function Get-Shared([string]$Name) { [Environment]::GetEnvironmentVariable("${Vars}_$Name") }
 $Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE', 'SAS_GROUP_KEY') }
+            elseif ($EntraAuthentication) { @('GROUP_CA', 'IOTHUB_HOSTNAME', 'EVENTHUB_KEYLESS_CS', 'ID_SCOPE', 'SAS_GROUP_KEY', 'DPS_CS') }
             else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE', 'SAS_GROUP_KEY', 'DPS_CS', 'IOTHUB_REGISTRY_CS') }
 $Missing = $Required | ForEach-Object { "${Vars}_$_" } |
     Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
 if ($Missing) { throw "Shared e2e environment not configured; missing: $($Missing -join ', ')." }
 
-if (-not $Csr) {
+if ($EntraAuthentication) {
+    if ((Get-Shared 'EVENTHUB_KEYLESS_CS') -match 'SharedAccessKey') {
+        throw "${Vars}_EVENTHUB_KEYLESS_CS holds a key."
+    }
+} elseif (-not $Csr) {
     foreach ($Name in "${Vars}_IOTHUB_CS", "${Vars}_EVENTHUB_CS") {
         if ([Environment]::GetEnvironmentVariable($Name) -match 'SharedAccessKeyName=iothubowner') {
             throw "$Name uses the iothubowner policy; use the 'service' policy."
@@ -107,6 +122,23 @@ $Lines = if ($Csr) {
         Format-Assignment 'IOT_DPS_GROUP_X509_KEY' $KeyB64
         if ($env:E2E_CSR_SHARED_DPS_HOST) { Format-Assignment 'IOT_DPS_GLOBAL_ENDPOINT' $env:E2E_CSR_SHARED_DPS_HOST }
         Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' $env:E2E_CSR_SHARED_SAS_GROUP_KEY
+    )
+} elseif ($EntraAuthentication) {
+    @(
+        Format-Assignment 'IOTHUB_HOSTNAME' (Get-Shared 'IOTHUB_HOSTNAME')
+        Format-Assignment 'IOTHUB_EVENTHUB_CONNECTION_STRING' (Get-Shared 'EVENTHUB_KEYLESS_CS')
+        if (Get-Shared 'EVENTHUB_PARTITION_COUNT') {
+            Format-Assignment 'IOTHUB_EVENTHUB_PARTITION_COUNT' (Get-Shared 'EVENTHUB_PARTITION_COUNT')
+        }
+        # The shared environment's role assignments already apply.
+        Format-Assignment 'E2E_EVENTHUB_READABLE_AFTER' '0'
+        Format-Assignment 'IOTHUB_EVENTHUB_CONSUMER_GROUP' $ConsumerGroup
+        Format-Assignment 'IOT_DPS_ID_SCOPE' (Get-Shared 'ID_SCOPE')
+        Format-Assignment "IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$DeviceIndex" $RegistrationId
+        Format-Assignment "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$DeviceIndex" (ConvertTo-B64 $Chain)
+        Format-Assignment "IOT_DPS_INDIVIDUAL_X509_KEY_$DeviceIndex" $KeyB64
+        Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' (Get-Shared 'SAS_GROUP_KEY')
+        Format-Assignment 'IOT_DPS_CONNECTION_STRING' (Get-Shared 'DPS_CS')
     )
 } else {
     @(

@@ -1,15 +1,23 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# The C e2e tests of .github/workflows/ci-c-e2e.yml (test legs) against a per-run IoT Hub with
-# local authentication disabled: setup provisions it and grants the service connection's principal
-# IoT Hub Data Contributor; each test job takes that principal's Microsoft Entra token for the hub
-# service calls. Device X.509 and SAS, DPS and the Event Hub-compatible endpoint are unchanged.
+# The C e2e tests, the ESP32 sample in QEMU and their merged Linux coverage. The test jobs run
+# against a per-run IoT Hub with local authentication disabled: setup provisions it and grants the
+# service connection's principal IoT Hub Data Contributor, and teardown deletes it. With
+# sharedEnvironment, they run on the shared, long-lived environment instead, whose secrets
+# sharedKeyVault holds, with no setup or teardown. The ESP32 jobs always run on the shared
+# environment. Every job passes the principal's Microsoft Entra tokens to the tests for the hub
+# service calls and to read telemetry; devices keep their X.509 and SAS credentials with DPS.
 
 parameters:
   - name: azureServiceConnection
     type: string
   - name: azureLocation
+    type: string
+  - name: sharedEnvironment
+    type: boolean
+    default: false
+  - name: sharedKeyVault
     type: string
   # Device index of a job: osIndex * 4 + groupIndex (0..11).
   - name: platforms
@@ -65,44 +73,45 @@ jobs:
           sourceRoot: c
           workflow: ci-c-e2e
 
-  - job: setup
-    displayName: Provision test resources
-    dependsOn: changes
-    condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
-    timeoutInMinutes: 30
-    pool:
-      vmImage: ubuntu-24.04
-    variables:
-      - template: variables-e2e-resource-group.yml
-        parameters:
-          suite: c-e2e
-    steps:
-      - checkout: self
-        persistCredentials: false
-      - template: steps-e2e-framework.yml
-        parameters:
-          # master with the -DisableLocalAuth opt-in (Azure/iot-sdks-e2e-fx#466).
-          revision: 2a897f5bb210febb13c969ff6b30b9d0e33b54c8
-      - task: AzureCLI@2
-        name: configure
-        displayName: Provision and encrypt test configuration
-        inputs:
-          azureSubscription: ${{ parameters.azureServiceConnection }}
-          scriptType: pscore
-          scriptLocation: scriptPath
-          scriptPath: .azure-pipelines/scripts/provision.ps1
-          visibleAzLogin: false
-        env:
-          E2E_SUITE: c-e2e
-          E2E_LOCATION: ${{ parameters.azureLocation }}
-          E2E_RESOURCE_GROUP: $(e2eResourceGroup)
-          E2E_FRAMEWORK_ROOT: $(Agent.TempDirectory)/iot-sdks-e2e-fx
-          E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
-      - task: PublishPipelineArtifact@1
-        displayName: Publish encrypted test configuration
-        inputs:
-          targetPath: $(Agent.TempDirectory)/test-config/test-config.encrypted
-          artifact: e2e-test-config
+  - ${{ if not(parameters.sharedEnvironment) }}:
+    - job: setup
+      displayName: Provision test resources
+      dependsOn: changes
+      condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
+      timeoutInMinutes: 30
+      pool:
+        vmImage: ubuntu-24.04
+      variables:
+        - template: variables-e2e-resource-group.yml
+          parameters:
+            suite: c-e2e
+      steps:
+        - checkout: self
+          persistCredentials: false
+        - template: steps-e2e-framework.yml
+          parameters:
+            # master with the -DisableLocalAuth opt-in (Azure/iot-sdks-e2e-fx#466).
+            revision: 2a897f5bb210febb13c969ff6b30b9d0e33b54c8
+        - task: AzureCLI@2
+          name: configure
+          displayName: Provision and encrypt test configuration
+          inputs:
+            azureSubscription: ${{ parameters.azureServiceConnection }}
+            scriptType: pscore
+            scriptLocation: scriptPath
+            scriptPath: .azure-pipelines/scripts/provision.ps1
+            visibleAzLogin: false
+          env:
+            E2E_SUITE: c-e2e
+            E2E_LOCATION: ${{ parameters.azureLocation }}
+            E2E_RESOURCE_GROUP: $(e2eResourceGroup)
+            E2E_FRAMEWORK_ROOT: $(Agent.TempDirectory)/iot-sdks-e2e-fx
+            E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
+        - task: PublishPipelineArtifact@1
+          displayName: Publish encrypted test configuration
+          inputs:
+            targetPath: $(Agent.TempDirectory)/test-config/test-config.encrypted
+            artifact: e2e-test-config
 
   # Builds OpenSSL into the cache once per image, so the test jobs restore it.
   - job: openssl
@@ -127,10 +136,13 @@ jobs:
 
   - job: test
     displayName: Run C e2e tests
-    dependsOn: [setup, openssl]
+    ${{ if parameters.sharedEnvironment }}:
+      dependsOn: [openssl]
+    ${{ else }}:
+      dependsOn: [setup, openssl]
+      variables:
+        configKey: $[ dependencies.setup.outputs['configure.configKey'] ]
     timeoutInMinutes: 45
-    variables:
-      configKey: $[ dependencies.setup.outputs['configure.configKey'] ]
     strategy:
       matrix:
         ${{ each platform in parameters.platforms }}:
@@ -182,28 +194,20 @@ jobs:
         workingDirectory: c
         env:
           PRESET: $(preset)
-      - task: DownloadPipelineArtifact@2
-        displayName: Download encrypted test configuration
-        inputs:
-          buildType: current
-          artifactName: e2e-test-config
-          targetPath: $(Agent.TempDirectory)/test-config
+      - ${{ if not(parameters.sharedEnvironment) }}:
+        - task: DownloadPipelineArtifact@2
+          displayName: Download encrypted test configuration
+          inputs:
+            buildType: current
+            artifactName: e2e-test-config
+            targetPath: $(Agent.TempDirectory)/test-config
       # Taken after the build, so its 60-90 minutes cover the tests. The tests run without the
       # Azure CLI login, which this task removes.
-      - task: AzureCLI@2
-        displayName: Get IoT Hub and Event Hubs access tokens
-        inputs:
-          azureSubscription: ${{ parameters.azureServiceConnection }}
-          scriptType: pscore
-          scriptLocation: inlineScript
-          visibleAzLogin: false
-          inlineScript: |
-            $ErrorActionPreference = 'Stop'
-            foreach ($resource in @{ hubAccessToken = 'https://iothubs.azure.net'; eventHubsAccessToken = 'https://eventhubs.azure.net' }.GetEnumerator()) {
-              $token = az account get-access-token --resource $resource.Value --query accessToken -o tsv --only-show-errors
-              if ($LASTEXITCODE -ne 0 -or -not $token) { throw "Could not get an access token for $($resource.Value)." }
-              Write-Host "##vso[task.setvariable variable=$($resource.Key);issecret=true]$token"
-            }
+      - template: steps-c-e2e-access.yml
+        parameters:
+          azureServiceConnection: ${{ parameters.azureServiceConnection }}
+          ${{ if parameters.sharedEnvironment }}:
+            sharedKeyVault: ${{ parameters.sharedKeyVault }}
       - task: PowerShell@2
         displayName: Run tests
         inputs:
@@ -212,7 +216,8 @@ jobs:
           filePath: .azure-pipelines/scripts/run-c-e2e.ps1
           workingDirectory: $(Build.SourcesDirectory)
         env:
-          CONFIG_KEY: $(configKey)
+          ${{ if not(parameters.sharedEnvironment) }}:
+            CONFIG_KEY: $(configKey)
           E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
           IOTHUB_SERVICE_ACCESS_TOKEN: $(hubAccessToken)
           IOTHUB_EVENTHUB_ACCESS_TOKEN: $(eventHubsAccessToken)
@@ -245,13 +250,148 @@ jobs:
           targetPath: c/coverage/e2e.json
           artifact: coverage-trace-e2e-linux-$(group)
 
-  - template: jobs-e2e-teardown.yml
-    parameters:
-      azureServiceConnection: ${{ parameters.azureServiceConnection }}
-      suite: c-e2e
-      dependsOn: [setup, test]
+  # Only when every test job succeeded: a failed group leaves partial coverage, and merging it would
+  # understate coverage for an unrelated reason.
+  - job: coverage
+    displayName: Merge Linux coverage
+    dependsOn: test
+    condition: succeeded()
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+      - checkout: self
+        fetchDepth: '1'
+        persistCredentials: false
+      - bash: python3 -m pip install --upgrade 'gcovr==7.2'
+        displayName: Install gcovr
+      - task: DownloadPipelineArtifact@2
+        displayName: Download coverage tracefiles
+        inputs:
+          buildType: current
+          itemPattern: coverage-trace-e2e-linux-*/**
+          targetPath: $(Agent.TempDirectory)/traces
+      - bash: |
+          set -euo pipefail
+          mapfile -t files < <(find "$TRACES" -name '*.json' | sort)
+          if [ "${#files[@]}" -ne 4 ]; then
+            echo "##vso[task.logissue type=error]Expected 4 Linux tracefiles, got ${#files[@]}."
+            exit 1
+          fi
+          args=()
+          for f in "${files[@]}"; do echo "  $f"; args+=(--add-tracefile "$f"); done
+          mkdir -p c/coverage
+          gcovr --root c "${args[@]}" --merge-mode-functions=separate --json c/coverage/e2e.json
+        displayName: Merge tracefiles
+        env:
+          TRACES: $(Agent.TempDirectory)/traces
+      - task: PublishPipelineArtifact@1
+        displayName: Publish merged coverage tracefile
+        inputs:
+          targetPath: c/coverage/e2e.json
+          artifact: coverage-trace-e2e
 
-  - template: jobs-e2e-gate.yml
-    parameters:
-      displayName: C e2e gate
-      jobs: [setup, openssl, test]
+  # The ESP32 IoT Hub sample (samples/unified/esp32) in QEMU: the firmware is the device,
+  # az_iot_tests_e2e_esp32_qemu the service (c/eng/esp-idf-qemu-e2e.sh). esp32 keeps its key in
+  # flash; esp32c3 and esp32s3 in the Digital Signature peripheral, its key burned into an emulated
+  # eFuse. Always on the shared environment: the per-run enrollments' RSA-4096 keys exceed the
+  # esp32c3 Digital Signature peripheral's 3072 bits, and the shared group CA issues RSA-2048.
+  # Device indexes 12, 13 and 14, after the test jobs' 0..11.
+  - job: esp32_qemu
+    displayName: ESP32 in QEMU
+    dependsOn: changes
+    condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
+    timeoutInMinutes: 45
+    strategy:
+      matrix:
+        esp32:
+          target: esp32
+          groupIndex: 0
+        esp32c3:
+          target: esp32c3
+          groupIndex: 1
+        esp32s3:
+          target: esp32s3
+          groupIndex: 2
+    pool:
+      vmImage: ubuntu-24.04
+    variables:
+      deviceDirectory: $(Agent.TempDirectory)/esp32-device
+    steps:
+      - checkout: self
+        fetchDepth: '1'
+        persistCredentials: false
+        # The ESP-IDF component builds azure-sdk-for-c from c/deps.
+        submodules: true
+      - template: steps-c-e2e-access.yml
+        parameters:
+          azureServiceConnection: ${{ parameters.azureServiceConnection }}
+          sharedKeyVault: ${{ parameters.sharedKeyVault }}
+          deviceIndexOs: '3'
+          deviceIndexGroup: $(groupIndex)
+      # The test runs in the ESP-IDF container: hand it the device's PEMs and a docker --env-file
+      # (NAME=value, the value taken literally).
+      - pwsh: |
+          $ErrorActionPreference = 'Stop'
+          & ./.azure-pipelines/scripts/import-test-config.ps1
+          $index = 12 + [int]$env:GROUP_INDEX
+          $registrationId = (Get-Item "env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$index").Value
+          New-Item -ItemType Directory -Path $env:DEVICE_DIRECTORY -Force | Out-Null
+          foreach ($pair in @(@('CERTIFICATE', 'cert.pem'), @('KEY', 'key.pem'))) {
+            $base64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_$($pair[0])_$index").Value
+            [IO.File]::WriteAllBytes((Join-Path $env:DEVICE_DIRECTORY $pair[1]), [Convert]::FromBase64String($base64))
+          }
+          @(
+            "E2E_ESP32_DEVICE_ID=$registrationId"
+            foreach ($name in @('IOT_DPS_ID_SCOPE', 'IOTHUB_HOSTNAME', 'IOTHUB_SERVICE_ACCESS_TOKEN',
+                                'IOTHUB_EVENTHUB_CONNECTION_STRING', 'IOTHUB_EVENTHUB_ACCESS_TOKEN',
+                                'IOTHUB_EVENTHUB_PARTITION_COUNT', 'IOTHUB_EVENTHUB_CONSUMER_GROUP')) {
+              $value = (Get-Item "env:$name" -ErrorAction SilentlyContinue).Value
+              if ($value) { "$name=$value" }
+            }
+          ) | Set-Content -Path (Join-Path $env:DEVICE_DIRECTORY 'env')
+          Write-Host "e2e device (index $index): $registrationId"
+        displayName: Write the device files
+        env:
+          E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
+          IOTHUB_SERVICE_ACCESS_TOKEN: $(hubAccessToken)
+          IOTHUB_EVENTHUB_ACCESS_TOKEN: $(eventHubsAccessToken)
+          GROUP_INDEX: $(groupIndex)
+          DEVICE_DIRECTORY: $(deviceDirectory)
+      # espressif/idf:v6.1, pinned by digest (as ci-c.yml's esp-idf job). Its entrypoint sources
+      # export.sh; the host compiler and OpenSSL headers build the test.
+      - bash: |
+          docker run --rm --env-file "$DEVICE_DIRECTORY/env" \
+            -v "$BUILD_SOURCESDIRECTORY:/work" -v "$DEVICE_DIRECTORY:/device:ro" -w /work/c \
+            espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c \
+            bash -c 'set -e
+              git config --global --add safe.directory /work
+              bash eng/apt-install.sh gcc libc6-dev libssl-dev
+              bash eng/esp-idf-qemu-e2e.sh "$0" /device/cert.pem /device/key.pem /tmp/esp32-qemu-e2e' \
+            "$TARGET"
+        displayName: Run e2e
+        env:
+          TARGET: $(target)
+          DEVICE_DIRECTORY: $(deviceDirectory)
+      - bash: rm -rf "$DEVICE_DIRECTORY"
+        displayName: Remove the device files
+        condition: always()
+        env:
+          DEVICE_DIRECTORY: $(deviceDirectory)
+
+  - ${{ if parameters.sharedEnvironment }}:
+    - template: jobs-e2e-gate.yml
+      parameters:
+        displayName: C e2e gate
+        waitForTeardown: false
+        jobs: [openssl, test, coverage, esp32_qemu]
+  - ${{ else }}:
+    - template: jobs-e2e-teardown.yml
+      parameters:
+        azureServiceConnection: ${{ parameters.azureServiceConnection }}
+        suite: c-e2e
+        dependsOn: [setup, test]
+
+    - template: jobs-e2e-gate.yml
+      parameters:
+        displayName: C e2e gate
+        jobs: [setup, openssl, test, coverage, esp32_qemu]
