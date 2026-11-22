@@ -1,0 +1,72 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# The C build environment of an e2e job. On Windows, the MSVC x64 developer environment. Unless
+# variable `openssl` is 'system', OpenSSL $(openssl) built by c/eng/install-openssl.sh (cached per
+# image) and selected for CMake through OPENSSL_ROOT_DIR, PATH and, on Linux, PKG_CONFIG_PATH and
+# the distribution's CA bundle (SSL_CERT_FILE), as .github/actions/install-openssl does.
+
+steps:
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+      $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+      $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+      if (-not $vs) { throw 'No Visual Studio installation with the MSVC x64 tools.' }
+      $before = [Environment]::GetEnvironmentVariables()
+      $after = cmd /c "`"$vs\VC\Auxiliary\Build\vcvars64.bat`" >nul && set"
+      if ($LASTEXITCODE -ne 0) { throw "vcvars64.bat failed ($LASTEXITCODE)." }
+      $oldPath = @($env:PATH -split ';')
+      foreach ($line in $after) {
+        if ($line -notmatch '^([^=]+)=(.*)$') { continue }
+        $name, $value = $Matches[1], $Matches[2]
+        if ($name -eq 'Path') {
+          $added = @($value -split ';' | Where-Object { $_ -and $_ -notin $oldPath })
+          [array]::Reverse($added)
+          foreach ($entry in $added) { Write-Host "##vso[task.prependpath]$entry" }
+        }
+        elseif ($before[$name] -ne $value) {
+          Write-Host "##vso[task.setvariable variable=$name]$value"
+        }
+      }
+    displayName: Set up MSVC (Windows)
+    condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'))
+
+  - task: Cache@2
+    displayName: Restore OpenSSL $(openssl)
+    condition: and(succeeded(), ne(variables['openssl'], 'system'))
+    inputs:
+      key: '"openssl-$(openssl)" | "$(Agent.OS)" | "$(Agent.OSArchitecture)" | "$(vmImage)" | c/eng/install-openssl.sh'
+      path: $(Pipeline.Workspace)/openssl-$(openssl)
+      cacheHitVar: OPENSSL_RESTORED
+
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+      $bash = if ($IsWindows) { Join-Path $env:ProgramFiles 'Git\bin\bash.exe' } else { 'bash' }
+      & $bash c/eng/install-openssl.sh $env:OPENSSL_VERSION $env:OPENSSL_PREFIX.Replace('\', '/')
+      if ($LASTEXITCODE -ne 0) { throw "OpenSSL $env:OPENSSL_VERSION build failed ($LASTEXITCODE)." }
+    displayName: Build OpenSSL $(openssl)
+    condition: and(succeeded(), ne(variables['openssl'], 'system'), ne(variables['OPENSSL_RESTORED'], 'true'))
+    env:
+      OPENSSL_VERSION: $(openssl)
+      OPENSSL_PREFIX: $(Pipeline.Workspace)/openssl-$(openssl)
+
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+      $root = $env:OPENSSL_PREFIX.Replace('\', '/')
+      $version = & "$root/bin/openssl" version
+      if ($version -notlike "OpenSSL $env:OPENSSL_VERSION *") { throw "Unexpected OpenSSL: $version" }
+      Write-Host "##vso[task.setvariable variable=OPENSSL_ROOT_DIR]$root"
+      Write-Host "##vso[task.prependpath]$root/bin"
+      if (-not $IsWindows) {
+        $pkgConfigPath = if ($env:PKG_CONFIG_PATH) { "$root/lib/pkgconfig:$env:PKG_CONFIG_PATH" } else { "$root/lib/pkgconfig" }
+        Write-Host "##vso[task.setvariable variable=PKG_CONFIG_PATH]$pkgConfigPath"
+        # The build's own OPENSSLDIR holds no CA certificates: use the distribution's.
+        if (-not $env:SSL_CERT_FILE -and (Test-Path /etc/ssl/certs/ca-certificates.crt)) {
+          Write-Host '##vso[task.setvariable variable=SSL_CERT_FILE]/etc/ssl/certs/ca-certificates.crt'
+        }
+      }
+    displayName: Select OpenSSL $(openssl)
+    condition: and(succeeded(), ne(variables['openssl'], 'system'))
+    env:
+      OPENSSL_VERSION: $(openssl)
+      OPENSSL_PREFIX: $(Pipeline.Workspace)/openssl-$(openssl)
