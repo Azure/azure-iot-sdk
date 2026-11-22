@@ -11,7 +11,7 @@ group's CA, and writes the test-config script the workflow sources (the variable
 provisioning action emits), including the shared symmetric-key group's key for the SAS
 suites. Devices register through the groups on first connect, so no Azure call is made here.
 
-Default (ci-c-samples), inputs from the environment (repository secrets/variables):
+Default (with -Prefix E2E_MQTTV5_SHARED: ci-c-e2e-mqttv5, ci-c-e2e-adu), inputs from the environment (repository secrets/variables):
   E2E_SHARED_GROUP_CA        base64 of a PEM holding the group CA certificate and its private key
   E2E_SHARED_IOTHUB_CS       IoT Hub 'service' policy connection string
   E2E_SHARED_EVENTHUB_CS     Event Hub-compatible endpoint connection string, 'service' policy

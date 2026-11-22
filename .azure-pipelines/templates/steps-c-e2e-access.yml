@@ -24,6 +24,10 @@ parameters:
   - name: deviceIndexGroup
     type: string
     default: $(groupIndex)
+  # A samples job's slot: its device index and consumer group samples-<slot>, instead of the above.
+  - name: samplesSlot
+    type: string
+    default: ''
 
 steps:
   - task: AzureCLI@2
@@ -44,7 +48,10 @@ steps:
         E2E_CSR: 'true'
       ${{ if parameters.sharedKeyVault }}:
         E2E_SHARED_KEY_VAULT: ${{ parameters.sharedKeyVault }}
-        E2E_DEVICE_INDEX_OS: ${{ parameters.deviceIndexOs }}
-        E2E_DEVICE_INDEX_GROUP: ${{ parameters.deviceIndexGroup }}
+        ${{ if parameters.samplesSlot }}:
+          E2E_SAMPLES_SLOT: ${{ parameters.samplesSlot }}
+        ${{ else }}:
+          E2E_DEVICE_INDEX_OS: ${{ parameters.deviceIndexOs }}
+          E2E_DEVICE_INDEX_GROUP: ${{ parameters.deviceIndexGroup }}
         E2E_RUN_ID: $(Build.BuildId)-$(System.JobAttempt)
         E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config

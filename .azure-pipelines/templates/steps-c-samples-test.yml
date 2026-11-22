@@ -1,0 +1,159 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# The steps of a C samples job (jobs-c-e2e.yml): build the samples and their test with the pipeline
+# hooks, get the job's device, run its samples (scripts/run-c-samples.ps1), and publish the results,
+# each sample's output and the proxy's log. Reads the job's matrix variables vmImage, openssl,
+# preset, adapter, slot and, but with csr, shard.
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+  - name: sharedEnvironment
+    type: boolean
+  - name: sharedKeyVault
+    type: string
+  # The certificate-management samples (samples_csr), always on a provisioned environment.
+  - name: csr
+    type: boolean
+    default: false
+
+steps:
+  - checkout: self
+    fetchDepth: '1'
+    persistCredentials: false
+  - template: steps-c-toolchain.yml
+  # libcurl: file_upload and dps_tpm, and the configure requires it. libtss2-dev and swtpm:
+  # dps_tpm_tss. softhsm2, opensc, meson and pkg-config: the PKCS#11 token of hsm_pkcs11 and its
+  # OpenSSL provider.
+  - bash: |
+      set -euo pipefail
+      packages=(ninja-build libssl-dev libcurl4-openssl-dev)
+      if [ "$E2E_CSR" != True ]; then
+        packages+=(libtss2-dev swtpm softhsm2 opensc meson pkg-config)
+      fi
+      bash c/eng/apt-install.sh "${packages[@]}"
+    displayName: Install build tools (Linux)
+    condition: and(succeeded(), eq(variables['Agent.OS'], 'Linux'))
+    env:
+      E2E_CSR: ${{ parameters.csr }}
+  # libcurl for MSVC (vcpkg curl:x64-windows, Schannel TLS), cached per image: the image pins its
+  # vcpkg checkout, so the image version fixes the port versions.
+  - pwsh: |
+      $version = if ($env:ImageVersion) { $env:ImageVersion } else { 'unknown' }
+      Write-Host "##vso[task.setvariable variable=imageVersion]$version"
+    displayName: Read the image version (Windows)
+    condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'))
+  - task: Cache@2
+    displayName: Restore libcurl (Windows)
+    condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'))
+    inputs:
+      key: '"curl-x64-windows" | "$(vmImage)" | "$(imageVersion)"'
+      path: $(Pipeline.Workspace)/curl
+      cacheHitVar: CURL_RESTORED
+  - pwsh: |
+      & (Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg') install curl:x64-windows "--x-install-root=$env:CURL_ROOT"
+      if ($LASTEXITCODE -ne 0) { throw "vcpkg install curl failed ($LASTEXITCODE)." }
+    displayName: Build libcurl (Windows)
+    condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'), ne(variables['CURL_RESTORED'], 'true'))
+    env:
+      CURL_ROOT: $(Pipeline.Workspace)/curl
+  # For find_package(CURL), and on PATH for what links it (Debug builds link libcurl-d.dll).
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+      $prefix = (Join-Path $env:CURL_ROOT 'x64-windows').Replace('\', '/')
+      if (-not (Test-Path "$prefix/include/curl/curl.h")) { throw "libcurl not found under $prefix." }
+      Write-Host "##vso[task.setvariable variable=CMAKE_PREFIX_PATH]$prefix"
+      Write-Host "##vso[task.prependpath]$prefix/bin"
+      Write-Host "##vso[task.prependpath]$prefix/debug/bin"
+    displayName: Select libcurl (Windows)
+    condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'))
+    env:
+      CURL_ROOT: $(Pipeline.Workspace)/curl
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+      cmake --preset $env:PRESET -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E=ON `
+        -DAZ_IOT_BUILD_SAMPLES_WITH_PIPELINE_HOOKS=ON -DAZ_IOT_BUILD_E2E_SAMPLES=ON
+      if ($LASTEXITCODE -ne 0) { throw "CMake configure failed ($LASTEXITCODE)." }
+      cmake --build --preset $env:PRESET --config Debug --target az_iot_tests_e2e_samples
+      if ($LASTEXITCODE -ne 0) { throw "Build failed ($LASTEXITCODE)." }
+      # Linux: hsm_pkcs11 is built for both adapters, dps_tpm_tss where tpm2-tss is found.
+      if ($IsLinux -and $env:E2E_CSR -ne 'true') {
+        foreach ($name in 'hsm_pkcs11', 'dps_tpm_tss') {
+          $test = "^az_iot_samples_e2e_authentication_$($name)_$($env:ADAPTER)$"
+          $listed = ctest --test-dir "build/$($env:PRESET)" -N -R $test | Out-String
+          if ($listed -notmatch 'Total Tests: 1\b') { throw "No test $test." }
+        }
+      }
+    displayName: Build the samples and their test
+    workingDirectory: c
+    env:
+      PRESET: $(preset)
+      ADAPTER: $(adapter)
+      E2E_CSR: ${{ parameters.csr }}
+  - ${{ if not(parameters.csr) }}:
+    # proxy.py, for unified/proxy; its log shows the tunnels the sample opened. run-c-samples.ps1
+    # starts it.
+    - pwsh: |
+        $ErrorActionPreference = 'Stop'
+        & ($IsWindows ? 'python' : 'python3') -m venv $env:PROXY_VENV
+        if ($LASTEXITCODE -ne 0) { throw "python -m venv failed ($LASTEXITCODE)." }
+        $python = Join-Path $env:PROXY_VENV ($IsWindows ? 'Scripts/python.exe' : 'bin/python')
+        & $python -m pip install --quiet 'proxy.py==2.4.10'
+        if ($LASTEXITCODE -ne 0) { throw "pip install proxy.py failed ($LASTEXITCODE)." }
+      displayName: Install the HTTP proxy
+      env:
+        PROXY_VENV: $(Agent.TempDirectory)/proxy-venv
+  - ${{ if not(parameters.sharedEnvironment) }}:
+    - task: DownloadPipelineArtifact@2
+      displayName: Download encrypted test configuration
+      inputs:
+        buildType: current
+        artifactName: ${{ iif(parameters.csr, 'samples-csr-test-config', 'samples-test-config') }}
+        targetPath: $(Agent.TempDirectory)/test-config
+  # Taken after the build, so its 60-90 minutes cover the samples. They run without the Azure CLI
+  # login, which this task removes.
+  - template: steps-c-e2e-access.yml
+    parameters:
+      azureServiceConnection: ${{ parameters.azureServiceConnection }}
+      ${{ if parameters.sharedEnvironment }}:
+        sharedKeyVault: ${{ parameters.sharedKeyVault }}
+        samplesSlot: $(slot)
+  - task: PowerShell@2
+    displayName: Run the samples
+    inputs:
+      pwsh: true
+      targetType: filePath
+      filePath: .azure-pipelines/scripts/run-c-samples.ps1
+      workingDirectory: $(Build.SourcesDirectory)
+    env:
+      ${{ if not(parameters.sharedEnvironment) }}:
+        CONFIG_KEY: $(configKey)
+      # The CSR samples read the built-in endpoint with its key (scripts/provision.ps1).
+      ${{ if not(parameters.csr) }}:
+        IOTHUB_EVENTHUB_ACCESS_TOKEN: $(eventHubsAccessToken)
+        E2E_SAMPLES_SHARD: $(shard)
+        E2E_PROXY_VENV: $(Agent.TempDirectory)/proxy-venv
+      E2E_SAMPLES_CSR: ${{ parameters.csr }}
+      IOTHUB_SERVICE_ACCESS_TOKEN: $(hubAccessToken)
+      E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
+      E2E_PRESET: $(preset)
+      E2E_SAMPLES_ADAPTER: $(adapter)
+      E2E_SAMPLES_SLOT: $(slot)
+      E2E_RESULTS_DIRECTORY: $(Common.TestResultsDirectory)
+      E2E_LOGS_DIRECTORY: $(Build.ArtifactStagingDirectory)/samples-logs
+  - task: PublishTestResults@2
+    displayName: Publish test results
+    condition: always()
+    inputs:
+      testResultsFormat: JUnit
+      testResultsFiles: '$(Common.TestResultsDirectory)/**/*.xml'
+      testRunTitle: C samples $(System.JobDisplayName)
+      failTaskOnMissingResultsFile: true
+  # Set by run-c-samples.ps1 once it copied the logs.
+  - task: PublishPipelineArtifact@1
+    displayName: Publish sample and proxy logs
+    condition: and(always(), eq(variables['samplesLogs'], 'true'))
+    inputs:
+      targetPath: $(Build.ArtifactStagingDirectory)/samples-logs
+      artifact: ${{ iif(parameters.csr, 'samples-csr-logs', 'samples-logs') }}-$(System.JobName)-$(System.JobAttempt)

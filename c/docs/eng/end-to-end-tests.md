@@ -205,13 +205,18 @@ changes nothing under `c/`, `common/` (Markdown aside) or `.azure-pipelines/`, a
 | --- | --- | --- |
 | `setup` | ubuntu | scheduled and manual runs only: provisions one resource group (IoT Hub + DPS + Event Hubs) and publishes the encrypted test configuration |
 | `setup_csr` | ubuntu | scheduled and manual runs only: provisions a certificate-management resource group (IoT Hub + DPS linked to Azure Device Registration) and publishes its encrypted test configuration |
+| `setup_samples` | ubuntu | scheduled and manual runs only: provisions the samples' resource group (IoT Hub + DPS + Event Hubs, file upload) |
+| `setup_samples_csr` | ubuntu | every run: provisions the CSR samples' certificate-management resource group |
 | `openssl` | windows, ubuntu | builds OpenSSL 4.1.0 into the pipeline cache once per image |
 | `test` | ubuntu (OpenSSL 3.0 and 4.1.0) + windows (4.1.0), 4 groups each | builds the e2e tests, materializes its device's X.509 material, and runs its group: `core` (every e2e suite but the three below, plus custody on Linux), `transport_paho`, `transport_az_mqtt`, `sas` (both adapters) |
 | `test_csr` | ubuntu (OpenSSL 3.0) + windows (4.1.0) | builds and runs the CSR suites (`e2e_csr`, both adapters) on its own bootstrap device; the Linux job publishes `coverage-trace-e2e-csr` |
 | `coverage` | ubuntu | merges the four OpenSSL 3.0 groups' tracefiles into `coverage-trace-e2e`, only when every `test` job passed |
 | `coverage_combined` | ubuntu | not on pull requests, nor in the gate: the combined coverage report ([code-coverage.md](code-coverage.md#nightly-combined-coverage)) |
 | `esp32_qemu` | ubuntu, esp32, esp32c3 and esp32s3 (matrix) | the ESP32 IoT Hub sample in QEMU, always on the shared environment ([ESP32 in QEMU](#esp32-in-qemu)) |
-| `teardown`, `teardown_csr` | ubuntu | scheduled and manual runs only: delete the resource groups, even when a job failed or the run was canceled |
+| `samples` | ubuntu + windows, 2 adapters x 2 shards each | the connecting samples (`samples_mqttv3`, [Samples](#samples)) |
+| `samples_csr` | ubuntu + windows, 2 adapters each | the certificate-management samples (`samples_csr`), always on their provisioned environment |
+| `teardown`, `teardown_csr`, `teardown_samples` | ubuntu | scheduled and manual runs only: delete the resource groups, even when a job failed or the run was canceled |
+| `teardown_samples_csr` | ubuntu | every run: deletes the CSR samples' resource group |
 
 Each `test` job has its own device (index os-index * 4 + group-index) and Event Hubs consumer
 group, so the groups run in parallel without sharing a device, twin or reader quota (Event Hubs
@@ -222,7 +227,8 @@ tokens only. Each job takes the pipeline service connection principal's tokens f
 `https://iothubs.azure.net` (`IOTHUB_SERVICE_ACCESS_TOKEN`) and `https://eventhubs.azure.net`
 (`IOTHUB_EVENTHUB_ACCESS_TOKEN`) right before the tests, which run without the Azure CLI login. The
 tokens are not refreshed and live 60-90 minutes, longer than a job. The CSR suites make no hub
-service calls, so `test_csr` takes no tokens. The built-in Event
+service calls, so `test_csr` takes no tokens. The CSR samples read telemetry from their hub's
+built-in endpoint with its key (below). The built-in Event
 Hub-compatible endpoint accepts only shared access keys, so device messages are routed to an Event
 Hub (`telemetry`, 4 partitions, consumer groups `e2e-0`..`e2e-11`) in a namespace with local
 authentication disabled; the hub sends with its system-assigned identity (**Azure Event Hubs Data
@@ -256,7 +262,7 @@ symmetric-key enrollment group. Its secrets:
 
 The principal needs **Key Vault Secrets User** on the vault, **IoT Hub Data Contributor** on the
 hub and **Azure Event Hubs Data Receiver** on the Event Hub, which needs consumer groups
-`e2e-0`..`e2e-11`. Jobs pick consumer groups from the build ID and device index, so a run uses
+`e2e-0`..`e2e-11` and, for the samples, `samples-0`..`samples-7`. Jobs pick consumer groups from the build ID and device index, so a run uses
 each at most twice. The hub routes device messages to that Event Hub and to the built-in
 endpoint, and needs file upload with notifications. The TPM suite deletes its enrollment and
 device; other devices the runs register stay in the shared hub. Pull requests from forks get no
@@ -403,33 +409,37 @@ Each test:
 | `authentication/dps_sas_key_issued_cert` (`samples_csr`) | Telemetry `"auth":"sas-key,x509-issued"`; the sample gets the certificate-management environment's `AZ_IOT_DPS_ENROLLMENT_GROUP_KEY`. |
 | `authentication/dps_tpm`, `dps_tpm_tss` | `--enrollment` first; the test creates the TPM individual enrollment, then telemetry `"attestation":"tpm"`. The enrollment and device are always deleted. `dps_tpm_tss` runs against an swtpm the test starts. |
 
-CI: [`ci-c-samples.yml`](../../../.github/workflows/ci-c-samples.yml), on pull requests and pushes
-to `main` that change `c/` or `common/` (Markdown excluded), and on demand. Not a required check.
+CI: the `samples` and `samples_csr` jobs of [`ci-c-e2e`](#ci-c-e2e-azure-pipelines), with the
+service connection principal's Microsoft Entra tokens ([`run-c-samples.ps1`](../../../.azure-pipelines/scripts/run-c-samples.ps1)).
 
-- Legs: {ubuntu-24.04, windows-latest} x {paho, az_mqtt} x shard {0, 1}. Shard 0 is
-  telemetry, connect_first, websockets, proxy, multithreaded_telemetry, dps_sas_key and
-  user_provided_sas_token; shard 1 the rest. A leg runs its samples one after the other on its
-  device.
-- Slot = os-index * 4 + adapter-index * 2 + shard (0..7). Each leg reads events on consumer group
+- Jobs: {ubuntu-24.04, windows-latest} x {paho, az_mqtt} x shard {0, 1}, with the image's OpenSSL.
+  Shard 0 is telemetry, connect_first, websockets, proxy, multithreaded_telemetry, dps_sas_key
+  and user_provided_sas_token; shard 1 the rest. A job runs its samples one after the other on
+  its device.
+- Slot = os-index * 4 + adapter-index * 2 + shard (0..7). Each job reads events on consumer group
   `samples-<slot>`.
-- Pull requests use the shared environment: device index 20 + slot, registration ID
-  `samples-<run>-<attempt>-<index>` (`e2e-shared-device.ps1`). The hub needs consumer groups
-  `samples-0`..`samples-7`.
-- Pushes and manual runs provision `CSDKE2ESamples-<run>-<attempt>` (8 X.509 enrollments, the SAS
-  group, file upload) and always delete it.
-- Pull requests from forks and Dependabot skip.
-- Each leg uploads its JUnit, each sample's `sample-output.log` and the proxy log.
-- CSR legs (`samples_csr`): {ubuntu-24.04, windows-latest} x {paho, az_mqtt}, slot 0..3. Every run,
-  pull requests included, provisions `CSDKE2ESamplesCert-<run>-<attempt>` (certificate management,
-  an X.509 enrollment group with four devices, the SAS group, both linked to the signing CA) and
-  always deletes it. A leg uses group identity `IOT_DPS_GROUP_X509_*_<slot>` as its bootstrap
-  device and consumer group `samples-<slot>` on that hub. Two legs run at a time: with all four
-  registering with a CSR at once, DPS left some registrations unanswered past the samples' 60 s.
+- Pull requests use the shared environment: device index = slot, registration ID
+  `ci-ado-samples-<build>-<attempt>-<slot>` (`e2e-shared-device.ps1 -EntraAuthentication`).
+- Scheduled and manual runs provision `CSDKE2ESamples-Ado-<project>-<build>` (8 X.509
+  enrollments, the SAS group, file upload, device messages routed to an Event Hub with consumer
+  groups `samples-0`..`samples-7`) and always delete it. Its own hub, since the samples' file-upload
+  watchers would compete with the e2e tests'.
+- Each job publishes its JUnit and, as an artifact, each sample's `sample-output.log` and the
+  proxy log.
+- CSR jobs (`samples_csr`): {ubuntu-24.04, windows-latest} x {paho, az_mqtt}, slot 0..3. Every run,
+  pull requests included, provisions `CSDKE2ESamplesCert-Ado-<project>-<build>` (certificate
+  management, hub `disableLocalAuth=true`, an X.509 enrollment group with four devices, the SAS
+  group, both linked to the signing CA) and always deletes it: the shared CSR environment gives no
+  hub or Event Hub access. A job uses group identity `IOT_DPS_GROUP_X509_*_<slot>` as its bootstrap
+  device and consumer group `samples-<slot>` of the hub's built-in endpoint, read with that
+  endpoint's key: once Azure Device Registration links the hub, `az iot hub` cannot add the routing
+  to an Event Hub. Two jobs run at a time: with all four registering with a CSR at once, DPS left
+  some registrations unanswered past the samples' 60 s.
 
-Not in this workflow: the samples that do not connect, which are CTest tests of `ci-c` already;
+Not in these jobs: the samples that do not connect, which are CTest tests of `ci-c` already;
 `unified/esp32` ([ESP32 in QEMU](#esp32-in-qemu)). Windows: see [Not run on Windows](#not-run-on-windows).
 
-Run locally, with the variables above (as the workflow's "Run the samples" step sets them) and
+Run locally, with the variables above (as `run-c-samples.ps1` sets them) and
 proxy.py listening:
 
 ```pwsh

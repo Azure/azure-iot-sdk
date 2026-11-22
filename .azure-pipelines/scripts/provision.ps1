@@ -39,36 +39,59 @@ if ($env:E2E_SUITE -eq 'csr') {
     $arguments.EnableCertificateManagement = $true
     $arguments.DpsSymmKeyGroupEnrollmentDevices = 1
 }
-if ($env:E2E_SUITE -eq 'c-e2e') {
-    # One enrollment per test job (device index 0..11), a symmetric-key group for the SAS suite,
-    # and file upload. Local authentication is disabled, so the tests authorize hub service calls
-    # with a Microsoft Entra token.
-    $arguments.DpsX509IndividualEnrollments = 12
+if ($env:E2E_SUITE -in @('c-e2e', 'c-samples')) {
+    # One enrollment per job (c-e2e: test device index 0..11; c-samples: samples slot 0..7), a
+    # symmetric-key group for the SAS suite and samples, and file upload. Local authentication is
+    # disabled, so the tests authorize hub service calls with a Microsoft Entra token.
+    $arguments.DpsX509IndividualEnrollments = if ($env:E2E_SUITE -eq 'c-e2e') { 12 } else { 8 }
     $arguments.DpsX509GroupEnrollmentDevices = 0
     $arguments.DpsSymmKeyGroupEnrollmentDevices = 1
     $arguments.EnableFileUpload = $true
     $arguments.DisableLocalAuth = $true
 }
-if ($env:E2E_SUITE -eq 'c-e2e-csr') {
+if ($env:E2E_SUITE -in @('c-e2e-csr', 'c-samples-csr')) {
     # A certificate-management (ADR) environment: one bootstrap identity under the X.509 group per
-    # test job (device index 0..1), and a symmetric-key group, both linked to the signing CA. The C
-    # test configuration needs an individual enrollment. The CSR suites make no hub service calls.
+    # job (c-e2e-csr: test_csr device index 0..1; c-samples-csr: CSR samples slot 0..3), and a
+    # symmetric-key group, both linked to the signing CA. The C test configuration needs an
+    # individual enrollment. The CSR e2e suites make no hub service calls.
     $arguments.EnableCertificateManagement = $true
     $arguments.DpsX509IndividualEnrollments = 1
-    $arguments.DpsX509GroupEnrollmentDevices = 2
+    $arguments.DpsX509GroupEnrollmentDevices = if ($env:E2E_SUITE -eq 'c-e2e-csr') { 2 } else { 4 }
     $arguments.DpsSymmKeyGroupEnrollmentDevices = 1
     $arguments.DisableLocalAuth = $true
 }
+# The suites whose tests read telemetry from an Event Hub it is routed to: one consumer group per
+# job, since Event Hubs allows 5 readers per partition per consumer group.
+$consumerGroups = @(switch ($env:E2E_SUITE) {
+    'c-e2e' { 0..11 | ForEach-Object { "e2e-$_" } }
+    'c-samples' { 0..7 | ForEach-Object { "samples-$_" } }
+})
 $testEnvironment = New-AzIotTestEnvironment @arguments
 
-if ($env:E2E_SUITE -eq 'c-e2e') {
+if ($consumerGroups.Count -gt 0 -or $env:E2E_SUITE -eq 'c-samples-csr') {
     # The connection string names the hub; its key is unusable with local authentication disabled.
     $hostName = ($testEnvironment.IotHub.ConnectionString -split ';' | Where-Object { $_ -like 'HostName=*' }) -replace '^HostName=', ''
     $hubName = "$hostName".Split('.')[0]
     if (-not $hubName) { throw 'Could not read the IoT Hub name from the test environment.' }
-    # The framework leaves file-upload notifications off; the file-upload suite needs them.
-    az iot hub update --name $hubName --resource-group $resourceGroup --fileupload-notifications true --only-show-errors | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "Could not enable file-upload notifications on $hubName." }
+}
+
+if ($env:E2E_SUITE -eq 'c-samples-csr') {
+    # Once ADR links the hub, 'az iot hub' cannot update it, so no routing: the CSR samples read the
+    # built-in endpoint, whose shared access key still works with local authentication disabled.
+    # One consumer group per job (slot 0..3).
+    foreach ($slot in 0..3) {
+        az iot hub consumer-group create --hub-name $hubName --resource-group $resourceGroup --name "samples-$slot" `
+            --only-show-errors | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not create consumer group samples-$slot on $hubName." }
+    }
+}
+
+if ($consumerGroups.Count -gt 0) {
+    if ($arguments.EnableFileUpload) {
+        # The framework leaves file-upload notifications off; the file-upload suite needs them.
+        az iot hub update --name $hubName --resource-group $resourceGroup --fileupload-notifications true --only-show-errors | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Could not enable file-upload notifications on $hubName." }
+    }
     # The built-in Event Hub-compatible endpoint accepts only SAS keys, which a hub without local
     # authentication refuses. Device telemetry is routed instead to an Event Hub with local
     # authentication disabled: the hub sends with its managed identity, the tests read with a
@@ -81,12 +104,10 @@ if ($env:E2E_SUITE -eq 'c-e2e') {
     $eventHubId = az eventhubs eventhub create --name $eventHub --namespace-name $eventHubsNamespace --resource-group $resourceGroup `
         --partition-count 4 --query id -o tsv --only-show-errors
     if ($LASTEXITCODE -ne 0 -or -not $eventHubId) { throw "Could not create Event Hub $eventHub." }
-    # One consumer group per test job (device index 0..11): Event Hubs allows 5 readers per
-    # partition per consumer group.
-    foreach ($index in 0..11) {
-        az eventhubs eventhub consumer-group create --name "e2e-$index" --eventhub-name $eventHub `
+    foreach ($consumerGroup in $consumerGroups) {
+        az eventhubs eventhub consumer-group create --name $consumerGroup --eventhub-name $eventHub `
             --namespace-name $eventHubsNamespace --resource-group $resourceGroup --only-show-errors | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Could not create consumer group e2e-$index on $eventHub." }
+        if ($LASTEXITCODE -ne 0) { throw "Could not create consumer group $consumerGroup on $eventHub." }
     }
 
     $hubPrincipalId = az iot hub identity assign --name $hubName --resource-group $resourceGroup --system-assigned `
@@ -107,7 +128,7 @@ if ($env:E2E_SUITE -eq 'c-e2e') {
             --role $grant.Role --scope $eventHubId --only-show-errors | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Could not assign $($grant.Role) on $eventHub to $($grant.Principal)." }
     }
-    # Event Hubs role assignments take up to five minutes to apply; run-c-e2e.ps1 waits until then.
+    # Event Hubs role assignments take up to five minutes to apply; the run scripts wait until then.
     $eventHubReadableAfter = [DateTimeOffset]::UtcNow.AddMinutes(5).ToUnixTimeSeconds()
 
     # Creating an identity-based endpoint can fail until the hub's new role propagates.
@@ -131,7 +152,7 @@ $configPath = Join-Path $env:E2E_CONFIG_DIRECTORY 'set_test_env_vars.ps1'
 try {
     New-AzIotCSDKE2ETestConfig -TestEnvInfo $testEnvironment -Target powershell -OutFile $configPath
 
-    if ($env:E2E_SUITE -eq 'c-e2e') {
+    if ($consumerGroups.Count -gt 0) {
         # Appended, so these replace the rendered built-in endpoint. No key: the tests read with a
         # Microsoft Entra token (IOTHUB_EVENTHUB_ACCESS_TOKEN).
         Add-Content $configPath @(
@@ -139,6 +160,9 @@ try {
             "`$env:IOTHUB_EVENTHUB_PARTITION_COUNT = '4'"
             "`$env:E2E_EVENTHUB_READABLE_AFTER = '$eventHubReadableAfter'"
         )
+    } elseif ($env:E2E_SUITE -eq 'c-samples-csr') {
+        # The renderer names it IOTHUB_PARTITION_COUNT; the tests read every partition.
+        Add-Content $configPath "`$env:IOTHUB_EVENTHUB_PARTITION_COUNT = '$($testEnvironment.IotHub.EventHub.PartitionCount)'"
     }
 
     # The config renderer omits the enrollment group's intermediate-signed bootstrap identities:

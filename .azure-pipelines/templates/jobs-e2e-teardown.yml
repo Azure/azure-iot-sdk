@@ -11,7 +11,7 @@ parameters:
   # E2E_SUITE of scripts/provision.ps1.
   - name: suite
     type: string
-    values: [standard, csr, longhaul, c-e2e, c-e2e-csr]
+    values: [standard, csr, longhaul, c-e2e, c-e2e-csr, c-samples, c-samples-csr]
   # The job that provisions the resource group.
   - name: setupJob
     type: string
