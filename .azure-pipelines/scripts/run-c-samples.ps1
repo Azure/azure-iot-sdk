@@ -34,6 +34,9 @@ $slot = [int]$env:E2E_SAMPLES_SLOT
 
 $before = @(Get-ChildItem env: | ForEach-Object Name)
 & (Join-Path $PSScriptRoot 'import-test-config.ps1')
+# With them, a sample could decrypt the whole configuration, every slot's device key included.
+Remove-Item env:CONFIG_KEY -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $env:E2E_CONFIG_DIRECTORY 'test-config.encrypted') -Force -ErrorAction SilentlyContinue
 $config = @{}
 foreach ($name in @(Get-ChildItem env: | ForEach-Object Name | Where-Object { $_ -notin $before })) {
     $config[$name] = (Get-Item "env:$name").Value
