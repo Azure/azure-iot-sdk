@@ -16,7 +16,7 @@ parameters:
     default: aziotclb service connection
   - name: prefixes
     type: string
-    default: DotnetE2ETestPipeline-Ado-,DotnetCertMgmtE2ETestPipeline-Ado-,DotnetLonghaul-Ado-,CSDKE2E-Ado-
+    default: DotnetE2ETestPipeline-Ado-,DotnetCertMgmtE2ETestPipeline-Ado-,DotnetLonghaul-Ado-,CSDKE2E-Ado-,CSDKE2ECert-Ado-
   - name: minimumAgeHours
     type: number
     default: 8

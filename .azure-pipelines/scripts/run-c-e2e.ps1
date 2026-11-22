@@ -5,25 +5,36 @@
 # one group of suites, then, for the core group on Linux, the PKCS#11 custody suite. The tests use
 # Microsoft Entra tokens: IOTHUB_SERVICE_ACCESS_TOKEN for hub service calls,
 # IOTHUB_EVENTHUB_ACCESS_TOKEN to read the Event Hub that telemetry is routed to.
+#
+# Group csr runs the certificate-management (CSR) suites, which make no hub service calls: its
+# device is a bootstrap identity under the certificate-management X.509 enrollment group
+# (IOT_DPS_GROUP_X509_*_<index>), which DPS issues an operational certificate for.
 
 $ErrorActionPreference = 'Stop'
 
-foreach ($name in @('IOTHUB_SERVICE_ACCESS_TOKEN', 'IOTHUB_EVENTHUB_ACCESS_TOKEN', 'E2E_PRESET', 'E2E_GROUP', 'E2E_DEVICE_INDEX_OS',
-                    'E2E_DEVICE_INDEX_GROUP', 'E2E_TESTS', 'E2E_TESTS_EXCLUDE', 'E2E_RUN_ID',
-                    'E2E_RESULTS_DIRECTORY')) {
+$csr = $env:E2E_GROUP -eq 'csr'
+$required = @('E2E_PRESET', 'E2E_GROUP', 'E2E_DEVICE_INDEX_OS', 'E2E_DEVICE_INDEX_GROUP', 'E2E_TESTS', 'E2E_RUN_ID',
+              'E2E_RESULTS_DIRECTORY')
+if (-not $csr) { $required += @('IOTHUB_SERVICE_ACCESS_TOKEN', 'IOTHUB_EVENTHUB_ACCESS_TOKEN', 'E2E_TESTS_EXCLUDE') }
+foreach ($name in $required) {
     if (-not (Get-Item "env:$name" -ErrorAction SilentlyContinue).Value) { throw "$name is not set." }
 }
 
 & (Join-Path $PSScriptRoot 'import-test-config.ps1')
 
 $index = [int]$env:E2E_DEVICE_INDEX_OS * 4 + [int]$env:E2E_DEVICE_INDEX_GROUP
-$registrationId = (Get-Item "env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$index" -ErrorAction SilentlyContinue).Value
-$certificateBase64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$index" -ErrorAction SilentlyContinue).Value
-$keyBase64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_KEY_$index" -ErrorAction SilentlyContinue).Value
-if (-not $registrationId -or -not $certificateBase64 -or -not $keyBase64) {
-    throw "The test configuration has no X.509 device $index."
+$deviceVariables = if ($csr) {
+    @('IOT_DPS_GROUP_X509_REGISTRATION_ID', 'IOT_DPS_GROUP_X509_CERTIFICATE', 'IOT_DPS_GROUP_X509_KEY')
+} else {
+    @('IOT_DPS_INDIVIDUAL_REGISTRATION_ID', 'IOT_DPS_INDIVIDUAL_X509_CERTIFICATE', 'IOT_DPS_INDIVIDUAL_X509_KEY')
 }
-if (-not $env:E2E_EVENTHUB_READABLE_AFTER) {
+$registrationId, $certificateBase64, $keyBase64 = foreach ($name in $deviceVariables) {
+    (Get-Item "env:$($name)_$index" -ErrorAction SilentlyContinue).Value
+}
+if (-not $registrationId -or -not $certificateBase64 -or -not $keyBase64) {
+    throw "The test configuration has no X.509 device $index ($($deviceVariables[0])_$index)."
+}
+if (-not $csr -and -not $env:E2E_EVENTHUB_READABLE_AFTER) {
     throw 'The test configuration has no E2E_EVENTHUB_READABLE_AFTER.'
 }
 if (-not $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY) {
@@ -45,7 +56,19 @@ $env:AZ_IOT_CLIENT_KEY = $keyPath
 $env:AZ_IOT_TRUSTED_CA = & ./c/eng/e2e-trusted-ca.ps1 -Path (Join-Path $deviceDirectory 'trusted-ca.pem')
 if ($env:IOT_DPS_GLOBAL_ENDPOINT) { $env:AZ_IOT_DPS_GLOBAL_ENDPOINT = $env:IOT_DPS_GLOBAL_ENDPOINT }
 $env:AZ_IOT_DPS_SAS_GROUP_KEY = $env:IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY
-$env:AZ_IOT_DPS_SAS_REGISTRATION_ID = "sas-$($env:E2E_RUN_ID)-$index"
+$env:AZ_IOT_DPS_SAS_REGISTRATION_ID = if ($csr) { "sas-csr-$($env:E2E_RUN_ID)-$index" } else { "sas-$($env:E2E_RUN_ID)-$index" }
+if ($csr) {
+    # A self-signed certificate DPS and the hub refuse: the certificate fallback test offers it
+    # before the real one. An MSYS openssl would rewrite the "/CN=..." subject into a path.
+    $env:AZ_IOT_REJECTED_CLIENT_CERT = Join-Path $deviceDirectory 'rejected-cert.pem'
+    $env:AZ_IOT_REJECTED_CLIENT_KEY = Join-Path $deviceDirectory 'rejected-key.pem'
+    $env:MSYS2_ARG_CONV_EXCL = '*'
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 -subj "/CN=$registrationId" `
+        -keyout $env:AZ_IOT_REJECTED_CLIENT_KEY -out $env:AZ_IOT_REJECTED_CLIENT_CERT 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "openssl could not create the rejected certificate ($LASTEXITCODE)." }
+    # SDK trace, so a connect or DPS failure shows its reason.
+    $env:AZ_IOT_E2E_LOG_LEVEL = 'TRACE'
+}
 # On a provisioned environment (encrypted configuration), each job reads events on its own consumer
 # group (provision.ps1). The shared environment's configuration names one.
 if ($env:CONFIG_KEY) { $env:IOTHUB_EVENTHUB_CONSUMER_GROUP = "e2e-$index" }
@@ -58,13 +81,16 @@ $resultsPrefix = Join-Path $env:E2E_RESULTS_DIRECTORY "c-e2e-$($env:AGENT_OS)-$(
 New-Item -ItemType Directory -Path $env:E2E_RESULTS_DIRECTORY -Force | Out-Null
 
 # Until the Event Hubs Data Receiver role applies, reading telemetry is refused (provision.ps1).
-$wait = [long]$env:E2E_EVENTHUB_READABLE_AFTER - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-if ($wait -gt 0) {
-    Write-Host "Waiting $wait seconds for the Event Hubs role assignments to apply."
-    Start-Sleep -Seconds $wait
+if (-not $csr) {
+    $wait = [long]$env:E2E_EVENTHUB_READABLE_AFTER - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    if ($wait -gt 0) {
+        Write-Host "Waiting $wait seconds for the Event Hubs role assignments to apply."
+        Start-Sleep -Seconds $wait
+    }
 }
 
-ctest --test-dir $buildDirectory @configuration -R $env:E2E_TESTS -E $env:E2E_TESTS_EXCLUDE `
+$exclude = if ($env:E2E_TESTS_EXCLUDE) { @('-E', $env:E2E_TESTS_EXCLUDE) } else { @() }
+ctest --test-dir $buildDirectory @configuration -R $env:E2E_TESTS @exclude `
     --verbose --no-tests=error --timeout 900 --output-junit "$resultsPrefix.xml"
 $failed = $LASTEXITCODE -ne 0
 if ($failed) { Write-Host "##vso[task.logissue type=error]$($env:E2E_GROUP) e2e suites failed ($LASTEXITCODE)." }

@@ -9,7 +9,7 @@ parameters:
   # E2E_SUITE of scripts/provision.ps1.
   - name: suite
     type: string
-    values: [standard, csr, longhaul, c-e2e]
+    values: [standard, csr, longhaul, c-e2e, c-e2e-csr]
 
 variables:
   - name: e2eResourceGroupPrefix
@@ -21,5 +21,7 @@ variables:
       value: DotnetLonghaul
     ${{ if eq(parameters.suite, 'c-e2e') }}:
       value: CSDKE2E
+    ${{ if eq(parameters.suite, 'c-e2e-csr') }}:
+      value: CSDKE2ECert
   - name: e2eResourceGroup
     value: $(e2eResourceGroupPrefix)-Ado-$(System.TeamProjectId)-$(Build.BuildId)

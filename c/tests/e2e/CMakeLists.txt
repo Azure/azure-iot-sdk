@@ -154,7 +154,7 @@ az_iot_add_e2e_suite(az_iot_tests_e2e
 # az_iot_tests_e2e_csr
 #
 # CSR-based DPS enrollment (issued operational cert). Requires a DPS enrollment
-# linked to a signing CA, which only the ci-c-e2e-csr workflow provisions, so it
+# linked to a signing CA, which only the ci-c-e2e pipeline's CSR jobs provision, so it
 # is built only when AZ_IOT_BUILD_E2E_CSR is set -- and when the OpenSSL
 # "managed" certificate provider is available.
 #

@@ -148,7 +148,7 @@ shared; env `AZ_IOT_DPS_SAS_GROUP_KEY`, `AZ_IOT_DPS_SAS_REGISTRATION_ID`,
   SAS-key scenario uploads a file as `<AZ_IOT_DPS_SAS_REGISTRATION_ID>-fu`.
 - [`e2e_csr_sas_test.c`](../../tests/e2e/tests/e2e_csr_sas_test.c) — DPS over SAS
   with a CSR; the hub over the DPS-issued certificate, then telemetry. Also needs
-  `AZ_IOT_BUILD_E2E_CSR` (group linked to the signing CA). `ci-c-e2e-csr`.
+  `AZ_IOT_BUILD_E2E_CSR` (group linked to the signing CA). `ci-c-e2e` (`test_csr`).
 
 **TPM suite** (built with every e2e build and run by `ci-c-e2e` on Linux and Windows, on pull
 requests and on main; env `AZ_IOT_DPS_ID_SCOPE`, `IOT_DPS_CONNECTION_STRING` (a DPS policy with
@@ -204,11 +204,14 @@ changes nothing under `c/`, `common/` (Markdown aside) or `.azure-pipelines/`, a
 | Job | Runs on | Purpose |
 | --- | --- | --- |
 | `setup` | ubuntu | scheduled and manual runs only: provisions one resource group (IoT Hub + DPS + Event Hubs) and publishes the encrypted test configuration |
+| `setup_csr` | ubuntu | scheduled and manual runs only: provisions a certificate-management resource group (IoT Hub + DPS linked to Azure Device Registration) and publishes its encrypted test configuration |
 | `openssl` | windows, ubuntu | builds OpenSSL 4.1.0 into the pipeline cache once per image |
 | `test` | ubuntu (OpenSSL 3.0 and 4.1.0) + windows (4.1.0), 4 groups each | builds the e2e tests, materializes its device's X.509 material, and runs its group: `core` (every e2e suite but the three below, plus custody on Linux), `transport_paho`, `transport_az_mqtt`, `sas` (both adapters) |
+| `test_csr` | ubuntu (OpenSSL 3.0) + windows (4.1.0) | builds and runs the CSR suites (`e2e_csr`, both adapters) on its own bootstrap device; the Linux job publishes `coverage-trace-e2e-csr` |
 | `coverage` | ubuntu | merges the four OpenSSL 3.0 groups' tracefiles into `coverage-trace-e2e`, only when every `test` job passed |
+| `coverage_combined` | ubuntu | not on pull requests, nor in the gate: the combined coverage report ([code-coverage.md](code-coverage.md#nightly-combined-coverage)) |
 | `esp32_qemu` | ubuntu, esp32, esp32c3 and esp32s3 (matrix) | the ESP32 IoT Hub sample in QEMU, always on the shared environment ([ESP32 in QEMU](#esp32-in-qemu)) |
-| `teardown` | ubuntu | scheduled and manual runs only: deletes the resource group, even when a job failed or the run was canceled |
+| `teardown`, `teardown_csr` | ubuntu | scheduled and manual runs only: delete the resource groups, even when a job failed or the run was canceled |
 
 Each `test` job has its own device (index os-index * 4 + group-index) and Event Hubs consumer
 group, so the groups run in parallel without sharing a device, twin or reader quota (Event Hubs
@@ -218,7 +221,8 @@ allows 5 readers per partition per consumer group).
 tokens only. Each job takes the pipeline service connection principal's tokens for
 `https://iothubs.azure.net` (`IOTHUB_SERVICE_ACCESS_TOKEN`) and `https://eventhubs.azure.net`
 (`IOTHUB_EVENTHUB_ACCESS_TOKEN`) right before the tests, which run without the Azure CLI login. The
-tokens are not refreshed and live 60-90 minutes, longer than a job. The built-in Event
+tokens are not refreshed and live 60-90 minutes, longer than a job. The CSR suites make no hub
+service calls, so `test_csr` takes no tokens. The built-in Event
 Hub-compatible endpoint accepts only shared access keys, so device messages are routed to an Event
 Hub (`telemetry`, 4 partitions, consumer groups `e2e-0`..`e2e-11`) in a namespace with local
 authentication disabled; the hub sends with its system-assigned identity (**Azure Event Hubs Data
@@ -258,13 +262,28 @@ endpoint, and needs file upload with notifications. The TPM suite deletes its en
 device; other devices the runs register stay in the shared hub. Pull requests from forks get no
 service connection and fail.
 
+**CSR environment.** The CSR suites need DPS enrollment groups linked to a certificate policy of
+Azure Device Registration, which issues the devices' operational certificates. `setup_csr`
+provisions one (`provision.ps1` suite `c-e2e-csr`, hub `disableLocalAuth=true`) with one bootstrap
+identity under the X.509 group per `test_csr` job (`IOT_DPS_GROUP_X509_*_<index>`), so both run in
+parallel. On the shared environment, each `test_csr` job issues its bootstrap device from the
+group's issuing CA ([`e2e-shared-device.ps1`](../../eng/e2e-shared-device.ps1) `-Csr`, registration
+ID `ci-ado-csr-<build>-<attempt>-<index>`), with these secrets of the same vault:
+
+| Secret | Value |
+| --- | --- |
+| `E2E-CSR-SHARED-GROUP-CA` | base64 of a PEM holding the X.509 group's issuing CA certificate and its private key, then any CA certificates above it (issuer first) |
+| `E2E-CSR-SHARED-ID-SCOPE` | DPS ID scope |
+| `E2E-CSR-SHARED-DPS-HOST` | DPS device endpoint |
+| `E2E-CSR-SHARED-SAS-GROUP-KEY` | primary key of the symmetric-key group linked to the same certificate policy |
+
 See [`.azure-pipelines/README.md`](../../../.azure-pipelines/README.md) for the scripts it shares
 with the .NET pipelines and the permissions it needs.
 
 ### GitHub Actions workflows
 
-The other C e2e workflows (`ci-c-e2e-csr`, `ci-c-e2e-mqttv5` and `ci-c-e2e-adu`) end with a
-`<workflow>-gate` job (`ci-c-e2e-csr-gate`, `ci-c-e2e-mqttv5-gate`, `ci-c-e2e-adu-gate`), the
+The other C e2e workflows (`ci-c-e2e-mqttv5` and `ci-c-e2e-adu`) end with a
+`<workflow>-gate` job (`ci-c-e2e-mqttv5-gate`, `ci-c-e2e-adu-gate`), the
 single check name for rulesets to require. Since its workflow runs on every pull request
 (`ci-c-e2e-mqttv5` and `ci-c-e2e-adu`: every pull request to `releases/public-preview`), it
 always reports; it fails only when a job failed or was cancelled. The other C workflows end with
@@ -294,16 +313,6 @@ is the nightly backstop: it reaps any `CSDKE2E*` (C), `DotnetE2ETestPipeline-*`
 `Remove-LeftoverAzureResourceGroups`),
 covering what teardown structurally cannot — an asynchronous `--no-wait` delete
 failure, or a runner that dies before teardown.
-
-[`ci-c-e2e-csr.yml`](../../../.github/workflows/ci-c-e2e-csr.yml) uses a shared environment for
-pull requests when repository variable `E2E_CSR_SHARED_ID_SCOPE` is set. It needs its own certificate-management environment
-(ADR-linked hub and DPS; a DPS without a managed identity cannot be linked), so it
-cannot reuse the one above. Each run issues a bootstrap device with
-`e2e-shared-device.ps1 -Csr` from secret `E2E_CSR_SHARED_GROUP_CA` (the group's issuing
-CA certificate and key, then its root); its Linux and Windows legs each issue their own. A
-provisioned run has one bootstrap device, so its legs run one after the other. `E2E_CSR_SHARED_DPS_HOST` optionally sets the DPS
-device endpoint. `E2E_CSR_SHARED_SAS_GROUP_KEY` is the key of a symmetric-key group linked
-to the same certificate policy.
 
 `ci-c-e2e-mqttv5.yml` and `ci-c-e2e-mqttv5-adr-namespace.yml` serve `releases/public-preview` only.
 

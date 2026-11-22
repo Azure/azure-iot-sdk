@@ -1,13 +1,16 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# The C e2e tests, the ESP32 sample in QEMU and their merged Linux coverage. The test jobs run
-# against a per-run IoT Hub with local authentication disabled: setup provisions it and grants the
-# service connection's principal IoT Hub Data Contributor, and teardown deletes it. With
-# sharedEnvironment, they run on the shared, long-lived environment instead, whose secrets
-# sharedKeyVault holds, with no setup or teardown. The ESP32 jobs always run on the shared
-# environment. Every job passes the principal's Microsoft Entra tokens to the tests for the hub
-# service calls and to read telemetry; devices keep their X.509 and SAS credentials with DPS.
+# The C e2e tests, the certificate-management (CSR) e2e tests, the ESP32 sample in QEMU, their
+# merged Linux coverage and, outside pull requests, the coverage report combined with the unit
+# tests'. The test jobs run against a per-run IoT Hub with local authentication disabled: setup
+# provisions it and grants the service connection's principal IoT Hub Data Contributor, and teardown
+# deletes it; setup_csr and teardown_csr do the same for a certificate-management environment (DPS
+# linked to Azure Device Registration). With sharedEnvironment, they run on the shared, long-lived
+# environments instead, whose secrets sharedKeyVault holds, with no setup or teardown. The ESP32
+# jobs always run on the shared environment. Every job but the CSR ones passes the principal's
+# Microsoft Entra tokens to the tests for the hub service calls and to read telemetry; devices keep
+# their X.509 and SAS credentials with DPS. The CSR suites make no hub service calls.
 
 parameters:
   - name: azureServiceConnection
@@ -60,6 +63,39 @@ parameters:
         groupIndex: 3
         tests: '^az_iot_tests_e2e_sas(_az_mqtt)?$'
         testsExclude: custody
+  # The provisioned environments (not with sharedEnvironment): E2E_SUITE of scripts/provision.ps1,
+  # the jobs that provision and delete it and those that test on it, and its configuration artifact.
+  - name: suites
+    type: object
+    default:
+      - suite: c-e2e
+        setupJob: setup
+        teardownJob: teardown
+        testJob: test
+        configArtifact: e2e-test-config
+        timeoutInMinutes: 30
+      # Certificate management (ADR) provisioning is the slower.
+      - suite: c-e2e-csr
+        setupJob: setup_csr
+        teardownJob: teardown_csr
+        testJob: test_csr
+        configArtifact: e2e-csr-test-config
+        timeoutInMinutes: 60
+  # The CSR jobs, each on its own bootstrap device of the certificate-management environment: device
+  # index groupIndex (0..1). Their OpenSSL builds are the openssl job's.
+  - name: csrPlatforms
+    type: object
+    default:
+      - name: Linux_OpenSSL_system
+        vmImage: ubuntu-24.04
+        openssl: system
+        preset: linux-gcc-e2e-coverage
+        groupIndex: 0
+      - name: Windows_OpenSSL_4_1_0
+        vmImage: windows-latest
+        openssl: 4.1.0
+        preset: windows-msvc-debug
+        groupIndex: 1
 
 jobs:
   - job: changes
@@ -74,44 +110,45 @@ jobs:
           workflow: ci-c-e2e
 
   - ${{ if not(parameters.sharedEnvironment) }}:
-    - job: setup
-      displayName: Provision test resources
-      dependsOn: changes
-      condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
-      timeoutInMinutes: 30
-      pool:
-        vmImage: ubuntu-24.04
-      variables:
-        - template: variables-e2e-resource-group.yml
-          parameters:
-            suite: c-e2e
-      steps:
-        - checkout: self
-          persistCredentials: false
-        - template: steps-e2e-framework.yml
-          parameters:
-            # master with the -DisableLocalAuth opt-in (Azure/iot-sdks-e2e-fx#466).
-            revision: 2a897f5bb210febb13c969ff6b30b9d0e33b54c8
-        - task: AzureCLI@2
-          name: configure
-          displayName: Provision and encrypt test configuration
-          inputs:
-            azureSubscription: ${{ parameters.azureServiceConnection }}
-            scriptType: pscore
-            scriptLocation: scriptPath
-            scriptPath: .azure-pipelines/scripts/provision.ps1
-            visibleAzLogin: false
-          env:
-            E2E_SUITE: c-e2e
-            E2E_LOCATION: ${{ parameters.azureLocation }}
-            E2E_RESOURCE_GROUP: $(e2eResourceGroup)
-            E2E_FRAMEWORK_ROOT: $(Agent.TempDirectory)/iot-sdks-e2e-fx
-            E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
-        - task: PublishPipelineArtifact@1
-          displayName: Publish encrypted test configuration
-          inputs:
-            targetPath: $(Agent.TempDirectory)/test-config/test-config.encrypted
-            artifact: e2e-test-config
+    - ${{ each suite in parameters.suites }}:
+      - job: ${{ suite.setupJob }}
+        displayName: Provision test resources (${{ suite.suite }})
+        dependsOn: changes
+        condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
+        timeoutInMinutes: ${{ suite.timeoutInMinutes }}
+        pool:
+          vmImage: ubuntu-24.04
+        variables:
+          - template: variables-e2e-resource-group.yml
+            parameters:
+              suite: ${{ suite.suite }}
+        steps:
+          - checkout: self
+            persistCredentials: false
+          - template: steps-e2e-framework.yml
+            parameters:
+              # master with the -DisableLocalAuth opt-in (Azure/iot-sdks-e2e-fx#466).
+              revision: 2a897f5bb210febb13c969ff6b30b9d0e33b54c8
+          - task: AzureCLI@2
+            name: configure
+            displayName: Provision and encrypt test configuration
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: pscore
+              scriptLocation: scriptPath
+              scriptPath: .azure-pipelines/scripts/provision.ps1
+              visibleAzLogin: false
+            env:
+              E2E_SUITE: ${{ suite.suite }}
+              E2E_LOCATION: ${{ parameters.azureLocation }}
+              E2E_RESOURCE_GROUP: $(e2eResourceGroup)
+              E2E_FRAMEWORK_ROOT: $(Agent.TempDirectory)/iot-sdks-e2e-fx
+              E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
+          - task: PublishPipelineArtifact@1
+            displayName: Publish encrypted test configuration
+            inputs:
+              targetPath: $(Agent.TempDirectory)/test-config/test-config.encrypted
+              artifact: ${{ suite.configArtifact }}
 
   # Builds OpenSSL into the cache once per image, so the test jobs restore it.
   - job: openssl
@@ -159,96 +196,45 @@ jobs:
     pool:
       vmImage: $(vmImage)
     steps:
-      - checkout: self
-        fetchDepth: '1'
-        persistCredentials: false
-      - template: steps-c-toolchain.yml
-      - bash: |
-          set -euo pipefail
-          # softhsm2 and opensc hold the custody suite's device key in a PKCS#11 token; meson and
-          # pkg-config build the OpenSSL pkcs11 provider (c/eng/setup-pkcs11-provider.sh).
-          bash c/eng/apt-install.sh ninja-build softhsm2 opensc meson pkg-config
-          python3 -m pip install --upgrade 'gcovr==7.2'
-        displayName: Install build tools (Linux)
-        condition: and(succeeded(), eq(variables['Agent.OS'], 'Linux'))
-      - pwsh: |
-          $ErrorActionPreference = 'Stop'
-          # The custody suite needs an OpenSSL pkcs11 provider, which only the Linux jobs build.
-          $configure = @('--preset', $env:PRESET, '-DAZ_IOT_BUILD_E2E=ON', '-DAZ_IOT_WITH_PAHO=ON', '-DAZ_IOT_WITH_AZ_MQTT=ON')
-          if ($IsLinux) { $configure += '-DAZ_IOT_BUILD_E2E_PKCS11=ON' }
-          cmake @configure
-          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed ($LASTEXITCODE)." }
-          $config = if ($IsWindows) { @('--config', 'Debug') } else { @() }
-          $targets = @('az_iot_tests_e2e', 'az_iot_tests_e2e_process', 'az_iot_tests_e2e_fileupload',
-            'az_iot_tests_e2e_transport', 'az_iot_tests_e2e_amqp_link', 'az_iot_tests_e2e_notify_time',
-            'az_iot_tests_e2e_http_headers', 'az_iot_tests_e2e_amqp_capture', 'az_iot_tests_e2e_amqp_telemetry',
-            'az_iot_tests_e2e_sas', 'az_iot_tests_e2e_tpm', 'az_iot_tests_e2e_az_mqtt',
-            'az_iot_tests_e2e_fileupload_az_mqtt', 'az_iot_tests_e2e_transport_az_mqtt',
-            'az_iot_tests_e2e_sas_az_mqtt', 'az_iot_tests_e2e_tpm_az_mqtt')
-          if ($IsLinux) {
-            $targets += @('az_iot_tests_e2e_custody', 'az_iot_tests_e2e_custody_az_mqtt', 'az_iot_tests_e2e_amqp_transport_sigpipe')
-          }
-          cmake --build --preset $env:PRESET @config --target @targets
-          if ($LASTEXITCODE -ne 0) { throw "Build failed ($LASTEXITCODE)." }
-        displayName: Build e2e tests
-        workingDirectory: c
-        env:
-          PRESET: $(preset)
-      - ${{ if not(parameters.sharedEnvironment) }}:
-        - task: DownloadPipelineArtifact@2
-          displayName: Download encrypted test configuration
-          inputs:
-            buildType: current
-            artifactName: e2e-test-config
-            targetPath: $(Agent.TempDirectory)/test-config
-      # Taken after the build, so its 60-90 minutes cover the tests. The tests run without the
-      # Azure CLI login, which this task removes.
-      - template: steps-c-e2e-access.yml
+      - template: steps-c-e2e-test.yml
         parameters:
           azureServiceConnection: ${{ parameters.azureServiceConnection }}
-          ${{ if parameters.sharedEnvironment }}:
-            sharedKeyVault: ${{ parameters.sharedKeyVault }}
-      - task: PowerShell@2
-        displayName: Run tests
-        inputs:
-          pwsh: true
-          targetType: filePath
-          filePath: .azure-pipelines/scripts/run-c-e2e.ps1
-          workingDirectory: $(Build.SourcesDirectory)
-        env:
-          ${{ if not(parameters.sharedEnvironment) }}:
-            CONFIG_KEY: $(configKey)
-          E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
-          IOTHUB_SERVICE_ACCESS_TOKEN: $(hubAccessToken)
-          IOTHUB_EVENTHUB_ACCESS_TOKEN: $(eventHubsAccessToken)
-          E2E_OPENSSL: $(openssl)
-          E2E_PRESET: $(preset)
-          E2E_GROUP: $(group)
-          E2E_DEVICE_INDEX_OS: $(osIndex)
-          E2E_DEVICE_INDEX_GROUP: $(groupIndex)
-          E2E_TESTS: $(tests)
-          E2E_TESTS_EXCLUDE: $(testsExclude)
-          E2E_RUN_ID: $(Build.BuildId)-$(System.JobAttempt)
-          E2E_RESULTS_DIRECTORY: $(Common.TestResultsDirectory)
-      - task: PublishTestResults@2
-        displayName: Publish test results
-        condition: always()
-        inputs:
-          testResultsFormat: JUnit
-          testResultsFiles: '$(Common.TestResultsDirectory)/**/*.xml'
-          testRunTitle: C e2e $(System.JobDisplayName)
-          failTaskOnMissingResultsFile: true
-      # Not on failure: a failed run leaves partial coverage data.
-      - bash: bash eng/collect-coverage.sh build/linux-gcc-e2e-coverage coverage/e2e.json e2e-linux
-        displayName: Collect coverage (Linux)
-        condition: and(succeeded(), eq(variables['preset'], 'linux-gcc-e2e-coverage'))
-        workingDirectory: c
-      - task: PublishPipelineArtifact@1
-        displayName: Publish coverage tracefile (Linux)
-        condition: and(succeeded(), eq(variables['preset'], 'linux-gcc-e2e-coverage'))
-        inputs:
-          targetPath: c/coverage/e2e.json
-          artifact: coverage-trace-e2e-linux-$(group)
+          sharedEnvironment: ${{ parameters.sharedEnvironment }}
+          sharedKeyVault: ${{ parameters.sharedKeyVault }}
+
+  # The certificate-management suites: a bootstrap device under the X.509 enrollment group asks DPS
+  # for an operational certificate with a CSR, then connects to the hub with it; the SAS suites do
+  # the same from the symmetric-key group.
+  - job: test_csr
+    displayName: Run C CSR e2e tests
+    ${{ if parameters.sharedEnvironment }}:
+      dependsOn: [openssl]
+    ${{ else }}:
+      dependsOn: [setup_csr, openssl]
+      variables:
+        configKey: $[ dependencies.setup_csr.outputs['configure.configKey'] ]
+    # Windows: room for an OpenSSL build on a cache miss.
+    timeoutInMinutes: 75
+    strategy:
+      matrix:
+        ${{ each platform in parameters.csrPlatforms }}:
+          ${{ platform.name }}:
+            vmImage: ${{ platform.vmImage }}
+            openssl: ${{ platform.openssl }}
+            preset: ${{ platform.preset }}
+            osIndex: 0
+            group: csr
+            groupIndex: ${{ platform.groupIndex }}
+            tests: e2e_csr
+    pool:
+      vmImage: $(vmImage)
+    steps:
+      - template: steps-c-e2e-test.yml
+        parameters:
+          azureServiceConnection: ${{ parameters.azureServiceConnection }}
+          sharedEnvironment: ${{ parameters.sharedEnvironment }}
+          sharedKeyVault: ${{ parameters.sharedKeyVault }}
+          csr: true
 
   # Only when every test job succeeded: a failed group leaves partial coverage, and merging it would
   # understate coverage for an unrelated reason.
@@ -378,20 +364,105 @@ jobs:
         env:
           DEVICE_DIRECTORY: $(deviceDirectory)
 
+  # The e2e coverage combined with the unit and conformance tests', which it runs at this commit:
+  # the report of the whole C SDK. Not for pull requests (ci-c.yml reports theirs), nor in the gate.
+  # The CSR tracefile is left out, with a warning, when its tests failed.
+  - job: coverage_combined
+    displayName: Combine coverage with the unit tests
+    dependsOn: [coverage, test_csr]
+    condition: and(eq(dependencies.coverage.result, 'Succeeded'), ne(variables['Build.Reason'], 'PullRequest'))
+    timeoutInMinutes: 30
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+      - checkout: self
+        fetchDepth: '1'
+        persistCredentials: false
+      - bash: |
+          set -euo pipefail
+          bash c/eng/apt-install.sh ninja-build libssl-dev mosquitto-clients
+          python3 -m pip install --upgrade 'gcovr==7.2'
+          bash c/eng/install-mbedtls.sh 4.1.1 "$AGENT_TEMPDIRECTORY/mbedtls"
+          echo "##vso[task.setvariable variable=CMAKE_PREFIX_PATH]$AGENT_TEMPDIRECTORY/mbedtls"
+        displayName: Install build tools
+      - task: DownloadPipelineArtifact@2
+        displayName: Download e2e coverage tracefiles
+        inputs:
+          buildType: current
+          itemPattern: |
+            coverage-trace-e2e/**
+            coverage-trace-e2e-csr/**
+          targetPath: $(Agent.TempDirectory)/traces
+      - bash: |
+          set -euo pipefail
+          docker run -d --name mosquitto -p 1883:1883 eclipse-mosquitto:2 \
+            sh -c "printf 'listener 1883\nallow_anonymous true\n' > /m.conf; mosquitto -c /m.conf"
+          for _ in $(seq 1 30); do
+            mosquitto_pub -h localhost -p 1883 -t probe -m ok 2>/dev/null && break
+            sleep 1
+          done
+          mosquitto_pub -h localhost -p 1883 -t probe -m ok
+          cmake --preset linux-gcc-coverage
+          cmake --build --preset linux-gcc-coverage
+          ctest --preset linux-gcc-coverage -E e2e
+          bash eng/collect-coverage.sh build/linux-gcc-coverage coverage/unit.json unit
+        displayName: Build and run the unit and conformance tests
+        workingDirectory: c
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: localhost
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+          AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
+      - bash: |
+          set -euo pipefail
+          pairs=("unit=$PWD/c/coverage/unit.json" "e2e=$TRACES/coverage-trace-e2e/e2e.json")
+          if [ -f "$TRACES/coverage-trace-e2e-csr/e2e-csr.json" ]; then
+            pairs+=("e2e-csr=$TRACES/coverage-trace-e2e-csr/e2e-csr.json")
+          else
+            echo "##vso[task.logissue type=warning]No CSR e2e tracefile: the combined coverage leaves it out."
+          fi
+          bash c/eng/combine-coverage.sh "$OUT" "${pairs[@]}"
+          {
+            echo "# Combined C coverage"
+            echo
+            echo "Commit \`$BUILD_SOURCEVERSION\`"
+            echo
+            cat "$OUT/contribution.md"
+            echo
+            cat "$OUT/combined.md"
+          } > "$AGENT_TEMPDIRECTORY/coverage-combined.md"
+          echo "##vso[task.uploadsummary]$AGENT_TEMPDIRECTORY/coverage-combined.md"
+        displayName: Build the combined and per-suite reports
+        env:
+          TRACES: $(Agent.TempDirectory)/traces
+          OUT: $(Build.ArtifactStagingDirectory)/coverage-combined
+      - task: PublishPipelineArtifact@1
+        displayName: Publish combined coverage
+        inputs:
+          targetPath: $(Build.ArtifactStagingDirectory)/coverage-combined
+          artifact: coverage-combined
+      - bash: docker rm -f mosquitto || true
+        displayName: Stop the broker
+        condition: always()
+
   - ${{ if parameters.sharedEnvironment }}:
     - template: jobs-e2e-gate.yml
       parameters:
         displayName: C e2e gate
-        waitForTeardown: false
-        jobs: [openssl, test, coverage, esp32_qemu]
+        teardownJobs: []
+        jobs: [openssl, test, test_csr, coverage, esp32_qemu]
   - ${{ else }}:
-    - template: jobs-e2e-teardown.yml
-      parameters:
-        azureServiceConnection: ${{ parameters.azureServiceConnection }}
-        suite: c-e2e
-        dependsOn: [setup, test]
+    - ${{ each suite in parameters.suites }}:
+      - template: jobs-e2e-teardown.yml
+        parameters:
+          azureServiceConnection: ${{ parameters.azureServiceConnection }}
+          suite: ${{ suite.suite }}
+          name: ${{ suite.teardownJob }}
+          displayName: Delete test resources (${{ suite.suite }})
+          setupJob: ${{ suite.setupJob }}
+          dependsOn: [ '${{ suite.setupJob }}', '${{ suite.testJob }}' ]
 
     - template: jobs-e2e-gate.yml
       parameters:
         displayName: C e2e gate
-        jobs: [setup, openssl, test, coverage, esp32_qemu]
+        teardownJobs: [teardown, teardown_csr]
+        jobs: [setup, setup_csr, openssl, test, test_csr, coverage, esp32_qemu]

@@ -49,6 +49,16 @@ if ($env:E2E_SUITE -eq 'c-e2e') {
     $arguments.EnableFileUpload = $true
     $arguments.DisableLocalAuth = $true
 }
+if ($env:E2E_SUITE -eq 'c-e2e-csr') {
+    # A certificate-management (ADR) environment: one bootstrap identity under the X.509 group per
+    # test job (device index 0..1), and a symmetric-key group, both linked to the signing CA. The C
+    # test configuration needs an individual enrollment. The CSR suites make no hub service calls.
+    $arguments.EnableCertificateManagement = $true
+    $arguments.DpsX509IndividualEnrollments = 1
+    $arguments.DpsX509GroupEnrollmentDevices = 2
+    $arguments.DpsSymmKeyGroupEnrollmentDevices = 1
+    $arguments.DisableLocalAuth = $true
+}
 $testEnvironment = New-AzIotTestEnvironment @arguments
 
 if ($env:E2E_SUITE -eq 'c-e2e') {
@@ -131,20 +141,25 @@ try {
         )
     }
 
-    # The config renderer omits the enrollment group's intermediate-signed bootstrap identity.
+    # The config renderer omits the enrollment group's intermediate-signed bootstrap identities:
+    # each as IOT_DPS_GROUP_X509_*_<i>, and the first also without the suffix.
     if ($testEnvironment.Dps.Enrollments.GroupX509.Count -gt 0) {
         $group = $testEnvironment.Dps.Enrollments.GroupX509[0]
-        $identity = $group.Identities[0]
-        $chain = $identity.Certificate.ToPem() + "`n" + $group.Certificate.ToPem() + "`n" +
-            $testEnvironment.Dps.RootCaCertificates[0].ToPem()
-        $values = @{
-            IOT_DPS_GROUP_X509_REGISTRATION_ID = $identity.Id
-            IOT_DPS_GROUP_X509_CERTIFICATE = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($chain))
-            IOT_DPS_GROUP_X509_KEY = [Convert]::ToBase64String(
-                [Text.Encoding]::UTF8.GetBytes($identity.Certificate.PrivateKey.ToRsaPkcs1Pem()))
-        }
-        foreach ($entry in $values.GetEnumerator()) {
-            Add-Content $configPath ("`$env:{0} = '{1}'" -f $entry.Key, $entry.Value.Replace("'", "''"))
+        for ($i = 0; $i -lt $group.Identities.Count; $i++) {
+            $identity = $group.Identities[$i]
+            $chain = $identity.Certificate.ToPem() + "`n" + $group.Certificate.ToPem() + "`n" +
+                $testEnvironment.Dps.RootCaCertificates[0].ToPem()
+            $values = @{
+                IOT_DPS_GROUP_X509_REGISTRATION_ID = $identity.Id
+                IOT_DPS_GROUP_X509_CERTIFICATE = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($chain))
+                IOT_DPS_GROUP_X509_KEY = [Convert]::ToBase64String(
+                    [Text.Encoding]::UTF8.GetBytes($identity.Certificate.PrivateKey.ToRsaPkcs1Pem()))
+            }
+            foreach ($entry in $values.GetEnumerator()) {
+                $value = $entry.Value.Replace("'", "''")
+                Add-Content $configPath ("`$env:{0}_{1} = '{2}'" -f $entry.Key, $i, $value)
+                if ($i -eq 0) { Add-Content $configPath ("`$env:{0} = '{1}'" -f $entry.Key, $value) }
+            }
         }
     }
 
