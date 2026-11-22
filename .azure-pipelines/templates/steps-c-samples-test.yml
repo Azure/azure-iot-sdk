@@ -129,13 +129,12 @@ steps:
     env:
       ${{ if not(parameters.sharedEnvironment) }}:
         CONFIG_KEY: $(configKey)
-      # The CSR samples read the built-in endpoint with its key (scripts/provision.ps1).
       ${{ if not(parameters.csr) }}:
-        IOTHUB_EVENTHUB_ACCESS_TOKEN: $(eventHubsAccessToken)
         E2E_SAMPLES_SHARD: $(shard)
         E2E_PROXY_VENV: $(Agent.TempDirectory)/proxy-venv
       E2E_SAMPLES_CSR: ${{ parameters.csr }}
       IOTHUB_SERVICE_ACCESS_TOKEN: $(hubAccessToken)
+      IOTHUB_EVENTHUB_ACCESS_TOKEN: $(eventHubsAccessToken)
       E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
       E2E_PRESET: $(preset)
       E2E_SAMPLES_ADAPTER: $(adapter)

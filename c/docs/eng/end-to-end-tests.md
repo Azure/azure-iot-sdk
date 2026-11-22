@@ -227,8 +227,7 @@ tokens only. Each job takes the pipeline service connection principal's tokens f
 `https://iothubs.azure.net` (`IOTHUB_SERVICE_ACCESS_TOKEN`) and `https://eventhubs.azure.net`
 (`IOTHUB_EVENTHUB_ACCESS_TOKEN`) right before the tests, which run without the Azure CLI login. The
 tokens are not refreshed and live 60-90 minutes, longer than a job. The CSR suites make no hub
-service calls, so `test_csr` takes no tokens. The CSR samples read telemetry from their hub's
-built-in endpoint with its key (below). The built-in Event
+service calls, so `test_csr` takes no tokens. The built-in Event
 Hub-compatible endpoint accepts only shared access keys, so device messages are routed to an Event
 Hub (`telemetry`, 4 partitions, consumer groups `e2e-0`..`e2e-11`) in a namespace with local
 authentication disabled; the hub sends with its system-assigned identity (**Azure Event Hubs Data
@@ -431,9 +430,9 @@ service connection principal's Microsoft Entra tokens ([`run-c-samples.ps1`](../
   management, hub `disableLocalAuth=true`, an X.509 enrollment group with four devices, the SAS
   group, both linked to the signing CA) and always deletes it: the shared CSR environment gives no
   hub or Event Hub access. A job uses group identity `IOT_DPS_GROUP_X509_*_<slot>` as its bootstrap
-  device and consumer group `samples-<slot>` of the hub's built-in endpoint, read with that
-  endpoint's key: once Azure Device Registration links the hub, `az iot hub` cannot add the routing
-  to an Event Hub. Two jobs run at a time: with all four registering with a CSR at once, DPS left
+  device and consumer group `samples-<slot>` of the Event Hub its telemetry is routed to, like the
+  other samples jobs; once Azure Device Registration links the hub, `az iot hub` refuses to update
+  it, so that routing is written through Azure Resource Manager. Two jobs run at a time: with all four registering with a CSR at once, DPS left
   some registrations unanswered past the samples' 60 s.
 
 Not in these jobs: the samples that do not connect, which are CTest tests of `ci-c` already;

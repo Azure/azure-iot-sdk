@@ -11,9 +11,8 @@
 # secrets sharedKeyVault holds, with no setup or teardown; but the CSR samples, which the shared CSR
 # environment cannot serve, always provision theirs. The ESP32 jobs always run on the shared
 # environment. Every job but the CSR e2e ones passes the principal's Microsoft Entra tokens to the
-# tests for the hub service calls and to read telemetry (the CSR samples read theirs with the
-# built-in endpoint's key); devices keep their X.509 and SAS credentials with DPS. The CSR e2e
-# suites make no hub service calls.
+# tests for the hub service calls and to read telemetry; devices keep their X.509 and SAS
+# credentials with DPS. The CSR e2e suites make no hub service calls.
 
 parameters:
   - name: azureServiceConnection
@@ -172,8 +171,9 @@ jobs:
             persistCredentials: false
           - template: steps-e2e-framework.yml
             parameters:
-              # master with the -DisableLocalAuth opt-in (Azure/iot-sdks-e2e-fx#466).
-              revision: 2a897f5bb210febb13c969ff6b30b9d0e33b54c8
+              # master with -DisableLocalAuth (Azure/iot-sdks-e2e-fx#466) and telemetry routed to an
+              # Event Hub through ARM (Add-AzIotEventHubTelemetryRoute, Azure/iot-sdks-e2e-fx#468).
+              revision: c920634091202c1d97aa9342d4512289af7a52f0
           - task: AzureCLI@2
             name: configure
             displayName: Provision and encrypt test configuration
@@ -314,8 +314,7 @@ jobs:
           sharedEnvironment: ${{ parameters.sharedEnvironment }}
           sharedKeyVault: ${{ parameters.sharedKeyVault }}
 
-  # The certificate-management samples (label samples_csr), always on a provisioned environment,
-  # whose telemetry they read from the hub's built-in endpoint (scripts/provision.ps1).
+  # The certificate-management samples (label samples_csr), always on a provisioned environment.
   - job: samples_csr
     displayName: Run C CSR samples
     dependsOn: [changes, setup_samples_csr]

@@ -97,8 +97,8 @@ file-upload watchers do not compete with the e2e tests'
 each job reads the shared environment's settings from Key Vault and issues its
 own device (`scripts/get-c-e2e-access.ps1`). The CSR samples, whose checks the
 shared CSR environment cannot serve, always provision theirs; once Azure Device
-Registration links that hub, it cannot be routed to an Event Hub, so they read
-telemetry from its built-in endpoint with that endpoint's key. A provisioned run's
+Registration links that hub, `az iot hub` refuses to update it, so its routing
+is written through Azure Resource Manager. A provisioned run's
 configuration is encrypted before artifact publication; a random AES key is passed to the test job as a secret
 output variable. Temporary plaintext configuration and CSR keys are removed
 after use. Unlike GitHub Actions, Azure pipeline artifacts do not have a

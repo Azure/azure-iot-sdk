@@ -5,8 +5,7 @@
 # device of its slot. Each sample is a CTest test (c/tests/e2e/tests/e2e_samples_test.c) that starts
 # the sample, waits for its end and checks what the service saw, with Microsoft Entra tokens:
 # IOTHUB_SERVICE_ACCESS_TOKEN for hub service calls, IOTHUB_EVENTHUB_ACCESS_TOKEN to read the Event
-# Hub that telemetry is routed to, on consumer group samples-<slot>. With E2E_SAMPLES_CSR, telemetry
-# is read from the hub's built-in endpoint with its shared access key instead (provision.ps1).
+# Hub that telemetry is routed to, on consumer group samples-<slot>.
 #
 # The device is enrollment E2E_SAMPLES_SLOT: X.509 individual (IOT_DPS_INDIVIDUAL_*_<slot>) or, with
 # E2E_SAMPLES_CSR, a bootstrap identity under the certificate-management X.509 group
@@ -19,13 +18,9 @@
 $ErrorActionPreference = 'Stop'
 
 $csr = $env:E2E_SAMPLES_CSR -eq 'true'
-$required = @('IOTHUB_SERVICE_ACCESS_TOKEN', 'E2E_CONFIG_DIRECTORY', 'E2E_PRESET', 'E2E_SAMPLES_ADAPTER',
-              'E2E_SAMPLES_SLOT', 'E2E_RESULTS_DIRECTORY', 'E2E_LOGS_DIRECTORY')
-if ($csr) {
-    if ($env:IOTHUB_EVENTHUB_ACCESS_TOKEN) { throw 'IOTHUB_EVENTHUB_ACCESS_TOKEN is set: the CSR samples read the built-in endpoint.' }
-} else {
-    $required += @('IOTHUB_EVENTHUB_ACCESS_TOKEN', 'E2E_SAMPLES_SHARD', 'E2E_PROXY_VENV')
-}
+$required = @('IOTHUB_SERVICE_ACCESS_TOKEN', 'IOTHUB_EVENTHUB_ACCESS_TOKEN', 'E2E_CONFIG_DIRECTORY', 'E2E_PRESET',
+              'E2E_SAMPLES_ADAPTER', 'E2E_SAMPLES_SLOT', 'E2E_RESULTS_DIRECTORY', 'E2E_LOGS_DIRECTORY')
+if (-not $csr) { $required += @('E2E_SAMPLES_SHARD', 'E2E_PROXY_VENV') }
 foreach ($name in $required) {
     if (-not (Get-Item "env:$name" -ErrorAction SilentlyContinue).Value) { throw "$name is not set." }
 }
@@ -58,7 +53,7 @@ $registrationId, $certificateBase64, $keyBase64 = foreach ($name in $deviceVaria
 if (-not $registrationId -or -not $certificateBase64 -or -not $keyBase64) {
     throw "The test configuration has no X.509 device $slot ($($deviceVariables[0])_$slot)."
 }
-if (-not $csr -and -not $config['E2E_EVENTHUB_READABLE_AFTER']) {
+if (-not $config['E2E_EVENTHUB_READABLE_AFTER']) {
     throw 'The test configuration has no E2E_EVENTHUB_READABLE_AFTER.'
 }
 if (-not $config['IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY']) {
@@ -119,9 +114,7 @@ try {
 
     # Until the Event Hubs Data Receiver role applies, reading the routed telemetry is refused
     # (provision.ps1).
-    $wait = if ($csr) { 0 } else {
-        [long]$config['E2E_EVENTHUB_READABLE_AFTER'] - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    }
+    $wait = [long]$config['E2E_EVENTHUB_READABLE_AFTER'] - [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     if ($wait -gt 0) {
         Write-Host "Waiting $wait seconds for the Event Hubs role assignments to apply."
         Start-Sleep -Seconds $wait
