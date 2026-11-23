@@ -19,8 +19,9 @@ each entry point below. All pipelines also support **Run pipeline**.
 
 On `releases/public-preview`, these pipelines cover only the classic (MQTTv3) IoT
 hub: the e2e and CSR filters exclude tests with trait `Hub=MQTTv5`. MQTTv5 IoT hub
-tests still run in the GitHub Actions workflows `ci-dotnet-e2e-mqttv5.yml`,
-`ci-dotnet-e2e-csr.yml` and `longhaul-dotnet.yml`.
+tests still run in the GitHub Actions workflows `ci-dotnet-e2e-mqttv5.yml` and
+`longhaul-dotnet.yml`. The MQTTv5 certificate-management cases run in no pipeline:
+the shared MQTTv5 environment has no symmetric-key enrollment group for them.
 
 ## Required configuration
 

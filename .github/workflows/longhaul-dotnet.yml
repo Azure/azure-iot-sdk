@@ -63,8 +63,8 @@ permissions:
   contents: read
 
 # Derived from the run (not a job output) so teardown still finds the group
-# when setup is cancelled; see ci-dotnet.yml. The cleanup-e2e-resources
-# janitor reaps leaked groups with this prefix.
+# when setup is cancelled: a cancelled job does not propagate its outputs. The
+# cleanup-e2e-resources janitor reaps leaked groups with this prefix.
 env:
   E2E_RESOURCE_GROUP: DotnetLonghaul-${{ github.run_id }}-${{ github.run_attempt }}
 
@@ -169,7 +169,9 @@ jobs:
         uses: Azure/iot-sdks-e2e-fx/actions/provision-e2e-resources@b96d2aa2eb2b36e1e4dfbdb04aa56cf3dccecf8a # v1.0.1
         with:
           rg-name: ${{ env.E2E_RESOURCE_GROUP }}
-          # See ci-dotnet.yml for why the region fallback lives here.
+          # The action defaults to EastUS, but this subscription's IoT Hub scale
+          # unit is pinned to eastus2euap (IH400059 elsewhere). An undefined
+          # repository variable arrives empty, so the fallback is here.
           azure-location: ${{ vars.E2E_AZURE_LOCATION || 'eastus2euap' }}
           enable-file-upload: 'false'
           enable-certificate-management: 'false'
