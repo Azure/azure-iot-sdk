@@ -12,14 +12,13 @@
 # certificate management cases run in no pipeline.
 #
 #   vars:    E2E_MQTTV5_SHARED_ID_SCOPE (unset: the workflow skips),
-#            E2E_MQTTV5_SHARED_DPS_HOST (optional DPS device endpoint), plus
-#            those of ci-c-e2e-mqttv5-adr-namespace.yml
+#            E2E_MQTTV5_SHARED_DPS_HOST (optional DPS device endpoint)
 #   secrets: E2E_MQTTV5_SHARED_IOTHUB_CS  IoT Hub connection string; the tests
 #              need RegistryRead, RegistryWrite and ServiceConnect (device
 #              identities, twins, direct methods, cloud-to-device messages)
 #            E2E_MQTTV5_SHARED_DPS_CS  DPS service connection string with
 #              EnrollmentRead and EnrollmentWrite (individual enrollments)
-#            AZURE_CLIENT_ID, AZURE_TENANT_ID (ADR namespace repair)
+# The Azure Pipelines e2e-mqttv5-adr-namespace keeps the environment's ADR namespace linked.
 #
 # Pull requests from forks and from Dependabot get no secrets, so they skip.
 
@@ -34,7 +33,6 @@ on:
       - 'common/**'
       - '!common/**/*.md'
       - '.github/workflows/ci-dotnet-e2e-mqttv5.yml'
-      - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
   schedule:
     - cron: '45 11 * * *'
 
@@ -46,28 +44,10 @@ permissions:
   contents: read
 
 jobs:
-  # The namespace can drop out of Azure; DPS registrations fail until it is back.
-  # Not on pull requests: the repair logs in to Azure and runs the checked-out
-  # script, so it only runs trusted code (schedule, manual). Pull requests rely
-  # on the scheduled repair (every 10 minutes) in ci-c-e2e-mqttv5-adr-namespace.yml.
-  adr-namespace:
-    name: ADR namespace
-    if: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' && github.event_name != 'pull_request' }}
-    permissions:
-      contents: read
-      id-token: write
-    # actionlint 1.7.12 does not accept the $/ self-repository form yet.
-    uses: ./.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml # zizmor: ignore[self-repository]
-    secrets:
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-
   test:
     name: ${{ matrix.os }}
-    needs: adr-namespace
     if: >-
       ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
-          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&
             github.actor != 'dependabot[bot]')) }}

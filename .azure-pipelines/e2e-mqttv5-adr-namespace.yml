@@ -1,0 +1,54 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Keeps the shared MQTTv5 e2e environment's ADR namespace present and linked.
+#
+# Workaround: the namespace can disappear from ARM (taking its role assignments with it), after
+# which DPS registrations fail. c/eng/e2e-mqttv5-adr-namespace.ps1 rebuilds and re-links it; when
+# it is healthy the run is one ARM read. The MQTTv5 e2e workflows (ci-c-e2e-mqttv5,
+# ci-c-e2e-adu, ci-dotnet-e2e-mqttv5, longhaul-dotnet) rely on this schedule.
+# Register this YAML as a separate pipeline (scripts/ensure-mqttv5-adr-namespace.ps1 lists what it
+# reads and needs).
+trigger: none
+pr: none
+schedules:
+  # Every 15 minutes (the namespace can drop about an hour after each rebuild). Azure Pipelines
+  # allows about 1000 scheduled runs per pipeline and week; every 10 minutes would exceed that.
+  - cron: '3-59/15 * * * *'
+    displayName: Ensure the MQTTv5 ADR namespace
+    branches:
+      include: [releases/public-preview]
+    always: true
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+    default: aziotclb service connection
+  - name: sharedKeyVault
+    type: string
+    default: kv-aziotclb
+
+jobs:
+  - job: ensure
+    displayName: Ensure ADR namespace
+    # Above the script's worst case: operation wait 15 + delete wait 15 + namespace 10 + role
+    # grants 14 + 4 link attempts x 13 + 3 settle waits x 5 + reconcile 5 + update instance
+    # (grants 6 + 4 attempts x 13) + DPS 5 = 189 min, plus ARM latency.
+    timeoutInMinutes: 210
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+      - checkout: self
+        fetchDepth: 1
+        persistCredentials: false
+      - task: AzureCLI@2
+        displayName: Ensure ADR namespace
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: pscore
+          scriptLocation: scriptPath
+          scriptPath: .azure-pipelines/scripts/ensure-mqttv5-adr-namespace.ps1
+          visibleAzLogin: false
+        env:
+          E2E_SHARED_KEY_VAULT: ${{ parameters.sharedKeyVault }}
+          SYSTEM_ACCESSTOKEN: $(System.AccessToken)

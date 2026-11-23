@@ -14,14 +14,14 @@
 # provider and SoftHSM2, and az_mqtt takes key references only over OpenSSL.
 #
 #   vars:    E2E_MQTTV5_SHARED_ID_SCOPE (unset: the workflow skips),
-#            E2E_MQTTV5_SHARED_DPS_HOST, plus those of
-#            ci-c-e2e-mqttv5-adr-namespace.yml
+#            E2E_MQTTV5_SHARED_DPS_HOST
 #   secrets: E2E_MQTTV5_SHARED_GROUP_CA,
 #            E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS ('service' policy, passed as
 #            E2E_MQTTV5_SHARED_IOTHUB_CS; the secret of that name holds the
 #            .NET e2e's iothubowner one),
-#            E2E_MQTTV5_SHARED_EVENTHUB_CS, AZURE_CLIENT_ID, AZURE_TENANT_ID
+#            E2E_MQTTV5_SHARED_EVENTHUB_CS
 #   No SAS: mqttv5 hubs accept X.509 only.
+# The Azure Pipelines e2e-mqttv5-adr-namespace keeps the environment's ADR namespace linked.
 #
 # Pull requests from forks and from Dependabot get no secrets, so they skip.
 
@@ -82,28 +82,10 @@ jobs:
               - 'c/eng/e2e-shared-device.ps1'
               - 'c/eng/e2e-trusted-ca.ps1'
               - 'c/eng/e2e-connect-proxy.py'
-              - 'c/eng/e2e-mqttv5-adr-namespace.ps1'
               - 'c/eng/setup-softhsm.sh'
               - 'c/eng/setup-pkcs11-provider.sh'
               - '.github/workflows/ci-c-e2e-mqttv5.yml'
-              - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
               - '.github/actions/install-openssl/**'
-
-  # The namespace can drop out of Azure; DPS registrations fail until it is back.
-  # Not on pull requests: the repair logs in to Azure and runs the checked-out
-  # script, so it only runs trusted code (schedule, manual). Pull requests rely
-  # on the scheduled repair (every 10 minutes) in ci-c-e2e-mqttv5-adr-namespace.yml.
-  adr-namespace:
-    name: ADR namespace
-    if: ${{ vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' && github.event_name != 'pull_request' }}
-    permissions:
-      contents: read
-      id-token: write
-    # actionlint 1.7.12 does not accept the $/ self-repository form yet.
-    uses: ./.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml # zizmor: ignore[self-repository]
-    secrets:
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
   # Builds the Windows legs' OpenSSL into the cache once per run, so the legs restore it instead
   # of each building it on a cache miss (.github/actions/install-openssl).
@@ -140,10 +122,9 @@ jobs:
   # run and two overlapping runs stay within Event Hubs' five per partition.
   custom-topics:
     name: custom topics / ${{ matrix.os-name }} / ${{ matrix.adapter }} / shard ${{ matrix.shard }} of 2
-    needs: [ adr-namespace, openssl ]
+    needs: openssl
     if: >-
       ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
-          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
           needs.openssl.result == 'success' &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&
@@ -247,10 +228,9 @@ jobs:
 
   twin:
     name: twin / ${{ matrix.os-name }} / ${{ matrix.adapter }} / shard ${{ matrix.shard }} of 3
-    needs: [ adr-namespace, openssl ]
+    needs: openssl
     if: >-
       ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
-          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
           needs.openssl.result == 'success' &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&
@@ -343,10 +323,9 @@ jobs:
 
   connection:
     name: connection / ${{ matrix.os-name }}
-    needs: [ adr-namespace, openssl ]
+    needs: openssl
     if: >-
       ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
-          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
           needs.openssl.result == 'success' &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&
@@ -434,10 +413,9 @@ jobs:
 
   telemetry:
     name: telemetry / ${{ matrix.os-name }}
-    needs: [ adr-namespace, openssl ]
+    needs: openssl
     if: >-
       ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
-          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
           needs.openssl.result == 'success' &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&
@@ -525,10 +503,9 @@ jobs:
 
   direct-method:
     name: direct method / ${{ matrix.os-name }}
-    needs: [ adr-namespace, openssl ]
+    needs: openssl
     if: >-
       ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
-          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
           needs.openssl.result == 'success' &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&
@@ -615,10 +592,9 @@ jobs:
 
   transport:
     name: transport / ${{ matrix.os-name }} / ${{ matrix.adapter }} / shard ${{ matrix.shard }} of 2
-    needs: [ adr-namespace, openssl ]
+    needs: openssl
     if: >-
       ${{ !cancelled() && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
-          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
           needs.openssl.result == 'success' &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&
@@ -771,10 +747,9 @@ jobs:
 
   custody:
     name: custody / linux
-    needs: [ changes, adr-namespace ]
+    needs: changes
     if: >-
       ${{ !cancelled() && needs.changes.outputs.run == 'true' && vars.E2E_MQTTV5_SHARED_ID_SCOPE != '' &&
-          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&
             github.actor != 'dependabot[bot]')) }}
@@ -869,7 +844,7 @@ jobs:
   # fails when any job failed or was cancelled (skipped jobs pass).
   gate:
     name: ci-c-e2e-mqttv5-gate
-    needs: [ changes, adr-namespace, openssl, custom-topics, twin, connection, telemetry, direct-method, transport, custody ]
+    needs: [ changes, openssl, custom-topics, twin, connection, telemetry, direct-method, transport, custody ]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

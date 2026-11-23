@@ -139,15 +139,10 @@ jobs:
 
   setup:
     name: setup (provision MQTTv3 hub)
-    # Wait for ADR repair (up to 210 minutes) before creating the resource
-    # group: otherwise that wait plus the longhaul run could outlast the
-    # cleanup-e2e-resources janitor's 8-hour cutoff, letting it delete the
-    # hub mid-run.
-    needs: [plan, adr-namespace]
+    needs: plan
     if: >-
       ${{ !cancelled() && needs.plan.result == 'success' &&
-          needs.plan.outputs.needs-mqttv3 == 'true' &&
-          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') }}
+          needs.plan.outputs.needs-mqttv3 == 'true' }}
     permissions:
       contents: read
       id-token: write   # azure/login OIDC
@@ -184,28 +179,12 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # The namespace linking the shared MQTTv5 hub and DPS can drop out of Azure;
-  # repair it before starting hours of work that depend on it.
-  adr-namespace:
-    name: ADR namespace
-    needs: plan
-    if: needs.plan.outputs.needs-mqttv5 == 'true'
-    permissions:
-      contents: read
-      id-token: write
-    # actionlint 1.7.12 does not accept the $/ self-repository form yet.
-    uses: ./.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml # zizmor: ignore[self-repository]
-    secrets:
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-
   longhaul:
     name: ${{ matrix.scenario }} (${{ matrix.os }})
-    needs: [plan, setup, adr-namespace]
+    needs: [plan, setup]
     if: >-
       ${{ !cancelled() && needs.plan.result == 'success' &&
-          (needs.setup.result == 'success' || needs.setup.result == 'skipped') &&
-          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') }}
+          (needs.setup.result == 'success' || needs.setup.result == 'skipped') }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
