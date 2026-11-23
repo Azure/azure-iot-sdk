@@ -30,13 +30,15 @@ if ($running.Count -gt 0) {
 
 function Get-SharedValue([string]$Name, [switch]$Optional) {
     $secret = "E2E-MQTTV5-SHARED-$Name"
-    $value = if ($Optional) {
-        az keyvault secret show --vault-name $env:E2E_SHARED_KEY_VAULT --name $secret --query value -o tsv --only-show-errors 2>$null
-    } else {
-        az keyvault secret show --vault-name $env:E2E_SHARED_KEY_VAULT --name $secret --query value -o tsv --only-show-errors
-    }
-    if ($LASTEXITCODE -eq 0 -and $value) { return $value.Trim() }
-    if (-not $Optional) { throw "Could not read $secret from $($env:E2E_SHARED_KEY_VAULT)." }
+    $output = az keyvault secret show --vault-name $env:E2E_SHARED_KEY_VAULT --name $secret --query value -o tsv --only-show-errors 2>&1
+    $exitCode = $LASTEXITCODE
+    $errors = @($output | Where-Object { $_ -is [System.Management.Automation.ErrorRecord] }) -join ' '
+    $value = @($output | Where-Object { $_ -isnot [System.Management.Automation.ErrorRecord] }) -join ''
+    if ($exitCode -eq 0 -and $value) { return $value.Trim() }
+    # Only a missing optional secret takes the default: any other lookup failure (authorization,
+    # throttling, network) must not, or a rebuilt namespace could lose its Software Update link.
+    if ($Optional -and ($exitCode -eq 0 -or $errors -match 'SecretNotFound')) { return }
+    throw "Could not read $secret from $($env:E2E_SHARED_KEY_VAULT): $errors"
 }
 
 $subscriptionId = Get-SharedValue SUBSCRIPTION-ID -Optional

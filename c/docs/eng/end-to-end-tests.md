@@ -393,7 +393,9 @@ and `-ADR-NAMESPACE`; optional `-SUBSCRIPTION-ID` (default: the service connecti
 and `-ADR-API-VERSION` (default `2026-11-02-preview`), which must match the version the namespace
 was linked with. Optional
 `-SU-INSTANCE` names the Software Updates instance (same resource group) to keep linked as
-`updating/su-1`: linked by a separate PATCH after hub and DPS, with its 3 role assignments. A rebuild
+`updating/su-1`: linked by a separate PATCH after hub and DPS, with its 3 role assignments. An
+optional secret takes its default only when it does not exist; any other Key Vault error fails the
+run. A rebuild
 re-sends existing updating endpoints, and a namespace still in an operation is waited out, not
 rebuilt. The service connection's principal needs Key Vault Secrets User on the vault and Contributor
 on the resource group. Grant the link's role assignments (hub, DPS and namespace identities) on the
