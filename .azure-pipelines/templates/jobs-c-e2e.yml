@@ -1,0 +1,582 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# The C e2e tests, the certificate-management (CSR) e2e tests, the samples, the ESP32 sample in
+# QEMU, their merged Linux coverage and, outside pull requests, the coverage report combined with
+# the unit tests'. The test jobs run against a per-run IoT Hub with local authentication disabled:
+# setup provisions it and grants the service connection's principal IoT Hub Data Contributor, and
+# teardown deletes it; setup_csr and teardown_csr do the same for a certificate-management
+# environment (DPS linked to Azure Device Registration), and the samples' setup and teardown jobs
+# for theirs. With sharedEnvironment, they run on the shared, long-lived environments instead, whose
+# secrets sharedKeyVault holds, with no setup or teardown; but the CSR samples, which the shared CSR
+# environment cannot serve, always provision theirs. The ESP32 jobs always run on the shared
+# environment. Every job but the CSR e2e ones passes the principal's Microsoft Entra tokens to the
+# tests for the hub service calls and to read telemetry; devices keep their X.509 and SAS
+# credentials with DPS. The CSR e2e suites make no hub service calls.
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+  - name: azureLocation
+    type: string
+  - name: sharedEnvironment
+    type: boolean
+    default: false
+  - name: sharedKeyVault
+    type: string
+  # Device index of a job: osIndex * 4 + groupIndex (0..11).
+  - name: platforms
+    type: object
+    default:
+      # The minimum supported OpenSSL (the distribution's 3.0), instrumented for coverage.
+      - name: Linux_OpenSSL_system
+        vmImage: ubuntu-24.04
+        openssl: system
+        preset: linux-gcc-e2e-coverage
+        osIndex: 0
+      - name: Windows_OpenSSL_4_1_0
+        vmImage: windows-latest
+        openssl: 4.1.0
+        preset: windows-msvc-debug
+        osIndex: 1
+      - name: Linux_OpenSSL_4_1_0
+        vmImage: ubuntu-24.04
+        openssl: 4.1.0
+        preset: linux-gcc-debug
+        osIndex: 2
+  # Each group on its own device; transport and sas are the slow suites. ctest -R/-E patterns:
+  # custody runs separately (scripts/run-c-e2e.ps1), after its key is moved into a PKCS#11 token.
+  - name: groups
+    type: object
+    default:
+      - name: core
+        groupIndex: 0
+        tests: e2e
+        testsExclude: 'custody|^az_iot_tests_e2e_(transport|sas)(_az_mqtt)?$'
+      - name: transport_paho
+        groupIndex: 1
+        tests: '^az_iot_tests_e2e_transport$'
+        testsExclude: custody
+      - name: transport_az_mqtt
+        groupIndex: 2
+        tests: '^az_iot_tests_e2e_transport_az_mqtt$'
+        testsExclude: custody
+      - name: sas
+        groupIndex: 3
+        tests: '^az_iot_tests_e2e_sas(_az_mqtt)?$'
+        testsExclude: custody
+  # The provisioned environments: E2E_SUITE of scripts/provision.ps1, the jobs that provision and
+  # delete it and those that test on it, and its configuration artifact. Not with sharedEnvironment,
+  # but those alwaysProvisioned.
+  - name: suites
+    type: object
+    default:
+      - suite: c-e2e
+        setupJob: setup
+        teardownJob: teardown
+        testJob: test
+        configArtifact: e2e-test-config
+        timeoutInMinutes: 30
+        alwaysProvisioned: false
+      # Certificate management (ADR) provisioning is the slower.
+      - suite: c-e2e-csr
+        setupJob: setup_csr
+        teardownJob: teardown_csr
+        testJob: test_csr
+        configArtifact: e2e-csr-test-config
+        timeoutInMinutes: 60
+        alwaysProvisioned: false
+      - suite: c-samples
+        setupJob: setup_samples
+        teardownJob: teardown_samples
+        testJob: samples
+        configArtifact: samples-test-config
+        timeoutInMinutes: 30
+        alwaysProvisioned: false
+      # The shared CSR environment holds no hub or Event Hub access, which the CSR samples' checks
+      # need.
+      - suite: c-samples-csr
+        setupJob: setup_samples_csr
+        teardownJob: teardown_samples_csr
+        testJob: samples_csr
+        configArtifact: samples-csr-test-config
+        timeoutInMinutes: 60
+        alwaysProvisioned: true
+  # The CSR jobs, each on its own bootstrap device of the certificate-management environment: device
+  # index groupIndex (0..1). Their OpenSSL builds are the openssl job's.
+  - name: csrPlatforms
+    type: object
+    default:
+      - name: Linux_OpenSSL_system
+        vmImage: ubuntu-24.04
+        openssl: system
+        preset: linux-gcc-e2e-coverage
+        groupIndex: 0
+      - name: Windows_OpenSSL_4_1_0
+        vmImage: windows-latest
+        openssl: 4.1.0
+        preset: windows-msvc-debug
+        groupIndex: 1
+  # The samples jobs: OS x adapter x shard, each on the device and consumer group (samples-<slot>)
+  # of its slot (0..7). Shard 0 is the slow unified samples (scripts/run-c-samples.ps1), shard 1 the
+  # others. The image's OpenSSL, as the samples' users have.
+  - name: samplesLegs
+    type: object
+    default:
+      - { name: Linux_paho_0, vmImage: ubuntu-24.04, preset: linux-gcc-debug, adapter: paho, shard: 0, slot: 0 }
+      - { name: Linux_paho_1, vmImage: ubuntu-24.04, preset: linux-gcc-debug, adapter: paho, shard: 1, slot: 1 }
+      - { name: Linux_az_mqtt_0, vmImage: ubuntu-24.04, preset: linux-gcc-debug, adapter: az_mqtt, shard: 0, slot: 2 }
+      - { name: Linux_az_mqtt_1, vmImage: ubuntu-24.04, preset: linux-gcc-debug, adapter: az_mqtt, shard: 1, slot: 3 }
+      - { name: Windows_paho_0, vmImage: windows-latest, preset: windows-msvc-debug, adapter: paho, shard: 0, slot: 4 }
+      - { name: Windows_paho_1, vmImage: windows-latest, preset: windows-msvc-debug, adapter: paho, shard: 1, slot: 5 }
+      - { name: Windows_az_mqtt_0, vmImage: windows-latest, preset: windows-msvc-debug, adapter: az_mqtt, shard: 0, slot: 6 }
+      - { name: Windows_az_mqtt_1, vmImage: windows-latest, preset: windows-msvc-debug, adapter: az_mqtt, shard: 1, slot: 7 }
+  # The CSR samples jobs: OS x adapter, each on the bootstrap identity of its slot (0..3). The
+  # Windows ones, the slower builds, first.
+  - name: samplesCsrLegs
+    type: object
+    default:
+      - { name: Windows_paho, vmImage: windows-latest, preset: windows-msvc-debug, adapter: paho, slot: 2 }
+      - { name: Windows_az_mqtt, vmImage: windows-latest, preset: windows-msvc-debug, adapter: az_mqtt, slot: 3 }
+      - { name: Linux_paho, vmImage: ubuntu-24.04, preset: linux-gcc-debug, adapter: paho, slot: 0 }
+      - { name: Linux_az_mqtt, vmImage: ubuntu-24.04, preset: linux-gcc-debug, adapter: az_mqtt, slot: 1 }
+
+jobs:
+  - job: changes
+    displayName: Detect relevant changes
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - template: steps-detect-changes.yml
+        parameters:
+          includeCommon: true
+          sourceRoot: c
+          workflow: ci-c-e2e
+
+  - ${{ each suite in parameters.suites }}:
+    - ${{ if or(not(parameters.sharedEnvironment), suite.alwaysProvisioned) }}:
+      - job: ${{ suite.setupJob }}
+        displayName: Provision test resources (${{ suite.suite }})
+        dependsOn: changes
+        condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
+        timeoutInMinutes: ${{ suite.timeoutInMinutes }}
+        pool:
+          vmImage: ubuntu-24.04
+        variables:
+          - template: variables-e2e-resource-group.yml
+            parameters:
+              suite: ${{ suite.suite }}
+        steps:
+          - checkout: self
+            persistCredentials: false
+          - template: steps-e2e-framework.yml
+            parameters:
+              # master with -DisableLocalAuth (Azure/iot-sdks-e2e-fx#466) and telemetry routed to an
+              # Event Hub through ARM (Add-AzIotEventHubTelemetryRoute, Azure/iot-sdks-e2e-fx#468).
+              revision: c920634091202c1d97aa9342d4512289af7a52f0
+          - task: AzureCLI@2
+            name: configure
+            displayName: Provision and encrypt test configuration
+            inputs:
+              azureSubscription: ${{ parameters.azureServiceConnection }}
+              scriptType: pscore
+              scriptLocation: scriptPath
+              scriptPath: .azure-pipelines/scripts/provision.ps1
+              visibleAzLogin: false
+            env:
+              E2E_SUITE: ${{ suite.suite }}
+              E2E_LOCATION: ${{ parameters.azureLocation }}
+              E2E_RESOURCE_GROUP: $(e2eResourceGroup)
+              E2E_FRAMEWORK_ROOT: $(Agent.TempDirectory)/iot-sdks-e2e-fx
+              E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
+          - task: PublishPipelineArtifact@1
+            displayName: Publish encrypted test configuration
+            inputs:
+              targetPath: $(Agent.TempDirectory)/test-config/test-config.encrypted
+              artifact: ${{ suite.configArtifact }}
+
+  # Builds OpenSSL into the cache once per image, so the test jobs restore it.
+  - job: openssl
+    displayName: OpenSSL
+    dependsOn: changes
+    condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
+    timeoutInMinutes: 60
+    strategy:
+      matrix:
+        ${{ each platform in parameters.platforms }}:
+          ${{ if ne(platform.openssl, 'system') }}:
+            ${{ platform.name }}:
+              vmImage: ${{ platform.vmImage }}
+              openssl: ${{ platform.openssl }}
+    pool:
+      vmImage: $(vmImage)
+    steps:
+      - checkout: self
+        fetchDepth: '1'
+        persistCredentials: false
+      - template: steps-c-toolchain.yml
+
+  - job: test
+    displayName: Run C e2e tests
+    ${{ if parameters.sharedEnvironment }}:
+      dependsOn: [openssl]
+    ${{ else }}:
+      dependsOn: [setup, openssl]
+      variables:
+        configKey: $[ dependencies.setup.outputs['configure.configKey'] ]
+    timeoutInMinutes: 45
+    strategy:
+      matrix:
+        ${{ each platform in parameters.platforms }}:
+          ${{ each group in parameters.groups }}:
+            ${{ format('{0}_{1}', platform.name, group.name) }}:
+              vmImage: ${{ platform.vmImage }}
+              openssl: ${{ platform.openssl }}
+              preset: ${{ platform.preset }}
+              osIndex: ${{ platform.osIndex }}
+              group: ${{ group.name }}
+              groupIndex: ${{ group.groupIndex }}
+              tests: ${{ group.tests }}
+              testsExclude: ${{ group.testsExclude }}
+    pool:
+      vmImage: $(vmImage)
+    steps:
+      - template: steps-c-e2e-test.yml
+        parameters:
+          azureServiceConnection: ${{ parameters.azureServiceConnection }}
+          sharedEnvironment: ${{ parameters.sharedEnvironment }}
+          sharedKeyVault: ${{ parameters.sharedKeyVault }}
+
+  # The certificate-management suites: a bootstrap device under the X.509 enrollment group asks DPS
+  # for an operational certificate with a CSR, then connects to the hub with it; the SAS suites do
+  # the same from the symmetric-key group.
+  - job: test_csr
+    displayName: Run C CSR e2e tests
+    ${{ if parameters.sharedEnvironment }}:
+      dependsOn: [openssl]
+    ${{ else }}:
+      dependsOn: [setup_csr, openssl]
+      variables:
+        configKey: $[ dependencies.setup_csr.outputs['configure.configKey'] ]
+    # Windows: room for an OpenSSL build on a cache miss.
+    timeoutInMinutes: 75
+    strategy:
+      matrix:
+        ${{ each platform in parameters.csrPlatforms }}:
+          ${{ platform.name }}:
+            vmImage: ${{ platform.vmImage }}
+            openssl: ${{ platform.openssl }}
+            preset: ${{ platform.preset }}
+            osIndex: 0
+            group: csr
+            groupIndex: ${{ platform.groupIndex }}
+            tests: e2e_csr
+    pool:
+      vmImage: $(vmImage)
+    steps:
+      - template: steps-c-e2e-test.yml
+        parameters:
+          azureServiceConnection: ${{ parameters.azureServiceConnection }}
+          sharedEnvironment: ${{ parameters.sharedEnvironment }}
+          sharedKeyVault: ${{ parameters.sharedKeyVault }}
+          csr: true
+
+  # The samples (c/tests/e2e/tests/e2e_samples_test.c): each connecting sample, built with its
+  # pipeline hooks, is a CTest test labelled samples_mqttv3 that runs it to its end and checks what
+  # the service saw. c/docs/eng/end-to-end-tests.md, "Samples".
+  - job: samples
+    displayName: Run C samples
+    ${{ if parameters.sharedEnvironment }}:
+      dependsOn: [changes]
+    ${{ else }}:
+      dependsOn: [changes, setup_samples]
+      variables:
+        configKey: $[ dependencies.setup_samples.outputs['configure.configKey'] ]
+    condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
+    # Build ~10 min (Windows, libcurl not cached: ~20), a shard's samples ~8 min.
+    timeoutInMinutes: 50
+    strategy:
+      matrix:
+        ${{ each leg in parameters.samplesLegs }}:
+          ${{ leg.name }}:
+            vmImage: ${{ leg.vmImage }}
+            openssl: system
+            preset: ${{ leg.preset }}
+            adapter: ${{ leg.adapter }}
+            shard: ${{ leg.shard }}
+            slot: ${{ leg.slot }}
+    pool:
+      vmImage: $(vmImage)
+    steps:
+      - template: steps-c-samples-test.yml
+        parameters:
+          azureServiceConnection: ${{ parameters.azureServiceConnection }}
+          sharedEnvironment: ${{ parameters.sharedEnvironment }}
+          sharedKeyVault: ${{ parameters.sharedKeyVault }}
+
+  # The certificate-management samples (label samples_csr), always on a provisioned environment.
+  - job: samples_csr
+    displayName: Run C CSR samples
+    dependsOn: [changes, setup_samples_csr]
+    condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
+    variables:
+      configKey: $[ dependencies.setup_samples_csr.outputs['configure.configKey'] ]
+    # Build ~10 min (Windows, libcurl not cached: ~20), the CSR samples ~10 min.
+    timeoutInMinutes: 50
+    strategy:
+      # Two at a time: with all four registering with a CSR at once, DPS left some registrations
+      # unanswered past the samples' 60 s.
+      maxParallel: 2
+      matrix:
+        ${{ each leg in parameters.samplesCsrLegs }}:
+          ${{ leg.name }}:
+            vmImage: ${{ leg.vmImage }}
+            openssl: system
+            preset: ${{ leg.preset }}
+            adapter: ${{ leg.adapter }}
+            slot: ${{ leg.slot }}
+    pool:
+      vmImage: $(vmImage)
+    steps:
+      - template: steps-c-samples-test.yml
+        parameters:
+          azureServiceConnection: ${{ parameters.azureServiceConnection }}
+          sharedEnvironment: false
+          sharedKeyVault: ${{ parameters.sharedKeyVault }}
+          csr: true
+
+  # Only when every test job succeeded: a failed group leaves partial coverage, and merging it would
+  # understate coverage for an unrelated reason.
+  - job: coverage
+    displayName: Merge Linux coverage
+    dependsOn: test
+    condition: succeeded()
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+      - checkout: self
+        fetchDepth: '1'
+        persistCredentials: false
+      - bash: python3 -m pip install --upgrade 'gcovr==7.2'
+        displayName: Install gcovr
+      - task: DownloadPipelineArtifact@2
+        displayName: Download coverage tracefiles
+        inputs:
+          buildType: current
+          itemPattern: coverage-trace-e2e-linux-*/**
+          targetPath: $(Agent.TempDirectory)/traces
+      - bash: |
+          set -euo pipefail
+          mapfile -t files < <(find "$TRACES" -name '*.json' | sort)
+          if [ "${#files[@]}" -ne 4 ]; then
+            echo "##vso[task.logissue type=error]Expected 4 Linux tracefiles, got ${#files[@]}."
+            exit 1
+          fi
+          args=()
+          for f in "${files[@]}"; do echo "  $f"; args+=(--add-tracefile "$f"); done
+          mkdir -p c/coverage
+          gcovr --root c "${args[@]}" --merge-mode-functions=separate --json c/coverage/e2e.json
+        displayName: Merge tracefiles
+        env:
+          TRACES: $(Agent.TempDirectory)/traces
+      - task: PublishPipelineArtifact@1
+        displayName: Publish merged coverage tracefile
+        inputs:
+          targetPath: c/coverage/e2e.json
+          artifact: coverage-trace-e2e
+
+  # The ESP32 IoT Hub sample (samples/unified/esp32) in QEMU: the firmware is the device,
+  # az_iot_tests_e2e_esp32_qemu the service (c/eng/esp-idf-qemu-e2e.sh). esp32 keeps its key in
+  # flash; esp32c3 and esp32s3 in the Digital Signature peripheral, its key burned into an emulated
+  # eFuse. Always on the shared environment: the per-run enrollments' RSA-4096 keys exceed the
+  # esp32c3 Digital Signature peripheral's 3072 bits, and the shared group CA issues RSA-2048.
+  # Device indexes 12, 13 and 14, after the test jobs' 0..11.
+  - job: esp32_qemu
+    displayName: ESP32 in QEMU
+    dependsOn: changes
+    condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
+    timeoutInMinutes: 45
+    strategy:
+      matrix:
+        esp32:
+          target: esp32
+          groupIndex: 0
+        esp32c3:
+          target: esp32c3
+          groupIndex: 1
+        esp32s3:
+          target: esp32s3
+          groupIndex: 2
+    pool:
+      vmImage: ubuntu-24.04
+    variables:
+      deviceDirectory: $(Agent.TempDirectory)/esp32-device
+    steps:
+      - checkout: self
+        fetchDepth: '1'
+        persistCredentials: false
+        # The ESP-IDF component builds azure-sdk-for-c from c/deps.
+        submodules: true
+      - template: steps-c-e2e-access.yml
+        parameters:
+          azureServiceConnection: ${{ parameters.azureServiceConnection }}
+          sharedKeyVault: ${{ parameters.sharedKeyVault }}
+          deviceIndexOs: '3'
+          deviceIndexGroup: $(groupIndex)
+      # The test runs in the ESP-IDF container: hand it the device's PEMs and a docker --env-file
+      # (NAME=value, the value taken literally).
+      - pwsh: |
+          $ErrorActionPreference = 'Stop'
+          & ./.azure-pipelines/scripts/import-test-config.ps1
+          $index = 12 + [int]$env:GROUP_INDEX
+          $registrationId = (Get-Item "env:IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$index").Value
+          New-Item -ItemType Directory -Path $env:DEVICE_DIRECTORY -Force | Out-Null
+          foreach ($pair in @(@('CERTIFICATE', 'cert.pem'), @('KEY', 'key.pem'))) {
+            $base64 = (Get-Item "env:IOT_DPS_INDIVIDUAL_X509_$($pair[0])_$index").Value
+            [IO.File]::WriteAllBytes((Join-Path $env:DEVICE_DIRECTORY $pair[1]), [Convert]::FromBase64String($base64))
+          }
+          @(
+            "E2E_ESP32_DEVICE_ID=$registrationId"
+            foreach ($name in @('IOT_DPS_ID_SCOPE', 'IOTHUB_HOSTNAME', 'IOTHUB_SERVICE_ACCESS_TOKEN',
+                                'IOTHUB_EVENTHUB_CONNECTION_STRING', 'IOTHUB_EVENTHUB_ACCESS_TOKEN',
+                                'IOTHUB_EVENTHUB_PARTITION_COUNT', 'IOTHUB_EVENTHUB_CONSUMER_GROUP')) {
+              $value = (Get-Item "env:$name" -ErrorAction SilentlyContinue).Value
+              if ($value) { "$name=$value" }
+            }
+          ) | Set-Content -Path (Join-Path $env:DEVICE_DIRECTORY 'env')
+          Write-Host "e2e device (index $index): $registrationId"
+        displayName: Write the device files
+        env:
+          E2E_CONFIG_DIRECTORY: $(Agent.TempDirectory)/test-config
+          IOTHUB_SERVICE_ACCESS_TOKEN: $(hubAccessToken)
+          IOTHUB_EVENTHUB_ACCESS_TOKEN: $(eventHubsAccessToken)
+          GROUP_INDEX: $(groupIndex)
+          DEVICE_DIRECTORY: $(deviceDirectory)
+      # espressif/idf:v6.1, pinned by digest (as ci-c.yml's esp-idf job). Its entrypoint sources
+      # export.sh; the host compiler and OpenSSL headers build the test.
+      - bash: |
+          docker run --rm --env-file "$DEVICE_DIRECTORY/env" \
+            -v "$BUILD_SOURCESDIRECTORY:/work" -v "$DEVICE_DIRECTORY:/device:ro" -w /work/c \
+            espressif/idf:v6.1@sha256:81893c71bb5e570088901f21def8684c25cd2a9020281bd01b843a7655edb18c \
+            bash -c 'set -e
+              git config --global --add safe.directory /work
+              bash eng/apt-install.sh gcc libc6-dev libssl-dev
+              bash eng/esp-idf-qemu-e2e.sh "$0" /device/cert.pem /device/key.pem /tmp/esp32-qemu-e2e' \
+            "$TARGET"
+        displayName: Run e2e
+        env:
+          TARGET: $(target)
+          DEVICE_DIRECTORY: $(deviceDirectory)
+      - bash: rm -rf "$DEVICE_DIRECTORY"
+        displayName: Remove the device files
+        condition: always()
+        env:
+          DEVICE_DIRECTORY: $(deviceDirectory)
+
+  # The e2e coverage combined with the unit and conformance tests', which it runs at this commit:
+  # the report of the whole C SDK. Not for pull requests (ci-c.yml reports theirs), nor in the gate.
+  # The CSR tracefile is left out, with a warning, when its tests failed.
+  - job: coverage_combined
+    displayName: Combine coverage with the unit tests
+    dependsOn: [coverage, test_csr]
+    condition: and(eq(dependencies.coverage.result, 'Succeeded'), ne(variables['Build.Reason'], 'PullRequest'))
+    timeoutInMinutes: 30
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+      - checkout: self
+        fetchDepth: '1'
+        persistCredentials: false
+      - bash: |
+          set -euo pipefail
+          bash c/eng/apt-install.sh ninja-build libssl-dev mosquitto-clients
+          python3 -m pip install --upgrade 'gcovr==7.2'
+          bash c/eng/install-mbedtls.sh 4.1.1 "$AGENT_TEMPDIRECTORY/mbedtls"
+          echo "##vso[task.setvariable variable=CMAKE_PREFIX_PATH]$AGENT_TEMPDIRECTORY/mbedtls"
+          # The real delta processor, for the software updates microsoft/delta:1 interop test (as
+          # in the coverage job of ci-c.yml).
+          library="$(bash c/eng/install-su-delta-processor.sh "$AGENT_TEMPDIRECTORY/su-delta-processor")"
+          echo "##vso[task.setvariable variable=SU_DELTA_LIBRARY]$library"
+        displayName: Install build tools
+      - task: DownloadPipelineArtifact@2
+        displayName: Download e2e coverage tracefiles
+        inputs:
+          buildType: current
+          itemPattern: |
+            coverage-trace-e2e/**
+            coverage-trace-e2e-csr/**
+          targetPath: $(Agent.TempDirectory)/traces
+      - bash: |
+          set -euo pipefail
+          docker run -d --name mosquitto -p 1883:1883 eclipse-mosquitto:2 \
+            sh -c "printf 'listener 1883\nallow_anonymous true\n' > /m.conf; mosquitto -c /m.conf"
+          for _ in $(seq 1 30); do
+            mosquitto_pub -h localhost -p 1883 -t probe -m ok 2>/dev/null && break
+            sleep 1
+          done
+          mosquitto_pub -h localhost -p 1883 -t probe -m ok
+          cmake --preset linux-gcc-coverage "-DAZ_IOT_SU_DELTA_TEST_LIBRARY=$SU_DELTA_LIBRARY"
+          cmake --build --preset linux-gcc-coverage
+          ctest --preset linux-gcc-coverage -E e2e
+          bash eng/collect-coverage.sh build/linux-gcc-coverage coverage/unit.json unit
+        displayName: Build and run the unit and conformance tests
+        workingDirectory: c
+        env:
+          AZ_IOT_MQTT_BROKER_HOST: localhost
+          AZ_IOT_MQTT_BROKER_PORT: '1883'
+          AZ_IOT_CONFORMANCE_ALLOW_UNPROVEN: '1'
+      - bash: |
+          set -euo pipefail
+          pairs=("unit=$PWD/c/coverage/unit.json" "e2e=$TRACES/coverage-trace-e2e/e2e.json")
+          if [ -f "$TRACES/coverage-trace-e2e-csr/e2e-csr.json" ]; then
+            pairs+=("e2e-csr=$TRACES/coverage-trace-e2e-csr/e2e-csr.json")
+          else
+            echo "##vso[task.logissue type=warning]No CSR e2e tracefile: the combined coverage leaves it out."
+          fi
+          bash c/eng/combine-coverage.sh "$OUT" "${pairs[@]}"
+          {
+            echo "# Combined C coverage"
+            echo
+            echo "Commit \`$BUILD_SOURCEVERSION\`"
+            echo
+            cat "$OUT/contribution.md"
+            echo
+            cat "$OUT/combined.md"
+          } > "$AGENT_TEMPDIRECTORY/coverage-combined.md"
+          echo "##vso[task.uploadsummary]$AGENT_TEMPDIRECTORY/coverage-combined.md"
+        displayName: Build the combined and per-suite reports
+        env:
+          TRACES: $(Agent.TempDirectory)/traces
+          OUT: $(Build.ArtifactStagingDirectory)/coverage-combined
+      - task: PublishPipelineArtifact@1
+        displayName: Publish combined coverage
+        inputs:
+          targetPath: $(Build.ArtifactStagingDirectory)/coverage-combined
+          artifact: coverage-combined
+      - bash: docker rm -f mosquitto || true
+        displayName: Stop the broker
+        condition: always()
+
+  - ${{ each suite in parameters.suites }}:
+    - ${{ if or(not(parameters.sharedEnvironment), suite.alwaysProvisioned) }}:
+      - template: jobs-e2e-teardown.yml
+        parameters:
+          azureServiceConnection: ${{ parameters.azureServiceConnection }}
+          suite: ${{ suite.suite }}
+          name: ${{ suite.teardownJob }}
+          displayName: Delete test resources (${{ suite.suite }})
+          setupJob: ${{ suite.setupJob }}
+          dependsOn: [ '${{ suite.setupJob }}', '${{ suite.testJob }}' ]
+
+  - ${{ if parameters.sharedEnvironment }}:
+    - template: jobs-e2e-gate.yml
+      parameters:
+        displayName: C e2e gate
+        teardownJobs: [teardown_samples_csr]
+        jobs: [setup_samples_csr, openssl, test, test_csr, coverage, esp32_qemu, samples, samples_csr]
+  - ${{ else }}:
+    - template: jobs-e2e-gate.yml
+      parameters:
+        displayName: C e2e gate
+        teardownJobs: [teardown, teardown_csr, teardown_samples, teardown_samples_csr]
+        jobs: [setup, setup_csr, setup_samples, setup_samples_csr, openssl, test, test_csr, coverage, esp32_qemu, samples, samples_csr]

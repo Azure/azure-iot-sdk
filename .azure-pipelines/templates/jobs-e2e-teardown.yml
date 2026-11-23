@@ -1,0 +1,62 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# Deletes the resource group of an e2e run (variables-e2e-resource-group.yml). Also runs on failure
+# or cancellation, but not when setup never ran. Needs no checkout, so a failed or canceled fetch
+# does not leave the group behind.
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+  # E2E_SUITE of scripts/provision.ps1.
+  - name: suite
+    type: string
+    values: [standard, csr, longhaul, c-e2e, c-e2e-csr, c-samples, c-samples-csr]
+  # The job that provisions the resource group.
+  - name: setupJob
+    type: string
+    default: setup
+  # The jobs to wait for; must include setupJob.
+  - name: dependsOn
+    type: object
+  - name: name
+    type: string
+    default: teardown
+  - name: displayName
+    type: string
+    default: Delete test resources
+
+jobs:
+  - job: ${{ parameters.name }}
+    displayName: ${{ parameters.displayName }}
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: and(always(), ne(dependencies.${{ parameters.setupJob }}.result, 'Skipped'))
+    timeoutInMinutes: 15
+    cancelTimeoutInMinutes: 15
+    pool:
+      vmImage: ubuntu-24.04
+    variables:
+      - template: variables-e2e-resource-group.yml
+        parameters:
+          suite: ${{ parameters.suite }}
+    steps:
+      - checkout: none
+      - task: AzureCLI@2
+        displayName: Delete resource group if it exists
+        condition: always()
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: pscore
+          scriptLocation: inlineScript
+          visibleAzLogin: false
+          inlineScript: |
+            $ErrorActionPreference = 'Stop'
+            $rg = $env:E2E_RESOURCE_GROUP
+            $exists = az group exists --name $rg --only-show-errors
+            if ($LASTEXITCODE -ne 0) { throw "Could not check resource group $rg." }
+            if ($exists -eq 'true') {
+              az group delete --name $rg --yes --no-wait --only-show-errors
+              if ($LASTEXITCODE -ne 0) { throw "Could not queue deletion of $rg." }
+            }
+        env:
+          E2E_RESOURCE_GROUP: $(e2eResourceGroup)

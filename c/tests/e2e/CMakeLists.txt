@@ -212,7 +212,7 @@ az_iot_add_e2e_suite(az_iot_tests_e2e
 # az_iot_tests_e2e_csr
 #
 # CSR-based DPS enrollment (issued operational cert). Requires a DPS enrollment
-# linked to a signing CA, which only the ci-c-e2e-csr workflow provisions, so it
+# linked to a signing CA, which only the ci-c-e2e pipeline's CSR jobs provision, so it
 # is built only when AZ_IOT_BUILD_E2E_CSR is set -- and when the OpenSSL
 # "managed" certificate provider is available.
 #
@@ -324,7 +324,7 @@ if(AZ_IOT_BUILD_E2E_SAMPLES)
     # Built only in some configurations: a test where the sample is built.
     set(_optional_samples)
     # CSR: a bootstrap identity of an X.509 enrollment group linked to a signing CA, and the SAS
-    # group linked to it (ci-c-samples' CSR legs). Labelled samples_csr.
+    # group linked to it (ci-c-e2e's samples_csr jobs). Labelled samples_csr.
     set(_csr_samples
         authentication/dps_csr_managed authentication/custom_certificate_provider
         authentication/dps_persist_assignment authentication/hub_renew
