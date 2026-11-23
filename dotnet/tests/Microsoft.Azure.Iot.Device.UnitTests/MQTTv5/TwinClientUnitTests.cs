@@ -1015,6 +1015,60 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
             Assert.Equal(5ul, (await getTask.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken)).DesiredVersion);
         }
 
+        // MQTTnet may report the loss of the previous connection only once the device reconnects. The twin client must not take
+        // that loss for the loss of the new connection, which would drop the resync GET that the new connection's birth ack starts.
+        [Fact]
+        public async Task BirthAck_PullModeAfterLateConnectionLossCallback_FetchesDesiredProperties()
+        {
+            using MockConnectionMqttClient mqttClient = new()
+            {
+                AutoRespondToBirth = true,
+                AutoBirthAck = new BirthAck() { DesiredVersion = 3 },
+                RaiseDisconnectCallbackOnClientDisconnect = false,
+            };
+            List<MqttPublish> getPublishes = new();
+            mqttClient.OnPublish = publish =>
+            {
+                if (publish.UserProperties.Any(p => p.Name == "type" && p.ReadValueAsString() == "get:1"))
+                {
+                    lock (getPublishes)
+                    {
+                        getPublishes.Add(publish);
+                    }
+                }
+
+                return Task.FromResult(new MqttPublishAck() { ReasonCode = MqttPublishAckReasonCode.Success });
+            };
+            using ConnectionClient connection = new(new() { MqttClient = mqttClient });
+            using TwinClient twinClient = new(connection, new TwinState() { DesiredVersion = 3 });
+            TaskCompletionSource resyncGetSent = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            twinClient.DesiredResyncTimeoutSchedule = _ =>
+            {
+                resyncGetSent.TrySetResult();
+                return Timeout.InfiniteTimeSpan;
+            };
+            TaskCompletionSource<TwinPushReceivedEventArgs> fetched = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            twinClient.TwinPushReceived += args => fetched.TrySetResult(args);
+            var context = MockFeatureConnectionClient.CreateConnectionContext(IotHubConnectionType.Mqttv5, DeviceId);
+            await connection.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+            await connection.DisconnectAsync(null, TestContext.Current.CancellationToken);
+
+            mqttClient.AutoBirthAck = new BirthAck() { DesiredVersion = 4 };
+            await connection.ConnectToHubAsync(context, TestContext.Current.CancellationToken);
+            await resyncGetSent.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+            MqttPublish get;
+            lock (getPublishes)
+            {
+                get = Assert.Single(getPublishes);
+            }
+
+            var response = new TwinGetResponse() { DesiredVersion = 4, DesiredPayload = ByteString.CopyFromUtf8("{\"fanSpeed\":40}") };
+            await mqttClient.SimulatePublishReceivedAsync(CreateInboundTwinPublish("get-response:1", get.CorrelationData, response.ToByteArray()));
+            TwinPushReceivedEventArgs snapshot = await fetched.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            Assert.Equal(4ul, snapshot.Desired!.PropertiesVersion);
+        }
+
         [Fact]
         public async Task GetTwinAsync_ConnectionClientDisconnectAfterConnectionLossFailsOutstandingRequest()
         {
