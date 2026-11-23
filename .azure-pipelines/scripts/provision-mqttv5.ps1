@@ -61,16 +61,13 @@ foreach ($name in 'E2E_LOCATION', 'E2E_RUN_ID', 'E2E_CONFIG_DIRECTORY') {
 if ($env:E2E_RUN_ID -notmatch '^[a-fA-F0-9-]{36}-[0-9]+$') { throw 'Invalid E2E_RUN_ID.' }
 $account = Invoke-AzureJson @('account', 'show', '--only-show-errors', '-o', 'json')
 $subscription = $account.id
-$devices = Invoke-AzureJson @('provider', 'show', '--namespace', 'Microsoft.Devices', '--only-show-errors', '-o', 'json')
-$registry = Invoke-AzureJson @('provider', 'show', '--namespace', 'Microsoft.DeviceRegistry', '--only-show-errors', '-o', 'json')
+# Probe each type with a list call: `az provider show` omits preview api-versions that ARM still serves.
 foreach ($check in @(
-        @($devices, 'IotHubs', $hubApi),
-        @($devices, 'provisioningServices', $dpsApi),
-        @($registry, 'namespaces', $adrApi))) {
-    $type = $check[0].resourceTypes | Where-Object resourceType -EQ $check[1]
-    if ($check[0].registrationState -ne 'Registered' -or $check[2] -notin $type.apiVersions) {
-        throw "$($check[1]) requires a registered provider serving $($check[2]); check subscription preview access."
-    }
+        @('Microsoft.Devices/IotHubs', $hubApi),
+        @('Microsoft.Devices/provisioningServices', $dpsApi),
+        @('Microsoft.DeviceRegistry/namespaces', $adrApi))) {
+    try { [void](Invoke-Arm get "$arm/subscriptions/$subscription/providers/$($check[0])?api-version=$($check[1])") }
+    catch { throw "$($check[0]) api-version $($check[1]) is not available; check provider registration and preview access. $($_.Exception.Message)" }
 }
 
 $resourceGroup = "DotnetMqttv5E2E-Ado-$env:E2E_RUN_ID"
