@@ -19,6 +19,10 @@ try {
         [Environment]::SetEnvironmentVariable($name, $config[$name])
     }
     $results = Join-Path $env:COMMON_TESTRESULTSDIRECTORY 'mqttv5'
+    $null = New-Item -ItemType Directory -Force -Path $results
+    # Published with the raw test results, to diagnose failures from the client's side.
+    $previous['E2E_CLIENT_TRACE_FILE'] = $env:E2E_CLIENT_TRACE_FILE
+    $env:E2E_CLIENT_TRACE_FILE = Join-Path $results 'client-trace.log'
     $project = Join-Path $PSScriptRoot '../../dotnet/tests/Microsoft.Azure.Iot.Device.IntegrationTests/Microsoft.Azure.Iot.Device.IntegrationTests.csproj'
     & dotnet test $project --no-build `
         --filter 'Hub=MQTTv5&Category!=CertificateManagement&Category!=Longhaul' `
