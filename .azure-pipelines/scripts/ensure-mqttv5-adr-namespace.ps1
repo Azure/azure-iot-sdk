@@ -12,17 +12,19 @@
 # the resource group. Grant the link's role assignments on the resource group once; otherwise it
 # also needs role assignment write.
 #
-# A repair can take hours, and two must not overlap: this exits when an earlier run of the same
-# pipeline is still in progress (SYSTEM_ACCESSTOKEN reads the pipeline's builds).
+# A repair can take hours, and two must not overlap: this exits when any other run of the same
+# pipeline is in progress (SYSTEM_ACCESSTOKEN reads the pipeline's builds). Build ids do not give
+# the order runs execute in (a retried run keeps its id), so two runs starting together both exit
+# and the next scheduled run repairs.
 
 $ErrorActionPreference = 'Stop'
 
 $builds = Invoke-RestMethod -Headers @{ Authorization = "Bearer $env:SYSTEM_ACCESSTOKEN" } -Uri (
     "$($env:SYSTEM_COLLECTIONURI)$($env:SYSTEM_TEAMPROJECTID)/_apis/build/builds" +
     "?definitions=$($env:SYSTEM_DEFINITIONID)&statusFilter=inProgress&api-version=7.1")
-$earlier = @($builds.value | Where-Object { $_.id -lt [long]$env:BUILD_BUILDID })
-if ($earlier.Count -gt 0) {
-    Write-Host "Run $($earlier[0].id) is still ensuring the namespace; nothing to do."
+$running = @($builds.value | Where-Object { $_.id -ne [long]$env:BUILD_BUILDID })
+if ($running.Count -gt 0) {
+    Write-Host "Run $($running[0].id) is still ensuring the namespace; nothing to do."
     return
 }
 

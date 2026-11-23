@@ -382,7 +382,7 @@ failure, or a runner that dies before teardown.
 
 The shared mqttv5 environment (ADR-linked mqttv5 hub and DPS) is kept usable by the Azure Pipelines
 pipeline [`e2e-mqttv5-adr-namespace.yml`](../../../.azure-pipelines/e2e-mqttv5-adr-namespace.yml)
-(every 15 minutes on `releases/public-preview`, or manual; a run exits while an earlier one is still in
+(every 15 minutes on `releases/public-preview`, or manual; a run exits while another one is in
 progress). The ADR namespace
 can disappear from ARM, removing its role assignments; DPS registrations then fail.
 [`c/eng/e2e-mqttv5-adr-namespace.ps1`](../../eng/e2e-mqttv5-adr-namespace.ps1) re-creates it
