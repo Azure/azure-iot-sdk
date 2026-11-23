@@ -25,12 +25,13 @@
 #
 #   vars:    E2E_MQTTV5_SHARED_SUBSCRIPTION_ID, _RESOURCE_GROUP, _ADR_NAMESPACE,
 #            _ID_SCOPE, _DPS_HOST, _LOCATION, _SU_ENDPOINT, _SU_STORAGE_ACCOUNT,
-#            _SU_STORAGE_CONTAINER, and _SU_INSTANCE for the namespace repair
-#            (all E2E_MQTTV5_SHARED_*)
+#            _SU_STORAGE_CONTAINER (all E2E_MQTTV5_SHARED_*)
 #   secrets: E2E_MQTTV5_SHARED_GROUP_CA, E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS,
 #            E2E_MQTTV5_SHARED_EVENTHUB_CS (required by e2e-shared-device.ps1),
-#            AZURE_CLIENT_ID, AZURE_TENANT_ID (OIDC; ADR job and Device Update
-#            import rights, and blob write on the storage account)
+#            AZURE_CLIENT_ID, AZURE_TENANT_ID (OIDC; Device Update import
+#            rights, and blob write on the storage account)
+# The Azure Pipelines e2e-mqttv5-adr-namespace keeps the environment's ADR namespace
+# and its Software Update link in place.
 #
 # Every test is required: an incomplete environment fails the run. Pull requests
 # from forks and from Dependabot get no secrets, so they skip.
@@ -97,37 +98,18 @@ jobs:
               - 'c/eng/e2e-shared-device.ps1'
               - 'c/eng/e2e-trusted-ca.ps1'
               - 'c/eng/collect-coverage.sh'
-              - 'c/eng/e2e-mqttv5-adr-namespace.ps1'
               - '.github/workflows/ci-c-e2e-adu.yml'
               - '.github/actions/install-curl-windows/**'
               - '.github/actions/install-openssl/**'
               - '.github/actions/install-su-delta-processor/**'
-              - '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml'
-
-  # As in ci-c-e2e-mqttv5.yml: the namespace (and its Software Update link) can
-  # drop out of Azure. Not on pull requests, which rely on the scheduled repair
-  # (every 10 minutes) in ci-c-e2e-mqttv5-adr-namespace.yml.
-  # main has no software updates: a dispatch on main (the UI default) does nothing.
-  adr-namespace:
-    name: ADR namespace
-    if: ${{ github.event_name != 'pull_request' && github.ref != 'refs/heads/main' }}
-    permissions:
-      contents: read
-      id-token: write
-    # actionlint 1.7.12 does not accept the $/ self-repository form yet.
-    uses: ./.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml # zizmor: ignore[self-repository]
-    secrets:
-      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
 
   # Stages the standing offers once per run; each OS leg below reads them.
   offers:
     name: software updates offers
-    needs: [ changes, adr-namespace ]
+    needs: changes
     if: >-
       ${{ !cancelled() && needs.changes.outputs.run == 'true' &&
           github.ref != 'refs/heads/main' &&
-          (needs.adr-namespace.result == 'success' || needs.adr-namespace.result == 'skipped') &&
           (github.event_name != 'pull_request' ||
            (github.event.pull_request.head.repo.full_name == github.repository &&
             github.actor != 'dependabot[bot]')) }}
@@ -380,7 +362,7 @@ jobs:
   # fails when any job failed or was cancelled (skipped jobs pass).
   gate:
     name: ci-c-e2e-adu-gate
-    needs: [ changes, adr-namespace, offers, e2e-su ]
+    needs: [ changes, offers, e2e-su ]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

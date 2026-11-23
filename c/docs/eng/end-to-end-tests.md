@@ -319,7 +319,7 @@ is the nightly backstop: it reaps any `CSDKE2E*` (C), `DotnetE2ETestPipeline-*`
 covering what teardown structurally cannot — an asynchronous `--no-wait` delete
 failure, or a runner that dies before teardown.
 
-`ci-c-e2e-mqttv5.yml` and `ci-c-e2e-mqttv5-adr-namespace.yml` serve `releases/public-preview` only.
+`ci-c-e2e-mqttv5.yml` serves `releases/public-preview` only.
 
 ---
 
