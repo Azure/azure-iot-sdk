@@ -172,8 +172,9 @@ jobs:
           - template: steps-e2e-framework.yml
             parameters:
               # master with -DisableLocalAuth (Azure/iot-sdks-e2e-fx#466) and telemetry routed to an
-              # Event Hub through ARM (Add-AzIotEventHubTelemetryRoute, Azure/iot-sdks-e2e-fx#468).
-              revision: c920634091202c1d97aa9342d4512289af7a52f0
+              # Event Hub through ARM (Add-AzIotEventHubTelemetryRoute, Azure/iot-sdks-e2e-fx#468), with
+              # transient ARM errors retried on the ADR namespace create (Azure/iot-sdks-e2e-fx#476).
+              revision: 2b60a0fb7cb644e64747c018d05c2b209c487944
           - task: AzureCLI@2
             name: configure
             displayName: Provision and encrypt test configuration
