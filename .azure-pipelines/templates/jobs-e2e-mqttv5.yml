@@ -26,7 +26,6 @@ jobs:
               ($_ -match '^(dotnet|common)/' -and $_ -notmatch '\.md$') -or
               $_ -match '^\.azure-pipelines/' -or
               $_ -in @('.github/workflows/ci-dotnet-e2e-mqttv5.yml',
-                '.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml',
                 'c/eng/e2e-mqttv5-adr-namespace.ps1')
             }).Count -gt 0
           }

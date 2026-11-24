@@ -17,6 +17,7 @@ each entry point below. All pipelines also support **Run pipeline**.
 | `longhaul-dotnet.yml` | Manual MQTTv3 longhaul with duration, OS, success-rate and memory-growth parameters |
 | `ci-c-e2e.yml` | C end-to-end tests (Linux on OpenSSL 3.0 and 4.1.0, Windows on 4.1.0, four groups each; the certificate-management (CSR) suites on Linux and Windows; the connecting samples and the CSR samples on Linux and Windows; the ESP32 sample in QEMU; merged Linux coverage and, outside pull requests, the coverage combined with the unit tests') against IoT Hubs with local authentication disabled: on pull requests the shared environments, daily at 11:00 UTC on `main` and 14:00 UTC on `releases/public-preview` its own |
 | `cleanup-e2e-resources.yml` | Age-gated cleanup of leaked Azure Pipelines e2e resources; also daily at 02:00 UTC |
+| `e2e-mqttv5-adr-namespace.yml` | Keeps the shared MQTTv5 environment's ADR namespace present and linked (`c/docs/eng/end-to-end-tests.md`); every 15 minutes on `releases/public-preview`. Its service connection principal needs **Key Vault Secrets User** on `sharedKeyVault` and **Contributor** on the environment's resource group |
 
 On `releases/public-preview`, these pipelines cover only the classic (MQTTv3) IoT
 hub: the e2e and CSR filters exclude tests with trait `Hub=MQTTv5`. MQTTv5 IoT hub

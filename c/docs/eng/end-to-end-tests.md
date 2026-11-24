@@ -380,22 +380,26 @@ is the nightly backstop: it reaps any `CSDKE2E*` (C), `DotnetE2ETestPipeline-*`
 covering what teardown structurally cannot — an asynchronous `--no-wait` delete
 failure, or a runner that dies before teardown.
 
-The shared mqttv5 environment (ADR-linked mqttv5 hub and DPS) is kept usable by
-[`ci-c-e2e-mqttv5-adr-namespace.yml`](../../../.github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml)
-(every 10 minutes, manual, or `workflow_call` as the first job of a mqttv5 e2e workflow). The ADR namespace
+The shared mqttv5 environment (ADR-linked mqttv5 hub and DPS) is kept usable by the Azure Pipelines
+pipeline [`e2e-mqttv5-adr-namespace.yml`](../../../.azure-pipelines/e2e-mqttv5-adr-namespace.yml)
+(every 15 minutes on `releases/public-preview`, or manual; a run exits while another one is in
+progress). The ADR namespace
 can disappear from ARM, removing its role assignments; DPS registrations then fail.
 [`c/eng/e2e-mqttv5-adr-namespace.ps1`](../../eng/e2e-mqttv5-adr-namespace.ps1) re-creates it
 (same name, hub region), ensures the 8 role assignments, re-links hub and DPS, and pushes the
-namespace to DPS; when the namespace is healthy it makes one ARM read. Inputs are repository
-variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_HUB_NAME`, `_DPS_NAME`
-and `_ADR_NAMESPACE` (unset `_ADR_NAMESPACE` skips the job); optional `_ADR_API_VERSION`
-(default `2026-11-02-preview`) must match the version the namespace was linked with. Optional
-`_SU_INSTANCE` names the Software Updates instance (same resource group) to keep linked as
-`updating/su-1`: linked by a separate PATCH after hub and DPS, with its 3 role assignments. A rebuild
+namespace to DPS; when the namespace is healthy it makes one ARM read. Inputs are Key Vault secrets
+(`sharedKeyVault`, default `kv-aziotclb`) `E2E-MQTTV5-SHARED-RESOURCE-GROUP`, `-HUB-NAME`, `-DPS-NAME`
+and `-ADR-NAMESPACE`; optional `-SUBSCRIPTION-ID` (default: the service connection's subscription)
+and `-ADR-API-VERSION` (default `2026-11-02-preview`), which must match the version the namespace
+was linked with. Optional
+`-SU-INSTANCE` names the Software Updates instance (same resource group) to keep linked as
+`updating/su-1`: linked by a separate PATCH after hub and DPS, with its 3 role assignments. An
+optional secret takes its default only when it does not exist; any other Key Vault error fails the
+run. A rebuild
 re-sends existing updating endpoints, and a namespace still in an operation is waited out, not
-rebuilt. The OIDC identity needs Contributor
+rebuilt. The service connection's principal needs Key Vault Secrets User on the vault and Contributor
 on the resource group. Grant the link's role assignments (hub, DPS and namespace identities) on the
-resource group once: those survive the namespace, so the job creates none and needs no role
+resource group once: those survive the namespace, so the pipeline creates none and needs no role
 assignment write unless the namespace identity changes.
 
 [`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml) runs the mqttv5 suites on
@@ -404,8 +408,7 @@ az_mqtt over Schannel; custody is Linux only, see [Not run on Windows](#not-run-
 with its own device. The twin, transport and custom topic suites run one job per
 adapter and per shard instead (`AZ_IOT_TEST_SHARD=<index>/<count>`, see
 [`test_shard.h`](../../tests/support/test_shard.h)), each with its own device, so their cases run in
-parallel. On schedule and manual runs the namespace job runs first; pull
-requests skip it (it logs in to Azure and runs the checked-out script) and rely on its scheduled run (every 10 minutes). Each job issues a device with
+parallel. The jobs rely on the namespace repair's schedule (above). Each job issues a device with
 `e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED` from secret `E2E_MQTTV5_SHARED_GROUP_CA`, and
 reads secrets `E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS` and `_EVENTHUB_CS` (`service` policy; the former is passed to the
 script as `E2E_MQTTV5_SHARED_IOTHUB_CS`, as the secret of that name holds `iothubowner` for the .NET e2e), and variables `E2E_MQTTV5_SHARED_ID_SCOPE` (unset skips the workflow) and
@@ -630,9 +633,9 @@ after `Retry-After` or 2, 4, 8, 16 s (at most 60 s), with a warning per retry; a
 CI ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) runs on the shared mqttv5
 environment, whose ADR namespace is linked to a Device Update instance, on pull requests touching
 core, Software Update or adapter code, the e2e harness or the workflow; nightly; manual. Pull requests
-from forks and from Dependabot skip. Scheduled and manual runs first run the namespace repair
-(`ci-c-e2e-mqttv5-adr-namespace.yml`), which also restores the Software Update link. The `offers`
-job then ensures the standing offers (`New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -Reuse`;
+from forks and from Dependabot skip. The namespace repair (`e2e-mqttv5-adr-namespace.yml`, above)
+also restores the Software Update link. The `offers`
+job ensures the standing offers (`New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -Reuse`;
 seconds once staged) and passes their state on. The `e2e-su` job, on Linux and on Windows (libcurl
 from [`install-curl-windows`](../../../.github/actions/install-curl-windows/action.yml)), sets the
 offer variables (`Export-SuE2EOfferVariables`), issues a new device per suite execution (4: each
