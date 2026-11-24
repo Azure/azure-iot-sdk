@@ -54,10 +54,10 @@ jobs:
       # Everything eng/check-ga-scope.sh scans; runs only the cheap conventions job.
       ga_scope: ${{ steps.filter.outputs.ga_scope == 'true' }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           # `every`: a file counts only if it matches all patterns of a filter,
@@ -136,7 +136,7 @@ jobs:
           --health-start-period=5s
 
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -247,7 +247,7 @@ jobs:
     env:
       PKCS11_PROVIDER_TAG: v1.3.0
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up MSVC (Windows)
@@ -310,7 +310,7 @@ jobs:
     if: needs.changes.outputs.c == 'true' || needs.changes.outputs.ga_scope == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # Guards the rules in c/docs/eng/coding-conventions.md. Cheap and
@@ -381,7 +381,7 @@ jobs:
           --health-retries=10
           --health-start-period=5s
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install toolchain
@@ -465,7 +465,7 @@ jobs:
           --health-retries=10
           --health-start-period=5s
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install deps
@@ -498,7 +498,7 @@ jobs:
           fi
       - name: Upload valgrind logs
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: valgrind-logs
           path: c/build/linux-gcc-debug/Testing/Temporary/MemoryChecker.*.log
@@ -549,7 +549,7 @@ jobs:
       matrix:
         tool: [ helgrind, drd ]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install deps
@@ -578,7 +578,7 @@ jobs:
         run: bash eng/run-race-detectors.sh ${{ matrix.tool }}
       - name: Upload race-detector logs
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: race-detector-logs-${{ matrix.tool }}
           path: c/build/linux-gcc-debug/race-logs/
@@ -590,7 +590,7 @@ jobs:
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
@@ -638,7 +638,7 @@ jobs:
           --health-retries=10
           --health-start-period=5s
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install deps
@@ -691,7 +691,7 @@ jobs:
           --health-retries=10
           --health-start-period=5s
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install deps
@@ -736,7 +736,7 @@ jobs:
       matrix:
         mbedtls: [ '3.6.7', '4.1.1', '4.2.0' ]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install deps
@@ -780,7 +780,7 @@ jobs:
           - tls: mbedtls
             mbedtls: '4.1.1'
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install deps
@@ -869,7 +869,7 @@ jobs:
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install deps
@@ -928,7 +928,7 @@ jobs:
     if: needs.changes.outputs.c == 'true' || github.event_name != 'pull_request'
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
@@ -968,7 +968,7 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install deps
@@ -1012,7 +1012,7 @@ jobs:
         shell: bash
         working-directory: c
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
@@ -1053,7 +1053,7 @@ jobs:
         shell: bash
         working-directory: c
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1.13.0
@@ -1089,7 +1089,7 @@ jobs:
       # never used, only ignored. The image version is in the key: a new image
       # starts a new entry instead of growing the old one.
       - name: Restore vcpkg binary cache
-        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/vcpkg-archives
           key: ${{ env.VCPKG_CACHE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
@@ -1145,7 +1145,7 @@ jobs:
           echo "save=$([ "$after" -gt "$before" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
       - name: Save vcpkg binary cache
         if: always() && steps.vcpkg-archives.outputs.save == 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/vcpkg-archives
           key: ${{ env.VCPKG_CACHE_PREFIX }}${{ github.run_id }}-${{ github.run_attempt }}
@@ -1226,7 +1226,7 @@ jobs:
         shell: bash
         working-directory: c
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -1439,7 +1439,7 @@ jobs:
         shell: bash
         working-directory: c
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Set up MSVC (Windows)
@@ -1498,7 +1498,7 @@ jobs:
           --health-retries=10
           --health-start-period=5s
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # diff-cover compares against the merge base.
@@ -1618,7 +1618,7 @@ jobs:
         run: bash eng/collect-coverage.sh build/linux-gcc-coverage coverage/unit.json unit-conformance
 
       - name: Upload coverage tracefile
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-trace-unit
           path: c/coverage/unit.json
@@ -1666,7 +1666,7 @@ jobs:
 
       - name: Upload coverage report
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-c
           path: c/build/linux-gcc-coverage/coverage/
@@ -1705,7 +1705,7 @@ jobs:
           # The sample's minimum ESP-IDF.
           - { sample: unified/esp32, target: esp32, profile: default, idf: v6.0 }
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           # The ESP-IDF component builds azure-sdk-for-c from c/deps.
