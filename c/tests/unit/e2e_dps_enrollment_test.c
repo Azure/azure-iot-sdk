@@ -52,6 +52,22 @@ static void json_whitespace_is_accepted(void** state)
       "{ \"registrationId\" : \"r1\" ,\n \"deviceId\" : \"d1\" }\n", "r1", "d1"));
 }
 
+static void escaped_values_are_compared_decoded(void** state)
+{
+  (void)state;
+  const char* json = "{\"registrationId\":\"r1\",\"deviceId\":\"d\\/1\"}";
+  assert_true(e2e_dps_enrollment_assigns_device(json, "r1", "d/1"));
+  assert_false(e2e_dps_enrollment_assigns_device(json, "r1", "d\\/1"));
+  /* az_json does not decode \uXXXX: such an assignment is refused, never guessed. */
+  assert_false(e2e_dps_enrollment_assigns_device(
+      "{\"registrationId\":\"r1\",\"deviceId\":\"d\\u0031\"}", "r1", "d1"));
+  /* Nor can it match an escaped name: a deviceId spelled so must not read as absent. */
+  assert_false(e2e_dps_enrollment_assigns_device(
+      "{\"registrationId\":\"r1\",\"\\u0064eviceId\":\"other\"}", "r1", NULL));
+  assert_false(e2e_dps_enrollment_assigns_device(
+      "{\"registrationId\":\"r1\",\"initialTwin\":{\"\\u0064eviceId\":\"x\"}}", "r1", NULL));
+}
+
 static void another_registration_id_is_refused(void** state)
 {
   (void)state;
@@ -83,6 +99,7 @@ int main(void)
     cmocka_unit_test(a_nested_device_id_is_not_the_assignment),
     cmocka_unit_test(an_absent_or_null_device_id_assigns_the_registration_id),
     cmocka_unit_test(json_whitespace_is_accepted),
+    cmocka_unit_test(escaped_values_are_compared_decoded),
     cmocka_unit_test(another_registration_id_is_refused),
     cmocka_unit_test(a_truncated_or_malformed_enrollment_is_refused),
   };
