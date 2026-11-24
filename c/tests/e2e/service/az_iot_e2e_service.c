@@ -6,6 +6,7 @@
 #include "az_iot_e2e_service.h"
 
 #include "e2e_amqp.h"
+#include "e2e_dps_enrollment.h"
 #include "e2e_http.h"
 #include "e2e_sas.h"
 
@@ -1392,10 +1393,16 @@ static bool dps_service_auth(e2e_conn_info* info, char* sas, size_t sas_size)
 /**
  * @brief A DPS service REST call; true for a 2xx (or 404 when @p allow_404).
  *
- * PUT (create or replace with the same body) and DELETE are idempotent, so a stalled attempt is
- * sent again.
+ * A stalled PUT or DELETE is sent again. DPS refuses a resent PUT with 409 when the first one
+ * created the enrollment, so the caller settles that case. @p out_status (optional) receives
+ * the last HTTP status, 0 when none arrived.
  */
-static bool dps_service_call(const char* method, const char* path, const char* body, bool allow_404)
+static bool dps_service_call(
+    const char* method,
+    const char* path,
+    const char* body,
+    bool allow_404,
+    int* out_status)
 {
   e2e_conn_info info;
   char sas[512];
@@ -1427,7 +1434,56 @@ static bool dps_service_call(const char* method, const char* path, const char* b
   {
     (void)fprintf(stderr, "[e2e] DPS service %s %s: HTTP %d %s\n", method, path, status, resp);
   }
+  if (out_status != NULL)
+  {
+    *out_status = status;
+  }
   return done;
+}
+
+/**
+ * @brief Reads the individual enrollment at @p path: whether it is that of @p registration_id
+ * and assigns @p device_id (NULL: @p registration_id).
+ */
+static bool dps_enrollment_assigns(
+    const char* path,
+    const char* registration_id,
+    const char* device_id)
+{
+  e2e_conn_info info;
+  char sas[512];
+  if (!dps_service_auth(&info, sas, sizeof(sas)))
+  {
+    return false;
+  }
+  int status = 0;
+  char resp[4096] = { 0 };
+  bool read = https_request(
+      info.host,
+      "GET",
+      path,
+      sas,
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+      0,
+      true,
+      &status,
+      resp,
+      sizeof(resp),
+      NULL,
+      NULL);
+  bool ok = read && status == 200
+      && e2e_dps_enrollment_assigns_device(resp, registration_id, device_id);
+  (void)fprintf(
+      stderr,
+      "[e2e] DPS service GET %s: HTTP %d, %s\n",
+      path,
+      status,
+      ok ? "as requested" : "not as requested");
+  return ok;
 }
 
 bool az_iot_e2e_dps_tpm_enrollment_create(
@@ -1449,8 +1505,13 @@ bool az_iot_e2e_dps_tpm_enrollment_create(
       device_id != NULL ? device_id : "",
       device_id != NULL ? "\"," : "",
       endorsement_key_base64);
-  return n > 0 && (size_t)n < sizeof(path) && m > 0 && (size_t)m < sizeof(body)
-      && dps_service_call("PUT", path, body, false);
+  if (n <= 0 || (size_t)n >= sizeof(path) || m <= 0 || (size_t)m >= sizeof(body))
+  {
+    return false;
+  }
+  int status = 0;
+  return dps_service_call("PUT", path, body, false, &status)
+      || (status == 409 && dps_enrollment_assigns(path, registration_id, device_id));
 }
 
 /** @brief Deletes the registration record of @p registration_id; a missing one counts as deleted.
@@ -1460,7 +1521,7 @@ static bool dps_registration_delete(const char* registration_id)
   char path[256];
   int n = snprintf(
       path, sizeof(path), "/registrations/%s?api-version=" E2E_DPS_API_VERSION, registration_id);
-  return n > 0 && (size_t)n < sizeof(path) && dps_service_call("DELETE", path, NULL, true);
+  return n > 0 && (size_t)n < sizeof(path) && dps_service_call("DELETE", path, NULL, true, NULL);
 }
 
 bool az_iot_e2e_dps_enrollment_delete(const char* registration_id)
@@ -1469,7 +1530,8 @@ bool az_iot_e2e_dps_enrollment_delete(const char* registration_id)
   bool ok = dps_registration_delete(registration_id);
   int n = snprintf(
       path, sizeof(path), "/enrollments/%s?api-version=" E2E_DPS_API_VERSION, registration_id);
-  return n > 0 && (size_t)n < sizeof(path) && dps_service_call("DELETE", path, NULL, true) && ok;
+  return n > 0 && (size_t)n < sizeof(path) && dps_service_call("DELETE", path, NULL, true, NULL)
+      && ok;
 }
 
 bool az_iot_e2e_service_device_delete(az_iot_e2e_service* svc, const char* device_id)

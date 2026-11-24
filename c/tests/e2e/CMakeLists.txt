@@ -185,7 +185,7 @@ if(AZ_IOT_BUILD_E2E_ESP32_QEMU)
     if(NOT UNIX)
         message(FATAL_ERROR "AZ_IOT_BUILD_E2E_ESP32_QEMU=ON needs a POSIX host (it starts QEMU)")
     endif()
-    az_iot_add_cmocka_test(az_iot_tests_e2e_esp32_qemu tests/e2e_esp32_qemu_test.c tests/e2e_json.c)
+    az_iot_add_cmocka_test(az_iot_tests_e2e_esp32_qemu tests/e2e_esp32_qemu_test.c)
     target_link_libraries(az_iot_tests_e2e_esp32_qemu PRIVATE az_iot_e2e_service az_iot_e2e_process)
     # DPS, TLS and MQTT run emulated: minutes, not seconds.
     set_tests_properties(az_iot_tests_e2e_esp32_qemu PROPERTIES TIMEOUT 1200)
@@ -309,7 +309,7 @@ az_iot_add_e2e_suite(az_iot_tests_e2e_fileupload
 # ---------------------------------------------------------------------------
 if(AZ_IOT_BUILD_E2E_SAMPLES)
     az_iot_add_cmocka_test(az_iot_tests_e2e_samples NO_CTEST
-        tests/e2e_samples_test.c tests/e2e_json.c)
+        tests/e2e_samples_test.c)
     target_link_libraries(az_iot_tests_e2e_samples PRIVATE
         az_iot_e2e_service az_iot_e2e_process OpenSSL::Crypto)
 
