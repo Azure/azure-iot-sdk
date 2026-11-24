@@ -233,6 +233,11 @@ target_link_libraries(az_iot_tests_e2e_process PRIVATE az_iot_e2e_process)
 target_compile_definitions(az_iot_tests_e2e_process PRIVATE
     "AZ_IOT_E2E_PROCESS_TEST_CHILD=\"$<TARGET_FILE:az_iot_tests_e2e_process_child>\"")
 add_dependencies(az_iot_tests_e2e_process az_iot_tests_e2e_process_child)
+# e2e/service/e2e_dps_enrollment.h: the enrollment a 409 on a resent DPS enrollment PUT accepts.
+# Here, not in e2e/, so every build runs its test, which needs no network.
+az_iot_add_cmocka_test(az_iot_tests_e2e_dps_enrollment unit/e2e_dps_enrollment_test.c
+    e2e/service/e2e_dps_enrollment.c e2e/service/e2e_json.c)
+target_include_directories(az_iot_tests_e2e_dps_enrollment PRIVATE e2e/service)
 # Concurrent writers and rotation in the file sink, which documents itself as
 # thread-safe. RACE: also run under helgrind and DRD.
 az_iot_add_cmocka_test(az_iot_tests_log_file_race RACE unit/log_file_race_test.c)

@@ -6,8 +6,8 @@
 #include "az_iot_e2e_service.h"
 
 #include "e2e_amqp.h"
+#include "e2e_dps_enrollment.h"
 #include "e2e_http.h"
-#include "e2e_json.h"
 #include "e2e_sas.h"
 
 #include <stdio.h>
@@ -1441,8 +1441,8 @@ static bool dps_service_call(
 }
 
 /**
- * @brief Whether the individual enrollment at @p path assigns @p device_id: its top-level
- * deviceId, or @p registration_id when it sets none.
+ * @brief Reads the individual enrollment at @p path: whether it is that of @p registration_id
+ * and assigns @p device_id (NULL: @p registration_id).
  */
 static bool dps_enrollment_assigns(
     const char* path,
@@ -1474,17 +1474,8 @@ static bool dps_enrollment_assigns(
       sizeof(resp),
       NULL,
       NULL);
-  static const char* const registration_id_path[] = { "registrationId", NULL };
-  static const char* const device_id_path[] = { "deviceId", NULL };
-  char assigned[256];
   bool ok = read && status == 200
-      && e2e_json_read_string(resp, registration_id_path, assigned, sizeof(assigned))
-      && strcmp(assigned, registration_id) == 0;
-  if (ok && !e2e_json_read_string(resp, device_id_path, assigned, sizeof(assigned)))
-  {
-    (void)snprintf(assigned, sizeof(assigned), "%s", registration_id);
-  }
-  ok = ok && strcmp(assigned, device_id) == 0;
+      && e2e_dps_enrollment_assigns_device(resp, registration_id, device_id);
   (void)fprintf(
       stderr,
       "[e2e] DPS service GET %s: HTTP %d, %s\n",
@@ -1519,9 +1510,7 @@ bool az_iot_e2e_dps_tpm_enrollment_create(
   }
   int status = 0;
   return dps_service_call("PUT", path, body, false, &status)
-      || (status == 409
-          && dps_enrollment_assigns(
-              path, registration_id, device_id != NULL ? device_id : registration_id));
+      || (status == 409 && dps_enrollment_assigns(path, registration_id, device_id));
 }
 
 /** @brief Deletes the registration record of @p registration_id; a missing one counts as deleted.
