@@ -67,7 +67,7 @@ jobs:
     outputs:
       run: ${{ github.event_name != 'pull_request' || steps.filter.outputs.e2e == 'true' }}
     steps:
-      - uses: dorny/paths-filter@0e4a8c6effa4802afeda77dc8d303f8176d7dfad # v3.0.4
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         if: github.event_name == 'pull_request'
         id: filter
         with:
@@ -127,12 +127,12 @@ jobs:
       AZ_IOT_E2E_SU_STORAGE_ACCOUNT: ${{ vars.E2E_MQTTV5_SHARED_SU_STORAGE_ACCOUNT }}
       AZ_IOT_E2E_SU_STORAGE_CONTAINER: ${{ vars.E2E_MQTTV5_SHARED_SU_STORAGE_CONTAINER }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Azure Login via OIDC
-        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
@@ -149,7 +149,7 @@ jobs:
 
       # Offer and job names only; the test legs check each device's job results with it.
       - name: Upload the offers
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: su-offers
           path: su-offers.json
@@ -189,7 +189,7 @@ jobs:
       AZ_IOT_E2E_SU_STORAGE_CONTAINER: ${{ vars.E2E_MQTTV5_SHARED_SU_STORAGE_CONTAINER }}
       SU_OFFERS_STATE: ${{ github.workspace }}/su-offers.json
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -239,14 +239,14 @@ jobs:
           cmake --build --preset $env:AZ_IOT_PRESET --target az_iot_tests_e2e_su az_iot_tests_e2e_su_offer az_iot_tests_e2e_su_az_mqtt az_iot_tests_e2e_su_offer_az_mqtt
 
       - name: Azure Login via OIDC
-        uses: azure/login@7184910d9eb2b1c5e48f7073824a90609bb9b6d6 # v2.3.1
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.E2E_MQTTV5_SHARED_SUBSCRIPTION_ID }}
 
       - name: Download the offers
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: su-offers
           path: ${{ github.workspace }}
@@ -337,7 +337,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e2e-su-results-${{ matrix.os-name }}
           path: results/*.xml
@@ -352,7 +352,7 @@ jobs:
 
       - name: Upload coverage tracefile
         if: runner.os == 'Linux' && success()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-trace-e2e-adu
           path: c/coverage/e2e-adu.json
