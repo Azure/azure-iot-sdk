@@ -154,7 +154,7 @@ jobs:
           workflow: ci-c-e2e
 
   - ${{ each suite in parameters.suites }}:
-    - ${{ if or(not(parameters.sharedEnvironment), suite.alwaysProvisioned) }}:
+    - ${{ if or(not(parameters.sharedEnvironment), eq(suite.alwaysProvisioned, true)) }}:
       - job: ${{ suite.setupJob }}
         displayName: Provision test resources (${{ suite.suite }})
         dependsOn: changes
@@ -555,7 +555,7 @@ jobs:
         condition: always()
 
   - ${{ each suite in parameters.suites }}:
-    - ${{ if or(not(parameters.sharedEnvironment), suite.alwaysProvisioned) }}:
+    - ${{ if or(not(parameters.sharedEnvironment), eq(suite.alwaysProvisioned, true)) }}:
       - template: jobs-e2e-teardown.yml
         parameters:
           azureServiceConnection: ${{ parameters.azureServiceConnection }}
