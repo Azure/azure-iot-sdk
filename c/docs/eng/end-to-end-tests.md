@@ -287,30 +287,9 @@ with the .NET pipelines and the permissions it needs.
 
 ### GitHub Actions workflows
 
-The other C e2e workflow (`ci-c-e2e-mqttv5`) ends with a
-`<workflow>-gate` job (`ci-c-e2e-mqttv5-gate`), the
-single check name for rulesets to require. Since its workflow runs on every pull request
-to `releases/public-preview`, it
-always reports; it fails only when a job failed or was cancelled. The other C workflows end with
-`ci-c-gate`, `ci-c-static-analysis-gate`, `codeql-c-gate` and `ci-c-yocto-gate`.
-
-They log in with OIDC via `azure/login@v2`, using repo secrets `AZURE_CLIENT_ID`,
-`AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` (same secrets as the dotnet CI), and grant
-`permissions: id-token: write`. Each provisioning job downloads the shared
-[`iot-sdks-e2e-fx`](https://github.com/Azure/iot-sdks-e2e-fx) script and:
-
-1. computes the RG name from the run itself (`CSDKE2E<Flavor>-<run_id>-<run_attempt>`, a
-   workflow-level `env`) and passes it to the provision action as `rg-name`;
-2. provisions IoT Hub + DPS + enrollments (`New-AzIotTestEnvironment`);
-3. emits an env-var script that is dot-sourced (`New-AzIotCSDKE2ETestConfig -Target powershell`);
-4. **always** (`if: always()`) deletes the resource group (`az group delete --no-wait`).
-
-The RG name is deliberately *derived from the run* rather than published as a
-setup job output: **a cancelled job does not propagate its `outputs`**, so a
-teardown reading `needs.setup.outputs.rg` would receive an empty string and
-delete nothing while the group stayed behind. Because teardown
-recomputes the same name, it cleans up even when `setup` is cancelled or times
-out; `destroy-e2e-resources` no-ops when the group was never created.
+No C e2e test runs in GitHub Actions. The C workflows end with a gate job, the single check name
+for rulesets to require: `ci-c-gate`, `ci-c-static-analysis-gate`, `codeql-c-gate` and
+`ci-c-yocto-gate`.
 
 [`cleanup-e2e-resources.yml`](../../../.github/workflows/cleanup-e2e-resources.yml)
 is the nightly backstop: it reaps any `CSDKE2E*` (C), `DotnetE2ETestPipeline-*`
@@ -318,8 +297,6 @@ is the nightly backstop: it reaps any `CSDKE2E*` (C), `DotnetE2ETestPipeline-*`
 `Remove-LeftoverAzureResourceGroups`),
 covering what teardown structurally cannot — an asynchronous `--no-wait` delete
 failure, or a runner that dies before teardown.
-
-`ci-c-e2e-mqttv5.yml` serves `releases/public-preview` only.
 
 ---
 
