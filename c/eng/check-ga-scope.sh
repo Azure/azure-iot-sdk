@@ -48,12 +48,8 @@ scope=(
 allowed_files=(
     # This guard: its pattern lists.
     c/eng/check-ga-scope.sh
-    # Preview-only workflows. workflow_dispatch needs the file on the default
-    # branch, so they stay on main, trigger on releases/public-preview only and
-    # do nothing on main.
-    .github/workflows/ci-c-e2e-mqttv5.yml
-    .github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml
-    # Dispatches the workflows above on releases/public-preview.
+    # Dispatches the scheduled C workflows on releases/public-preview, and
+    # names the preview-only pipelines.
     .github/workflows/ci-c-public-preview-nightly.yml
 )
 # Files that may name one category, whole.
@@ -74,8 +70,6 @@ allowed_tokens_mqttv5=(
     # kept AZ_IOT_CONNECTION_PROFILE_MQTT_V3/_UNKNOWN do not match.
     $'.*\t\\\\?"mqttV5\\\\?"'
     $'.*\t`mqttV5`'
-    # References to the preview-only workflow files kept on main (above).
-    $'.*\tci-c-e2e-mqttv5[A-Za-z0-9._-]*'
     # Build the vendored az_mqtt without its MQTT 5 client: CMake, and ESP-IDF.
     $'c/adapters/az_mqtt/CMakeLists\\.txt\t^set\\(AZ_MQTT_ENABLE_MQTTV5 OFF CACHE BOOL "" FORCE\\)$'
     $'c/samples/unified/esp32/sdkconfig\\.defaults\t^CONFIG_AZ_MQTT_ENABLE_MQTTV5=n$'
@@ -130,7 +124,7 @@ if [ "${1:-}" = "--self-test" ]; then
     expect pass su "${f}" 'AZ_IOT_DPS_PHASE_SUBSCRIBING AZ_IOT_MOCK_CALL_SUBSCRIBE'
     expect pass su "${f}" 'az_iot_mqtt_suback features/subscriptions issue_delta'
     expect pass su "${f}" 'mqttv5 is another category'
-    expect pass su .github/workflows/ci-c-e2e-mqttv5.yml 'az_iot_su_client'
+    expect pass su .github/workflows/ci-c-public-preview-nightly.yml 'az_iot_su_client'
     expect pass su other/x.c 'az_iot_su_client'
     expect fail mqttv5 "${f}" 'az_iot_mqttv5_twin_client_init(&c);'
     expect fail mqttv5 "${f}" 'AZ_IOT_MQTTV5_H'
@@ -145,10 +139,8 @@ if [ "${1:-}" = "--self-test" ]; then
     expect pass mqttv5 "${f}" '"\"connectionProfile\":\"mqttV5\","'
     # shellcheck disable=SC2016 # backticks are fixture text
     expect pass mqttv5 c/docs/x.md 'DPS returns `mqttV5`: the client fails closed.'
-    expect pass mqttv5 c/docs/x.md 'see ci-c-e2e-mqttv5.yml and ci-c-e2e-mqttv5-gate'
     expect pass mqttv5 "${f}" 'AZ_IOT_CONNECTION_PROFILE_MQTT_V3 AZ_IOT_CONNECTION_PROFILE_UNKNOWN mqttv3'
     expect pass mqttv5 "${f}" 'az_iot_su_client is another category'
-    expect pass mqttv5 .github/workflows/ci-c-e2e-mqttv5.yml 'az_iot_mqttv5'
     expect pass mqttv5 .github/workflows/ci-c-public-preview-nightly.yml 'ci-c-e2e-mqttv5.yml mqttv5'
     expect pass mqttv5 c/eng/check-ga-scope.sh 'mqttv5'
     expect pass mqttv5 c/deps/az_mqtt/src/az_mqtt5_client.c 'az_mqttv5 AZ_MQTT_ENABLE_MQTTV5'

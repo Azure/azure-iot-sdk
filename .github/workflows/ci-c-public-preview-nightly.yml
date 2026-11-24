@@ -10,11 +10,10 @@
 # branches' e2e runs do not share the Azure resources at the same time:
 #
 # Azure Pipelines' ci-c-e2e (with the CSR e2e tests and the combined coverage)
-# schedules both branches itself; Azure Pipelines' ci-c-e2e-adu (preview only)
-# schedules releases/public-preview at 15:00.
+# schedules both branches itself; Azure Pipelines' ci-c-e2e-mqttv5 and
+# ci-c-e2e-adu (preview only) schedule releases/public-preview at 14:30 and 15:00.
 #
 #   main (own schedule)                      releases/public-preview (here)
-#   -     ci-c-e2e-mqttv5 (preview only)     14:30
 #   12:00 Mon codeql-c                       15:00 Mon
 #   04:17 Mon,Thu ci-c-yocto                 07:17 Mon,Thu
 #
@@ -24,7 +23,6 @@ name: ci-c-public-preview-nightly
 
 on:
   schedule:
-    - cron: '30 14 * * *'
     - cron: '0 15 * * 1'
     - cron: '17 7 * * 1,4'
   workflow_dispatch:
@@ -53,9 +51,8 @@ jobs:
         run: |
           set -euo pipefail
           set -f
-          all="ci-c-e2e-mqttv5.yml codeql-c.yml ci-c-yocto.yml"
+          all="codeql-c.yml ci-c-yocto.yml"
           case "$SCHEDULE" in
-            '30 14 * * *')  workflows="ci-c-e2e-mqttv5.yml" ;;
             '0 15 * * 1')   workflows="codeql-c.yml" ;;
             '17 7 * * 1,4') workflows="ci-c-yocto.yml" ;;
             '')             workflows="${REQUESTED:-$all}" ;;
