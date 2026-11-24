@@ -73,16 +73,30 @@ bool e2e_json_read_string(const char* json, const char* const* path, char* out, 
       && az_json_token_get_string(&r.token, out, (int32_t)size, NULL) == AZ_OK;
 }
 
-/** @brief Whether @p json is exactly one well-formed JSON value. */
-static bool json_is_complete(const char* json)
+/**
+ * @brief Whether @p json is exactly one well-formed JSON value whose member names have no
+ * \\uXXXX escape, which az_json cannot match (such a member would look absent).
+ */
+static bool json_is_complete_and_matchable(const char* json)
 {
   az_json_reader r;
-  return *json != '\0'
-      && az_json_reader_init(
+  if (*json == '\0'
+      || az_json_reader_init(
              &r, az_span_create((uint8_t*)(uintptr_t)json, (int32_t)strlen(json)), NULL)
-      == AZ_OK
-      && az_json_reader_next_token(&r) == AZ_OK && az_json_reader_skip_children(&r) == AZ_OK
-      && az_json_reader_next_token(&r) == AZ_ERROR_JSON_READER_DONE;
+          != AZ_OK)
+  {
+    return false;
+  }
+  az_result result;
+  while ((result = az_json_reader_next_token(&r)) == AZ_OK)
+  {
+    if (r.token.kind == AZ_JSON_TOKEN_PROPERTY_NAME
+        && az_span_find(r.token.slice, AZ_SPAN_FROM_STR("\\u")) >= 0)
+    {
+      return false;
+    }
+  }
+  return result == AZ_ERROR_JSON_READER_DONE;
 }
 
 bool e2e_json_read_string_or_default(
@@ -92,7 +106,7 @@ bool e2e_json_read_string_or_default(
     char* out,
     size_t size)
 {
-  if (!json_is_complete(json))
+  if (!json_is_complete_and_matchable(json))
   {
     return false;
   }

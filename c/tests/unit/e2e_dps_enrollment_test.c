@@ -61,6 +61,11 @@ static void escaped_values_are_compared_decoded(void** state)
   /* az_json does not decode \uXXXX: such an assignment is refused, never guessed. */
   assert_false(e2e_dps_enrollment_assigns_device(
       "{\"registrationId\":\"r1\",\"deviceId\":\"d\\u0031\"}", "r1", "d1"));
+  /* Nor can it match an escaped name: a deviceId spelled so must not read as absent. */
+  assert_false(e2e_dps_enrollment_assigns_device(
+      "{\"registrationId\":\"r1\",\"\\u0064eviceId\":\"other\"}", "r1", NULL));
+  assert_false(e2e_dps_enrollment_assigns_device(
+      "{\"registrationId\":\"r1\",\"initialTwin\":{\"\\u0064eviceId\":\"x\"}}", "r1", NULL));
 }
 
 static void another_registration_id_is_refused(void** state)

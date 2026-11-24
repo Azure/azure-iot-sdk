@@ -30,8 +30,9 @@ bool e2e_json_read_string(const char* json, const char* const* path, char* out, 
  * @brief Reads the string at @p path (as e2e_json_read_string()) into @p out, or copies
  * @p default_value when nothing or null is there.
  *
- * @return false when @p json is not one complete JSON value (e.g. truncated), the value there is
- * not a string or null, or it does not fit @p size.
+ * @return false when @p json is not one complete JSON value (e.g. truncated), a member name in it
+ * has a \\uXXXX escape (unmatchable, so absence is unknown), the value there is not a string or
+ * null, or it does not fit @p size.
  */
 bool e2e_json_read_string_or_default(
     const char* json,
