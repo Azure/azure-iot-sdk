@@ -74,7 +74,8 @@ The `coverage_combined` job of Azure Pipelines
 conformance tests (`linux-gcc-coverage`) at the run's commit, and merges their tracefile with the
 e2e ones of the same run (`coverage-trace-e2e`, and `coverage-trace-e2e-csr` from `test_csr`) using
 [`eng/combine-coverage.sh`](../../eng/combine-coverage.sh). The
-software updates e2e tracefile (`ci-c-e2e-adu`, still a GitHub Actions workflow) is not part of it.
+software updates e2e tracefile (`coverage-trace-e2e-adu`, from the separate Azure Pipelines pipeline
+`ci-c-e2e-adu`) is not part of it.
 
 - It runs on every scheduled or manual run (`main` and `releases/public-preview` nightly), not on
   pull requests, and is not part of the gate.

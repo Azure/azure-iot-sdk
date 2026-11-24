@@ -1,0 +1,39 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# libcurl for MSVC (vcpkg curl:x64-windows, Schannel TLS) on a Windows job, cached per image: the
+# image pins its vcpkg checkout, so the image version fixes the port versions. Selected for
+# find_package(CURL) through CMAKE_PREFIX_PATH, and on PATH for what links it (Debug builds link
+# libcurl-d.dll). Reads the job's variable vmImage; does nothing on Linux.
+
+steps:
+  - pwsh: |
+      $version = if ($env:ImageVersion) { $env:ImageVersion } else { 'unknown' }
+      Write-Host "##vso[task.setvariable variable=imageVersion]$version"
+    displayName: Read the image version (Windows)
+    condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'))
+  - task: Cache@2
+    displayName: Restore libcurl (Windows)
+    condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'))
+    inputs:
+      key: '"curl-x64-windows" | "$(vmImage)" | "$(imageVersion)"'
+      path: $(Pipeline.Workspace)/curl
+      cacheHitVar: CURL_RESTORED
+  - pwsh: |
+      & (Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg') install curl:x64-windows "--x-install-root=$env:CURL_ROOT"
+      if ($LASTEXITCODE -ne 0) { throw "vcpkg install curl failed ($LASTEXITCODE)." }
+    displayName: Build libcurl (Windows)
+    condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'), ne(variables['CURL_RESTORED'], 'true'))
+    env:
+      CURL_ROOT: $(Pipeline.Workspace)/curl
+  - pwsh: |
+      $ErrorActionPreference = 'Stop'
+      $prefix = (Join-Path $env:CURL_ROOT 'x64-windows').Replace('\', '/')
+      if (-not (Test-Path "$prefix/include/curl/curl.h")) { throw "libcurl not found under $prefix." }
+      Write-Host "##vso[task.setvariable variable=CMAKE_PREFIX_PATH]$prefix"
+      Write-Host "##vso[task.prependpath]$prefix/bin"
+      Write-Host "##vso[task.prependpath]$prefix/debug/bin"
+    displayName: Select libcurl (Windows)
+    condition: and(succeeded(), eq(variables['Agent.OS'], 'Windows_NT'))
+    env:
+      CURL_ROOT: $(Pipeline.Workspace)/curl

@@ -1,0 +1,207 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# End-to-end software updates tests for the C SDK, against the real service, on the shared MQTTv5
+# environment (its ADR namespace is linked to a Device Update instance; e2e-mqttv5-adr-namespace.yml
+# keeps that link in place). Per MQTT adapter, each suite on its own new device:
+#   az_iot_tests_e2e_su        the DPS channel, with no update offered
+#   az_iot_tests_e2e_su_offer  offered updates through the whole client, delta ones on Linux also
+#                              with the real delta processor (c/eng/install-su-delta-processor.sh)
+# then checks what the service recorded for each device and offer. The offers job stages the
+# standing offers (staged once per version of the code that defines them and reused by every run;
+# c/tests/e2e/scripts/SuE2E.psm1); the e2e_su job runs on Linux and on Windows (MSVC; Paho over
+# OpenSSL, az_mqtt over Schannel). Nothing is deleted per run. scripts/run-c-e2e-adu.ps1 runs each
+# step.
+#
+# The service connection's principal reads the E2E-MQTTV5-SHARED-* secrets of sharedKeyVault and
+# needs Device Update Administrator on the Device Update account, Storage Blob Data Contributor on
+# the update storage account, and Contributor on the environment's resource group (ADR jobs).
+trigger: none
+pr:
+  branches:
+    include: [releases/public-preview]
+schedules:
+  - cron: '0 15 * * *'
+    displayName: Nightly software updates e2e tests
+    branches:
+      include: [releases/public-preview]
+    always: true
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+    default: aziotclb service connection
+  - name: sharedKeyVault
+    type: string
+    default: kv-aziotclb
+
+variables:
+  sharedKeyVault: ${{ parameters.sharedKeyVault }}
+  offersState: $(Pipeline.Workspace)/su-offers/su-offers.json
+
+jobs:
+  - job: changes
+    displayName: Detect changes
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - template: templates/steps-detect-changes.yml
+        parameters:
+          includeCommon: false
+          workflow: ci-c-e2e-adu
+          sourceRoot: c
+
+  # Seconds when the offers are staged. Otherwise typically about 11 min; at most 11 x (10 min
+  # import + 5 min job) + 10 min to Active + 5 min grace, + 15 min to delete older offer sets.
+  - job: offers
+    displayName: Software updates offers
+    dependsOn: changes
+    condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
+    timeoutInMinutes: 200
+    pool:
+      vmImage: ubuntu-24.04
+    steps:
+      - checkout: self
+        fetchDepth: '1'
+        persistCredentials: false
+      - task: AzureCLI@2
+        displayName: Ensure standing offers
+        timeoutInMinutes: 195
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: pscore
+          scriptLocation: scriptPath
+          scriptPath: .azure-pipelines/scripts/run-c-e2e-adu.ps1
+          arguments: -Step StageOffers
+          visibleAzLogin: false
+        env:
+          E2E_SHARED_KEY_VAULT: $(sharedKeyVault)
+          SU_OFFERS_STATE: $(offersState)
+      # Offer and job names only; the test legs check each device's job results with it.
+      - task: PublishPipelineArtifact@1
+        displayName: Publish the offers
+        inputs:
+          targetPath: $(offersState)
+          artifact: su-offers
+
+  - job: e2e_su
+    displayName: Software updates e2e
+    dependsOn: offers
+    # Above the sum of the step budgets, so every step's own timeout fires first.
+    timeoutInMinutes: 300
+    strategy:
+      matrix:
+        # Linux builds instrumented for coverage.
+        Linux:
+          vmImage: ubuntu-24.04
+          openssl: system
+          preset: linux-gcc-e2e-coverage
+          osTag: l
+        Windows:
+          vmImage: windows-latest
+          openssl: 4.1.0
+          preset: windows-msvc-debug
+          osTag: w
+    pool:
+      vmImage: $(vmImage)
+    variables:
+      devicesDirectory: $(Agent.TempDirectory)/su-devices
+    steps:
+      - checkout: self
+        fetchDepth: '1'
+        persistCredentials: false
+      - template: templates/steps-c-toolchain.yml
+      - bash: |
+          set -euo pipefail
+          bash c/eng/apt-install.sh ninja-build libcurl4-openssl-dev
+          python3 -m pip install --upgrade 'gcovr==7.2'
+          library="$(bash c/eng/install-su-delta-processor.sh "$AGENT_TEMPDIRECTORY/su-delta-processor")"
+          echo "##vso[task.setvariable variable=SU_DELTA_LIBRARY]$library"
+        displayName: Install build tools and the delta processor (Linux)
+        condition: and(succeeded(), eq(variables['Agent.OS'], 'Linux'))
+        timeoutInMinutes: 10
+      - template: templates/steps-c-libcurl-windows.yml
+      - pwsh: |
+          $ErrorActionPreference = 'Stop'
+          # The real delta processor for the MICROSOFT_DELTA offer (POSIX only, as the reference
+          # microsoft/delta:1 handler).
+          $delta = if ($IsLinux) { '-DAZ_IOT_WITH_SU_DELTA=ON', "-DAZ_IOT_SU_DELTA_TEST_LIBRARY=$env:SU_DELTA_LIBRARY" } else { @() }
+          cmake --preset $env:PRESET -DAZ_IOT_BUILD_E2E=ON -DAZ_IOT_WITH_PAHO=ON -DAZ_IOT_WITH_AZ_MQTT=ON -DAZ_IOT_BUILD_E2E_SU=ON @delta
+          if ($LASTEXITCODE -ne 0) { throw "CMake configure failed ($LASTEXITCODE)." }
+          cmake --build --preset $env:PRESET --config Debug --target az_iot_tests_e2e_su az_iot_tests_e2e_su_offer az_iot_tests_e2e_su_az_mqtt az_iot_tests_e2e_su_offer_az_mqtt
+          if ($LASTEXITCODE -ne 0) { throw "Build failed ($LASTEXITCODE)." }
+        displayName: Build
+        workingDirectory: c
+        timeoutInMinutes: 15
+        env:
+          PRESET: $(preset)
+      - task: DownloadPipelineArtifact@2
+        displayName: Download the offers
+        inputs:
+          buildType: current
+          artifactName: su-offers
+          targetPath: $(Pipeline.Workspace)/su-offers
+      - task: AzureCLI@2
+        displayName: Issue devices
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: pscore
+          scriptLocation: scriptPath
+          scriptPath: .azure-pipelines/scripts/run-c-e2e-adu.ps1
+          arguments: -Step IssueDevices
+          visibleAzLogin: false
+        env:
+          E2E_SHARED_KEY_VAULT: $(sharedKeyVault)
+          E2E_SU_DEVICES: $(devicesDirectory)
+          E2E_RUN_ID: $(Build.BuildId)-$(System.JobAttempt)
+          E2E_OS_TAG: $(osTag)
+      - pwsh: .azure-pipelines/scripts/run-c-e2e-adu.ps1 -Step RunTests
+        displayName: Run software updates e2e
+        timeoutInMinutes: 190
+        env:
+          E2E_SU_DEVICES: $(devicesDirectory)
+          E2E_RESULTS_DIRECTORY: $(Common.TestResultsDirectory)
+          E2E_PRESET: $(preset)
+          E2E_OS_TAG: $(osTag)
+      - task: AzureCLI@2
+        displayName: Check job results
+        # After the tests, failed or not, once the devices were issued.
+        condition: and(succeededOrFailed(), ne(variables['SU_REG_ID_PAHO_OFFER'], ''))
+        timeoutInMinutes: 25
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: pscore
+          scriptLocation: scriptPath
+          scriptPath: .azure-pipelines/scripts/run-c-e2e-adu.ps1
+          arguments: -Step CheckResults
+          visibleAzLogin: false
+        env:
+          E2E_SHARED_KEY_VAULT: $(sharedKeyVault)
+          SU_OFFERS_STATE: $(offersState)
+      - task: PublishTestResults@2
+        displayName: Publish test results
+        condition: succeededOrFailed()
+        inputs:
+          testResultsFormat: JUnit
+          testResultsFiles: '*.xml'
+          searchFolder: $(Common.TestResultsDirectory)
+          testRunTitle: Software updates e2e $(Agent.JobName)
+          failTaskOnMissingResultsFile: false
+      # Not on failure: a failed run leaves partial .gcda, which would understate coverage for an
+      # unrelated reason.
+      - bash: bash eng/collect-coverage.sh build/linux-gcc-e2e-coverage coverage/e2e-adu.json e2e-adu
+        displayName: Collect coverage
+        condition: and(succeeded(), eq(variables['Agent.OS'], 'Linux'))
+        workingDirectory: c
+      - task: PublishPipelineArtifact@1
+        displayName: Publish coverage tracefile
+        condition: and(succeeded(), eq(variables['Agent.OS'], 'Linux'))
+        inputs:
+          targetPath: c/coverage/e2e-adu.json
+          artifact: coverage-trace-e2e-adu
+
+  - template: templates/jobs-e2e-gate.yml
+    parameters:
+      displayName: C software updates e2e gate
+      jobs: [offers, e2e_su]
+      teardownJobs: []

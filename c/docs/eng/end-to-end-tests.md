@@ -348,10 +348,10 @@ with the .NET pipelines and the permissions it needs.
 
 ### GitHub Actions workflows
 
-The other C e2e workflows (`ci-c-e2e-mqttv5` and `ci-c-e2e-adu`) end with a
-`<workflow>-gate` job (`ci-c-e2e-mqttv5-gate`, `ci-c-e2e-adu-gate`), the
+The other C e2e workflow (`ci-c-e2e-mqttv5`) ends with a
+`<workflow>-gate` job (`ci-c-e2e-mqttv5-gate`), the
 single check name for rulesets to require. Since its workflow runs on every pull request
-(`ci-c-e2e-mqttv5` and `ci-c-e2e-adu`: every pull request to `releases/public-preview`), it
+to `releases/public-preview`, it
 always reports; it fails only when a job failed or was cancelled. The other C workflows end with
 `ci-c-gate`, `ci-c-static-analysis-gate`, `codeql-c-gate` and `ci-c-yocto-gate`.
 
@@ -417,9 +417,9 @@ script as `E2E_MQTTV5_SHARED_IOTHUB_CS`, as the secret of that name holds `iothu
 within Event Hubs' five readers per partition. No SAS: mqttv5 hubs accept X.509 only. Triggers: pull requests touching mqttv5 or core device code, the e2e harness or the
 workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
 
-> **Software updates e2e** runs in its own workflow
-> ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml), Linux and Windows) on the same shared mqttv5
-> environment and triggers. See [Software updates e2e](#software-updates-e2e).
+> **Software updates e2e** runs in its own Azure Pipelines pipeline
+> ([`ci-c-e2e-adu.yml`](../../../.azure-pipelines/ci-c-e2e-adu.yml), Linux and Windows) on the same shared mqttv5
+> environment. See [Software updates e2e](#software-updates-e2e).
 
 ---
 
@@ -630,25 +630,27 @@ Each REST request is retried on a transient failure (no response; HTTP 408, 429,
 after `Retry-After` or 2, 4, 8, 16 s (at most 60 s), with a warning per retry; a `401` with
 `invalid_token` is retried once with a new token, and other `4xx` are not retried.
 
-CI ([`ci-c-e2e-adu.yml`](../../../.github/workflows/ci-c-e2e-adu.yml)) runs on the shared mqttv5
-environment, whose ADR namespace is linked to a Device Update instance, on pull requests touching
-core, Software Update or adapter code, the e2e harness or the workflow; nightly; manual. Pull requests
-from forks and from Dependabot skip. The namespace repair (`e2e-mqttv5-adr-namespace.yml`, above)
-also restores the Software Update link. The `offers`
-job ensures the standing offers (`New-SuE2EOffers -RunId "s$(Get-SuE2EFixtureTag)" -Reuse`;
-seconds once staged) and passes their state on. The `e2e-su` job, on Linux and on Windows (libcurl
-from [`install-curl-windows`](../../../.github/actions/install-curl-windows/action.yml)), sets the
-offer variables (`Export-SuE2EOfferVariables`), issues a new device per suite execution (4: each
-suite on each adapter) from the enrollment group's CA (`e2e-shared-device.ps1`), installs the delta
-processor on Linux ([`install-su-delta-processor`](../../../.github/actions/install-su-delta-processor/action.yml)),
+CI (Azure Pipelines [`ci-c-e2e-adu.yml`](../../../.azure-pipelines/ci-c-e2e-adu.yml), each step in
+[`run-c-e2e-adu.ps1`](../../../.azure-pipelines/scripts/run-c-e2e-adu.ps1)) runs on the shared mqttv5
+environment, whose ADR namespace is linked to a Device Update instance, on pull requests to
+`releases/public-preview` touching `c/` or `.azure-pipelines/`; nightly; manual. Its gate job always
+reports. The namespace repair (`e2e-mqttv5-adr-namespace.yml`, above) also restores the Software
+Update link. The `offers` job ensures the standing offers (`New-SuE2EOffers -RunId
+"s$(Get-SuE2EFixtureTag)" -Reuse`; seconds once staged) and passes their state on. The `e2e_su`
+job, on Linux and on Windows (libcurl from vcpkg), installs the delta processor on Linux
+([`install-su-delta-processor.sh`](../../eng/install-su-delta-processor.sh)), issues a new device
+per suite execution (4: each suite on each adapter) from the enrollment group's CA
+(`e2e-shared-device.ps1 -DeviceOnly`), sets the offer variables (`Export-SuE2EOfferVariables`),
 runs the suites, then checks the offer devices' job results. The reference `microsoft/delta:1`
 handler is POSIX only: on Windows the offer suite skips the `MICROSOFT_DELTA` scenario, and the
 check skips its result (`Test-SuE2EOffers -Skip`).
-Nothing is deleted per run; offer sets staged by older fixture code are left in place. Inputs:
-variables `E2E_MQTTV5_SHARED_SUBSCRIPTION_ID`, `_RESOURCE_GROUP`, `_ADR_NAMESPACE`, `_ID_SCOPE`,
-`_DPS_HOST`, `_LOCATION`, `_SU_ENDPOINT`, `_SU_STORAGE_ACCOUNT`, `_SU_STORAGE_CONTAINER`, and
-`_SU_INSTANCE` (the Device Update instance the namespace repair links); secrets `E2E_MQTTV5_SHARED_GROUP_CA`,
-`_IOTHUB_SERVICE_CS`, `_EVENTHUB_CS`, `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`.
+Nothing is deleted per run; offer sets staged by older fixture code are left in place. Inputs: the
+Key Vault secrets `E2E-MQTTV5-SHARED-SUBSCRIPTION-ID`, `-RESOURCE-GROUP`, `-LOCATION`,
+`-ADR-NAMESPACE`, `-SU-ENDPOINT`, `-SU-STORAGE-ACCOUNT`, `-SU-STORAGE-CONTAINER`, `-GROUP-CA`,
+`-ID-SCOPE` and `-DPS-HOST`; no IoT Hub or Event Hubs key. The service connection's principal
+calls Azure with Microsoft Entra tokens: it needs **Key Vault Secrets User** on the vault, **Device
+Update Administrator** on the Device Update account, **Storage Blob Data Contributor** on the update
+storage account and **Contributor** on the environment's resource group (ADR jobs).
 
 Every variable is required; a missing one fails the suite or the scenario that needs it.
 
