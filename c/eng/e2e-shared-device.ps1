@@ -43,6 +43,10 @@ identity instead, from:
   E2E_CSR_SHARED_DPS_HOST    DPS device endpoint (optional)
   E2E_CSR_SHARED_SAS_GROUP_KEY  primary key of the DPS symmetric-key enrollment group, linked to
                              the certificate policy
+
+-DeviceOnly (Azure Pipelines ci-c-e2e-adu) writes only the device's DPS identity (ID scope, DPS
+host, registration ID, certificate and key), for suites that call no service API: it reads only
+GROUP_CA, ID_SCOPE and DPS_HOST under -Prefix.
 #>
 param(
     [Parameter(Mandatory)][ValidatePattern('^[a-z0-9][a-z0-9-]{0,127}$')][string]$RegistrationId,
@@ -52,6 +56,7 @@ param(
     [ValidateSet('E2E_SHARED', 'E2E_MQTTV5_SHARED')][string]$Prefix = 'E2E_SHARED',
     [switch]$Csr,
     [switch]$EntraAuthentication,
+    [switch]$DeviceOnly,
     [string]$OutFile = 'test_config/set_test_env_vars.ps1'
 )
 
@@ -59,11 +64,13 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($Csr -and $EntraAuthentication) { throw '-Csr and -EntraAuthentication cannot be combined.' }
 if ($EntraAuthentication -and $Prefix -ne 'E2E_SHARED') { throw '-EntraAuthentication supports only -Prefix E2E_SHARED.' }
+if ($DeviceOnly -and ($Csr -or $EntraAuthentication)) { throw '-DeviceOnly cannot be combined with -Csr or -EntraAuthentication.' }
 
 $Vars = if ($Csr) { 'E2E_CSR_SHARED' } else { $Prefix }
 function Get-Shared([string]$Name) { [Environment]::GetEnvironmentVariable("${Vars}_$Name") }
 $Mqttv5 = -not $Csr -and $Prefix -eq 'E2E_MQTTV5_SHARED'
 $Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE', 'SAS_GROUP_KEY') }
+            elseif ($DeviceOnly) { @('GROUP_CA', 'ID_SCOPE') }
             elseif ($Mqttv5) { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE') }
             elseif ($EntraAuthentication) { @('GROUP_CA', 'IOTHUB_HOSTNAME', 'EVENTHUB_KEYLESS_CS', 'ID_SCOPE', 'SAS_GROUP_KEY', 'DPS_CS') }
             else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE', 'SAS_GROUP_KEY', 'DPS_CS', 'IOTHUB_REGISTRY_CS') }
@@ -75,7 +82,7 @@ if ($EntraAuthentication) {
     if ((Get-Shared 'EVENTHUB_KEYLESS_CS') -match 'SharedAccessKey') {
         throw "${Vars}_EVENTHUB_KEYLESS_CS holds a key."
     }
-} elseif (-not $Csr) {
+} elseif (-not $Csr -and -not $DeviceOnly) {
     foreach ($Name in "${Vars}_IOTHUB_CS", "${Vars}_EVENTHUB_CS") {
         if ([Environment]::GetEnvironmentVariable($Name) -match 'SharedAccessKeyName=iothubowner') {
             throw "$Name uses the iothubowner policy; use the 'service' policy."
@@ -151,6 +158,14 @@ $Lines = if ($Csr) {
         Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' (Get-Shared 'SAS_GROUP_KEY')
         Format-Assignment 'IOT_DPS_CONNECTION_STRING' (Get-Shared 'DPS_CS')
     )
+} elseif ($DeviceOnly) {
+    @(
+        Format-Assignment 'IOT_DPS_ID_SCOPE' (Get-Shared 'ID_SCOPE')
+        if (Get-Shared 'DPS_HOST') { Format-Assignment 'IOT_DPS_GLOBAL_ENDPOINT' (Get-Shared 'DPS_HOST') }
+        Format-Assignment "IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$DeviceIndex" $RegistrationId
+        Format-Assignment "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$DeviceIndex" (ConvertTo-B64 $Chain)
+        Format-Assignment "IOT_DPS_INDIVIDUAL_X509_KEY_$DeviceIndex" $KeyB64
+    )
 } else {
     @(
         Format-Assignment 'IOTHUB_CONNECTION_STRING' (Get-Shared 'IOTHUB_CS')
@@ -171,6 +186,8 @@ if ($OutDir) { New-Item -ItemType Directory -Force -Path $OutDir | Out-Null }
 Set-Content -Path $OutFile -Value $Lines -Encoding utf8NoBOM
 if ($Csr) {
     Write-Host "Wrote $OutFile for CSR bootstrap device '$RegistrationId' (device index $DeviceIndex)."
+} elseif ($DeviceOnly) {
+    Write-Host "Wrote $OutFile for '$RegistrationId' (device index $DeviceIndex)."
 } else {
     Write-Host "Wrote $OutFile for '$RegistrationId' (device index $DeviceIndex, consumer group $ConsumerGroup)."
 }

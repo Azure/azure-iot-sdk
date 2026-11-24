@@ -61,7 +61,7 @@ $script:DeltaVectorsDir = Join-Path $PSScriptRoot '../../unit/data/su_delta'
 $script:MaxUpdateNamesPerProvider = 25
 # Blob a standing offer set's RunId is appended to, overwritten by each run that uses the set.
 $script:OfferSetUseMarkerPrefix = 'sdke2e/used/'
-# Hours a run of ci-c-e2e-adu.yml may use the offer set it staged (offers job, then e2e-su job):
+# Hours a run of ci-c-e2e-adu.yml may use the offer set it staged (offers job, then e2e_su job):
 # a set used more recently is never deleted to make room.
 $script:OfferSetInUseHours = 8
 
