@@ -18,6 +18,7 @@ add_library(az_iot_e2e_service STATIC
     e2e_notify_time.c
     e2e_http.c
     e2e_json.c
+    e2e_dps_enrollment.c
 )
 
 # Only the public facade header directory is exported to consumers.

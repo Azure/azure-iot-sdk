@@ -26,4 +26,18 @@ bool e2e_json_read_uint64(const char* json, const char* const* path, uint64_t* o
  */
 bool e2e_json_read_string(const char* json, const char* const* path, char* out, size_t size);
 
+/**
+ * @brief Reads the string at @p path (as e2e_json_read_string()) into @p out, or copies
+ * @p default_value when nothing or null is there.
+ *
+ * @return false when @p json is not one complete JSON value (e.g. truncated), the value there is
+ * not a string or null, or it does not fit @p size.
+ */
+bool e2e_json_read_string_or_default(
+    const char* json,
+    const char* const* path,
+    const char* default_value,
+    char* out,
+    size_t size);
+
 #endif /* E2E_JSON_H */
