@@ -10,11 +10,11 @@
 # branches' e2e runs do not share the Azure resources at the same time:
 #
 # Azure Pipelines' ci-c-e2e (with the CSR e2e tests and the combined coverage)
-# schedules both branches itself.
+# schedules both branches itself; Azure Pipelines' ci-c-e2e-adu (preview only)
+# schedules releases/public-preview at 15:00.
 #
 #   main (own schedule)                      releases/public-preview (here)
 #   -     ci-c-e2e-mqttv5 (preview only)     14:30
-#   -     ci-c-e2e-adu (preview only)        15:00
 #   12:00 Mon codeql-c                       15:00 Mon
 #   04:17 Mon,Thu ci-c-yocto                 07:17 Mon,Thu
 #
@@ -25,7 +25,7 @@ name: ci-c-public-preview-nightly
 on:
   schedule:
     - cron: '30 14 * * *'
-    - cron: '0 15 * * *'
+    - cron: '0 15 * * 1'
     - cron: '17 7 * * 1,4'
   workflow_dispatch:
     inputs:
@@ -53,12 +53,10 @@ jobs:
         run: |
           set -euo pipefail
           set -f
-          all="ci-c-e2e-mqttv5.yml ci-c-e2e-adu.yml codeql-c.yml ci-c-yocto.yml"
+          all="ci-c-e2e-mqttv5.yml codeql-c.yml ci-c-yocto.yml"
           case "$SCHEDULE" in
             '30 14 * * *')  workflows="ci-c-e2e-mqttv5.yml" ;;
-            '0 15 * * *')
-              workflows="ci-c-e2e-adu.yml"
-              if [ "$(date -u +%u)" = 1 ]; then workflows="$workflows codeql-c.yml"; fi ;;
+            '0 15 * * 1')   workflows="codeql-c.yml" ;;
             '17 7 * * 1,4') workflows="ci-c-yocto.yml" ;;
             '')             workflows="${REQUESTED:-$all}" ;;
             *) echo "::error::no workflows for schedule '$SCHEDULE'"; exit 1 ;;
