@@ -53,7 +53,6 @@ allowed_files=(
     # do nothing on main.
     .github/workflows/ci-c-e2e-mqttv5.yml
     .github/workflows/ci-c-e2e-mqttv5-adr-namespace.yml
-    .github/workflows/ci-c-e2e-adu.yml
     # Dispatches the workflows above on releases/public-preview.
     .github/workflows/ci-c-public-preview-nightly.yml
 )
@@ -131,7 +130,7 @@ if [ "${1:-}" = "--self-test" ]; then
     expect pass su "${f}" 'AZ_IOT_DPS_PHASE_SUBSCRIBING AZ_IOT_MOCK_CALL_SUBSCRIBE'
     expect pass su "${f}" 'az_iot_mqtt_suback features/subscriptions issue_delta'
     expect pass su "${f}" 'mqttv5 is another category'
-    expect pass su .github/workflows/ci-c-e2e-adu.yml 'az_iot_su_client'
+    expect pass su .github/workflows/ci-c-e2e-mqttv5.yml 'az_iot_su_client'
     expect pass su other/x.c 'az_iot_su_client'
     expect fail mqttv5 "${f}" 'az_iot_mqttv5_twin_client_init(&c);'
     expect fail mqttv5 "${f}" 'AZ_IOT_MQTTV5_H'
@@ -150,7 +149,7 @@ if [ "${1:-}" = "--self-test" ]; then
     expect pass mqttv5 "${f}" 'AZ_IOT_CONNECTION_PROFILE_MQTT_V3 AZ_IOT_CONNECTION_PROFILE_UNKNOWN mqttv3'
     expect pass mqttv5 "${f}" 'az_iot_su_client is another category'
     expect pass mqttv5 .github/workflows/ci-c-e2e-mqttv5.yml 'az_iot_mqttv5'
-    expect pass mqttv5 .github/workflows/ci-c-public-preview-nightly.yml 'ci-c-e2e-adu.yml mqttv5'
+    expect pass mqttv5 .github/workflows/ci-c-public-preview-nightly.yml 'ci-c-e2e-mqttv5.yml mqttv5'
     expect pass mqttv5 c/eng/check-ga-scope.sh 'mqttv5'
     expect pass mqttv5 c/deps/az_mqtt/src/az_mqtt5_client.c 'az_mqttv5 AZ_MQTT_ENABLE_MQTTV5'
     expect pass mqttv5 c/deps/az_mqtt/mqttv5/x.c 'int x;'

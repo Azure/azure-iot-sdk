@@ -287,10 +287,10 @@ with the .NET pipelines and the permissions it needs.
 
 ### GitHub Actions workflows
 
-The other C e2e workflows (`ci-c-e2e-mqttv5` and `ci-c-e2e-adu`) end with a
-`<workflow>-gate` job (`ci-c-e2e-mqttv5-gate`, `ci-c-e2e-adu-gate`), the
+The other C e2e workflow (`ci-c-e2e-mqttv5`) ends with a
+`<workflow>-gate` job (`ci-c-e2e-mqttv5-gate`), the
 single check name for rulesets to require. Since its workflow runs on every pull request
-(`ci-c-e2e-mqttv5` and `ci-c-e2e-adu`: every pull request to `releases/public-preview`), it
+to `releases/public-preview`, it
 always reports; it fails only when a job failed or was cancelled. The other C workflows end with
 `ci-c-gate`, `ci-c-static-analysis-gate`, `codeql-c-gate` and `ci-c-yocto-gate`.
 
