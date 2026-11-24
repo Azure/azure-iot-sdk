@@ -17,6 +17,7 @@ add_library(az_iot_e2e_service STATIC
     e2e_amqp.c
     e2e_notify_time.c
     e2e_http.c
+    e2e_json.c
 )
 
 # Only the public facade header directory is exported to consumers.

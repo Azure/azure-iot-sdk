@@ -7,6 +7,7 @@
 
 #include "e2e_amqp.h"
 #include "e2e_http.h"
+#include "e2e_json.h"
 #include "e2e_sas.h"
 
 #include <stdio.h>
@@ -1440,10 +1441,13 @@ static bool dps_service_call(
 }
 
 /**
- * @brief Whether the individual enrollment at @p path exists and, when @p device_id is not NULL,
- * assigns @p device_id.
+ * @brief Whether the individual enrollment at @p path assigns @p device_id: its top-level
+ * deviceId, or @p registration_id when it sets none.
  */
-static bool dps_enrollment_exists(const char* path, const char* device_id)
+static bool dps_enrollment_assigns(
+    const char* path,
+    const char* registration_id,
+    const char* device_id)
 {
   e2e_conn_info info;
   char sas[512];
@@ -1453,29 +1457,34 @@ static bool dps_enrollment_exists(const char* path, const char* device_id)
   }
   int status = 0;
   char resp[4096] = { 0 };
-  char expected_device_id[256];
-  int n = device_id != NULL
-      ? snprintf(expected_device_id, sizeof(expected_device_id), "\"deviceId\":\"%s\"", device_id)
-      : 0;
-  bool ok = n >= 0 && (size_t)n < sizeof(expected_device_id)
-      && https_request(
-                info.host,
-                "GET",
-                path,
-                sas,
-                NULL,
-                NULL,
-                NULL,
-                NULL,
-                NULL,
-                0,
-                true,
-                &status,
-                resp,
-                sizeof(resp),
-                NULL,
-                NULL)
-      && status == 200 && (device_id == NULL || strstr(resp, expected_device_id) != NULL);
+  bool read = https_request(
+      info.host,
+      "GET",
+      path,
+      sas,
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+      NULL,
+      0,
+      true,
+      &status,
+      resp,
+      sizeof(resp),
+      NULL,
+      NULL);
+  static const char* const registration_id_path[] = { "registrationId", NULL };
+  static const char* const device_id_path[] = { "deviceId", NULL };
+  char assigned[256];
+  bool ok = read && status == 200
+      && e2e_json_read_string(resp, registration_id_path, assigned, sizeof(assigned))
+      && strcmp(assigned, registration_id) == 0;
+  if (ok && !e2e_json_read_string(resp, device_id_path, assigned, sizeof(assigned)))
+  {
+    (void)snprintf(assigned, sizeof(assigned), "%s", registration_id);
+  }
+  ok = ok && strcmp(assigned, device_id) == 0;
   (void)fprintf(
       stderr,
       "[e2e] DPS service GET %s: HTTP %d, %s\n",
@@ -1510,7 +1519,9 @@ bool az_iot_e2e_dps_tpm_enrollment_create(
   }
   int status = 0;
   return dps_service_call("PUT", path, body, false, &status)
-      || (status == 409 && dps_enrollment_exists(path, device_id));
+      || (status == 409
+          && dps_enrollment_assigns(
+              path, registration_id, device_id != NULL ? device_id : registration_id));
 }
 
 /** @brief Deletes the registration record of @p registration_id; a missing one counts as deleted.
