@@ -22,7 +22,7 @@ Default, inputs from the environment (repository secrets/variables):
   E2E_SHARED_IOTHUB_REGISTRY_CS  IoT Hub connection string with RegistryWrite, written as
                              IOTHUB_REGISTRY_CONNECTION_STRING for the TPM suite's device cleanup
 
--Prefix E2E_MQTTV5_SHARED (ci-c-e2e-mqttv5) reads the same variables under that prefix except
+-Prefix E2E_MQTTV5_SHARED (Azure Pipelines ci-c-e2e-mqttv5) reads the same variables under that prefix except
 SAS_GROUP_KEY, DPS_CS and IOTHUB_REGISTRY_CS (mqttv5 hubs accept X.509 only; no SAS key is
 written, and there is no TPM suite), and optionally
 E2E_MQTTV5_SHARED_DPS_HOST, the DPS device endpoint.

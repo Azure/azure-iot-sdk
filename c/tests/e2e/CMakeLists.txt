@@ -453,7 +453,7 @@ endif()
 # az_iot_tests_e2e_mqttv5_custom_topic
 #
 # mqttv5 custom topics. Needs an mqttv5 hub with the custom topic templates
-# e2e/{deviceId}/# and e2e/shared/#, which only the ci-c-e2e-mqttv5 workflow's
+# e2e/{deviceId}/# and e2e/shared/#, which only the ci-c-e2e-mqttv5 pipeline's
 # environment has, so it is built only when AZ_IOT_BUILD_E2E_MQTTV5 is set.
 # ---------------------------------------------------------------------------
 if(AZ_IOT_BUILD_E2E_MQTTV5)
