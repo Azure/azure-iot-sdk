@@ -40,7 +40,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
 
 archive="openssl-${version}.tar.gz"
-curl -sSfL -o "${work}/${archive}" \
+curl -sSfL --retry 5 --retry-delay 10 --retry-all-errors -o "${work}/${archive}" \
     "https://github.com/openssl/openssl/releases/download/openssl-${version}/${archive}"
 echo "${sha256}  ${work}/${archive}" | sha256sum -c -
 tar -xzf "${work}/${archive}" -C "${work}"
