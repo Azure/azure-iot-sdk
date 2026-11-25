@@ -56,8 +56,7 @@ the shared MQTTv5 environment has no symmetric-key enrollment group for them.
    Secrets User** on the shared environment's vault (`sharedKeyVault`, default
    `kv-aziotclb`), **IoT Hub Data Contributor** on its hub and **Azure Event Hubs
    Data Receiver** on its Event Hub (`c/docs/eng/end-to-end-tests.md`).
-   The default region is `centraluseuap`, the region of the shared environment
-   (`eastus2euap` for `ci-dotnet-e2e-mqttv5`, the region of the MQTTv5 shared hub);
+   The default region is `centraluseuap`, the region of the shared environment;
    change `azureLocation` if the subscription uses a different region.
 3. Configure CodeQL for the source host. For **Azure Repos**, enable GitHub Code
    Security/Advanced Security for the repository; the pipeline uses native
