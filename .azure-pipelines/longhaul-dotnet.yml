@@ -10,7 +10,7 @@ parameters:
     default: aziotclb service connection
   - name: azureLocation
     type: string
-    default: eastus2euap
+    default: centraluseuap
   - name: durationMinutes
     displayName: Duration in minutes (1-320)
     type: number
