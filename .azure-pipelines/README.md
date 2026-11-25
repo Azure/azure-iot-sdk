@@ -48,8 +48,8 @@ each entry point below. All pipelines also support **Run pipeline**.
    Secrets User** on the shared environment's vault (`sharedKeyVault`, default
    `kv-aziotclb`), **IoT Hub Data Contributor** on its hub and **Azure Event Hubs
    Data Receiver** on its Event Hub (`c/docs/eng/end-to-end-tests.md`).
-   The default region is `centraluseuap`, the region of the shared environment;
-   change `azureLocation` if the subscription uses a different region.
+   `azureLocation` (default `centraluseuap`) sets the region of the environments
+   the pipelines provision; the shared environment's region is fixed.
 3. Configure CodeQL for the source host. For **Azure Repos**, enable GitHub Code
    Security/Advanced Security for the repository; the pipeline uses native
    `AdvancedSecurity-Codeql-*` tasks and publishes alerts to Azure DevOps.

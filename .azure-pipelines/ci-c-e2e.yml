@@ -26,7 +26,7 @@ parameters:
   - name: azureServiceConnection
     type: string
     default: aziotclb service connection
-  # The shared environment's region.
+  # Region of the environments this pipeline provisions; the shared environment's is fixed.
   - name: azureLocation
     type: string
     default: centraluseuap
