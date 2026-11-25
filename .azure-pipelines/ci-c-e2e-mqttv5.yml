@@ -5,16 +5,18 @@
 # environment (an mqttv5 hub and DPS linked through an ADR namespace; e2e-mqttv5-adr-namespace.yml
 # keeps it linked). Nothing is provisioned or deleted per run. Each leg builds its suite, issues
 # its own device from the DPS X.509 enrollment group's CA (c/eng/e2e-shared-device.ps1 -Prefix
-# E2E_MQTTV5_SHARED) and reads the events endpoint through its own consumer group. Every suite
+# E2E_MQTTV5_SHARED) and reads telemetry through its own consumer group. Every suite
 # runs on Linux and on Windows (MSVC; Paho over OpenSSL 4.1.0, az_mqtt over Schannel), except
 # custody: Linux only (an OpenSSL PKCS#11 provider and SoftHSM2; az_mqtt takes key references only
 # over OpenSSL). The custom topic, twin and transport suites run one leg per adapter and shard
 # (AZ_IOT_TEST_SHARD, c/tests/support/test_shard.h). scripts/run-c-e2e-mqttv5.ps1 runs each step
 # and holds each suite's settings.
 #
-# The service connection's principal reads the E2E-MQTTV5-SHARED-* secrets of sharedKeyVault (Key
-# Vault Secrets User), including the hub's and its events endpoint's 'service' policy connection
-# strings. No SAS device: mqttv5 hubs accept X.509 only.
+# The hub has local authentication disabled. The service connection's principal reads the
+# E2E-MQTTV5-SHARED-* secrets of sharedKeyVault (Key Vault Secrets User), none of which holds a hub
+# or Event Hubs key, and the tests reach the hub (IoT Hub Data Contributor) and the Event Hub it
+# routes telemetry to (Azure Event Hubs Data Receiver) with its Microsoft Entra tokens. No SAS
+# device: mqttv5 hubs accept X.509 only.
 trigger: none
 pr:
   branches:
@@ -145,11 +147,16 @@ jobs:
           E2E_SUITE: $(suite)
           E2E_ADAPTER: $(adapter)
           E2E_SHARD: $(shard)
+      - template: templates/steps-c-e2e-access.yml
+        parameters:
+          azureServiceConnection: ${{ parameters.azureServiceConnection }}
       - pwsh: .azure-pipelines/scripts/run-c-e2e-mqttv5.ps1 -Step RunTests
         displayName: Run mqttv5 e2e
         # Two tests of up to 15 min each for adapter "both".
         timeoutInMinutes: 35
         env:
+          IOTHUB_SERVICE_ACCESS_TOKEN: $(hubAccessToken)
+          IOTHUB_EVENTHUB_ACCESS_TOKEN: $(eventHubsAccessToken)
           E2E_DEVICE_DIRECTORY: $(deviceDirectory)
           E2E_RESULTS_DIRECTORY: $(Common.TestResultsDirectory)
           E2E_SUITE: $(suite)

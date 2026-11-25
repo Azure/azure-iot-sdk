@@ -1,10 +1,10 @@
 # Copyright (c) Microsoft. All rights reserved.
 # Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-# Runs in an AzureCLI@2 task of a C e2e job (jobs-c-e2e.yml). Sets the secret variables
-# hubAccessToken and eventHubsAccessToken: the service connection's Microsoft Entra tokens for
-# https://iothubs.azure.net and https://eventhubs.azure.net. Not with E2E_CSR: the CSR suites make
-# no hub service calls.
+# Runs in an AzureCLI@2 task of a C e2e or mqttv5 e2e job (steps-c-e2e-access.yml). Sets the
+# secret variables hubAccessToken and eventHubsAccessToken: the service connection's Microsoft
+# Entra tokens for https://iothubs.azure.net and https://eventhubs.azure.net. Not with E2E_CSR: the
+# CSR suites make no hub service calls.
 #
 # With E2E_SHARED_KEY_VAULT, the job runs on the shared environment: this reads its E2E-SHARED-*
 # (with E2E_CSR, E2E-CSR-SHARED-*) secrets from that vault and writes the job's test configuration
