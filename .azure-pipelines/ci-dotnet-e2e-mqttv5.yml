@@ -22,7 +22,7 @@ parameters:
     default: aziotclb service connection
   - name: azureLocation
     type: string
-    default: eastus2euap
+    default: centraluseuap
 
 jobs:
   - template: templates/jobs-e2e-mqttv5.yml

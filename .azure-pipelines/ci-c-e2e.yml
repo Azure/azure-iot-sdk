@@ -26,9 +26,10 @@ parameters:
   - name: azureServiceConnection
     type: string
     default: aziotclb service connection
+  # The shared environment's region.
   - name: azureLocation
     type: string
-    default: eastus2euap
+    default: centraluseuap
   # auto: the shared environment for pull requests, a provisioned one otherwise.
   - name: environment
     type: string
