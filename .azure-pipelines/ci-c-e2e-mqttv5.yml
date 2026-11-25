@@ -1,0 +1,172 @@
+# Copyright (c) Microsoft. All rights reserved.
+# Licensed under the MIT license. See LICENSE file in the project root for full license information.
+
+# End-to-end tests for the C SDK's mqttv5 clients, against the real service on the shared MQTTv5
+# environment (an mqttv5 hub and DPS linked through an ADR namespace; e2e-mqttv5-adr-namespace.yml
+# keeps it linked). Nothing is provisioned or deleted per run. Each leg builds its suite, issues
+# its own device from the DPS X.509 enrollment group's CA (c/eng/e2e-shared-device.ps1 -Prefix
+# E2E_MQTTV5_SHARED) and reads the events endpoint through its own consumer group. Every suite
+# runs on Linux and on Windows (MSVC; Paho over OpenSSL 4.1.0, az_mqtt over Schannel), except
+# custody: Linux only (an OpenSSL PKCS#11 provider and SoftHSM2; az_mqtt takes key references only
+# over OpenSSL). The custom topic, twin and transport suites run one leg per adapter and shard
+# (AZ_IOT_TEST_SHARD, c/tests/support/test_shard.h). scripts/run-c-e2e-mqttv5.ps1 runs each step
+# and holds each suite's settings.
+#
+# The service connection's principal reads the E2E-MQTTV5-SHARED-* secrets of sharedKeyVault (Key
+# Vault Secrets User), including the hub's and its events endpoint's 'service' policy connection
+# strings. No SAS device: mqttv5 hubs accept X.509 only.
+trigger: none
+pr:
+  branches:
+    include: [releases/public-preview]
+schedules:
+  - cron: '30 14 * * *'
+    displayName: Nightly mqttv5 e2e tests
+    branches:
+      include: [releases/public-preview]
+    always: true
+
+parameters:
+  - name: azureServiceConnection
+    type: string
+    default: aziotclb service connection
+  - name: sharedKeyVault
+    type: string
+    default: kv-aziotclb
+
+variables:
+  sharedKeyVault: ${{ parameters.sharedKeyVault }}
+
+jobs:
+  - job: changes
+    displayName: Detect changes
+    pool:
+      vmImage: ubuntu-latest
+    steps:
+      - template: templates/steps-detect-changes.yml
+        parameters:
+          includeCommon: false
+          workflow: ci-c-e2e-mqttv5
+          sourceRoot: c
+
+  # Builds the Windows legs' OpenSSL into the pipeline cache once per run, so the legs restore it
+  # instead of each building it on a cache miss.
+  - job: openssl
+    displayName: OpenSSL (Windows)
+    dependsOn: changes
+    condition: and(succeeded(), eq(dependencies.changes.outputs['filter.relevant'], 'true'))
+    timeoutInMinutes: 60
+    pool:
+      vmImage: windows-latest
+    variables:
+      # Read by steps-c-toolchain.yml (cache key); as the e2e legs' Windows image.
+      vmImage: windows-latest
+      openssl: 4.1.0
+    steps:
+      - checkout: self
+        fetchDepth: '1'
+        persistCredentials: false
+      - template: templates/steps-c-toolchain.yml
+
+  # One leg per suite, OS, and for the sharded suites, adapter and shard (shard "0/1": every test).
+  # adapter "both": the suite's Paho and az_mqtt tests on one device.
+  - job: e2e
+    displayName: mqttv5 e2e
+    dependsOn: openssl
+    timeoutInMinutes: 90
+    strategy:
+      matrix:
+        linux_custom_topic_paho_0: { vmImage: ubuntu-24.04, openssl: system, suite: custom_topic, adapter: paho, shard: '0/2' }
+        linux_custom_topic_paho_1: { vmImage: ubuntu-24.04, openssl: system, suite: custom_topic, adapter: paho, shard: '1/2' }
+        linux_custom_topic_az_mqtt_0: { vmImage: ubuntu-24.04, openssl: system, suite: custom_topic, adapter: az_mqtt, shard: '0/2' }
+        linux_custom_topic_az_mqtt_1: { vmImage: ubuntu-24.04, openssl: system, suite: custom_topic, adapter: az_mqtt, shard: '1/2' }
+        linux_twin_paho_0: { vmImage: ubuntu-24.04, openssl: system, suite: twin, adapter: paho, shard: '0/3' }
+        linux_twin_paho_1: { vmImage: ubuntu-24.04, openssl: system, suite: twin, adapter: paho, shard: '1/3' }
+        linux_twin_paho_2: { vmImage: ubuntu-24.04, openssl: system, suite: twin, adapter: paho, shard: '2/3' }
+        linux_twin_az_mqtt_0: { vmImage: ubuntu-24.04, openssl: system, suite: twin, adapter: az_mqtt, shard: '0/3' }
+        linux_twin_az_mqtt_1: { vmImage: ubuntu-24.04, openssl: system, suite: twin, adapter: az_mqtt, shard: '1/3' }
+        linux_twin_az_mqtt_2: { vmImage: ubuntu-24.04, openssl: system, suite: twin, adapter: az_mqtt, shard: '2/3' }
+        linux_connection: { vmImage: ubuntu-24.04, openssl: system, suite: connection, adapter: both, shard: '0/1' }
+        linux_telemetry: { vmImage: ubuntu-24.04, openssl: system, suite: telemetry, adapter: both, shard: '0/1' }
+        linux_direct_method: { vmImage: ubuntu-24.04, openssl: system, suite: direct_method, adapter: both, shard: '0/1' }
+        linux_transport_paho_0: { vmImage: ubuntu-24.04, openssl: system, suite: transport, adapter: paho, shard: '0/2' }
+        linux_transport_paho_1: { vmImage: ubuntu-24.04, openssl: system, suite: transport, adapter: paho, shard: '1/2' }
+        linux_transport_az_mqtt_0: { vmImage: ubuntu-24.04, openssl: system, suite: transport, adapter: az_mqtt, shard: '0/2' }
+        linux_transport_az_mqtt_1: { vmImage: ubuntu-24.04, openssl: system, suite: transport, adapter: az_mqtt, shard: '1/2' }
+        linux_custody: { vmImage: ubuntu-24.04, openssl: system, suite: custody, adapter: both, shard: '0/1' }
+        windows_custom_topic_paho_0: { vmImage: windows-latest, openssl: 4.1.0, suite: custom_topic, adapter: paho, shard: '0/2' }
+        windows_custom_topic_paho_1: { vmImage: windows-latest, openssl: 4.1.0, suite: custom_topic, adapter: paho, shard: '1/2' }
+        windows_custom_topic_az_mqtt_0: { vmImage: windows-latest, openssl: 4.1.0, suite: custom_topic, adapter: az_mqtt, shard: '0/2' }
+        windows_custom_topic_az_mqtt_1: { vmImage: windows-latest, openssl: 4.1.0, suite: custom_topic, adapter: az_mqtt, shard: '1/2' }
+        windows_twin_paho_0: { vmImage: windows-latest, openssl: 4.1.0, suite: twin, adapter: paho, shard: '0/3' }
+        windows_twin_paho_1: { vmImage: windows-latest, openssl: 4.1.0, suite: twin, adapter: paho, shard: '1/3' }
+        windows_twin_paho_2: { vmImage: windows-latest, openssl: 4.1.0, suite: twin, adapter: paho, shard: '2/3' }
+        windows_twin_az_mqtt_0: { vmImage: windows-latest, openssl: 4.1.0, suite: twin, adapter: az_mqtt, shard: '0/3' }
+        windows_twin_az_mqtt_1: { vmImage: windows-latest, openssl: 4.1.0, suite: twin, adapter: az_mqtt, shard: '1/3' }
+        windows_twin_az_mqtt_2: { vmImage: windows-latest, openssl: 4.1.0, suite: twin, adapter: az_mqtt, shard: '2/3' }
+        windows_connection: { vmImage: windows-latest, openssl: 4.1.0, suite: connection, adapter: both, shard: '0/1' }
+        windows_telemetry: { vmImage: windows-latest, openssl: 4.1.0, suite: telemetry, adapter: both, shard: '0/1' }
+        windows_direct_method: { vmImage: windows-latest, openssl: 4.1.0, suite: direct_method, adapter: both, shard: '0/1' }
+        windows_transport_paho_0: { vmImage: windows-latest, openssl: 4.1.0, suite: transport, adapter: paho, shard: '0/2' }
+        windows_transport_paho_1: { vmImage: windows-latest, openssl: 4.1.0, suite: transport, adapter: paho, shard: '1/2' }
+        windows_transport_az_mqtt_0: { vmImage: windows-latest, openssl: 4.1.0, suite: transport, adapter: az_mqtt, shard: '0/2' }
+        windows_transport_az_mqtt_1: { vmImage: windows-latest, openssl: 4.1.0, suite: transport, adapter: az_mqtt, shard: '1/2' }
+    pool:
+      vmImage: $(vmImage)
+    variables:
+      deviceDirectory: $(Agent.TempDirectory)/mqttv5-device
+    steps:
+      - checkout: self
+        fetchDepth: '1'
+        persistCredentials: false
+      - template: templates/steps-c-toolchain.yml
+      - pwsh: .azure-pipelines/scripts/run-c-e2e-mqttv5.ps1 -Step Build
+        displayName: Build
+        timeoutInMinutes: 20
+        env:
+          E2E_SUITE: $(suite)
+          E2E_ADAPTER: $(adapter)
+          E2E_SHARD: $(shard)
+      - task: AzureCLI@2
+        displayName: Issue a device
+        timeoutInMinutes: 5
+        inputs:
+          azureSubscription: ${{ parameters.azureServiceConnection }}
+          scriptType: pscore
+          scriptLocation: scriptPath
+          scriptPath: .azure-pipelines/scripts/run-c-e2e-mqttv5.ps1
+          arguments: -Step IssueDevice
+          visibleAzLogin: false
+        env:
+          E2E_SHARED_KEY_VAULT: $(sharedKeyVault)
+          E2E_DEVICE_DIRECTORY: $(deviceDirectory)
+          E2E_BUILD_ID: $(Build.BuildId)
+          E2E_JOB_ATTEMPT: $(System.JobAttempt)
+          E2E_SUITE: $(suite)
+          E2E_ADAPTER: $(adapter)
+          E2E_SHARD: $(shard)
+      - pwsh: .azure-pipelines/scripts/run-c-e2e-mqttv5.ps1 -Step RunTests
+        displayName: Run mqttv5 e2e
+        # Two tests of up to 15 min each for adapter "both".
+        timeoutInMinutes: 35
+        env:
+          E2E_DEVICE_DIRECTORY: $(deviceDirectory)
+          E2E_RESULTS_DIRECTORY: $(Common.TestResultsDirectory)
+          E2E_SUITE: $(suite)
+          E2E_ADAPTER: $(adapter)
+          E2E_SHARD: $(shard)
+      - task: PublishTestResults@2
+        displayName: Publish test results
+        condition: succeededOrFailed()
+        inputs:
+          testResultsFormat: JUnit
+          testResultsFiles: '*.xml'
+          searchFolder: $(Common.TestResultsDirectory)
+          testRunTitle: mqttv5 e2e $(Agent.JobName)
+          failTaskOnMissingResultsFile: false
+
+  - template: templates/jobs-e2e-gate.yml
+    parameters:
+      displayName: C mqttv5 e2e gate
+      jobs: [openssl, e2e]
+      teardownJobs: []

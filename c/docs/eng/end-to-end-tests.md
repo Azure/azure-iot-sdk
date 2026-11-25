@@ -348,30 +348,9 @@ with the .NET pipelines and the permissions it needs.
 
 ### GitHub Actions workflows
 
-The other C e2e workflow (`ci-c-e2e-mqttv5`) ends with a
-`<workflow>-gate` job (`ci-c-e2e-mqttv5-gate`), the
-single check name for rulesets to require. Since its workflow runs on every pull request
-to `releases/public-preview`, it
-always reports; it fails only when a job failed or was cancelled. The other C workflows end with
-`ci-c-gate`, `ci-c-static-analysis-gate`, `codeql-c-gate` and `ci-c-yocto-gate`.
-
-They log in with OIDC via `azure/login@v2`, using repo secrets `AZURE_CLIENT_ID`,
-`AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` (same secrets as the dotnet CI), and grant
-`permissions: id-token: write`. Each provisioning job downloads the shared
-[`iot-sdks-e2e-fx`](https://github.com/Azure/iot-sdks-e2e-fx) script and:
-
-1. computes the RG name from the run itself (`CSDKE2E<Flavor>-<run_id>-<run_attempt>`, a
-   workflow-level `env`) and passes it to the provision action as `rg-name`;
-2. provisions IoT Hub + DPS + enrollments (`New-AzIotTestEnvironment`);
-3. emits an env-var script that is dot-sourced (`New-AzIotCSDKE2ETestConfig -Target powershell`);
-4. **always** (`if: always()`) deletes the resource group (`az group delete --no-wait`).
-
-The RG name is deliberately *derived from the run* rather than published as a
-setup job output: **a cancelled job does not propagate its `outputs`**, so a
-teardown reading `needs.setup.outputs.rg` would receive an empty string and
-delete nothing while the group stayed behind. Because teardown
-recomputes the same name, it cleans up even when `setup` is cancelled or times
-out; `destroy-e2e-resources` no-ops when the group was never created.
+No C e2e test runs in GitHub Actions. The C workflows end with a gate job, the single check name
+for rulesets to require: `ci-c-gate`, `ci-c-static-analysis-gate`, `codeql-c-gate` and
+`ci-c-yocto-gate`.
 
 [`cleanup-e2e-resources.yml`](../../../.github/workflows/cleanup-e2e-resources.yml)
 is the nightly backstop: it reaps any `CSDKE2E*` (C), `DotnetE2ETestPipeline-*`
@@ -379,6 +358,8 @@ is the nightly backstop: it reaps any `CSDKE2E*` (C), `DotnetE2ETestPipeline-*`
 `Remove-LeftoverAzureResourceGroups`),
 covering what teardown structurally cannot — an asynchronous `--no-wait` delete
 failure, or a runner that dies before teardown.
+
+### MQTTv5 e2e (Azure Pipelines)
 
 The shared mqttv5 environment (ADR-linked mqttv5 hub and DPS) is kept usable by the Azure Pipelines
 pipeline [`e2e-mqttv5-adr-namespace.yml`](../../../.azure-pipelines/e2e-mqttv5-adr-namespace.yml)
@@ -402,20 +383,23 @@ on the resource group. Grant the link's role assignments (hub, DPS and namespace
 resource group once: those survive the namespace, so the pipeline creates none and needs no role
 assignment write unless the namespace identity changes.
 
-[`ci-c-e2e-mqttv5.yml`](../../../.github/workflows/ci-c-e2e-mqttv5.yml) runs the mqttv5 suites on
-that environment, one job per client and OS (Linux, and Windows with MSVC: Paho over OpenSSL 4.1.0,
+[`ci-c-e2e-mqttv5.yml`](../../../.azure-pipelines/ci-c-e2e-mqttv5.yml) runs the mqttv5 suites on
+that environment, one job per suite and OS (Linux, and Windows with MSVC: Paho over OpenSSL 4.1.0,
 az_mqtt over Schannel; custody is Linux only, see [Not run on Windows](#not-run-on-windows)), each
 with its own device. The twin, transport and custom topic suites run one job per
 adapter and per shard instead (`AZ_IOT_TEST_SHARD=<index>/<count>`, see
 [`test_shard.h`](../../tests/support/test_shard.h)), each with its own device, so their cases run in
-parallel. The jobs rely on the namespace repair's schedule (above). Each job issues a device with
-`e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED` from secret `E2E_MQTTV5_SHARED_GROUP_CA`, and
-reads secrets `E2E_MQTTV5_SHARED_IOTHUB_SERVICE_CS` and `_EVENTHUB_CS` (`service` policy; the former is passed to the
-script as `E2E_MQTTV5_SHARED_IOTHUB_CS`, as the secret of that name holds `iothubowner` for the .NET e2e), and variables `E2E_MQTTV5_SHARED_ID_SCOPE` (unset skips the workflow) and
-`_DPS_HOST`. Jobs that read events use consumer groups `e2e-0`..`e2e-10` on the hub, group
-(run id + slot) mod 11: a group has at most two readers in a run, so two overlapping runs stay
-within Event Hubs' five readers per partition. No SAS: mqttv5 hubs accept X.509 only. Triggers: pull requests touching mqttv5 or core device code, the e2e harness or the
-workflow; nightly; manual. Pull requests from forks and from Dependabot skip.
+parallel. The jobs rely on the namespace repair's schedule (above). Each job reads secrets
+`E2E-MQTTV5-SHARED-GROUP-CA`, `-ID-SCOPE`, `-DPS-HOST`, `-IOTHUB-SERVICE-CS` and `-EVENTHUB-CS`
+(`service` policy) from `sharedKeyVault` through the service connection (Key Vault Secrets User),
+and issues a device with `e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED`, registration ID
+`ci-ado-mqttv5-<suite>-<build>-<attempt>-<job>`
+([`run-c-e2e-mqttv5.ps1`](../../../.azure-pipelines/scripts/run-c-e2e-mqttv5.ps1)). Jobs that read
+events use consumer groups `e2e-0`..`e2e-10` on the hub, group (build id + slot) mod 11: a group
+has at most two readers in a run, so two overlapping runs stay within Event Hubs' five readers per
+partition. No SAS: mqttv5 hubs accept X.509 only. Triggers: pull requests to
+`releases/public-preview` (the jobs skip when no C or pipeline input changed; the gate job always
+reports); daily at 14:30 UTC on `releases/public-preview`; manual.
 
 > **Software updates e2e** runs in its own Azure Pipelines pipeline
 > ([`ci-c-e2e-adu.yml`](../../../.azure-pipelines/ci-c-e2e-adu.yml), Linux and Windows) on the same shared mqttv5
