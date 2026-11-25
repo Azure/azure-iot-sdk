@@ -32,7 +32,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
 
 archive="mbedtls-${version}.tar.bz2"
-curl -sSfL -o "${work}/${archive}" \
+curl -sSfL --retry 5 --retry-delay 10 --retry-all-errors -o "${work}/${archive}" \
     "https://github.com/Mbed-TLS/mbedtls/releases/download/mbedtls-${version}/${archive}"
 echo "${sha256}  ${work}/${archive}" | sha256sum -c -
 tar -xjf "${work}/${archive}" -C "${work}"
