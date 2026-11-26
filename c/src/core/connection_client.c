@@ -2804,9 +2804,18 @@ static void apply_user_token(
  */
 #define DPS_SESSION_READY_TIMEOUT_MS 120000u
 
+/**
+ * @brief Registrations or status queries a provisioning session may leave unanswered, each for
+ * opts.dps_response_timeout_ms, before it ends with AZ_IOT_ERR_TIMEOUT: the request and one
+ * re-send. A new session is the stronger remedy when a re-send on this one goes unanswered too.
+ */
+#define DPS_UNANSWERED_REQUESTS_MAX 2u
+
 static void dps_teardown_mqtt(az_iot_connection_client* c)
 {
   c->dps_subscription_confirmed = false;
+  az_iot_deadline__clear(&c->dps_response_deadline);
+  c->dps_unanswered_request_count = 0;
   /* A session that is gone never became ready. */
   c->dps_pending_ready_announce = false;
   /* The live hold belongs to the session. The holder count is the feature
@@ -2831,6 +2840,20 @@ static void dps_finalize(az_iot_connection_client* c, az_iot_result status, bool
   c->dps_pending_finalize = true;
   c->dps_pending_status = status;
   c->dps_pending_have_assignment = have_assignment;
+  /* The outcome is decided: no response is awaited any more. */
+  az_iot_deadline__clear(&c->dps_response_deadline);
+}
+
+/**
+ * @brief Record a registration or status query just sent: awaited for
+ * opts.dps_response_timeout_ms.
+ */
+static void dps_await_response(az_iot_connection_client* c)
+{
+  c->dps_phase = DPS_PHASE_REGISTERING;
+  ++c->dps_unanswered_request_count;
+  az_iot_deadline__arm_after_ms(
+      &c->dps_response_deadline, az_iot_time_mono_ms(), c->opts.dps_response_timeout_ms);
 }
 
 /* Bound on the pre-registration hold. */
@@ -3091,7 +3114,9 @@ static az_iot_result dps_do_register_publish(az_iot_connection_client* c)
   az_iot_result r = c->dps_mqtt->iface->publish(c->dps_mqtt, &msg, &pid);
   if (r == AZ_IOT_OK)
   {
-    c->dps_phase = DPS_PHASE_REGISTERING;
+    /* A new registration supersedes any operation an earlier one started. */
+    c->dps_operation_id_len = 0;
+    dps_await_response(c);
   }
   else
   {
@@ -3122,13 +3147,44 @@ static az_iot_result dps_do_query_publish(az_iot_connection_client* c)
   az_iot_result r = c->dps_mqtt->iface->publish(c->dps_mqtt, &msg, &pid);
   if (r == AZ_IOT_OK)
   {
-    c->dps_phase = DPS_PHASE_REGISTERING;
+    dps_await_response(c);
   }
   else
   {
     stage_local_error(c, AZ_IOT_CONN_SCOPE_DPS, r, "status query publish() failed");
   }
   return r;
+}
+
+/**
+ * @brief Send again the registration or status query DPS left unanswered for
+ * opts.dps_response_timeout_ms; past DPS_UNANSWERED_REQUESTS_MAX, end the provisioning session
+ * with AZ_IOT_ERR_TIMEOUT instead.
+ */
+static void dps_resend_unanswered_request(az_iot_connection_client* c)
+{
+  bool const querying = c->dps_operation_id_len > 0;
+  const char* const request = querying ? "status query" : "registration";
+  if (c->dps_unanswered_request_count >= DPS_UNANSWERED_REQUESTS_MAX)
+  {
+    AZ_IOT_LOG_ERRORF(
+        AZ_IOT_LOG_COMPONENT_DPS,
+        "no response to the %s after %u attempts; ending the provisioning session",
+        request,
+        (unsigned)c->dps_unanswered_request_count);
+    dps_finalize(c, AZ_IOT_ERR_TIMEOUT, false);
+    return;
+  }
+  AZ_IOT_LOG_WARNF(
+      AZ_IOT_LOG_COMPONENT_DPS,
+      "no response to the %s in %u ms; sending it again",
+      request,
+      (unsigned)c->opts.dps_response_timeout_ms);
+  az_iot_result r = querying ? dps_do_query_publish(c) : dps_do_register_publish(c);
+  if (r != AZ_IOT_OK)
+  {
+    dps_finalize(c, r, false);
+  }
 }
 
 /* Position `jr` on the BEGIN_OBJECT of registrationState in a DPS response.
@@ -3782,10 +3838,17 @@ static void on_dps_mqtt_event(const az_iot_mqtt_event* evt, void* user_ctx)
         }
       }
 
-      if (c->dps_phase != DPS_PHASE_REGISTERING && c->dps_phase != DPS_PHASE_POLLING)
+      /* Once the outcome is decided, a later response (to a request that was sent again, say)
+       * must not run the outcome a second time. */
+      if ((c->dps_phase != DPS_PHASE_REGISTERING && c->dps_phase != DPS_PHASE_POLLING)
+          || c->dps_pending_finalize)
       {
         break;
       }
+      /* DPS answered: every request sent so far is. A response to an earlier request than the
+       * last one is about the same registration, so it is acted on like the last one's. */
+      az_iot_deadline__clear(&c->dps_response_deadline);
+      c->dps_unanswered_request_count = 0;
 
       /* MQTT permits an empty payload, and an adapter may report that as a NULL
        * pointer with zero length. az_iot_provisioning_client_parse_received_topic_and_payload
@@ -6719,7 +6782,7 @@ static void process_sas_token_request(az_iot_connection_client* c)
  * connection deadline: a session's SAS token renewal, a planned hub session
  * end's settle and disconnect bounds, the presence SUBACK or birth-ack timeout, an open
  * certificate renewal's response timeout, a provisioning session's readiness
- * bound, or a feature observer's NEXT_DEADLINE.
+ * bound, a DPS request's response timeout, or a feature observer's NEXT_DEADLINE.
  * A token request's deadline is not one: its attempt has no session to wait on.
  */
 static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, uint32_t timeout_ms)
@@ -6789,6 +6852,8 @@ static uint32_t limit_wait_to_connection_deadlines(az_iot_connection_client* c, 
     uint64_t presence_left = az_iot_deadline__remaining_ms(&c->presence.deadline, now);
     remaining = presence_left < remaining ? presence_left : remaining;
   }
+  uint64_t const dps_response_left = az_iot_deadline__remaining_ms(&c->dps_response_deadline, now);
+  remaining = dps_response_left < remaining ? dps_response_left : remaining;
   if (c->csr_op.in_use)
   {
     uint64_t const csr_left = c->csr_op.deadline_ms > now ? c->csr_op.deadline_ms - now : 0;
@@ -6987,6 +7052,7 @@ AZ_NODISCARD az_iot_connection_client_options az_iot_connection_client_options_d
       = az_iot_connection_client_get_default_identity_recovery_after_assignment_policy();
   opts.max_unconfirmed_delivery_timeout_ms = AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS;
   opts.csr_response_timeout_ms = AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS;
+  opts.dps_response_timeout_ms = AZ_IOT_DEFAULT_DPS_RESPONSE_TIMEOUT_MS;
   return opts;
 }
 
@@ -7462,6 +7528,10 @@ AZ_NODISCARD az_iot_result az_iot_connection_client_init(
   if (client->opts.csr_response_timeout_ms == 0u)
   {
     client->opts.csr_response_timeout_ms = AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS;
+  }
+  if (client->opts.dps_response_timeout_ms == 0u)
+  {
+    client->opts.dps_response_timeout_ms = AZ_IOT_DEFAULT_DPS_RESPONSE_TIMEOUT_MS;
   }
   client->opts.limits = limits;
   memset(client->opts.workspace, 0, workspace_size);
@@ -8421,6 +8491,12 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
       {
         dps_finalize(client, r, false);
       }
+    }
+
+    if (client->dps_phase == DPS_PHASE_REGISTERING && !client->dps_pending_finalize
+        && az_iot_deadline__has_passed(&client->dps_response_deadline, az_iot_time_mono_ms()))
+    {
+      dps_resend_unanswered_request(client);
     }
 
     az_iot_result r = AZ_IOT_OK;
