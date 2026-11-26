@@ -216,6 +216,9 @@ is no `IOTHUB_SERVICE_ACCESS_TOKEN`) and `AZ_IOT_TRUSTED_CA`):
   `$.uid`, `$.ctime`, `$.sub`; custom application properties; eight messages in flight keep their
   order; a 512 KB - 8 KiB body is routed whole and a 1 MiB + 4 KiB body is refused (or the session
   dropped), never routed, and telemetry flows again after. `ci-c-e2e-mqttv5`.
+  `AZ_IOT_E2E_ROUTE_MESSAGE_LIMIT_BYTES` names a lower limit of the route to the Event Hub read:
+  the 512 KB - 8 KiB body then need only be acknowledged, and one 8 KiB under that limit is routed
+  whole.
 - [`e2e_mqttv5_custody_test.c`](../../tests/e2e/tests/e2e_mqttv5_custody_test.c) — the device key
   inside a SoftHSM2 token (`eng/setup-softhsm.sh`, named by `AZ_IOT_CLIENT_KEY_URI`): DPS and the
   mqttv5 hub accept it, telemetry reaches the events endpoint, and a reconnect loads the key

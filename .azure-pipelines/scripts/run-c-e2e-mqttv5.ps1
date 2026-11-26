@@ -42,7 +42,13 @@ $suites = @{
     }
     twin          = @{ Tag = 'tw'; Slot = 0; LogLevel = 'INFO' }
     connection    = @{ Tag = 'cn'; Slot = 9; LogLevel = 'INFO' }
-    telemetry     = @{ Tag = 'te'; Slot = 8; LogLevel = 'INFO' }
+    telemetry     = @{
+        Tag = 'te'; Slot = 8; LogLevel = 'INFO'
+        # The tests read a custom Event Hub endpoint, whose route does not deliver a body near the
+        # hub's 512 KB limit; the at-limit case then needs only the acknowledgement and checks
+        # routing just under this limit.
+        Environment = @{ AZ_IOT_E2E_ROUTE_MESSAGE_LIMIT_BYTES = '256000' }
+    }
     direct_method = @{ Tag = 'dm'; Slot = 0; LogLevel = 'INFO' }
     transport     = @{ Tag = 'tr'; Slot = 4; SpreadGroups = $true; LogLevel = 'INFO'; Proxy = $true }
     custody       = @{
