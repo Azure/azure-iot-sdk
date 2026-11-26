@@ -216,6 +216,9 @@ is no `IOTHUB_SERVICE_ACCESS_TOKEN`) and `AZ_IOT_TRUSTED_CA`):
   `$.uid`, `$.ctime`, `$.sub`; custom application properties; eight messages in flight keep their
   order; a 512 KB - 8 KiB body is routed whole and a 1 MiB + 4 KiB body is refused (or the session
   dropped), never routed, and telemetry flows again after. `ci-c-e2e-mqttv5`.
+  `AZ_IOT_E2E_ROUTE_MESSAGE_LIMIT_BYTES` names a lower limit of the route to the Event Hub read:
+  the 512 KB - 8 KiB body then need only be acknowledged, and one 8 KiB under that limit is routed
+  whole.
 - [`e2e_mqttv5_custody_test.c`](../../tests/e2e/tests/e2e_mqttv5_custody_test.c) — the device key
   inside a SoftHSM2 token (`eng/setup-softhsm.sh`, named by `AZ_IOT_CLIENT_KEY_URI`): DPS and the
   mqttv5 hub accept it, telemetry reaches the events endpoint, and a reconnect loads the key
@@ -390,14 +393,20 @@ with its own device. The twin, transport and custom topic suites run one job per
 adapter and per shard instead (`AZ_IOT_TEST_SHARD=<index>/<count>`, see
 [`test_shard.h`](../../tests/support/test_shard.h)), each with its own device, so their cases run in
 parallel. The jobs rely on the namespace repair's schedule (above). Each job reads secrets
-`E2E-MQTTV5-SHARED-GROUP-CA`, `-ID-SCOPE`, `-DPS-HOST`, `-IOTHUB-SERVICE-CS` and `-EVENTHUB-CS`
-(`service` policy) from `sharedKeyVault` through the service connection (Key Vault Secrets User),
-and issues a device with `e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED`, registration ID
+`E2E-MQTTV5-SHARED-GROUP-CA`, `-ID-SCOPE`, `-DPS-HOST`, `-IOTHUB-HOSTNAME` (the hub's service host
+name), `-EVENTHUB-KEYLESS-CS` and `-EVENTHUB-PARTITION-COUNT` from `sharedKeyVault` through the
+service connection (Key Vault Secrets User), and issues a device with
+`e2e-shared-device.ps1 -Prefix E2E_MQTTV5_SHARED -EntraAuthentication`, registration ID
 `ci-ado-mqttv5-<suite>-<build>-<attempt>-<job>`
-([`run-c-e2e-mqttv5.ps1`](../../../.azure-pipelines/scripts/run-c-e2e-mqttv5.ps1)). Jobs that read
-events use consumer groups `e2e-0`..`e2e-10` on the hub, group (build id + slot) mod 11: a group
-has at most two readers in a run, so two overlapping runs stay within Event Hubs' five readers per
-partition. No SAS: mqttv5 hubs accept X.509 only. Triggers: pull requests to
+([`run-c-e2e-mqttv5.ps1`](../../../.azure-pipelines/scripts/run-c-e2e-mqttv5.ps1)). The hub has
+local authentication disabled, as for [`ci-c-e2e`](#ci-c-e2e-azure-pipelines): the tests reach it
+with the service connection principal's Microsoft Entra tokens (IoT Hub Data Contributor on the
+hub), and read telemetry from the Event Hub the hub routes device messages to with its
+system-assigned identity (`telemetry`, in a namespace with local authentication disabled; Azure
+Event Hubs Data Receiver). Jobs that read events use consumer groups `e2e-0`..`e2e-10` on that
+Event Hub, group (build id + slot) mod 11: a group has at most two readers in a run, so two
+overlapping runs stay within Event Hubs' five readers per partition. No SAS: mqttv5 hubs accept
+X.509 only. Triggers: pull requests to
 `releases/public-preview` (the jobs skip when no C or pipeline input changed; the gate job always
 reports); daily at 14:30 UTC on `releases/public-preview`; manual.
 

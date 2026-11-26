@@ -22,18 +22,19 @@ Default, inputs from the environment (repository secrets/variables):
   E2E_SHARED_IOTHUB_REGISTRY_CS  IoT Hub connection string with RegistryWrite, written as
                              IOTHUB_REGISTRY_CONNECTION_STRING for the TPM suite's device cleanup
 
--Prefix E2E_MQTTV5_SHARED (Azure Pipelines ci-c-e2e-mqttv5) reads the same variables under that prefix except
-SAS_GROUP_KEY, DPS_CS and IOTHUB_REGISTRY_CS (mqttv5 hubs accept X.509 only; no SAS key is
-written, and there is no TPM suite), and optionally
-E2E_MQTTV5_SHARED_DPS_HOST, the DPS device endpoint.
-
--EntraAuthentication (Azure Pipelines ci-c-e2e) is for a hub and Event Hub read with Microsoft
-Entra tokens, which the caller sets (IOTHUB_SERVICE_ACCESS_TOKEN, IOTHUB_EVENTHUB_ACCESS_TOKEN). It
-reads no IoT Hub or Event Hubs keys: instead of E2E_SHARED_IOTHUB_CS, E2E_SHARED_EVENTHUB_CS and
-E2E_SHARED_IOTHUB_REGISTRY_CS:
-  E2E_SHARED_IOTHUB_HOSTNAME          IoT Hub host name
+-EntraAuthentication (Azure Pipelines ci-c-e2e and ci-c-e2e-mqttv5) is for a hub and Event Hub read
+with Microsoft Entra tokens, which the caller sets (IOTHUB_SERVICE_ACCESS_TOKEN,
+IOTHUB_EVENTHUB_ACCESS_TOKEN). It reads no IoT Hub or Event Hubs keys: instead of
+E2E_SHARED_IOTHUB_CS, E2E_SHARED_EVENTHUB_CS and E2E_SHARED_IOTHUB_REGISTRY_CS:
+  E2E_SHARED_IOTHUB_HOSTNAME          IoT Hub (service) host name
   E2E_SHARED_EVENTHUB_KEYLESS_CS      Event Hub connection string without a key (Endpoint, EntityPath)
   E2E_SHARED_EVENTHUB_PARTITION_COUNT that Event Hub's partition count (optional; tests default to 4)
+
+-Prefix E2E_MQTTV5_SHARED (Azure Pipelines ci-c-e2e-mqttv5) needs -EntraAuthentication or
+-DeviceOnly: the mqttv5 hub has local authentication disabled. It reads the -EntraAuthentication
+variables under that prefix except SAS_GROUP_KEY and DPS_CS (mqttv5 hubs accept X.509 only; no SAS
+key is written, and there is no TPM suite), and optionally E2E_MQTTV5_SHARED_DPS_HOST, the DPS
+device endpoint.
 
 -Csr (Azure Pipelines ci-c-e2e, CSR suites) writes the IOT_DPS_GROUP_X509_*_<DeviceIndex> bootstrap
 identity instead, from:
@@ -63,16 +64,19 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ($Csr -and $EntraAuthentication) { throw '-Csr and -EntraAuthentication cannot be combined.' }
-if ($EntraAuthentication -and $Prefix -ne 'E2E_SHARED') { throw '-EntraAuthentication supports only -Prefix E2E_SHARED.' }
 if ($DeviceOnly -and ($Csr -or $EntraAuthentication)) { throw '-DeviceOnly cannot be combined with -Csr or -EntraAuthentication.' }
 
 $Vars = if ($Csr) { 'E2E_CSR_SHARED' } else { $Prefix }
 function Get-Shared([string]$Name) { [Environment]::GetEnvironmentVariable("${Vars}_$Name") }
 $Mqttv5 = -not $Csr -and $Prefix -eq 'E2E_MQTTV5_SHARED'
+if ($Mqttv5 -and -not ($EntraAuthentication -or $DeviceOnly)) {
+    throw '-Prefix E2E_MQTTV5_SHARED needs -EntraAuthentication or -DeviceOnly: the mqttv5 hub has local authentication disabled.'
+}
 $Required = if ($Csr) { @('GROUP_CA', 'ID_SCOPE', 'SAS_GROUP_KEY') }
             elseif ($DeviceOnly) { @('GROUP_CA', 'ID_SCOPE') }
-            elseif ($Mqttv5) { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE') }
-            elseif ($EntraAuthentication) { @('GROUP_CA', 'IOTHUB_HOSTNAME', 'EVENTHUB_KEYLESS_CS', 'ID_SCOPE', 'SAS_GROUP_KEY', 'DPS_CS') }
+            elseif ($EntraAuthentication) {
+                @('GROUP_CA', 'IOTHUB_HOSTNAME', 'EVENTHUB_KEYLESS_CS', 'ID_SCOPE') + @(if (-not $Mqttv5) { 'SAS_GROUP_KEY', 'DPS_CS' })
+            }
             else { @('GROUP_CA', 'IOTHUB_CS', 'EVENTHUB_CS', 'ID_SCOPE', 'SAS_GROUP_KEY', 'DPS_CS', 'IOTHUB_REGISTRY_CS') }
 $Missing = $Required | ForEach-Object { "${Vars}_$_" } |
     Where-Object { [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_)) }
@@ -152,11 +156,14 @@ $Lines = if ($Csr) {
         Format-Assignment 'E2E_EVENTHUB_READABLE_AFTER' '0'
         Format-Assignment 'IOTHUB_EVENTHUB_CONSUMER_GROUP' $ConsumerGroup
         Format-Assignment 'IOT_DPS_ID_SCOPE' (Get-Shared 'ID_SCOPE')
+        if ($Mqttv5 -and (Get-Shared 'DPS_HOST')) { Format-Assignment 'IOT_DPS_GLOBAL_ENDPOINT' (Get-Shared 'DPS_HOST') }
         Format-Assignment "IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$DeviceIndex" $RegistrationId
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$DeviceIndex" (ConvertTo-B64 $Chain)
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_KEY_$DeviceIndex" $KeyB64
-        Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' (Get-Shared 'SAS_GROUP_KEY')
-        Format-Assignment 'IOT_DPS_CONNECTION_STRING' (Get-Shared 'DPS_CS')
+        if (-not $Mqttv5) {
+            Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' (Get-Shared 'SAS_GROUP_KEY')
+            Format-Assignment 'IOT_DPS_CONNECTION_STRING' (Get-Shared 'DPS_CS')
+        }
     )
 } elseif ($DeviceOnly) {
     @(
@@ -172,13 +179,12 @@ $Lines = if ($Csr) {
         Format-Assignment 'IOTHUB_EVENTHUB_CONNECTION_STRING' (Get-Shared 'EVENTHUB_CS')
         Format-Assignment 'IOTHUB_EVENTHUB_CONSUMER_GROUP' $ConsumerGroup
         Format-Assignment 'IOT_DPS_ID_SCOPE' (Get-Shared 'ID_SCOPE')
-        if ($Mqttv5 -and (Get-Shared 'DPS_HOST')) { Format-Assignment 'IOT_DPS_GLOBAL_ENDPOINT' (Get-Shared 'DPS_HOST') }
         Format-Assignment "IOT_DPS_INDIVIDUAL_REGISTRATION_ID_$DeviceIndex" $RegistrationId
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_CERTIFICATE_$DeviceIndex" (ConvertTo-B64 $Chain)
         Format-Assignment "IOT_DPS_INDIVIDUAL_X509_KEY_$DeviceIndex" $KeyB64
-        if (-not $Mqttv5) { Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' (Get-Shared 'SAS_GROUP_KEY') }
-        if (-not $Mqttv5) { Format-Assignment 'IOT_DPS_CONNECTION_STRING' (Get-Shared 'DPS_CS') }
-        if (-not $Mqttv5) { Format-Assignment 'IOTHUB_REGISTRY_CONNECTION_STRING' (Get-Shared 'IOTHUB_REGISTRY_CS') }
+        Format-Assignment 'IOT_DPS_SYMM_KEY_GROUP_PRIMARY_KEY' (Get-Shared 'SAS_GROUP_KEY')
+        Format-Assignment 'IOT_DPS_CONNECTION_STRING' (Get-Shared 'DPS_CS')
+        Format-Assignment 'IOTHUB_REGISTRY_CONNECTION_STRING' (Get-Shared 'IOTHUB_REGISTRY_CS')
     )
 }
 $OutDir = Split-Path -Parent $OutFile
