@@ -28,6 +28,7 @@
 #include "az_iot_e2e_service.h"
 #include "e2e_device.h"
 #include "e2e_log.h"
+#include "support/test_env.h"
 
 #define E2E_ROUTE_TIMEOUT_S 60
 #define E2E_ACK_TIMEOUT_S 60
@@ -45,7 +46,8 @@
 /* Observed on the mqttv5 hub: 257 KiB is routed; 1 MiB - 8 KiB drops the session. The documented
  * broker limit is 512 KB; the accepted body stays under it with 8 KiB for properties. Neither
  * Paho nor the SDK caps a publish. */
-#define E2E_PAYLOAD_AT_LIMIT (512 * 1000 - 8 * 1024)
+#define E2E_PAYLOAD_HEADROOM (8 * 1024)
+#define E2E_PAYLOAD_AT_LIMIT (512 * 1000 - E2E_PAYLOAD_HEADROOM)
 #define E2E_PAYLOAD_PAST_LIMIT (1024 * 1024 + 4 * 1024)
 /* Not the SDK default (application/json), so a dropped $.ct cannot pass. */
 #define E2E_CONTENT_TYPE "application/vnd.e2e+json"
@@ -641,26 +643,44 @@ static uint8_t* make_large_payload(const char* marker, size_t size)
   return payload;
 }
 
-/* A body just under the hub limit is acknowledged and routed. */
-static void payload_at_limit_is_accepted(void** state)
+/**
+ * @brief Message size limit of the route to the test's Event Hub, from
+ * AZ_IOT_E2E_ROUTE_MESSAGE_LIMIT_BYTES.
+ *
+ * @return The limit in bytes, or 0 when unset (the route carries whatever the hub accepts).
+ */
+static size_t route_message_limit(void)
 {
-  fixture* fx = (fixture*)*state;
-  assert_true(wait_connected(fx));
+  char* value = az_iot_test_env_dup("AZ_IOT_E2E_ROUTE_MESSAGE_LIMIT_BYTES");
+  const size_t limit = value != NULL ? (size_t)strtoul(value, NULL, 10) : 0;
+  free(value);
+  return limit;
+}
+
+/**
+ * @brief Sends a @p size byte body and checks the hub acknowledges it.
+ *
+ * @param must_route Also require the body to reach the Event Hub intact.
+ */
+static void send_large_payload_and_check(fixture* fx, const char* tag, size_t size, bool must_route)
+{
   char marker[E2E_MARKER_MAX];
-  make_marker(marker, sizeof(marker), "al", fx->device_id);
-  uint8_t* payload = make_large_payload(marker, E2E_PAYLOAD_AT_LIMIT);
+  make_marker(marker, sizeof(marker), tag, fx->device_id);
+  uint8_t* payload = make_large_payload(marker, size);
 
   watch_begin(fx);
-  publish_record* record = send_message(fx, payload, E2E_PAYLOAD_AT_LIMIT, NULL, 0);
-  const bool seen = wait_seen(fx, marker, E2E_ROUTE_TIMEOUT_S);
+  publish_record* record = send_message(fx, payload, size, NULL, 0);
+  /* A body the route may drop is not waited for: only its acknowledgement counts. */
+  const bool seen = must_route ? wait_seen(fx, marker, E2E_ROUTE_TIMEOUT_S)
+                               : az_iot_e2e_service_telemetry_seen(fx->service, marker);
   wait_done(fx, record, E2E_ACK_TIMEOUT_S);
   /* Paho copies the payload on send, and the publish has completed or timed out by now. */
   free(payload);
   size_t routed_size = 0;
   const bool sized = az_iot_e2e_service_telemetry_body_size(fx->service, marker, &routed_size);
   printf(
-      "[e2e] %d-byte payload: completion %s, routed %s (%u bytes), hub drops %d\n",
-      E2E_PAYLOAD_AT_LIMIT,
+      "[e2e] %u-byte payload: completion %s, routed %s (%u bytes), hub drops %d\n",
+      (unsigned)size,
       record_status(record),
       seen ? "yes" : "no",
       (unsigned)routed_size,
@@ -669,9 +689,30 @@ static void payload_at_limit_is_accepted(void** state)
   az_iot_e2e_service_telemetry_watch_end(fx->service);
   assert_true(record->done);
   assert_int_equal(record->status, AZ_IOT_OK);
-  assert_true(seen);
-  assert_true(sized);
-  assert_int_equal(routed_size, E2E_PAYLOAD_AT_LIMIT);
+  if (must_route)
+  {
+    assert_true(seen);
+    assert_true(sized);
+    assert_int_equal(routed_size, size);
+  }
+}
+
+/* A body just under the hub limit is acknowledged and routed. When the route to the test's Event
+ * Hub carries less (AZ_IOT_E2E_ROUTE_MESSAGE_LIMIT_BYTES), that body need only be acknowledged,
+ * and a body just under the route limit must be routed instead. */
+static void payload_at_limit_is_accepted(void** state)
+{
+  fixture* fx = (fixture*)*state;
+  assert_true(wait_connected(fx));
+  const size_t route_limit = route_message_limit();
+  const bool route_carries_hub_limit
+      = route_limit == 0 || E2E_PAYLOAD_AT_LIMIT + E2E_PAYLOAD_HEADROOM <= route_limit;
+  send_large_payload_and_check(fx, "al", E2E_PAYLOAD_AT_LIMIT, route_carries_hub_limit);
+  if (!route_carries_hub_limit)
+  {
+    assert_true(route_limit > 2 * E2E_PAYLOAD_HEADROOM);
+    send_large_payload_and_check(fx, "rl", route_limit - E2E_PAYLOAD_HEADROOM, true);
+  }
 }
 
 /** @brief Reopens the hub connection if it settled instead of reconnecting by itself. */

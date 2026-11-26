@@ -11,11 +11,14 @@ A leg runs suite E2E_SUITE over adapter E2E_ADAPTER (paho, az_mqtt, or both: eve
 suite) and shard E2E_SHARD ("<index>/<count>", AZ_IOT_TEST_SHARD; "0/1" runs every test).
   Build        installs the Linux packages the suite needs and builds its tests. No Azure call.
   IssueDevice  runs in an AzureCLI@2 task: reads the E2E-MQTTV5-SHARED-* secrets of Key Vault
-               E2E_SHARED_KEY_VAULT, issues the leg's device (c/eng/e2e-shared-device.ps1) and
-               writes its test config, certificate and key into E2E_DEVICE_DIRECTORY.
+               E2E_SHARED_KEY_VAULT, issues the leg's device (c/eng/e2e-shared-device.ps1
+               -EntraAuthentication) and writes its test config, certificate and key into
+               E2E_DEVICE_DIRECTORY. No hub or Event Hubs key: the hub has local authentication
+               disabled.
   RunTests     runs the suite with that device, with JUnit results in E2E_RESULTS_DIRECTORY; for
                transport, through a CONNECT proxy on loopback; for custody, with the key moved
-               into a SoftHSM2 token. No Azure call.
+               into a SoftHSM2 token. The service calls use the Microsoft Entra tokens in
+               IOTHUB_SERVICE_ACCESS_TOKEN and IOTHUB_EVENTHUB_ACCESS_TOKEN. No Azure CLI call.
 #>
 param(
     [Parameter(Mandatory)][ValidateSet('Build', 'IssueDevice', 'RunTests')][string]$Step
@@ -39,7 +42,13 @@ $suites = @{
     }
     twin          = @{ Tag = 'tw'; Slot = 0; LogLevel = 'INFO' }
     connection    = @{ Tag = 'cn'; Slot = 9; LogLevel = 'INFO' }
-    telemetry     = @{ Tag = 'te'; Slot = 8; LogLevel = 'INFO' }
+    telemetry     = @{
+        Tag = 'te'; Slot = 8; LogLevel = 'INFO'
+        # The tests read a custom Event Hub endpoint, whose route does not deliver a body near the
+        # hub's 512 KB limit; the at-limit case then needs only the acknowledgement and checks
+        # routing just under this limit.
+        Environment = @{ AZ_IOT_E2E_ROUTE_MESSAGE_LIMIT_BYTES = '256000' }
+    }
     direct_method = @{ Tag = 'dm'; Slot = 0; LogLevel = 'INFO' }
     transport     = @{ Tag = 'tr'; Slot = 4; SpreadGroups = $true; LogLevel = 'INFO'; Proxy = $true }
     custody       = @{
@@ -164,11 +173,12 @@ switch ($Step) {
         finally { Pop-Location }
     }
     'IssueDevice' {
-        # GROUP_CA signs devices that the shared enrollment group admits. The hub's 'service'
-        # policy, not iothubowner (secret IOTHUB-CS).
+        # GROUP_CA signs devices that the shared enrollment group admits. Telemetry is read from the
+        # Event Hub the hub routes it to: the built-in endpoint accepts only keys.
         $env:E2E_MQTTV5_SHARED_GROUP_CA = Get-SharedValue GROUP-CA -Secret
-        $env:E2E_MQTTV5_SHARED_IOTHUB_CS = Get-SharedValue IOTHUB-SERVICE-CS -Secret
-        $env:E2E_MQTTV5_SHARED_EVENTHUB_CS = Get-SharedValue EVENTHUB-CS -Secret
+        $env:E2E_MQTTV5_SHARED_IOTHUB_HOSTNAME = Get-SharedValue IOTHUB-HOSTNAME
+        $env:E2E_MQTTV5_SHARED_EVENTHUB_KEYLESS_CS = Get-SharedValue EVENTHUB-KEYLESS-CS
+        $env:E2E_MQTTV5_SHARED_EVENTHUB_PARTITION_COUNT = Get-SharedValue EVENTHUB-PARTITION-COUNT
         $env:E2E_MQTTV5_SHARED_ID_SCOPE = Get-SharedValue ID-SCOPE
         $env:E2E_MQTTV5_SHARED_DPS_HOST = Get-SharedValue DPS-HOST
         $directory = $env:E2E_DEVICE_DIRECTORY
@@ -179,7 +189,7 @@ switch ($Step) {
         $group = 'e2e-' + (([long]$env:E2E_BUILD_ID + $slot) % 11)
         $registrationId = "ci-ado-mqttv5-$($suite.Tag)-$($env:E2E_BUILD_ID)-$($env:E2E_JOB_ATTEMPT)-$legTag"
         Write-Host "Device $registrationId, consumer group $group."
-        & (Join-Path $repositoryRoot 'c/eng/e2e-shared-device.ps1') -Prefix E2E_MQTTV5_SHARED `
+        & (Join-Path $repositoryRoot 'c/eng/e2e-shared-device.ps1') -Prefix E2E_MQTTV5_SHARED -EntraAuthentication `
             -RegistrationId $registrationId -ConsumerGroup $group -OutFile $config
         . $config
         $key = Join-Path $directory 'device-key.pem'
