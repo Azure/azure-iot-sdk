@@ -670,7 +670,9 @@ static void send_large_payload_and_check(fixture* fx, const char* tag, size_t si
 
   watch_begin(fx);
   publish_record* record = send_message(fx, payload, size, NULL, 0);
-  const bool seen = wait_seen(fx, marker, E2E_ROUTE_TIMEOUT_S);
+  /* A body the route may drop is not waited for: only its acknowledgement counts. */
+  const bool seen = must_route ? wait_seen(fx, marker, E2E_ROUTE_TIMEOUT_S)
+                               : az_iot_e2e_service_telemetry_seen(fx->service, marker);
   wait_done(fx, record, E2E_ACK_TIMEOUT_S);
   /* Paho copies the payload on send, and the publish has completed or timed out by now. */
   free(payload);
