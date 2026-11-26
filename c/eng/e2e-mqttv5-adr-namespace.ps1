@@ -68,7 +68,11 @@ $RetryableSubmit = "$PropagationCodes|ResourceProvisioningInProgress|Service ?Un
 # ADR feature flag: without it the link takes another path and reports the linked resource as unreadable.
 $FeatureTags = @{ useMiSdk = 'true' }
 
-# Returns $null on 404. Response bodies are not logged: DPS reads can carry keys.
+# Tenant-wide throttling (for example of managed identity operations) clears within seconds.
+$Throttled = 'Too ?Many ?Requests|throttled'
+
+# Returns $null on 404, and retries throttled calls (every call here is idempotent). Response bodies are not logged:
+# DPS reads can carry keys.
 function Invoke-Arm([string]$Method, [string]$Url, $Body) {
     $a = @('rest', '--method', $Method, '--url', $Url, '-o', 'json')
     $tmp = $null
@@ -78,7 +82,12 @@ function Invoke-Arm([string]$Method, [string]$Url, $Body) {
         $a += @('--headers', 'Content-Type=application/json', '--body', "@$tmp")
     }
     try {
-        $out = ((& az @a 2>&1) | Out-String).Trim()
+        for ($attempt = 1; ; $attempt++) {
+            $out = ((& az @a 2>&1) | Out-String).Trim()
+            if ($LASTEXITCODE -eq 0 -or $attempt -ge 5 -or $out -notmatch $Throttled) { break }
+            Write-Host "  ARM $($Method.ToUpper()) throttled; retrying in $(10 * $attempt) s."
+            Start-Sleep -Seconds (10 * $attempt)
+        }
         if ($LASTEXITCODE -ne 0) {
             if ($Method -eq 'get' -and $out -match 'ResourceNotFound|\(NotFound\)|Not Found') { return $null }
             $msg = $out -replace '(?i)("(?:primaryKey|secondaryKey|accessToken)"\s*:\s*")[^"]*', '$1<redacted>'

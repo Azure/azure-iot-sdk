@@ -217,7 +217,8 @@ namespace Microsoft.Azure.Iot.Device
         private bool _isConnectionUp;
 
         // Completes once the most recent connection loss has been reported through DisconnectedAsync. The next
-        // connection is only reported through ConnectedAsync after that.
+        // connection attempt is only reported through ConnectingAsync, and the next connection through ConnectedAsync,
+        // after that.
         private Task _connectionLossNotification = Task.CompletedTask;
 
         private readonly IMqttClient _underlyingMqttClient;
@@ -279,23 +280,10 @@ namespace Microsoft.Azure.Iot.Device
 
             // Handlers of the previous connection's loss must finish before handlers of this connection start, so that
             // abandoning the previous connection's work cannot affect this one's.
-            await previousLossNotification;
-
-            if (lateLossNotified != null)
-            {
-                try
-                {
-                    await NotifyConnectionLostAsync(new MqttClientDisconnectedEventArgs()
-                    {
-                        Reason = MqttDisconnectReason.UnspecifiedError,
-                        ReasonString = "The previous connection was lost before this connection was established.",
-                    });
-                }
-                finally
-                {
-                    lateLossNotified.SetResult();
-                }
-            }
+            await AwaitConnectionLossNotificationAsync(
+                previousLossNotification,
+                lateLossNotified,
+                "The previous connection was lost before this connection was established.");
 
             await DelegateConnectedAsync(args);
         }
@@ -359,9 +347,57 @@ namespace Microsoft.Azure.Iot.Device
             }
         }
 
-        private Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect, CancellationToken cancellationToken)
+        private async Task<MqttConnect> DelegateConnectingAsync(MqttConnect connect, CancellationToken cancellationToken)
         {
-            return _connecting.InvokeAsync(connect, cancellationToken);
+            // Handlers of the previous connection's loss must finish before this attempt's handlers start, since these
+            // replace the state (such as the connection nonce) that loss handlers read to tell which connection was lost.
+            TaskCompletionSource? lateLossNotified = null;
+            Task previousLossNotification;
+            lock (_connectionStateLock)
+            {
+                previousLossNotification = _connectionLossNotification;
+                if (_isConnectionUp && !_underlyingMqttClient.IsConnected())
+                {
+                    // The previous connection's disconnect callback has not arrived yet, so report its loss now. The late
+                    // callback will then find no connection up and be dropped.
+                    _isConnectionUp = false;
+                    lateLossNotified = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _connectionLossNotification = lateLossNotified.Task;
+                }
+            }
+
+            await AwaitConnectionLossNotificationAsync(
+                previousLossNotification,
+                lateLossNotified,
+                "The previous connection was lost before the next connection attempt started.");
+
+            return await _connecting.InvokeAsync(connect, cancellationToken);
+        }
+
+        /// <summary>
+        /// Wait until the previous connection loss has been reported, reporting it first if its disconnect callback
+        /// has not arrived (<paramref name="lateLossNotified"/> is then set, and completed once reported).
+        /// </summary>
+        private async Task AwaitConnectionLossNotificationAsync(Task previousLossNotification, TaskCompletionSource? lateLossNotified, string reasonString)
+        {
+            await previousLossNotification;
+            if (lateLossNotified == null)
+            {
+                return;
+            }
+
+            try
+            {
+                await NotifyConnectionLostAsync(new MqttClientDisconnectedEventArgs()
+                {
+                    Reason = MqttDisconnectReason.UnspecifiedError,
+                    ReasonString = reasonString,
+                });
+            }
+            finally
+            {
+                lateLossNotified.SetResult();
+            }
         }
 
         private Task<MqttConnect> CaptureConnectSettingsAsync(MqttConnect connect, CancellationToken cancellationToken)

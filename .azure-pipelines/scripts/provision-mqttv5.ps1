@@ -17,8 +17,15 @@ function Protect-Secrets([string]$Text) {
     $Text -replace '(?i)(\bsig=)[^&"\s]+', '$1<redacted>'
 }
 
+# Retries tenant-wide throttling (for example of managed identity operations), which clears within seconds. Every
+# command here is idempotent.
 function Invoke-AzureJson([string[]]$Arguments, [switch]$Sensitive) {
-    $output = ((& az @Arguments 2>&1) | Out-String).Trim()
+    for ($attempt = 1; ; $attempt++) {
+        $output = ((& az @Arguments 2>&1) | Out-String).Trim()
+        if ($LASTEXITCODE -eq 0 -or $attempt -ge 5 -or $output -notmatch 'Too ?Many ?Requests|throttled') { break }
+        Write-Host "Azure command '$($Arguments[0..1] -join ' ')' throttled; retrying in $(10 * $attempt) s."
+        Start-Sleep -Seconds (10 * $attempt)
+    }
     if ($LASTEXITCODE -ne 0) {
         $detail = if ($Sensitive) { 'response withheld' } else { Protect-Secrets $output }
         throw "Azure command '$($Arguments[0..1] -join ' ')' failed (exit $LASTEXITCODE): $detail"
