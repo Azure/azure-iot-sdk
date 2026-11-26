@@ -121,13 +121,25 @@
 /** @brief mqttv3 hub CONNECT api-version. Hub certificate management
  * ($iothub/credentials) requires 2025-08-01-preview; the pinned azure-sdk-for-c
  * username helper emits 2020-09-30, so the username is built here. */
+#ifdef AZ_IOT_HUB_API_VERSION
+/* Build-time override, e.g. -DAZ_IOT_HUB_API_VERSION="2020-09-30" for a device
+ * that uses no feature needing the preview (hub certificate management). */
+#define HUB_API_VERSION AZ_IOT_HUB_API_VERSION
+#else
 #define HUB_API_VERSION "2025-08-01-preview"
+#endif
 /** @brief DeviceClientType value, unchanged from the azure-sdk-for-c default. */
 #define HUB_DEVICE_CLIENT_TYPE "azsdk-c%2F" AZ_SDK_VERSION_STRING
 
 /* The pinned azure-sdk-for-c helper emits 2019-03-31. Build the CONNECT
  * username here for every DPS session, including CSR. */
+#ifdef AZ_IOT_DPS_API_VERSION
+/* Build-time override, e.g. -DAZ_IOT_DPS_API_VERSION="2019-03-31" for a device
+ * that uses neither CSR enrollment nor connectionProfile. */
+#define DPS_API_VERSION AZ_IOT_DPS_API_VERSION
+#else
 #define DPS_API_VERSION "2026-11-02-preview"
+#endif
 #define DPS_USERNAME_INFIX "/registrations/"
 #define DPS_USERNAME_SUFFIX "/api-version=" DPS_API_VERSION
 #define DPS_DEFAULT_GLOBAL_ENDPOINT "global.azure-devices-provisioning.net"
