@@ -8,6 +8,7 @@ using Microsoft.Azure.Iot.Device.Models.CertificateManagement;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -40,6 +41,10 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         private volatile ClassicConnection _classicConnection = new(Guid.NewGuid());
 
         Guid? IConnectionClient.ConnectionNonce => CurrentConnectionContext != null ? _classicConnection.Nonce : null;
+
+        IWebProxy? IConnectionClient.Proxy => Proxy;
+
+        HttpClient IConnectionClient.CreateHttpClient(Authentication.AuthenticationCredentials credentials) => CreateHttpClient(credentials);
 
         event Action? IConnectionClient.ConnectionLost
         {

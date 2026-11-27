@@ -9,6 +9,7 @@ using Microsoft.Azure.Iot.Device.Unified.FileUpload;
 using Microsoft.Azure.Iot.Device.Models.FileUpload;
 using Microsoft.Azure.Iot.Device.Exceptions;
 using Microsoft.Azure.Iot.Device.Authentication;
+using Microsoft.Azure.Iot.Device.Unified.Models;
 
 namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
 {
@@ -21,27 +22,12 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [InlineData(false, false)]
         public async Task TestFileUpload(bool testAgainstClassicHub, bool withProvidedHttpClient)
         {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(testAgainstClassicHub, null, cancellationToken: TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientAsync(
+                testAgainstClassicHub,
+                new ConnectionClientOptions { HttpClientFactory = withProvidedHttpClient ? CreateUserHttpClient : null },
+                cancellationToken: TestContext.Current.CancellationToken);
 
-            FileUploadClient fileUploadClient;
-            if (testAgainstClassicHub)
-            {
-                if (withProvidedHttpClient)
-                {
-                    var handler = new HttpClientHandler();
-                    handler.ClientCertificates.Add(Assert.IsType<X509AuthenticationProvider>(testDeviceContext.AuthenticationProvider).PrimaryClientCertificate);
-                    HttpClient userProvidedHttpClient = new(handler);
-                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient, userProvidedHttpClient);
-                }
-                else
-                {
-                    fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
-                }
-            }
-            else
-            {
-                fileUploadClient = new FileUploadClient(testDeviceContext.ConnectionClient);
-            }
+            FileUploadClient fileUploadClient = new(testDeviceContext.ConnectionClient);
 
             await UploadFileAndCompleteAsync(fileUploadClient, TestContext.Current.CancellationToken);
 
@@ -54,19 +40,33 @@ namespace Microsoft.Azure.Iot.Device.IntegrationTests.Unified
         [InlineData(true)]
         public async Task TestFileUpload_SymmetricKey(bool withProvidedHttpClient)
         {
-            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(cancellationToken: TestContext.Current.CancellationToken);
+            UnifiedDeviceTestContext testDeviceContext = await Setup.CreateConnectedUnifiedConnectionClientWithSymmetricKeyAsync(
+                new ConnectionClientOptions { HttpClientFactory = withProvidedHttpClient ? CreateUserHttpClient : null },
+                cancellationToken: TestContext.Current.CancellationToken);
 
-            // Neither HTTP client is configured with a client certificate, so IoT Hub can only authenticate these requests with the SAS token
+            // There is no client certificate to present, so IoT Hub can only authenticate these requests with the SAS token
             Assert.IsType<SymmetricKeyAuthenticationProvider>(testDeviceContext.AuthenticationProvider);
             Assert.Null(testDeviceContext.ConnectionContext.IssuedClientCertificates);
-            FileUploadClient fileUploadClient = withProvidedHttpClient
-                ? new FileUploadClient(testDeviceContext.ConnectionClient, new HttpClient())
-                : new FileUploadClient(testDeviceContext.ConnectionClient);
+            FileUploadClient fileUploadClient = new(testDeviceContext.ConnectionClient);
 
             await UploadFileAndCompleteAsync(fileUploadClient, TestContext.Current.CancellationToken);
 
             await testDeviceContext.DisposeAsync(); // Dispose this before any feature clients so that the test device identity can be cleaned up and the MQTT client disconnected gracefully
             fileUploadClient.Dispose();
+        }
+
+        /// <summary>
+        /// Creates HTTP clients the way an application's <see cref="ConnectionClientOptions.HttpClientFactory"/> might, presenting the device's client certificate, if any.
+        /// </summary>
+        private static HttpClient CreateUserHttpClient(AuthenticationCredentials credentials)
+        {
+            var handler = new HttpClientHandler();
+            if (credentials.ClientCertificate != null)
+            {
+                handler.ClientCertificates.Add(credentials.ClientCertificate);
+            }
+
+            return new HttpClient(handler);
         }
 
         /// <summary>

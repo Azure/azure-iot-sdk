@@ -1,9 +1,11 @@
 ﻿// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
 // See LICENSE file in the project root for full license information.
 
+using Microsoft.Azure.Iot.Device.Authentication;
 using Microsoft.Azure.Iot.Device.Models;
 using Microsoft.Azure.Iot.Device.Mqtt;
 using Microsoft.Azure.Iot.Device.Unified.Models;
+using System.Net;
 
 namespace Microsoft.Azure.Iot.Device.Unified.Connection
 {
@@ -42,6 +44,18 @@ namespace Microsoft.Azure.Iot.Device.Unified.Connection
         /// those of the next.
         /// </remarks>
         internal Guid? ConnectionNonce => null;
+
+        /// <summary>
+        /// The HTTP proxy that feature clients send their HTTPS requests through, or null to use the system's default proxy
+        /// settings. See <see cref="ConnectionClientOptions.Proxy"/>.
+        /// </summary>
+        internal IWebProxy? Proxy => null;
+
+        /// <summary>
+        /// Creates an HTTP client for a feature client to send HTTPS requests with, presenting the given TLS credentials. The caller owns
+        /// and disposes it. See <see cref="ConnectionClientOptions.HttpClientFactory"/>.
+        /// </summary>
+        internal HttpClient CreateHttpClient(AuthenticationCredentials credentials) => new(HttpMessageHandlerFactory.Create(credentials, Proxy));
 
         /// <summary>
         /// Raised whenever the connection to IoT hub is lost or closed, before any reconnection starts.

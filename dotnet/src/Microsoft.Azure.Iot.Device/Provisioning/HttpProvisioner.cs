@@ -1,0 +1,128 @@
+// Copyright (c) Microsoft. All rights reserved. Licensed under the MIT license.
+// See LICENSE file in the project root for full license information.
+
+using Microsoft.Azure.Iot.Device.Authentication;
+using Microsoft.Azure.Iot.Device.Exceptions;
+using Microsoft.Azure.Iot.Device.Models;
+using Microsoft.Azure.Iot.Device.Provisioning.Models;
+using Microsoft.Azure.Iot.Device.Retry;
+using System.Diagnostics;
+
+namespace Microsoft.Azure.Iot.Device.Provisioning
+{
+    /// <summary>
+    /// Registers a device with Device Provisioning Service over its HTTPS REST API, retrying under the connection retry
+    /// policy. Device Provisioning Service only supports TPM attestation over HTTPS.
+    /// </summary>
+    /// <remarks>
+    /// With no MQTT connection to Device Provisioning Service, the connection layer cannot retry this, so this class
+    /// does: a request that fails transiently is retried under the retry policy, floored by any Retry-After the service
+    /// sent. A TPM has no secondary credentials, so a rejected registration is not retried with other credentials.
+    /// </remarks>
+    internal sealed class HttpProvisioner
+    {
+        private readonly Func<AuthenticationCredentials, HttpClient> _createHttpClient;
+        private readonly IRetryPolicy? _retryPolicy;
+        private readonly TimeSpan _requestTimeout;
+        private readonly ProvisioningServiceRetryAfter _serviceRetryAfter;
+
+        /// <param name="createHttpClient">
+        /// Creates a new HTTP client, presenting the given boot credentials, for each attempt. Each one is disposed once its attempt ends.
+        /// </param>
+        /// <param name="retryPolicy">
+        /// The policy that decides whether, and when, to retry a transient failure, or null to make a single attempt and
+        /// leave retrying to the caller.
+        /// </param>
+        /// <param name="requestTimeout">How long to wait for each HTTPS request.</param>
+        /// <param name="serviceRetryAfter">Tracks the Retry-After the service asks for.</param>
+        public HttpProvisioner(
+            Func<AuthenticationCredentials, HttpClient> createHttpClient,
+            IRetryPolicy? retryPolicy,
+            TimeSpan requestTimeout,
+            ProvisioningServiceRetryAfter serviceRetryAfter)
+        {
+            _createHttpClient = createHttpClient;
+            _retryPolicy = retryPolicy;
+            _requestTimeout = requestTimeout;
+            _serviceRetryAfter = serviceRetryAfter;
+        }
+
+        public async Task<DeviceRegistrationResult> RegisterAsync(
+            ProvisioningRun run,
+            TpmAuthenticationProvider authentication,
+            CancellationToken cancellationToken)
+        {
+            string registrationId = authentication.GetRegistrationId();
+
+            // Identifies this registration to the TPM, so that its end only affects IoT Hub signing if no later
+            // registration has imported Device Provisioning Service's key since.
+            object provisioningKeyOwner = new();
+
+            try
+            {
+                return await RegisterWithRetryAsync(run, authentication, registrationId, provisioningKeyOwner, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                // However registration ended, stop holding back IoT Hub signing: once the IoT Hub key is installed this
+                // is a no-op, and otherwise no IoT Hub key is coming, so IoT Hub signing fails until one is imported.
+                authentication.EndProvisioningKeyUse(provisioningKeyOwner);
+            }
+        }
+
+        private async Task<DeviceRegistrationResult> RegisterWithRetryAsync(
+            ProvisioningRun run,
+            TpmAuthenticationProvider authentication,
+            string registrationId,
+            object provisioningKeyOwner,
+            CancellationToken cancellationToken)
+        {
+            uint attempt = 0;
+
+            while (true)
+            {
+                try
+                {
+                    AuthenticationCredentials credentials = await authentication.GetPrimaryBootAuthenticationCredentialsAsync(cancellationToken).ConfigureAwait(false);
+                    using var provisioningHttpClient = new ProvisioningHttpClient(
+                        _createHttpClient(credentials),
+                        run.Settings.GlobalEndpointAddress,
+                        run.Settings.IdScope,
+                        registrationId,
+                        ProvisioningDefaults.ApiVersion,
+                        ProvisioningDefaults.UserAgent,
+                        _requestTimeout,
+                        ProvisioningDefaults.OperationPollingInterval,
+                        _serviceRetryAfter.Capture,
+                        authentication,
+                        provisioningKeyOwner);
+
+                    return await provisioningHttpClient
+                        .RegisterAsync(run.RequestPayload.Payload, run.RequestPayload.ClientCertificateSigningRequest, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (DeviceException e) when (_retryPolicy != null && e.Retryability == ErrorRetryability.Retryable && !cancellationToken.IsCancellationRequested)
+                {
+                    if (attempt < uint.MaxValue)
+                    {
+                        attempt++;
+                    }
+
+                    RetryGuidance guidance = _retryPolicy.GetRetryGuidance(attempt, e, ConnectionEndpoint.DeviceProvisioningService, out TimeSpan retryDelay);
+                    if (guidance == RetryGuidance.AbandonRetry)
+                    {
+                        throw;
+                    }
+
+                    retryDelay = _serviceRetryAfter.Floor(retryDelay);
+                    Trace.TraceWarning("Registering with Device Provisioning Service over HTTPS failed on attempt {0}; retrying in {1}. {2}", attempt, retryDelay, e);
+
+                    if (retryDelay > TimeSpan.Zero)
+                    {
+                        await Task.Delay(retryDelay, cancellationToken).ConfigureAwait(false);
+                    }
+                }
+            }
+        }
+    }
+}
