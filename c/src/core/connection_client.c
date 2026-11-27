@@ -8517,14 +8517,14 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
       wait_ms = limit_wait_to_connection_deadlines(client, wait_ms);
       r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, wait_ms);
       session_pumped = true;
-    }
 
-    /* After process_loop(), which a passed deadline makes nonblocking: an answer already queued
-     * is handled first, and a staged end is applied below in this pass. */
-    if (client->dps_phase == DPS_PHASE_REGISTERING && !client->dps_pending_finalize
-        && az_iot_deadline__has_passed(&client->dps_response_deadline, az_iot_time_mono_ms()))
-    {
-      dps_resend_unanswered_request(client);
+      /* After process_loop(), which a passed deadline makes nonblocking: an answer already
+       * queued is handled first, and a staged end is applied below in this pass. */
+      if (client->dps_phase == DPS_PHASE_REGISTERING && !client->dps_pending_finalize
+          && az_iot_deadline__has_passed(&client->dps_response_deadline, az_iot_time_mono_ms()))
+      {
+        dps_resend_unanswered_request(client);
+      }
     }
 
     /* Deferred out of the SUBACK handler, so observers do not run inside the
