@@ -290,6 +290,7 @@ Defaults used when the matching option is left at 0:
 | `AZ_IOT_DEFAULT_SUBSCRIPTION_ACK_TIMEOUT_SECONDS` | 60 | `subscription_ack_timeout_seconds` |
 | `AZ_IOT_DEFAULT_MAX_UNCONFIRMED_DELIVERY_TIMEOUT_MS` | 300000 | `max_unconfirmed_delivery_timeout_ms`: how long an SDK message with no Message Expiry is kept for confirmation or resend; cannot be disabled |
 | `AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS` | 120000 | `csr_response_timeout_ms`: how long a certificate renewal waits for a terminal response, restarted by a `202` |
+| `AZ_IOT_DEFAULT_DPS_RESPONSE_TIMEOUT_MS` | 30000 | `dps_response_timeout_ms`: how long a DPS registration or status query waits for a response; an unanswered one is sent once more, then the DPS session ends with `AZ_IOT_ERR_TIMEOUT` and the reconnection policy applies |
 | `AZ_IOT_DPS_HOLD_TIMEOUT_MS` | 60000 | `dps_hold_timeout_ms` |
 | `AZ_IOT_DEFAULT_MAX_HUB_CONNECT_ATTEMPTS_BEFORE_REPROVISION` | 50 | `dps.max_hub_connect_attempts_before_reprovision`, set by `az_iot_connection_client_options_default()` |
 | `AZ_IOT_DEFAULT_IDENTITY_RECOVERY_INITIAL_DELAY_MS` | 300000 | `identity_recovery.policy.initial_delay_ms`, set by `az_iot_connection_client_options_default()` |
