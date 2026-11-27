@@ -1066,8 +1066,13 @@ static void dps_ends_the_session_when_the_resent_request_is_unanswered(void** st
   (void)az_iot_connection_client_do_work(fx->client, 0);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), 2);
   az_iot_deadline__expire_now(&fx->client->dps_response_deadline);
-  (void)az_iot_connection_client_do_work(fx->client, 0);
+  size_t const loops = az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP);
+  (void)az_iot_connection_client_do_work(fx->client, 60000u);
 
+  /* The session ends in this pass, with no wait first. */
+  assert_true(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP) > loops);
+  assert_int_equal(
+      az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms, 0u);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), 2);
   assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
   assert_int_equal(
