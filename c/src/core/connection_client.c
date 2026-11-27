@@ -3173,9 +3173,6 @@ static void dps_resend_unanswered_request(az_iot_connection_client* c)
         request,
         (unsigned)c->dps_unanswered_request_count);
     dps_finalize(c, AZ_IOT_ERR_TIMEOUT, false);
-    /* The passed deadline stays until teardown clears it, so this pass does not wait in
-     * process_loop() before the staged end is applied. */
-    az_iot_deadline__expire_now(&c->dps_response_deadline);
     return;
   }
   AZ_IOT_LOG_WARNF(
@@ -8496,12 +8493,6 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
       }
     }
 
-    if (client->dps_phase == DPS_PHASE_REGISTERING && !client->dps_pending_finalize
-        && az_iot_deadline__has_passed(&client->dps_response_deadline, az_iot_time_mono_ms()))
-    {
-      dps_resend_unanswered_request(client);
-    }
-
     az_iot_result r = AZ_IOT_OK;
     if (client->dps_mqtt && client->dps_mqtt->iface && client->dps_mqtt->iface->process_loop)
     {
@@ -8526,6 +8517,14 @@ static az_iot_result do_work_pass(az_iot_connection_client* client, uint32_t tim
       wait_ms = limit_wait_to_connection_deadlines(client, wait_ms);
       r = client->dps_mqtt->iface->process_loop(client->dps_mqtt, wait_ms);
       session_pumped = true;
+    }
+
+    /* After process_loop(), which a passed deadline makes nonblocking: an answer already queued
+     * is handled first, and a staged end is applied below in this pass. */
+    if (client->dps_phase == DPS_PHASE_REGISTERING && !client->dps_pending_finalize
+        && az_iot_deadline__has_passed(&client->dps_response_deadline, az_iot_time_mono_ms()))
+    {
+      dps_resend_unanswered_request(client);
     }
 
     /* Deferred out of the SUBACK handler, so observers do not run inside the

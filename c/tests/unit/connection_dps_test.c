@@ -1090,6 +1090,45 @@ static void dps_ends_the_session_when_the_resent_request_is_unanswered(void** st
   assert_string_equal(c->connect.host, "global.azure-devices-provisioning.net");
 }
 
+/* An answer queued before the last deadline passed is handled, not dropped by the timeout. */
+static void dps_handles_an_answer_queued_before_the_last_deadline(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+  az_iot_deadline__expire_now(&fx->client->dps_response_deadline);
+  (void)az_iot_connection_client_do_work(fx->client, 0);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_PUBLISH), 2);
+
+  assert_true(inject_dps_response(m, DPS_RESPONSE_TOPIC_ASSIGNED, k_assigned_body));
+  az_iot_deadline__expire_now(&fx->client->dps_response_deadline);
+  for (int i = 0; i < 5; ++i)
+  {
+    (void)az_iot_connection_client_do_work(fx->client, 0);
+  }
+
+  assert_int_equal(az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_RETRY_PENDING), AZ_IOT_OK);
+  az_iot_mock_mqtt_client* hub = az_iot_mock_mqtt_adapter_last_client();
+  const az_iot_mock_call* c = az_iot_mock_mqtt_client_last_of(hub, AZ_IOT_MOCK_CALL_CONNECT);
+  assert_non_null(c);
+  assert_string_equal(c->connect.host, "myhub.azure-devices.net");
+}
+
+/* A re-send that fails at once ends the session in the same pass, with no wait first. */
+static void dps_ends_the_session_at_once_when_the_resend_fails(void** state)
+{
+  az_iot_test_conn* fx = (az_iot_test_conn*)*state;
+  az_iot_mock_mqtt_client* m = dps_open_to_registering(fx);
+  az_iot_mock_mqtt_client_set_next_result(m, AZ_IOT_MOCK_CALL_PUBLISH, AZ_IOT_ERR_MQTT);
+  az_iot_deadline__expire_now(&fx->client->dps_response_deadline);
+  (void)az_iot_connection_client_do_work(fx->client, 60000u);
+
+  assert_int_equal(
+      az_iot_mock_mqtt_client_last_of(m, AZ_IOT_MOCK_CALL_PROCESS_LOOP)->timeout_ms, 0u);
+  assert_int_equal(az_iot_mock_mqtt_client_count_of(m, AZ_IOT_MOCK_CALL_DISCONNECT), 1);
+  assert_int_equal(
+      az_iot_test_reason_for(&fx->log, AZ_IOT_CONN_STATE_RETRY_PENDING), AZ_IOT_ERR_MQTT);
+}
+
 static void count_registration_payload(az_span payload, void* ctx)
 {
   (void)payload;
@@ -6786,6 +6825,10 @@ int main(void)
         dps_response_before_the_timeout_cancels_the_resend, setup, teardown),
     cmocka_unit_test_setup_teardown(
         dps_ends_the_session_when_the_resent_request_is_unanswered, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_handles_an_answer_queued_before_the_last_deadline, setup_with_reconnect, teardown),
+    cmocka_unit_test_setup_teardown(
+        dps_ends_the_session_at_once_when_the_resend_fails, setup_with_reconnect, teardown),
     cmocka_unit_test_setup_teardown(
         dps_ignores_a_response_after_the_outcome_is_decided, setup, teardown),
     /* assignment handoff */
