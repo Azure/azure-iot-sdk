@@ -3022,6 +3022,9 @@ static void dps_resend_unanswered_request(az_iot_connection_client* c)
         request,
         (unsigned)c->dps_unanswered_request_count);
     dps_finalize(c, AZ_IOT_ERR_TIMEOUT, false);
+    /* The passed deadline stays until teardown clears it, so this pass does not wait in
+     * process_loop() before the staged end is applied. */
+    az_iot_deadline__expire_now(&c->dps_response_deadline);
     return;
   }
   AZ_IOT_LOG_WARNF(
