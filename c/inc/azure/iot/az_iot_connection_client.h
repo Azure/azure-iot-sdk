@@ -985,6 +985,17 @@ extern "C"
      */
     uint8_t* mqtt_workspace;
     size_t mqtt_workspace_size; /**< Bytes in mqtt_workspace. */
+    /**
+     * @brief Longest wait for DPS to answer a registration or status query, in milliseconds.
+     * az_iot_connection_client_options_default() sets #AZ_IOT_DEFAULT_DPS_RESPONSE_TIMEOUT_MS;
+     * init() also turns 0 into it.
+     *
+     * An unanswered request is sent again on the same session. When the re-sent one is not
+     * answered either, the provisioning session ends with AZ_IOT_ERR_TIMEOUT and the
+     * reconnection policy registers again on a new one. Appended so positional initializers
+     * keep their meaning.
+     */
+    uint32_t dps_response_timeout_ms;
   } az_iot_connection_client_options;
 
   typedef enum az_iot_connection_state
@@ -1400,6 +1411,10 @@ extern "C"
 /** @brief Default az_iot_connection_client_options::csr_response_timeout_ms (2 min). */
 #ifndef AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS
 #define AZ_IOT_DEFAULT_CSR_RESPONSE_TIMEOUT_MS 120000u
+#endif
+/** @brief Default az_iot_connection_client_options::dps_response_timeout_ms (30 s). */
+#ifndef AZ_IOT_DEFAULT_DPS_RESPONSE_TIMEOUT_MS
+#define AZ_IOT_DEFAULT_DPS_RESPONSE_TIMEOUT_MS 30000u
 #endif
 /** @brief Default lifetime of a token the SDK signs from a key, in seconds. */
 #ifndef AZ_IOT_DEFAULT_SAS_TOKEN_LIFETIME_SECONDS
@@ -1920,6 +1935,11 @@ extern "C"
     char dps_operation_id[AZ_IOT_DPS_OPERATION_ID_MAX];
     size_t dps_operation_id_len;
     uint64_t dps_poll_due_ms;
+    /** When the registration or status query awaiting a response is sent again; set while one
+     * is awaited. */
+    az_iot_deadline dps_response_deadline;
+    /** Requests sent on this provisioning session since its last response. */
+    uint8_t dps_unanswered_request_count;
     char dps_assigned_hub[AZ_IOT_DPS_HOST_BUF];
     char dps_assigned_device_id[AZ_IOT_DPS_DEVICE_ID_BUF];
     bool dps_pending_finalize;
