@@ -158,10 +158,10 @@
 #define PRESENCE_PHASE_BIRTH AZ_IOT_PRESENCE_PHASE_BIRTH
 #define PRESENCE_PHASE_DONE AZ_IOT_PRESENCE_PHASE_DONE
 
-/* Device publishes the birth message here; the birth-ack arrives on dev/. All
- * three are "ih/" + device id + one of these suffixes. */
+/* Device publishes the birth message on AZ_IOT_SERVICE_BOUND_TOPIC_PREFIX + device
+ * id; the birth-ack arrives on dev/. The device-bound topics are "ih/" + device id
+ * + one of these suffixes. */
 #define PRESENCE_TOPIC_PREFIX "ih/"
-#define PRESENCE_TOPIC_SRV_SUFFIX "/srv/presence"
 #define PRESENCE_TOPIC_DEV_SUFFIX "/dev/presence"
 /* The device subscribes to the whole device-bound topic space (per RFC
  * topics.md and the .NET SDK) rather than the narrower dev/presence: one
@@ -4775,7 +4775,7 @@ static void dps_apply_deferred(az_iot_connection_client* c)
 /* a birth-ack before the SDK reports CONNECTED. MQTTv3/DPS sessions skip all */
 /* of this. Sequenced as a small sub-state machine driven from on_mqtt_event:  */
 /*   CONNACK  -> SUBSCRIBE ih/{id}/dev/#                  (phase SUBSCRIBING)   */
-/*   SUBACK   -> PUBLISH   ih/{id}/srv/presence (birth)   (phase BIRTH)         */
+/*   SUBACK   -> PUBLISH   ih/srv/{id} (birth)            (phase BIRTH)         */
 /*   birth-ack MESSAGE on ih/{id}/dev/presence, matching nonce                  */
 /*                                     -> announce CONNECTED (phase DONE)       */
 /* A stalled handshake is timed out from do_work().                            */
@@ -5256,8 +5256,8 @@ static az_iot_result presence_publish_birth(az_iot_connection_client* c)
 
   const char* device_id = c->opts.device_id ? c->opts.device_id : "";
   char topic[AZ_IOT_PRESENCE_TOPIC_BUF];
-  const char* topic_parts[] = { PRESENCE_TOPIC_PREFIX, device_id, PRESENCE_TOPIC_SRV_SUFFIX };
-  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 3) != AZ_IOT_OK)
+  const char* topic_parts[] = { AZ_IOT_SERVICE_BOUND_TOPIC_PREFIX, device_id };
+  if (az_iot_span_writer_build_str(AZ_SPAN_FROM_BUFFER(topic), NULL, topic_parts, 2) != AZ_IOT_OK)
   {
     stage_local_error(
         c, AZ_IOT_CONN_SCOPE_HUB, AZ_IOT_ERR_NOT_ENOUGH_SPACE, "presence topic does not fit");
