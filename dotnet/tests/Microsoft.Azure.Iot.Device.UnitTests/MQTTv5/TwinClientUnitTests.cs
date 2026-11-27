@@ -23,7 +23,7 @@ namespace Microsoft.Azure.Iot.Device.UnitTests.MQTTv5
 
         private const string DeviceId = "someDeviceId";
         // The device ID is left for the connection client to fill in when it actually sends the publish.
-        private const string OutgoingTwinTopic = "ih/" + IConnectionClient.DeviceIdPlaceholder + "/srv/twin";
+        private const string OutgoingTwinTopic = "ih/srv/" + IConnectionClient.DeviceIdPlaceholder;
         private const string IncomingTwinTopic = "ih/someDeviceId/dev/twin";
 
         [Fact]

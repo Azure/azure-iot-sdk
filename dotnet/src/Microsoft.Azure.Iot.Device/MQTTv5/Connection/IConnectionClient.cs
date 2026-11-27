@@ -21,6 +21,12 @@ namespace Microsoft.Azure.Iot.Device.MQTTv5.Connection
         public const string DeviceIdPlaceholder = Unified.Connection.IConnectionClient.DeviceIdPlaceholder;
 
         /// <summary>
+        /// The topic that all of this device's service bound traffic other than telemetry (births, direct method
+        /// responses and twin requests) is published on. The "type" user property identifies the operation.
+        /// </summary>
+        internal const string ServiceBoundTopic = "ih/srv/" + DeviceIdPlaceholder;
+
+        /// <summary>
         /// Get the current connection context.
         /// </summary>
         /// <returns>Null if this connection client has not been connected yet. Otherwise, it returns the current connection context.</returns>
